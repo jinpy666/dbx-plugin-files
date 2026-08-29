@@ -1,0 +1,6 @@
+/backend/target/
+/frontend/node_modules/
+/frontend/dist/
+/dist/
+/ui/
+.dbx-repository-signing-key.env

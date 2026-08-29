@@ -1,0 +1,45 @@
+[package]
+name = "dbx-plugin-files"
+version = "0.1.3"
+edition = "2021"
+license = "Apache-2.0"
+description = "DBX files plugin sidecar: Apache OpenDAL storage engine"
+
+[workspace]
+
+[dependencies]
+base64 = "0.22"
+dbx-plugin-sdk = "0.1.0"
+# opendal 0.58.x needs rustc >= 1.91 (edition 2024 workspace); the host
+# toolchain is pinned to 1.88.0, so we lock the newest compatible line (0.57,
+# MSRV 1.85). Re-evaluate on toolchain upgrades.
+opendal = { version = "0.57", features = [
+    "services-fs",
+    "services-s3",
+    "services-webdav",
+    "services-ftp",
+    "services-sftp",
+    "services-gcs",
+    "services-azblob",
+    "services-oss",
+    "services-obs",
+    "services-cos",
+    "services-memory",
+] }
+# Pure-Rust SMB2/3 client (F5-SMB): the OpenDAL service registry has no SMB
+# backend, so `engine/smb/` adapts this crate behind a custom
+# `opendal::raw::Access`. Exact pin — upgrades go through the SMB regression
+# checklist (docs/IMPL_PLAN_SMB.zh-CN.md §0.2/§4).
+smb2 = "=0.20.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4"] }
+
+# The SDK is consumed from the local DBX host checkout; crates.io does not
+# carry it. Adjust the path when the host repo lives elsewhere.
+[patch.crates-io]
+dbx-plugin-sdk = { path = "../../../dbx-plugin-host-worktree/plugins/sdk/rust/dbx-plugin-sdk" }
+
+[dev-dependencies]
+tempfile = "3"

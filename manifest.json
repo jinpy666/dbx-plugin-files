@@ -1,0 +1,1081 @@
+{
+  "$schema": "https://raw.githubusercontent.com/t8y2/dbx/dev/plugin-framework-current/plugins/manifest.schema.json",
+  "manifest_version": 1,
+  "id": "io.dbx.files",
+  "name": "DBX Files",
+  "version": "0.1.3",
+  "publisher": "xynanan",
+  "description": "Multi-backend storage workbench plugin for DBX, powered by Apache OpenDAL.",
+  "icon": "assets/plugin.svg",
+  "engines": {
+    "dbx": ">=0.5.77",
+    "host_api": ">=1.0.0"
+  },
+  "permissions": [
+    "host.workbench",
+    "host.events",
+    "host.binary",
+    "host.filesystem"
+  ],
+  "entrypoints": {
+    "backend": {
+      "transport": "stdio-framed",
+      "executable": "bin/dbx-plugin-files"
+    },
+    "ui": {
+      "root": "ui",
+      "entry": "ui/index.html"
+    }
+  },
+  "contributions": [
+    {
+      "type": "connection-provider",
+      "id": "io.dbx.files.connection",
+      "label": "Storage",
+      "icon": "assets/plugin.svg",
+      "database_type": "storage",
+      "description": "Storage connection through Apache OpenDAL: local filesystem, S3/MinIO, WebDAV, FTP, SFTP, or any compiled OpenDAL service.",
+      "fields": [
+        {
+          "key": "display_name",
+          "label": "Connection name",
+          "type": "text",
+          "binding": "name",
+          "required": true,
+          "default": "Storage"
+        },
+        {
+          "key": "protocol",
+          "label": "Protocol",
+          "type": "select",
+          "binding": "config",
+          "required": true,
+          "default": "fs",
+          "options": [
+            {
+              "label": "Local filesystem",
+              "value": "fs"
+            },
+            {
+              "label": "S3 / MinIO",
+              "value": "s3"
+            },
+            {
+              "label": "WebDAV",
+              "value": "webdav"
+            },
+            {
+              "label": "FTP",
+              "value": "ftp"
+            },
+            {
+              "label": "SFTP",
+              "value": "sftp"
+            },
+            {
+              "label": "SMB / CIFS",
+              "value": "smb"
+            },
+            {
+              "label": "OpenDAL custom service",
+              "value": "opendal-custom"
+            }
+          ]
+        },
+        {
+          "key": "root",
+          "label": "Root path",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "description": "All operations are confined under this root when set."
+        },
+        {
+          "key": "lock_to_root",
+          "label": "Lock navigation to root",
+          "type": "boolean",
+          "binding": "config",
+          "default": false,
+          "description": "Reject any path outside the configured root."
+        },
+        {
+          "key": "service",
+          "label": "OpenDAL service name",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "opendal-custom"
+            ]
+          },
+          "description": "Any compiled OpenDAL service, e.g. gcs, azblob, oss, memory."
+        },
+        {
+          "key": "config",
+          "label": "Service config (JSON)",
+          "type": "textarea",
+          "binding": "config",
+          "default": "{}",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "opendal-custom"
+            ]
+          },
+          "description": "JSON object passed verbatim as OpenDAL Builder key/values, e.g. {\"root\":\"/tmp\",\"bucket\":\"demo\"}."
+        },
+        {
+          "key": "bucket",
+          "label": "Bucket",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "required": true,
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "s3"
+            ]
+          }
+        },
+        {
+          "key": "endpoint",
+          "label": "Endpoint",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "s3",
+              "webdav",
+              "ftp",
+              "sftp",
+              "smb"
+            ]
+          },
+          "description": "S3/WebDAV/FTP: full URL, e.g. http://127.0.0.1:9000. SFTP: OpenSSH style user@host or ssh://user@host:port. SMB: host[:445] or smb://host[:445], e.g. nas.local:445 or smb://nas.local."
+        },
+        {
+          "key": "share",
+          "label": "Share",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "required": true,
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "smb"
+            ]
+          },
+          "description": "SMB share name used as the tree connect target."
+        },
+        {
+          "key": "region",
+          "label": "Region",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "s3"
+            ]
+          }
+        },
+        {
+          "key": "access_key_id",
+          "label": "Access key ID",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "required": true,
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "s3"
+            ]
+          }
+        },
+        {
+          "key": "secret_access_key",
+          "label": "Secret access key",
+          "type": "password",
+          "binding": "secret",
+          "default": "",
+          "required": true,
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "s3"
+            ]
+          }
+        },
+        {
+          "key": "username",
+          "label": "Username",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "webdav",
+              "smb"
+            ]
+          }
+        },
+        {
+          "key": "domain",
+          "label": "Domain",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "smb"
+            ]
+          },
+          "description": "NTLM domain or workgroup; leave empty when not needed."
+        },
+        {
+          "key": "user",
+          "label": "User",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "ftp"
+            ]
+          },
+          "description": "Leave empty for anonymous login."
+        },
+        {
+          "key": "password",
+          "label": "Password",
+          "type": "password",
+          "binding": "secret",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "webdav",
+              "ftp",
+              "sftp",
+              "smb"
+            ]
+          }
+        },
+        {
+          "key": "key",
+          "label": "Private key or path",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "sftp"
+            ]
+          },
+          "description": "Private key content or a path to the key file."
+        },
+        {
+          "key": "known_hosts_strategy",
+          "label": "Known hosts strategy",
+          "type": "select",
+          "binding": "config",
+          "default": "Tolerate",
+          "options": [
+            {
+              "label": "Tolerate",
+              "value": "Tolerate"
+            },
+            {
+              "label": "Strict",
+              "value": "Strict"
+            },
+            {
+              "label": "Trust",
+              "value": "Trust"
+            }
+          ],
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "sftp"
+            ]
+          }
+        },
+        {
+          "key": "read_only",
+          "label": "Read only",
+          "type": "boolean",
+          "binding": "config",
+          "default": false,
+          "description": "Reject every write operation on this connection."
+        },
+        {
+          "key": "allow_delete",
+          "label": "Allow delete",
+          "type": "boolean",
+          "binding": "config",
+          "default": true,
+          "description": "When off, delete/purge operations are rejected."
+        },
+        {
+          "key": "connection_mode",
+          "label": "Connection mode",
+          "type": "select",
+          "binding": "config",
+          "default": "direct",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "sftp",
+              "ftp"
+            ]
+          },
+          "options": [
+            {
+              "label": "Direct",
+              "value": "direct"
+            },
+            {
+              "label": "Through DBX SSH tunnel",
+              "value": "via-dbx-ssh"
+            }
+          ]
+        },
+        {
+          "key": "dbx_ssh_connection",
+          "label": "DBX SSH connection",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": {
+            "field": "connection_mode",
+            "one_of": [
+              "via-dbx-ssh"
+            ]
+          },
+          "description": "Host SSH connection id used to forward the tunnel."
+        },
+        {
+          "key": "timeout_secs",
+          "label": "Operation timeout (seconds)",
+          "type": "number",
+          "binding": "config",
+          "default": 30
+        }
+      ],
+      "workbench": "io.dbx.files.workbench",
+      "capabilities": [
+        "test",
+        "connect",
+        "disconnect"
+      ]
+    },
+    {
+      "type": "workbench",
+      "id": "io.dbx.files.workbench",
+      "label": "Files Workbench",
+      "description": "Browse, transfer, and sync files across OpenDAL storage backends.",
+      "icon": "assets/plugin.svg"
+    }
+  ],
+  "localizations": {
+    "zh-CN": {
+      "name": "DBX 文件",
+      "description": "基于 Apache OpenDAL 的 DBX 多后端存储工作台插件。",
+      "contributions": {
+        "io.dbx.files.connection": {
+          "label": "存储",
+          "description": "经 Apache OpenDAL 的存储连接：本地文件系统、S3/MinIO、WebDAV、FTP、SFTP、SMB/CIFS 或任意已编译的 OpenDAL 服务。",
+          "fields": {
+            "display_name": {
+              "label": "连接名称"
+            },
+            "protocol": {
+              "label": "协议",
+              "options": {
+                "fs": "本地文件系统",
+                "s3": "S3 / MinIO",
+                "webdav": "WebDAV",
+                "ftp": "FTP",
+                "sftp": "SFTP",
+                "smb": "SMB / CIFS",
+                "opendal-custom": "OpenDAL 自定义服务"
+              }
+            },
+            "root": {
+              "label": "根路径"
+            },
+            "lock_to_root": {
+              "label": "锁定在根路径内"
+            },
+            "service": {
+              "label": "OpenDAL 服务名"
+            },
+            "config": {
+              "label": "服务配置（JSON）"
+            },
+            "bucket": {
+              "label": "存储桶"
+            },
+            "endpoint": {
+              "label": "端点"
+            },
+            "share": {
+              "label": "共享名"
+            },
+            "region": {
+              "label": "区域"
+            },
+            "access_key_id": {
+              "label": "Access Key ID"
+            },
+            "secret_access_key": {
+              "label": "Secret Access Key"
+            },
+            "username": {
+              "label": "用户名"
+            },
+            "domain": {
+              "label": "域"
+            },
+            "user": {
+              "label": "用户"
+            },
+            "password": {
+              "label": "密码"
+            },
+            "key": {
+              "label": "私钥或私钥路径"
+            },
+            "known_hosts_strategy": {
+              "label": "Known Hosts 策略"
+            },
+            "read_only": {
+              "label": "只读"
+            },
+            "allow_delete": {
+              "label": "允许删除"
+            },
+            "connection_mode": {
+              "label": "连接模式",
+              "options": {
+                "direct": "直连",
+                "via-dbx-ssh": "经 DBX SSH 隧道"
+              }
+            },
+            "dbx_ssh_connection": {
+              "label": "DBX SSH 连接"
+            },
+            "timeout_secs": {
+              "label": "操作超时（秒）"
+            }
+          }
+        },
+        "io.dbx.files.workbench": {
+          "label": "文件工作台",
+          "description": "在 OpenDAL 存储后端之间浏览、传输与同步文件。"
+        }
+      }
+    },
+    "zh-TW": {
+      "name": "DBX 檔案",
+      "description": "基於 Apache OpenDAL 的 DBX 多後端儲存工作台外掛。",
+      "contributions": {
+        "io.dbx.files.connection": {
+          "label": "儲存",
+          "description": "經 Apache OpenDAL 的儲存連線：本機檔案系統、S3/MinIO、WebDAV、FTP、SFTP、SMB/CIFS 或任意已編譯的 OpenDAL 服務。",
+          "fields": {
+            "display_name": {
+              "label": "連線名稱"
+            },
+            "protocol": {
+              "label": "通訊協定",
+              "options": {
+                "fs": "本機檔案系統",
+                "s3": "S3 / MinIO",
+                "webdav": "WebDAV",
+                "ftp": "FTP",
+                "sftp": "SFTP",
+                "smb": "SMB / CIFS",
+                "opendal-custom": "OpenDAL 自訂服務"
+              }
+            },
+            "root": {
+              "label": "根路徑"
+            },
+            "lock_to_root": {
+              "label": "鎖定在根路徑內"
+            },
+            "service": {
+              "label": "OpenDAL 服務名稱"
+            },
+            "config": {
+              "label": "服務設定（JSON）"
+            },
+            "bucket": {
+              "label": "儲存儲存桶"
+            },
+            "endpoint": {
+              "label": "端點"
+            },
+            "share": {
+              "label": "共用名稱"
+            },
+            "region": {
+              "label": "區域"
+            },
+            "access_key_id": {
+              "label": "Access Key ID"
+            },
+            "secret_access_key": {
+              "label": "Secret Access Key"
+            },
+            "username": {
+              "label": "使用者名稱"
+            },
+            "domain": {
+              "label": "網域"
+            },
+            "user": {
+              "label": "使用者"
+            },
+            "password": {
+              "label": "密碼"
+            },
+            "key": {
+              "label": "私鑰或私鑰路徑"
+            },
+            "known_hosts_strategy": {
+              "label": "Known Hosts 策略"
+            },
+            "read_only": {
+              "label": "唯讀"
+            },
+            "allow_delete": {
+              "label": "允許刪除"
+            },
+            "connection_mode": {
+              "label": "連線模式",
+              "options": {
+                "direct": "直連",
+                "via-dbx-ssh": "經 DBX SSH 隧道"
+              }
+            },
+            "dbx_ssh_connection": {
+              "label": "DBX SSH 連線"
+            },
+            "timeout_secs": {
+              "label": "操作逾時（秒）"
+            }
+          }
+        },
+        "io.dbx.files.workbench": {
+          "label": "檔案工作台",
+          "description": "在 OpenDAL 儲存後端之間瀏覽、傳輸與同步檔案。"
+        }
+      }
+    },
+    "en": {
+      "name": "DBX Files",
+      "description": "Multi-backend storage workbench plugin for DBX, powered by Apache OpenDAL.",
+      "contributions": {
+        "io.dbx.files.connection": {
+          "label": "Storage",
+          "description": "Storage connection through Apache OpenDAL: local filesystem, S3/MinIO, WebDAV, FTP, SFTP, SMB/CIFS, or any compiled OpenDAL service.",
+          "fields": {
+            "display_name": {
+              "label": "Connection name"
+            },
+            "protocol": {
+              "label": "Protocol",
+              "options": {
+                "fs": "Local filesystem",
+                "s3": "S3 / MinIO",
+                "webdav": "WebDAV",
+                "ftp": "FTP",
+                "sftp": "SFTP",
+                "smb": "SMB / CIFS",
+                "opendal-custom": "OpenDAL custom service"
+              }
+            },
+            "root": {
+              "label": "Root path"
+            },
+            "lock_to_root": {
+              "label": "Lock navigation to root"
+            },
+            "service": {
+              "label": "OpenDAL service name"
+            },
+            "config": {
+              "label": "Service config (JSON)"
+            },
+            "bucket": {
+              "label": "Bucket"
+            },
+            "endpoint": {
+              "label": "Endpoint"
+            },
+            "share": {
+              "label": "Share"
+            },
+            "region": {
+              "label": "Region"
+            },
+            "access_key_id": {
+              "label": "Access key ID"
+            },
+            "secret_access_key": {
+              "label": "Secret access key"
+            },
+            "username": {
+              "label": "Username"
+            },
+            "domain": {
+              "label": "Domain"
+            },
+            "user": {
+              "label": "User"
+            },
+            "password": {
+              "label": "Password"
+            },
+            "key": {
+              "label": "Private key or path"
+            },
+            "known_hosts_strategy": {
+              "label": "Known hosts strategy"
+            },
+            "read_only": {
+              "label": "Read only"
+            },
+            "allow_delete": {
+              "label": "Allow delete"
+            },
+            "connection_mode": {
+              "label": "Connection mode",
+              "options": {
+                "direct": "Direct",
+                "via-dbx-ssh": "Through DBX SSH tunnel"
+              }
+            },
+            "dbx_ssh_connection": {
+              "label": "DBX SSH connection"
+            },
+            "timeout_secs": {
+              "label": "Operation timeout (seconds)"
+            }
+          }
+        },
+        "io.dbx.files.workbench": {
+          "label": "Files Workbench",
+          "description": "Browse, transfer, and sync files across OpenDAL storage backends."
+        }
+      }
+    },
+    "es": {
+      "name": "DBX Archivos",
+      "description": "Complemento de almacenamiento multi-backend para DBX, impulsado por Apache OpenDAL.",
+      "contributions": {
+        "io.dbx.files.connection": {
+          "label": "Almacenamiento",
+          "description": "Conexión de almacenamiento mediante Apache OpenDAL: sistema de archivos local, S3/MinIO, WebDAV, FTP, SFTP, SMB/CIFS o cualquier servicio compilado de OpenDAL.",
+          "fields": {
+            "display_name": {
+              "label": "Nombre de la conexión"
+            },
+            "protocol": {
+              "label": "Protocolo",
+              "options": {
+                "fs": "Sistema de archivos local",
+                "s3": "S3 / MinIO",
+                "webdav": "WebDAV",
+                "ftp": "FTP",
+                "sftp": "SFTP",
+                "smb": "SMB / CIFS",
+                "opendal-custom": "Servicio personalizado de OpenDAL"
+              }
+            },
+            "root": {
+              "label": "Ruta raíz"
+            },
+            "lock_to_root": {
+              "label": "Restringir a la raíz"
+            },
+            "service": {
+              "label": "Nombre del servicio OpenDAL"
+            },
+            "config": {
+              "label": "Configuración del servicio (JSON)"
+            },
+            "bucket": {
+              "label": "Bucket"
+            },
+            "endpoint": {
+              "label": "Endpoint"
+            },
+            "share": {
+              "label": "Recurso compartido"
+            },
+            "region": {
+              "label": "Región"
+            },
+            "access_key_id": {
+              "label": "ID de clave de acceso"
+            },
+            "secret_access_key": {
+              "label": "Clave de acceso secreta"
+            },
+            "username": {
+              "label": "Usuario"
+            },
+            "domain": {
+              "label": "Dominio"
+            },
+            "user": {
+              "label": "Usuario"
+            },
+            "password": {
+              "label": "Contraseña"
+            },
+            "key": {
+              "label": "Clave privada o ruta"
+            },
+            "known_hosts_strategy": {
+              "label": "Estrategia de known hosts"
+            },
+            "read_only": {
+              "label": "Solo lectura"
+            },
+            "allow_delete": {
+              "label": "Permitir eliminar"
+            },
+            "connection_mode": {
+              "label": "Modo de conexión",
+              "options": {
+                "direct": "Directa",
+                "via-dbx-ssh": "A través del túnel SSH de DBX"
+              }
+            },
+            "dbx_ssh_connection": {
+              "label": "Conexión SSH de DBX"
+            },
+            "timeout_secs": {
+              "label": "Tiempo de espera de operación (segundos)"
+            }
+          }
+        },
+        "io.dbx.files.workbench": {
+          "label": "Mesa de trabajo de archivos",
+          "description": "Explore, transfiera y sincronice archivos entre backends de OpenDAL."
+        }
+      }
+    },
+    "it": {
+      "name": "DBX File",
+      "description": "Plugin di archiviazione multi-backend per DBX, basato su Apache OpenDAL.",
+      "contributions": {
+        "io.dbx.files.connection": {
+          "label": "Archiviazione",
+          "description": "Connessione di archiviazione tramite Apache OpenDAL: filesystem locale, S3/MinIO, WebDAV, FTP, SFTP, SMB/CIFS o qualsiasi servizio OpenDAL compilato.",
+          "fields": {
+            "display_name": {
+              "label": "Nome connessione"
+            },
+            "protocol": {
+              "label": "Protocollo",
+              "options": {
+                "fs": "Filesystem locale",
+                "s3": "S3 / MinIO",
+                "webdav": "WebDAV",
+                "ftp": "FTP",
+                "sftp": "SFTP",
+                "smb": "SMB / CIFS",
+                "opendal-custom": "Servizio OpenDAL personalizzato"
+              }
+            },
+            "root": {
+              "label": "Percorso radice"
+            },
+            "lock_to_root": {
+              "label": "Blocca nella radice"
+            },
+            "service": {
+              "label": "Nome servizio OpenDAL"
+            },
+            "config": {
+              "label": "Configurazione servizio (JSON)"
+            },
+            "bucket": {
+              "label": "Bucket"
+            },
+            "endpoint": {
+              "label": "Endpoint"
+            },
+            "share": {
+              "label": "Condivisione"
+            },
+            "region": {
+              "label": "Regione"
+            },
+            "access_key_id": {
+              "label": "ID chiave di accesso"
+            },
+            "secret_access_key": {
+              "label": "Chiave di accesso segreta"
+            },
+            "username": {
+              "label": "Nome utente"
+            },
+            "domain": {
+              "label": "Dominio"
+            },
+            "user": {
+              "label": "Utente"
+            },
+            "password": {
+              "label": "Password"
+            },
+            "key": {
+              "label": "Chiave privata o percorso"
+            },
+            "known_hosts_strategy": {
+              "label": "Strategia known hosts"
+            },
+            "read_only": {
+              "label": "Sola lettura"
+            },
+            "allow_delete": {
+              "label": "Consenti eliminazione"
+            },
+            "connection_mode": {
+              "label": "Modalità di connessione",
+              "options": {
+                "direct": "Diretta",
+                "via-dbx-ssh": "Tramite tunnel SSH di DBX"
+              }
+            },
+            "dbx_ssh_connection": {
+              "label": "Connessione SSH DBX"
+            },
+            "timeout_secs": {
+              "label": "Timeout operazione (secondi)"
+            }
+          }
+        },
+        "io.dbx.files.workbench": {
+          "label": "Banco di lavoro file",
+          "description": "Sfoglia, trasferisci e sincronizza file tra i backend OpenDAL."
+        }
+      }
+    },
+    "ja": {
+      "name": "DBX ファイル",
+      "description": "Apache OpenDAL を利用した DBX 用マルチバックエンドストレージワークベンチ。",
+      "contributions": {
+        "io.dbx.files.connection": {
+          "label": "ストレージ",
+          "description": "Apache OpenDAL 経由のストレージ接続：ローカルファイルシステム、S3/MinIO、WebDAV、FTP、SFTP、SMB/CIFS、またはコンパイル済みの任意の OpenDAL サービス。",
+          "fields": {
+            "display_name": {
+              "label": "接続名"
+            },
+            "protocol": {
+              "label": "プロトコル",
+              "options": {
+                "fs": "ローカルファイルシステム",
+                "s3": "S3 / MinIO",
+                "webdav": "WebDAV",
+                "ftp": "FTP",
+                "sftp": "SFTP",
+                "smb": "SMB / CIFS",
+                "opendal-custom": "OpenDAL カスタムサービス"
+              }
+            },
+            "root": {
+              "label": "ルートパス"
+            },
+            "lock_to_root": {
+              "label": "ルート内に制限"
+            },
+            "service": {
+              "label": "OpenDAL サービス名"
+            },
+            "config": {
+              "label": "サービス設定（JSON）"
+            },
+            "bucket": {
+              "label": "バケット"
+            },
+            "endpoint": {
+              "label": "エンドポイント"
+            },
+            "share": {
+              "label": "共有名"
+            },
+            "region": {
+              "label": "リージョン"
+            },
+            "access_key_id": {
+              "label": "アクセスキー ID"
+            },
+            "secret_access_key": {
+              "label": "シークレットアクセスキー"
+            },
+            "username": {
+              "label": "ユーザー名"
+            },
+            "domain": {
+              "label": "ドメイン"
+            },
+            "user": {
+              "label": "ユーザー"
+            },
+            "password": {
+              "label": "パスワード"
+            },
+            "key": {
+              "label": "秘密鍵またはパス"
+            },
+            "known_hosts_strategy": {
+              "label": "Known Hosts 戦略"
+            },
+            "read_only": {
+              "label": "読み取り専用"
+            },
+            "allow_delete": {
+              "label": "削除を許可"
+            },
+            "connection_mode": {
+              "label": "接続モード",
+              "options": {
+                "direct": "直接接続",
+                "via-dbx-ssh": "DBX SSH トンネル経由"
+              }
+            },
+            "dbx_ssh_connection": {
+              "label": "DBX SSH 接続"
+            },
+            "timeout_secs": {
+              "label": "操作タイムアウト（秒）"
+            }
+          }
+        },
+        "io.dbx.files.workbench": {
+          "label": "ファイルワークベンチ",
+          "description": "OpenDAL ストレージバックエンド間でファイルを閲覧・転送・同期します。"
+        }
+      }
+    },
+    "pt-BR": {
+      "name": "DBX Arquivos",
+      "description": "Plugin de armazenamento multi-backend para DBX, com Apache OpenDAL.",
+      "contributions": {
+        "io.dbx.files.connection": {
+          "label": "Armazenamento",
+          "description": "Conexão de armazenamento via Apache OpenDAL: sistema de arquivos local, S3/MinIO, WebDAV, FTP, SFTP, SMB/CIFS ou qualquer serviço OpenDAL compilado.",
+          "fields": {
+            "display_name": {
+              "label": "Nome da conexão"
+            },
+            "protocol": {
+              "label": "Protocolo",
+              "options": {
+                "fs": "Sistema de arquivos local",
+                "s3": "S3 / MinIO",
+                "webdav": "WebDAV",
+                "ftp": "FTP",
+                "sftp": "SFTP",
+                "smb": "SMB / CIFS",
+                "opendal-custom": "Serviço personalizado do OpenDAL"
+              }
+            },
+            "root": {
+              "label": "Caminho raiz"
+            },
+            "lock_to_root": {
+              "label": "Restringir à raiz"
+            },
+            "service": {
+              "label": "Nome do serviço OpenDAL"
+            },
+            "config": {
+              "label": "Configuração do serviço (JSON)"
+            },
+            "bucket": {
+              "label": "Bucket"
+            },
+            "endpoint": {
+              "label": "Endpoint"
+            },
+            "share": {
+              "label": "Compartilhamento"
+            },
+            "region": {
+              "label": "Região"
+            },
+            "access_key_id": {
+              "label": "ID da chave de acesso"
+            },
+            "secret_access_key": {
+              "label": "Chave de acesso secreta"
+            },
+            "username": {
+              "label": "Nome de usuário"
+            },
+            "domain": {
+              "label": "Domínio"
+            },
+            "user": {
+              "label": "Usuário"
+            },
+            "password": {
+              "label": "Senha"
+            },
+            "key": {
+              "label": "Chave privada ou caminho"
+            },
+            "known_hosts_strategy": {
+              "label": "Estratégia de known hosts"
+            },
+            "read_only": {
+              "label": "Somente leitura"
+            },
+            "allow_delete": {
+              "label": "Permitir exclusão"
+            },
+            "connection_mode": {
+              "label": "Modo de conexão",
+              "options": {
+                "direct": "Direta",
+                "via-dbx-ssh": "Via túnel SSH do DBX"
+              }
+            },
+            "dbx_ssh_connection": {
+              "label": "Conexão SSH do DBX"
+            },
+            "timeout_secs": {
+              "label": "Tempo limite da operação (segundos)"
+            }
+          }
+        },
+        "io.dbx.files.workbench": {
+          "label": "Bancada de arquivos",
+          "description": "Navegue, transfira e sincronize arquivos entre backends OpenDAL."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,9 @@
+schema_version = 1
+
+[backend]
+language = "rust"
+directory = "backend"
+binary = "dbx-plugin-files"
+
+[package]
+include = ["assets", "ui"]

@@ -1,0 +1,249 @@
+:root {
+  color-scheme: dark;
+  --background: #131416;
+  --foreground: #d7d7db;
+  --muted: #2a2a2d;
+  --muted-foreground: #97989d;
+  --accent: #2e2f33;
+  --accent-foreground: #dddde2;
+  --border: rgb(110 110 114 / 28%);
+  --destructive: #ef4444;
+  --primary: #3b82f6;
+  --primary-foreground: #fff;
+  --popover: color-mix(in srgb, var(--background) 94%, var(--foreground));
+  --ui-font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono-font-family: "Cascadia Mono", Consolas, monospace;
+  --radius: 6px;
+  color: var(--foreground);
+  background: var(--background);
+  font-family: var(--ui-font-family);
+  font-size: 12px;
+}
+
+* { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--muted-foreground) 48%, transparent) transparent; }
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { border-radius: 999px; background: color-mix(in srgb, var(--muted-foreground) 48%, transparent); }
+*::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--muted-foreground) 72%, transparent); }
+html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+button, input, textarea, select { font: inherit; }
+button { color: inherit; }
+button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px solid var(--primary); outline-offset: -1px; }
+.hidden { display: none !important; }
+.wb-muted { color: var(--muted-foreground); }
+.wb-mono { font-family: var(--mono-font-family); }
+.wb-numeric { font-variant-numeric: tabular-nums; text-align: right; }
+
+/* ---- workbench shell -------------------------------------------------- */
+.wb-workbench { position: relative; display: flex; width: 100%; height: 100%; min-width: 0; min-height: 0; flex-direction: column; background: var(--background); color: var(--foreground); }
+.wb-error-banner { display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-bottom: 1px solid color-mix(in srgb, var(--destructive) 40%, transparent); background: color-mix(in srgb, var(--destructive) 14%, var(--background)); color: var(--foreground); }
+.wb-notice { display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--primary) 10%, var(--background)); color: var(--muted-foreground); }
+
+/* ---- toolbar ----------------------------------------------------------- */
+.wb-toolbar { position: relative; z-index: 5; display: flex; height: 36px; min-height: 36px; align-items: center; justify-content: flex-end; gap: 8px; border-bottom: 1px solid var(--border); padding: 0 8px; background: color-mix(in srgb, var(--background) 92%, transparent); }
+.wb-identity, .wb-toolbar-actions, .wb-toolbar-button { display: flex; align-items: center; }
+.wb-identity { min-width: 0; gap: 6px; }
+.wb-identity strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
+.wb-connection-color { width: 4px; height: 16px; flex: 0 0 4px; border-radius: 999px; }
+.wb-readonly-badge { border: 1px solid var(--border); border-radius: 999px; padding: 1px 6px; color: var(--muted-foreground); font-size: 10px; }
+.wb-toolbar-actions { min-width: 0; justify-content: flex-end; gap: 2px; }
+.wb-icon-button, .wb-toolbar-button, .wb-link-button, .wb-context-menu button, .wb-dialog button, .wb-path-toolbar button { border: 0; background: transparent; cursor: pointer; }
+.wb-icon-button, .wb-toolbar-button { height: 24px; border-radius: 4px; }
+.wb-icon-button { display: inline-grid; position: relative; width: 24px; place-items: center; padding: 0; }
+.wb-toolbar-button { gap: 5px; padding: 0 6px; }
+.wb-icon-button:hover:not(:disabled), .wb-toolbar-button:hover:not(:disabled), .wb-context-menu button:hover:not(:disabled) { background: var(--accent); }
+.wb-icon-button:disabled, .wb-toolbar-button:disabled, button:disabled { cursor: default; opacity: .42; }
+.wb-icon-button svg, .wb-toolbar-button svg, .wb-context-menu svg { width: 14px; height: 14px; flex: 0 0 14px; stroke-width: 1.7; }
+.wb-toolbar-separator { width: 1px; height: 16px; flex: 0 0 1px; margin: 0 3px; background: var(--border); }
+.wb-icon-neutral { color: var(--muted-foreground); }
+.wb-icon-emerald { color: #10b981; }
+.wb-icon-amber { color: #d97706; }
+.wb-icon-cyan { color: #0891b2; }
+.wb-icon-violet { color: #7c3aed; }
+.wb-icon-blue { color: #2563eb; }
+.wb-icon-danger { color: var(--destructive); }
+:root[data-theme="dark"] .wb-icon-emerald { color: #6ee7b7; }
+:root[data-theme="dark"] .wb-icon-amber { color: #fcd34d; }
+
+/* ---- path bar ----------------------------------------------------------- */
+.wb-path-toolbar { display: flex; flex: 1 1 auto; min-width: 0; align-items: center; gap: 4px; border: 1px solid var(--border); border-radius: var(--radius); padding: 1px 6px; background: color-mix(in srgb, var(--background) 60%, var(--muted)); }
+.wb-path-input { flex: 1 1 auto; min-width: 0; border: 0; background: transparent; color: inherit; padding: 2px 0; }
+.wb-breadcrumbs { display: flex; min-width: 0; flex: 1; align-items: center; gap: 2px; overflow: hidden; white-space: nowrap; }
+.wb-breadcrumbs button { border: 0; background: transparent; cursor: pointer; border-radius: 4px; padding: 1px 4px; color: var(--muted-foreground); }
+.wb-breadcrumbs button:hover { background: var(--accent); color: var(--foreground); }
+.wb-breadcrumbs .wb-crumb-sep { color: var(--muted-foreground); opacity: .6; }
+/* 文件名过滤（对齐 tiny-rdm 搜索栏）：path bar 内的紧凑过滤框 */
+.wb-search-box { display: flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; width: 150px; border-left: 1px solid var(--border); padding-left: 6px; }
+.wb-search-box .wb-search-icon { width: 13px; height: 13px; flex: 0 0 auto; color: var(--muted-foreground); }
+.wb-search-input { flex: 1 1 auto; min-width: 0; border: 0; background: transparent; color: inherit; padding: 2px 0; font-size: 12px; }
+.wb-search-input::placeholder { color: var(--muted-foreground); opacity: .8; }
+
+/* ---- file table ---------------------------------------------------------- */
+.wb-file-pane { position: relative; display: flex; flex: 1 1 auto; min-height: 0; flex-direction: column; }
+.wb-file-header { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); padding: 3px 10px; color: var(--muted-foreground); font-size: 11px; }
+.wb-file-header .wb-col-name { flex: 1 1 auto; min-width: 0; }
+.wb-file-header button { border: 0; background: transparent; cursor: pointer; color: inherit; padding: 0; }
+.wb-file-scroll { position: relative; flex: 1 1 auto; overflow-y: auto; min-height: 0; }
+.wb-file-spacer { width: 100%; pointer-events: none; }
+/* pointer-events 为继承属性：spacer 关掉命中是为了让空白区域落到 scroll 上，
+   行本身必须显式恢复 auto，否则点击/双击/右键全部被 scroll 吞掉
+   （P-FILES ④ 浏览器验证发现的真实回归）。 */
+.wb-file-row { position: absolute; left: 0; right: 0; display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 10px; cursor: default; user-select: none; pointer-events: auto; }
+.wb-file-row:hover { background: color-mix(in srgb, var(--accent) 55%, transparent); }
+.wb-file-row.is-selected { background: color-mix(in srgb, var(--primary) 22%, transparent); }
+.wb-file-row.is-active { box-shadow: inset 2px 0 0 var(--primary); }
+.wb-file-name { display: flex; flex: 1 1 auto; min-width: 0; align-items: center; gap: 6px; }
+.wb-file-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-file-name svg { width: 14px; height: 14px; flex: 0 0 14px; stroke-width: 1.7; color: var(--muted-foreground); }
+.wb-file-name svg.wb-icon-dir { color: #0891b2; }
+.wb-file-check { display: inline-grid; place-items: center; width: 14px; height: 14px; }
+.wb-file-check input { width: 13px; height: 13px; margin: 0; accent-color: var(--primary); cursor: pointer; }
+.wb-file-empty { padding: 28px 0; text-align: center; color: var(--muted-foreground); }
+.wb-file-footer { display: flex; align-items: center; gap: 10px; border-top: 1px solid var(--border); padding: 3px 10px; color: var(--muted-foreground); font-size: 11px; }
+
+/* ---- context menu --------------------------------------------------------- */
+.wb-context-menu { position: fixed; z-index: 40; min-width: 170px; border: 1px solid var(--border); border-radius: var(--radius); padding: 3px; background: var(--popover); box-shadow: 0 8px 22px rgb(0 0 0 / 35%); }
+.wb-context-menu button { display: flex; width: 100%; align-items: center; gap: 7px; border-radius: 4px; padding: 4px 8px; text-align: left; }
+.wb-context-menu button.is-danger { color: var(--destructive); }
+.wb-context-menu hr { border: 0; border-top: 1px solid var(--border); margin: 3px 0; }
+
+/* ---- right dock (transfer / audit panels) --------------------------------- */
+.wb-dock { display: flex; flex: 0 0 300px; min-width: 240px; max-width: 420px; flex-direction: column; border-left: 1px solid var(--border); min-height: 0; overflow: hidden; }
+.wb-dock-tabs { display: flex; align-items: center; gap: 2px; border-bottom: 1px solid var(--border); padding: 3px 6px; }
+.wb-dock-tabs button { border: 0; background: transparent; cursor: pointer; border-radius: 4px; padding: 3px 8px; color: var(--muted-foreground); }
+.wb-dock-tabs button.is-active { background: var(--accent); color: var(--foreground); }
+.wb-dock-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 6px 8px; }
+
+/* ---- transfer panel --------------------------------------------------------- */
+.wb-transfer-item { border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 8px; margin-bottom: 6px; }
+.wb-transfer-title { display: flex; align-items: center; gap: 6px; }
+.wb-transfer-title strong { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.wb-transfer-meta { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 3px; color: var(--muted-foreground); font-size: 11px; }
+.wb-progress { height: 4px; border-radius: 999px; background: var(--muted); overflow: hidden; margin-top: 5px; }
+.wb-progress-bar { height: 100%; border-radius: 999px; background: var(--primary); transition: width 160ms ease; }
+.wb-progress-bar.is-completed { background: #10b981; }
+.wb-progress-bar.is-failed, .wb-progress-bar.is-canceled { background: var(--destructive); }
+.wb-transfer-state { border-radius: 999px; padding: 0 6px; font-size: 10px; border: 1px solid var(--border); }
+.wb-transfer-state.is-running { color: var(--primary); border-color: color-mix(in srgb, var(--primary) 55%, transparent); }
+.wb-transfer-state.is-completed { color: #10b981; border-color: color-mix(in srgb, #10b981 55%, transparent); }
+.wb-transfer-state.is-failed, .wb-transfer-state.is-canceled { color: var(--destructive); border-color: color-mix(in srgb, var(--destructive) 55%, transparent); }
+.wb-transfer-error { margin-top: 4px; color: var(--destructive); font-size: 11px; overflow-wrap: anywhere; }
+
+/* ---- audit panel -------------------------------------------------------------- */
+.wb-audit-list { display: flex; flex-direction: column; gap: 4px; }
+.wb-audit-item { border: 1px solid var(--border); border-radius: var(--radius); padding: 4px 8px; font-size: 11px; }
+.wb-audit-item .wb-audit-head { display: flex; justify-content: space-between; gap: 6px; color: var(--muted-foreground); }
+.wb-audit-item .wb-audit-path { overflow-wrap: anywhere; }
+
+/* ---- preview pane --------------------------------------------------------------- */
+.wb-preview { position: relative; display: flex; flex: 1 1 auto; min-height: 0; flex-direction: column; background: var(--background); }
+.wb-preview-header { display: flex; min-height: 32px; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); padding: 4px 8px; }
+.wb-preview-header strong { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-preview-editbar { display: flex; align-items: center; justify-content: flex-end; gap: 6px; border-bottom: 1px solid var(--border); padding: 3px 8px; }
+.wb-preview-editbar .wb-preview-edit-error { flex: 1 1 auto; min-width: 0; color: var(--destructive); font-size: 11px; overflow-wrap: anywhere; }
+.wb-preview-editbar .wb-edit-save { background: var(--primary); color: var(--primary-foreground); border-radius: 4px; }
+.wb-preview-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.wb-preview-body pre { margin: 0; padding: 10px 12px; font-family: var(--mono-font-family); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.wb-preview-body pre.wb-hex { white-space: pre; overflow-x: auto; line-height: 1.5; }
+.wb-preview-body img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.wb-preview-body .wb-preview-notice { padding: 20px; text-align: center; color: var(--muted-foreground); }
+.wb-edit-area { display: block; width: 100%; height: 100%; min-height: 200px; border: 0; resize: none; background: color-mix(in srgb, var(--background) 70%, var(--muted)); color: var(--foreground); padding: 10px 12px; font-size: 12px; outline: none; }
+.wb-preview-skeleton { display: flex; flex-direction: column; gap: 10px; padding: 14px; }
+.wb-preview-skeleton .wb-skeleton { height: 12px; }
+
+/* ---- dialogs ----------------------------------------------------------------------- */
+.wb-dialog-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: color-mix(in srgb, var(--background) 70%, transparent); }
+.wb-dialog { width: min(460px, calc(100vw - 40px)); max-height: min(560px, calc(100vh - 40px)); display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 8px; background: var(--popover); box-shadow: 0 16px 40px rgb(0 0 0 / 45%); }
+.wb-dialog.is-danger { border-color: color-mix(in srgb, var(--destructive) 55%, transparent); }
+.wb-dialog header { display: flex; align-items: center; gap: 8px; padding: 10px 14px 4px; font-weight: 600; }
+.wb-dialog .wb-dialog-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 6px 14px 10px; color: var(--muted-foreground); overflow-wrap: anywhere; }
+.wb-dialog .wb-dialog-body .wb-dialog-danger-list { margin: 6px 0 0; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--destructive) 40%, transparent); border-radius: var(--radius); color: var(--destructive); }
+.wb-dialog .wb-dialog-body input, .wb-dialog .wb-dialog-body textarea { width: 100%; margin-top: 6px; border: 1px solid var(--border); border-radius: var(--radius); background: color-mix(in srgb, var(--background) 60%, var(--muted)); color: var(--foreground); padding: 5px 8px; }
+.wb-dialog .wb-dialog-body textarea { min-height: 150px; font-family: var(--mono-font-family); resize: vertical; }
+.wb-dialog footer { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--border); }
+.wb-dialog button { border-radius: var(--radius); padding: 4px 12px; }
+.wb-dialog .wb-dialog-primary { background: var(--primary); color: var(--primary-foreground); border: 0; }
+.wb-dialog .wb-dialog-danger { background: var(--destructive); color: #fff; border: 0; }
+.wb-dialog .wb-dialog-cancel { border: 1px solid var(--border); }
+.wb-dialog select { margin-top: 6px; width: 100%; border: 1px solid var(--border); border-radius: var(--radius); background: color-mix(in srgb, var(--background) 60%, var(--muted)); color: var(--foreground); padding: 5px 8px; }
+
+/* ---- misc ------------------------------------------------------------------------ */
+.wb-spin { animation: wb-rotate 1s linear infinite; }
+@keyframes wb-rotate { to { transform: rotate(360deg); } }
+.wb-drop-overlay { position: absolute; inset: 0; z-index: 20; display: grid; place-items: center; border: 2px dashed var(--primary); border-radius: var(--radius); background: color-mix(in srgb, var(--primary) 12%, var(--background)); color: var(--primary); pointer-events: none; }
+
+/* ---- dual pane（A-FILES ①） -------------------------------------------------------- */
+.wb-content { display: flex; flex: 1 1 auto; min-height: 0; }
+.wb-pane { position: relative; display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; flex-direction: column; }
+.wb-pane-target { flex: 0 1 46%; min-width: 260px; border-left: 1px solid var(--border); }
+.wb-pane-bridge { display: flex; flex: 0 0 26px; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border-left: 1px solid var(--border); border-right: 1px solid var(--border); background: color-mix(in srgb, var(--muted) 55%, var(--background)); }
+.wb-pane-bridge .wb-icon-button { width: 22px; height: 22px; }
+.wb-pane-bridge .wb-toolbar-separator { width: 14px; height: 1px; margin: 1px 0; }
+.wb-flip-h { transform: scaleX(-1); }
+.wb-pane-tabs { display: flex; align-items: center; height: 28px; gap: 2px; border-bottom: 1px solid var(--border); padding: 3px 6px; }
+/* 双栏对齐：左栏无 tabs 内容，用等高空条占位（见 App.vue wb-pane-tabs-ghost）。 */
+.wb-pane-tabs-ghost { pointer-events: none; }
+.wb-pane-tabs button { border: 0; background: transparent; cursor: pointer; border-radius: 4px; padding: 3px 8px; color: var(--muted-foreground); font-size: 12px; }
+.wb-pane-tabs button.is-active { background: var(--accent); color: var(--foreground); }
+.wb-pane-header { display: flex; align-items: center; gap: 4px; min-height: 36px; border-bottom: 1px solid var(--border); padding: 2px 8px; background: color-mix(in srgb, var(--background) 92%, transparent); }
+.wb-pane-header .wb-breadcrumbs { flex: 1 1 auto; min-width: 0; overflow: hidden; }
+.wb-pane-header .wb-path-toolbar { flex: 1 1 auto; min-width: 0; }
+
+/* 快速目录 chips（tiny-rdm quick paths 对标；两栏同款） */
+.wb-quick-chips { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--border); padding: 4px 8px; }
+.wb-quick-chip { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 8px; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--muted-foreground); font-size: 11px; cursor: pointer; }
+.wb-quick-chip:hover { background: var(--accent); color: var(--foreground); }
+.wb-quick-chip svg { width: 11px; height: 11px; flex: 0 0 11px; stroke-width: 1.7; }
+.wb-target-connection { max-width: 130px; border: 1px solid var(--border); border-radius: var(--radius); background: color-mix(in srgb, var(--background) 60%, var(--muted)); color: var(--foreground); padding: 2px 4px; font-size: 11px; }
+.wb-crumb-ellipsis { color: var(--primary); }
+.wb-breadcrumbs button.is-current { color: var(--foreground); font-weight: 600; }
+
+/* ---- skeleton（A-FILES ④d） -------------------------------------------------------- */
+.wb-skeleton { display: inline-block; height: 12px; border-radius: 4px; background: linear-gradient(90deg, var(--muted) 25%, color-mix(in srgb, var(--muted-foreground) 20%, var(--muted)) 50%, var(--muted) 75%); background-size: 200% 100%; animation: wb-shimmer 1.2s linear infinite; }
+@keyframes wb-shimmer { to { background-position: -200% 0; } }
+.wb-file-row .wb-skeleton-check { width: 13px; height: 13px; flex: 0 0 13px; }
+.wb-file-row .wb-skeleton-name { flex: 0 1 auto; }
+.wb-file-row .wb-skeleton-cell { width: 80px; }
+
+/* PreviewPane: archive listing (files/archiveList) */
+.wb-archive {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-2, 8px);
+  min-height: 0;
+}
+.wb-archive-total {
+  font-size: 12px;
+}
+.wb-archive-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.wb-archive-entry {
+  display: flex;
+  align-items: center;
+  gap: var(--wb-space-2, 8px);
+  padding: 2px 4px;
+  border-radius: var(--wb-radius-sm, 4px);
+}
+.wb-archive-entry:hover {
+  background: var(--wb-hover-bg, rgba(128, 128, 128, 0.12));
+}
+.wb-archive-kind {
+  flex: none;
+}
+.wb-archive-path {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wb-archive-more {
+  display: flex;
+  justify-content: center;
+  padding: var(--wb-space-2, 8px) 0;
+}

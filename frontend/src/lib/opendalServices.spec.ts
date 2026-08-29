@@ -1,0 +1,311 @@
+import { describe, expect, it } from "vitest";
+import {
+  buildExternalConfig,
+  configFromFormValues,
+  CUSTOM_SERVICES,
+  CUSTOM_SERVICE_SCHEMAS,
+  formValuesFromConfig,
+  hostPartOf,
+  quickProtocolIds,
+  schemaForService,
+  templateFor,
+  validateConfigAgainstSchema,
+  validateFieldInput,
+  validateHostField,
+  validateUrlField,
+  type CustomFieldSpec,
+} from "./opendalServices";
+import { messages, resolveWorkbenchLocale, workbenchMessage } from "./i18n";
+
+describe("opendalServices", () => {
+  it("maps quick protocol values into an external config", () => {
+    const config = buildExternalConfig("s3", {
+      bucket: "dbx",
+      endpoint: "http://127.0.0.1:9000",
+      access_key_id: "ak",
+      secret_access_key: "sk",
+      enable_virtual_host_style: false,
+      read_only: true,
+    });
+    expect(config).toMatchObject({ protocol: "s3", bucket: "dbx", read_only: true });
+    expect(config).not.toHaveProperty("enable_virtual_host_style", true);
+  });
+
+  it("passes opendal-custom service and config JSON through", () => {
+    const config = buildExternalConfig("opendal-custom", {
+      service: "memory",
+      config: '{"root":"/x"}',
+    });
+    expect(config).toEqual({ protocol: "opendal-custom", service: "memory", config: { root: "/x" } });
+  });
+
+  it("keeps custom config empty on invalid JSON instead of throwing", () => {
+    const config = buildExternalConfig("opendal-custom", { service: "fs", config: "{broken" });
+    expect(config).toEqual({ protocol: "opendal-custom", service: "fs", config: {} });
+  });
+
+  it("keeps the UI service list in sync with the compiled whitelist", () => {
+    for (const service of ["fs", "s3", "webdav", "ftp", "sftp", "gcs", "azblob", "oss", "obs", "cos"]) {
+      expect(CUSTOM_SERVICES.has(service)).toBe(true);
+    }
+    expect(quickProtocolIds()).toEqual(["fs", "s3", "webdav", "ftp", "sftp", "smb"]);
+  });
+
+  it("maps smb quick fields into an external config with secrets separated", () => {
+    const config = buildExternalConfig("smb", {
+      endpoint: "nas.local:445",
+      share: "media",
+      username: "nas-user",
+      password: "secret",
+      domain: "WORKGROUP",
+      read_only: true,
+    });
+    expect(config).toEqual({
+      protocol: "smb",
+      endpoint: "nas.local:445",
+      share: "media",
+      username: "nas-user",
+      password: "secret",
+      domain: "WORKGROUP",
+      read_only: true,
+    });
+    const template = templateFor("smb")!;
+    expect(template.kind).toBe("quick");
+    expect(template.fields.filter((field) => field.required).map((field) => field.key)).toEqual(["endpoint", "share"]);
+    expect(template.fields.find((field) => field.key === "password")?.secret).toBe(true);
+  });
+});
+
+describe("custom service schemas", () => {
+  it("covers every selectable custom service and stays in sync with the set", () => {
+    for (const service of CUSTOM_SERVICES) {
+      expect(schemaForService(service), `schema for ${service}`).toBeDefined();
+    }
+    expect(schemaForService("unknown-service")).toBeUndefined();
+  });
+
+  it("keeps db/cache/memory-class services out of the config surface (product scope 2026-08-29)", () => {
+    // memory 仅保留为后端 smoke 测试后端（backend feature），不进 UI 配置面。
+    expect(CUSTOM_SERVICES.has("memory")).toBe(false);
+    expect(schemaForService("memory")).toBeUndefined();
+    for (const service of ["redis", "memcached", "rocksdb", "sqlite"]) {
+      expect(CUSTOM_SERVICES.has(service)).toBe(false);
+      expect(schemaForService(service)).toBeUndefined();
+    }
+  });
+
+  it("marks required keys consistently with OpenDAL needs", () => {
+    const requiredOf = (service: string) =>
+      (schemaForService(service) ?? []).filter((spec) => spec.required).map((spec) => spec.key);
+    expect(requiredOf("fs")).toEqual(["root"]);
+    expect(requiredOf("s3")).toEqual(["bucket", "access_key_id", "secret_access_key"]);
+    expect(requiredOf("webdav")).toEqual(["endpoint"]);
+    expect(requiredOf("ftp")).toEqual(["endpoint"]);
+    expect(requiredOf("sftp")).toEqual(["endpoint"]);
+    expect(requiredOf("oss")).toEqual(["bucket", "endpoint", "access_key_id", "access_key_secret"]);
+    expect(requiredOf("obs")).toEqual(["bucket", "endpoint", "access_key_id", "secret_access_key"]);
+    expect(requiredOf("cos")).toEqual(["bucket", "secret_id", "secret_key"]);
+  });
+
+  it("flags URL/host security classes on endpoint-like fields and secrets on credentials", () => {
+    const specOf = (service: string, key: string): CustomFieldSpec => {
+      const spec = (schemaForService(service) ?? []).find((item) => item.key === key);
+      expect(spec, `${service}.${key}`).toBeDefined();
+      return spec!;
+    };
+    expect(specOf("s3", "endpoint").security).toBe("url");
+    expect(specOf("webdav", "endpoint").security).toBe("url");
+    expect(specOf("ftp", "endpoint").security).toBe("host");
+    expect(specOf("sftp", "endpoint").security).toBe("host");
+    expect(specOf("s3", "secret_access_key").secret).toBe(true);
+    expect(specOf("oss", "access_key_secret").secret).toBe(true);
+    expect(specOf("sftp", "known_hosts_strategy").options).toEqual(["Tolerate", "Strict", "Trust"]);
+  });
+});
+
+describe("endpoint security validation", () => {
+  it("extracts hostnames from every endpoint spelling", () => {
+    expect(hostPartOf("ftp.example.com:21")).toBe("ftp.example.com");
+    expect(hostPartOf("user@host")).toBe("host");
+    expect(hostPartOf("ssh://user@host:22")).toBe("host");
+    expect(hostPartOf("https://dav.example.com/dav")).toBe("dav.example.com");
+    expect(hostPartOf("[2001:db8::1]:443")).toBe("2001:db8::1");
+  });
+
+  it("rejects localhost, loopback, private and reserved hosts", () => {
+    for (const bad of [
+      "localhost",
+      "localhost:9000",
+      "ftp.LOCALHOST",
+      "my.host.localhost",
+      "127.0.0.1:9000",
+      "http://127.0.0.1:9000",
+      "0.0.0.0",
+      "10.1.2.3",
+      "172.16.0.9",
+      "172.31.255.1",
+      "192.168.1.10",
+      "169.254.169.254",
+      "100.64.0.1",
+      "user@10.0.0.5:22",
+      "[::1]:9000",
+      "[fe80::1]",
+      "[fd00::5]",
+    ]) {
+      expect(validateHostField(bad), bad).toBe("host");
+    }
+  });
+
+  it("accepts public hosts and public IPv6", () => {
+    expect(validateHostField("ftp.example.com:21")).toBeNull();
+    expect(validateHostField("user@ops.example.com")).toBeNull();
+    expect(validateHostField("172.32.0.1")).toBeNull();
+    expect(validateHostField("[2001:db8::1]:22")).toBeNull();
+  });
+
+  it("requires a non-empty host value", () => {
+    expect(validateHostField("")).toBe("required");
+    expect(validateHostField("user@")).toBe("required");
+  });
+
+  it("allows only http/https URLs for url-class fields", () => {
+    expect(validateUrlField("https://s3.amazonaws.com")).toBeNull();
+    expect(validateUrlField("http://s3.example.com:9000")).toBeNull();
+    expect(validateUrlField("ftp://s3.example.com")).toBe("url");
+    expect(validateUrlField("s3.example.com")).toBe("url");
+    expect(validateUrlField("not a url")).toBe("url");
+    expect(validateUrlField("")).toBe("required");
+  });
+
+  it("routes url-class fields through the host deny-list as well", () => {
+    expect(validateUrlField("http://127.0.0.1:9000")).toBe("host");
+    expect(validateUrlField("https://192.168.1.1/dav")).toBe("host");
+    expect(validateUrlField("http://localhost/dav")).toBe("host");
+  });
+});
+
+describe("field-level validation", () => {
+  const spec = (overrides: Partial<CustomFieldSpec>): CustomFieldSpec => ({
+    key: "field",
+    type: "text",
+    ...overrides,
+  });
+
+  it("enforces required on empty values only", () => {
+    expect(validateFieldInput(spec({ required: true }), "")).toBe("required");
+    expect(validateFieldInput(spec({ required: true }), "   ")).toBe("required");
+    expect(validateFieldInput(spec({ required: true }), "value")).toBeNull();
+    expect(validateFieldInput(spec({}), "")).toBeNull();
+  });
+
+  it("accepts only numeric text for number fields", () => {
+    expect(validateFieldInput(spec({ type: "number", required: true }), "30")).toBeNull();
+    expect(validateFieldInput(spec({ type: "number", required: true }), "-1.5")).toBeNull();
+    expect(validateFieldInput(spec({ type: "number" }), "abc")).toBe("number");
+    expect(validateFieldInput(spec({ type: "number", required: true }), "")).toBe("required");
+  });
+
+  it("never fails boolean fields", () => {
+    expect(validateFieldInput(spec({ type: "boolean", required: true }), false)).toBeNull();
+    expect(validateFieldInput(spec({ type: "boolean", required: true }), undefined)).toBeNull();
+  });
+});
+
+describe("form ⇄ JSON sync", () => {
+  const s3Schema = schemaForService("s3")!;
+
+  it("hydrates form values from a config object and keeps unknown keys as extras", () => {
+    const hydration = formValuesFromConfig(s3Schema, {
+      bucket: "demo",
+      endpoint: "https://s3.example.com",
+      enable_virtual_host_style: true,
+      root: "/data",
+      custom_key: "keep-me",
+    });
+    expect(hydration.values).toMatchObject({
+      bucket: "demo",
+      endpoint: "https://s3.example.com",
+      region: "",
+      enable_virtual_host_style: true,
+    });
+    expect(hydration.extras).toEqual({ root: "/data", custom_key: "keep-me" });
+  });
+
+  it("serializes form values back into a config, dropping empty strings and false", () => {
+    const config = configFromFormValues(
+      s3Schema,
+      {
+        bucket: "demo",
+        endpoint: "",
+        region: "us-east-1",
+        access_key_id: "ak",
+        secret_access_key: "sk",
+        enable_virtual_host_style: false,
+      },
+      {},
+    );
+    expect(config).toEqual({ bucket: "demo", region: "us-east-1", access_key_id: "ak", secret_access_key: "sk" });
+  });
+
+  it("round-trips config → form → config without losing extras", () => {
+    const original = { bucket: "demo", root: "/x", tuning: { depth: 3 } };
+    const hydration = formValuesFromConfig(s3Schema, original);
+    const roundTrip = configFromFormValues(s3Schema, hydration.values, hydration.extras);
+    expect(roundTrip).toEqual(original);
+  });
+
+  it("re-hydrating a serialized form config keeps booleans and extras stable", () => {
+    const first = formValuesFromConfig(s3Schema, { bucket: "b", enable_virtual_host_style: true, root: "/r" });
+    const serialized = configFromFormValues(s3Schema, first.values, first.extras);
+    const second = formValuesFromConfig(s3Schema, serialized);
+    expect(second.values.enable_virtual_host_style).toBe(true);
+    expect(second.extras).toEqual({ root: "/r" });
+  });
+
+  it("validates a whole config against its schema", () => {
+    const errors = validateConfigAgainstSchema(s3Schema, {
+      endpoint: "http://127.0.0.1:9000",
+      region: "not-a-number-key",
+    });
+    expect(errors).toEqual({
+      bucket: "required",
+      endpoint: "host",
+      access_key_id: "required",
+      secret_access_key: "required",
+    });
+    expect(validateConfigAgainstSchema(s3Schema, { bucket: "b", access_key_id: "a", secret_access_key: "s" })).toEqual({});
+  });
+
+  it("serializes boolean true and keeps schema-unknown keys as extras", () => {
+    // fs schema 只声明 root；额外键以 extras 保真，来回切换不丢。
+    const values = formValuesFromConfig(schemaForService("fs")!, { root: "/x", custom_flag: "on" });
+    expect(values.values).toEqual({ root: "/x" });
+    expect(values.extras).toEqual({ custom_flag: "on" });
+  });
+});
+
+describe("i18n", () => {
+  const LOCALES = ["en", "es", "it", "ja", "pt-BR", "zh-CN", "zh-TW"] as const;
+
+  function flatten(node: unknown, prefix = ""): string[] {
+    return Object.entries(node as Record<string, unknown>).flatMap(([key, value]) =>
+      typeof value === "string" ? [prefix + key] : flatten(value, `${prefix}${key}.`),
+    );
+  }
+
+  it("has the same key set in all seven locales", () => {
+    const baseline = flatten(messages.en).sort();
+    expect(baseline.length).toBeGreaterThan(60);
+    for (const locale of LOCALES) {
+      expect(flatten(messages[locale]).sort(), `locale ${locale}`).toEqual(baseline);
+    }
+  });
+
+  it("falls back to en and interpolates values", () => {
+    expect(resolveWorkbenchLocale("zh")).toBe("zh-CN");
+    expect(resolveWorkbenchLocale("zh-Hant")).toBe("zh-TW");
+    expect(resolveWorkbenchLocale("pt")).toBe("pt-BR");
+    expect(workbenchMessage("ja", "entriesCount", { count: 3 })).toBe("3 件");
+    expect(workbenchMessage("xx-YY", "cancel")).toBe("Cancel");
+  });
+});
