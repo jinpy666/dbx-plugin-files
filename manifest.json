@@ -3,7 +3,7 @@
   "manifest_version": 1,
   "id": "io.dbx.files",
   "name": "DBX Files",
-  "version": "0.1.3",
+  "version": "0.1.10",
   "publisher": "xynanan",
   "description": "Multi-backend storage workbench plugin for DBX, powered by Apache OpenDAL.",
   "icon": "assets/plugin.svg",
@@ -110,6 +110,12 @@
               "opendal-custom"
             ]
           },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
+              "opendal-custom"
+            ]
+          },
           "description": "Any compiled OpenDAL service, e.g. gcs, azblob, oss, memory."
         },
         {
@@ -132,8 +138,13 @@
           "type": "text",
           "binding": "config",
           "default": "",
-          "required": true,
           "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "s3"
+            ]
+          },
+          "required_when": {
             "field": "protocol",
             "one_of": [
               "s3"
@@ -164,8 +175,13 @@
           "type": "text",
           "binding": "config",
           "default": "",
-          "required": true,
           "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "smb"
+            ]
+          },
+          "required_when": {
             "field": "protocol",
             "one_of": [
               "smb"
@@ -192,8 +208,13 @@
           "type": "text",
           "binding": "config",
           "default": "",
-          "required": true,
           "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "s3"
+            ]
+          },
+          "required_when": {
             "field": "protocol",
             "one_of": [
               "s3"
@@ -206,8 +227,13 @@
           "type": "password",
           "binding": "secret",
           "default": "",
-          "required": true,
           "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "s3"
+            ]
+          },
+          "required_when": {
             "field": "protocol",
             "one_of": [
               "s3"
@@ -360,6 +386,12 @@
           "binding": "config",
           "default": "",
           "visible_when": {
+            "field": "connection_mode",
+            "one_of": [
+              "via-dbx-ssh"
+            ]
+          },
+          "required_when": {
             "field": "connection_mode",
             "one_of": [
               "via-dbx-ssh"

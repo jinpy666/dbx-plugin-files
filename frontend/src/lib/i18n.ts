@@ -23,6 +23,7 @@ export const messages = {
     audit: "Audit",
     connection: "Connection",
     pathPlaceholder: "Path…",
+    editPath: "Edit path",
     searchPlaceholder: "Filter current directory…",
     // table
     colName: "Name",
@@ -173,6 +174,7 @@ export const messages = {
     quickDownloads: "Downloads",
     quickDocuments: "Documents",
     quickPictures: "Pictures",
+    quickPathsTitle: "Quick paths",
   },
   "es": {
     hostApiUnavailable: "La API del host DBX no está disponible",
@@ -192,6 +194,7 @@ export const messages = {
     audit: "Auditoría",
     connection: "Conexión",
     pathPlaceholder: "Ruta…",
+    editPath: "Editar ruta",
     searchPlaceholder: "Filtrar el directorio actual…",
     colName: "Nombre",
     colSize: "Tamaño",
@@ -331,6 +334,7 @@ export const messages = {
     quickDownloads: "Descargas",
     quickDocuments: "Documentos",
     quickPictures: "Imágenes",
+    quickPathsTitle: "Carpetas frecuentes",
   },
   "it": {
     hostApiUnavailable: "API host DBX non disponibile",
@@ -350,6 +354,7 @@ export const messages = {
     audit: "Audit",
     connection: "Connessione",
     pathPlaceholder: "Percorso…",
+    editPath: "Modifica percorso",
     searchPlaceholder: "Filtra la directory corrente…",
     colName: "Nome",
     colSize: "Dimensione",
@@ -489,6 +494,7 @@ export const messages = {
     quickDownloads: "Download",
     quickDocuments: "Documenti",
     quickPictures: "Immagini",
+    quickPathsTitle: "Cartelle rapide",
   },
   "ja": {
     hostApiUnavailable: "DBX ホスト API を利用できません",
@@ -508,6 +514,7 @@ export const messages = {
     audit: "監査",
     connection: "接続",
     pathPlaceholder: "パス…",
+    editPath: "パスを編集",
     searchPlaceholder: "現在のディレクトリを絞り込み…",
     colName: "名前",
     colSize: "サイズ",
@@ -647,6 +654,7 @@ export const messages = {
     quickDownloads: "ダウンロード",
     quickDocuments: "ドキュメント",
     quickPictures: "ピクチャ",
+    quickPathsTitle: "クイックフォルダ",
   },
   "pt-BR": {
     hostApiUnavailable: "A API do host DBX está indisponível",
@@ -666,6 +674,7 @@ export const messages = {
     audit: "Auditoria",
     connection: "Conexão",
     pathPlaceholder: "Caminho…",
+    editPath: "Editar caminho",
     searchPlaceholder: "Filtrar o diretório atual…",
     colName: "Nome",
     colSize: "Tamanho",
@@ -805,6 +814,7 @@ export const messages = {
     quickDownloads: "Downloads",
     quickDocuments: "Documentos",
     quickPictures: "Imagens",
+    quickPathsTitle: "Pastas rápidas",
   },
   "zh-CN": {
     hostApiUnavailable: "DBX 宿主 API 不可用",
@@ -824,6 +834,7 @@ export const messages = {
     audit: "审计",
     connection: "连接",
     pathPlaceholder: "路径…",
+    editPath: "编辑路径",
     searchPlaceholder: "过滤当前目录…",
     colName: "名称",
     colSize: "大小",
@@ -963,6 +974,7 @@ export const messages = {
     quickDownloads: "下载",
     quickDocuments: "文档",
     quickPictures: "图片",
+    quickPathsTitle: "快速目录",
   },
   "zh-TW": {
     hostApiUnavailable: "DBX 主機 API 無法使用",
@@ -982,6 +994,7 @@ export const messages = {
     audit: "稽核",
     connection: "連線",
     pathPlaceholder: "路徑…",
+    editPath: "編輯路徑",
     searchPlaceholder: "過濾目前目錄…",
     colName: "名稱",
     colSize: "大小",
@@ -1121,6 +1134,7 @@ export const messages = {
     quickDownloads: "下載",
     quickDocuments: "文件",
     quickPictures: "圖片",
+    quickPathsTitle: "快速目錄",
   },
 } satisfies Record<WorkbenchLocale, unknown>;
 

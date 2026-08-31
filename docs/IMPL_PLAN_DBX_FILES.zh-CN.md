@@ -136,6 +136,15 @@ connection-provider `io.dbx.files.connection`，`database_type: "storage"`，
 | `dbx_ssh_connection` | text | config | 空 | connection_mode=via-dbx-ssh | 宿主 SSH 连接 id |
 | `timeout_secs` | number | config | 30 | — | 插件超时 |
 
+**必填规则（v0.1.4 起）**：静态 `required: true` 仅限 `display_name` 与
+`protocol` 两个无条件字段。协议特定必填项（s3 的
+bucket/access_key_id/secret_access_key、smb 的 share、opendal-custom 的
+service、via-dbx-ssh 的 dbx_ssh_connection）一律 `required_when` 与
+`visible_when` 成对声明——宿主校验静态 `required` 时不评估 `visible_when`，
+静态必填会把其它协议全部拦死（"Plugin connection field 'Bucket' is
+required"）。`required_when` 由连接表单按条件拦截；运行时兜底强制在引擎
+构建层（OpenDAL builder / smb adapter 自带清晰报错）。
+
 > manifest 快捷协议覆盖 fs/s3/webdav/ftp/sftp 五类；其余全部走
 > `opendal-custom`（service + config JSON 透传，能力面 = 编译白名单内
 > 全部服务）。
@@ -251,7 +260,7 @@ Operator，幂等）。
 | `files/capabilities` | — | `{copy:bool,rename:bool,presign:bool,write:bool,…}`（`info().capability()` 透出，前端按能力显隐） |
 | `files/size` | `path` | `{count,bytes}`（lister 聚合） |
 | `files/publicLink` | `path`、`expireSecs?` | `{url}`；后端不支持时 -32000 |
-| `files/quickPaths` | — | `{paths:[{key,path}]}`；工作台快速跳转 chips。仅 fs 协议（root 为 `/` 即整盘、且未锁 root；OpenDAL fs 的 root 必填，无法「未配置」）透出 `home/desktop/downloads/documents/pictures`（逐个 stat 校验，缺失目录不出现）；其余协议与受限连接只返回 `{key:"root",path:"/"}` |
+| `files/quickPaths` | — | `{paths:[{key,path}]}`；工作台路径栏快速目录下拉（原 chips 行已并入下拉，tiny-rdm 对标）。仅 fs 协议（root 为 `/` 即整盘、且未锁 root；OpenDAL fs 的 root 必填，无法「未配置」）透出 `home/desktop/downloads/documents/pictures`（逐个 stat 校验，缺失目录不出现）；其余协议与受限连接只返回 `{key:"root",path:"/"}` |
 
 （`About` 删除——OpenDAL 无容量 API，前端隐藏入口。）
 

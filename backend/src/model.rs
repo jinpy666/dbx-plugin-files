@@ -930,28 +930,47 @@ mod tests {
                 item["type"]
             );
         }
-        // Connection identity + s3 essentials stay mandatory so the host form
-        // blocks them before the sidecar ever sees an invalid config.
-        let required = |name: &str| {
+        // Connection identity stays statically required. Protocol-specific
+        // essentials must be conditionally required: the host validates static
+        // `required` unconditionally and never evaluates `visible_when`, so a
+        // static `required` on an s3/smb-only field would reject every
+        // fs/webdav/ftp/sftp connection with "Plugin connection field '…' is
+        // required". `required_when` keeps the form-level enforcement on the
+        // matching protocol; the engine builders (OpenDAL, smb adapter) remain
+        // the runtime enforcement point with their own clear errors.
+        let field_of = |name: &str| {
             fields
                 .iter()
                 .find(|item| item["key"] == name)
-                .expect("field")
-                .get("required")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
+                .unwrap_or_else(|| panic!("manifest field '{name}' missing"))
         };
+        let required = |name: &str| field_of(name).get("required").and_then(Value::as_bool).unwrap_or(false);
         assert!(required("display_name"));
         assert!(required("protocol"));
-        assert!(required("bucket"), "s3 without bucket can never connect");
-        assert!(
-            required("access_key_id"),
-            "s3 without access key can never connect"
-        );
-        assert!(
-            required("secret_access_key"),
-            "s3 without secret can never connect"
-        );
+
+        let conditionally_required = [
+            "bucket",
+            "access_key_id",
+            "secret_access_key",
+            "share",
+            "service",
+            "dbx_ssh_connection",
+        ];
+        for key in conditionally_required {
+            let item = field_of(key);
+            assert!(
+                !required(key),
+                "field '{key}' must not be statically required: the host cannot scope static required to visible_when and would block every other protocol"
+            );
+            let visible_when = item.get("visible_when").unwrap_or_else(|| panic!("field '{key}' lacks visible_when"));
+            let required_when = item
+                .get("required_when")
+                .unwrap_or_else(|| panic!("field '{key}' must pair visible_when with required_when"));
+            assert_eq!(
+                visible_when, required_when,
+                "field '{key}' required_when must match its visible_when"
+            );
+        }
     }
 
     #[test]

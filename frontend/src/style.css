@@ -68,6 +68,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px
 /* ---- path bar ----------------------------------------------------------- */
 .wb-path-toolbar { display: flex; flex: 1 1 auto; min-width: 0; align-items: center; gap: 4px; border: 1px solid var(--border); border-radius: var(--radius); padding: 1px 6px; background: color-mix(in srgb, var(--background) 60%, var(--muted)); }
 .wb-path-input { flex: 1 1 auto; min-width: 0; border: 0; background: transparent; color: inherit; padding: 2px 0; }
+/* 单一路径控件（tiny-rdm 对标）：文件夹图标进入编辑态，面包屑⇄输入框互斥展示。 */
+.wb-path-field { display: flex; flex: 1 1 auto; min-width: 0; align-items: center; gap: 4px; }
+.wb-path-field .wb-breadcrumbs { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; }
+.wb-path-edit { flex: 0 0 20px; width: 20px; height: 20px; color: var(--muted-foreground); }
+.wb-path-edit:hover { background: var(--accent); color: var(--foreground); }
 .wb-breadcrumbs { display: flex; min-width: 0; flex: 1; align-items: center; gap: 2px; overflow: hidden; white-space: nowrap; }
 .wb-breadcrumbs button { border: 0; background: transparent; cursor: pointer; border-radius: 4px; padding: 1px 4px; color: var(--muted-foreground); }
 .wb-breadcrumbs button:hover { background: var(--accent); color: var(--foreground); }
@@ -148,6 +153,35 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px
 .wb-preview-body img { max-width: 100%; max-height: 100%; object-fit: contain; }
 .wb-preview-body .wb-preview-notice { padding: 20px; text-align: center; color: var(--muted-foreground); }
 .wb-edit-area { display: block; width: 100%; height: 100%; min-height: 200px; border: 0; resize: none; background: color-mix(in srgb, var(--background) 70%, var(--muted)); color: var(--foreground); padding: 10px 12px; font-size: 12px; outline: none; }
+
+/* ---- 代码高亮（highlight.js，token 色跟随宿主明暗 data-theme） -------- */
+:root {
+  --hl-comment: #7f848e;
+  --hl-keyword: #c678dd;
+  --hl-string: #98c379;
+  --hl-number: #d19a66;
+  --hl-function: #61afef;
+  --hl-type: #e5c07b;
+  --hl-variable: #e06c75;
+}
+:root[data-theme="light"] {
+  --hl-comment: #a0a1a7;
+  --hl-keyword: #a626a4;
+  --hl-string: #50a14f;
+  --hl-number: #986801;
+  --hl-function: #4078f2;
+  --hl-type: #c18401;
+  --hl-variable: #e45649;
+}
+.wb-code { line-height: 1.55; }
+.wb-code .hljs-comment, .wb-code .hljs-quote { color: var(--hl-comment); font-style: italic; }
+.wb-code .hljs-keyword, .wb-code .hljs-selector-tag, .wb-code .hljs-literal, .wb-code .hljs-section, .wb-code .hljs-doctag, .wb-code .hljs-name, .wb-code .hljs-strong { color: var(--hl-keyword); }
+.wb-code .hljs-string, .wb-code .hljs-regexp, .wb-code .hljs-addition { color: var(--hl-string); }
+.wb-code .hljs-number, .wb-code .hljs-symbol, .wb-code .hljs-bullet, .wb-code .hljs-meta, .wb-code .hljs-link { color: var(--hl-number); }
+.wb-code .hljs-title.function_, .wb-code .hljs-attr, .wb-code .hljs-attribute, .wb-code .hljs-variable, .wb-code .hljs-template-variable, .wb-code .hljs-selector-attr, .wb-code .hljs-selector-class, .wb-code .hljs-selector-id { color: var(--hl-function); }
+.wb-code .hljs-title.class_, .wb-code .hljs-type, .wb-code .hljs-built_in, .wb-code .hljs-class .hljs-title { color: var(--hl-type); }
+.wb-code .hljs-deletion { color: var(--hl-variable); }
+.wb-code .hljs-emphasis { font-style: italic; }
 .wb-preview-skeleton { display: flex; flex-direction: column; gap: 10px; padding: 14px; }
 .wb-preview-skeleton .wb-skeleton { height: 12px; }
 
@@ -189,11 +223,17 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px
 .wb-pane-header .wb-breadcrumbs { flex: 1 1 auto; min-width: 0; overflow: hidden; }
 .wb-pane-header .wb-path-toolbar { flex: 1 1 auto; min-width: 0; }
 
-/* 快速目录 chips（tiny-rdm quick paths 对标；两栏同款） */
-.wb-quick-chips { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--border); padding: 4px 8px; }
-.wb-quick-chip { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 8px; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--muted-foreground); font-size: 11px; cursor: pointer; }
-.wb-quick-chip:hover { background: var(--accent); color: var(--foreground); }
-.wb-quick-chip svg { width: 11px; height: 11px; flex: 0 0 11px; stroke-width: 1.7; }
+/* 快速目录下拉（tiny-rdm quick paths 对标；路径栏内触发，两栏同款） */
+.wb-quick-menu { position: relative; display: inline-flex; flex: 0 0 auto; }
+.wb-quick-trigger { width: 20px; height: 20px; color: var(--muted-foreground); }
+.wb-quick-trigger:hover, .wb-quick-menu.is-open .wb-quick-trigger { background: var(--accent); color: var(--foreground); }
+.wb-quick-trigger svg { transition: transform 0.12s ease; }
+.wb-quick-menu.is-open .wb-quick-trigger svg { transform: rotate(180deg); }
+.wb-quick-menu-pop { position: absolute; top: calc(100% + 6px); right: 0; z-index: 40; min-width: 180px; max-height: 320px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius); padding: 3px; background: var(--popover); box-shadow: 0 8px 22px rgb(0 0 0 / 35%); }
+.wb-quick-menu-pop button { display: flex; width: 100%; align-items: center; gap: 7px; border-radius: 4px; padding: 4px 8px; text-align: left; font-size: 12px; }
+.wb-quick-menu-pop button:hover { background: var(--accent); }
+.wb-quick-menu-pop button.is-current { color: var(--muted-foreground); }
+.wb-quick-menu-pop svg { width: 14px; height: 14px; flex: 0 0 14px; stroke-width: 1.7; }
 .wb-target-connection { max-width: 130px; border: 1px solid var(--border); border-radius: var(--radius); background: color-mix(in srgb, var(--background) 60%, var(--muted)); color: var(--foreground); padding: 2px 4px; font-size: 11px; }
 .wb-crumb-ellipsis { color: var(--primary); }
 .wb-breadcrumbs button.is-current { color: var(--foreground); font-weight: 600; }

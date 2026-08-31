@@ -51,6 +51,11 @@ export function installMockHost(): void {
   put("/docs", "dir");
   put("/empty", "dir");
   put("/10k", "dir");
+  // 快速目录样例（files/quickPaths mock 段按存在才透出，与真实 fs 侧行为对齐）
+  put("/desktop", "dir");
+  put("/downloads", "dir");
+  put("/documents", "dir");
+  put("/pictures", "dir");
   putText("/docs/readme.md", "# DBX Files\n\n双栏文件浏览（A-FILES）验证样例。\n\n- 左栏：源（当前连接）\n- 右栏：目标面板 / 预览\n\n编辑此文件并保存会走 files/write。\n");
   putText("/docs/notes.txt", "line 1\nline 2\nline 3\n");
   {

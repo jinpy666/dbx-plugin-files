@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch, type Component } from "vue";
-import { ArrowLeft, ArrowRight, Copy, ArrowUp, RefreshCw, Download, FileText, HardDrive, Home, Image as ImageIcon, Monitor, Search } from "@lucide/vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { ArrowLeft, ArrowRight, Copy, ArrowUp, RefreshCw, Search } from "@lucide/vue";
 import FileTable from "./components/FileTable.vue";
 import FileToolbar from "./components/FileToolbar.vue";
 import TransferPanel from "./components/TransferPanel.vue";
@@ -8,7 +8,8 @@ import ConfirmDialog from "./components/ConfirmDialog.vue";
 import AuditPanel from "./components/AuditPanel.vue";
 import PreviewPane from "./components/PreviewPane.vue";
 import CustomConfigEditor from "./components/CustomConfigEditor.vue";
-import Breadcrumbs from "./components/Breadcrumbs.vue";
+import PathField from "./components/PathField.vue";
+import QuickPathsMenu from "./components/QuickPathsMenu.vue";
 import {
   bindApi,
   baseName,
@@ -29,6 +30,7 @@ import { loadUiPrefs, saveUiPrefs } from "./lib/prefs";
 import { sortEntries, toggleSortState, type SortColumn, type SortState } from "./lib/sorting";
 import { filterEntries } from "./lib/searchFilter";
 import { isLargeDirectory } from "./lib/largeDir";
+import { normalizeQuickPaths, type QuickPath } from "./lib/quickPaths";
 
 type ConfirmKind = "delete" | "purge" | "syncDir" | "copyDir" | "newFolder" | "rename" | "copy" | "move" | "extract";
 type PaneSide = "left" | "right";
@@ -91,50 +93,28 @@ const targetConnections = ref<Array<{ id: string; name: string }>>([]);
 const dragOverSide = ref<PaneSide | null>(null);
 
 // ---- 快速目录（tiny-rdm quick paths 对标）------------------------------------
-interface QuickPath {
-  key: string;
-  path: string;
-}
-const QUICK_PATH_ICONS: Record<string, Component> = {
-  root: HardDrive,
-  home: Home,
-  desktop: Monitor,
-  downloads: Download,
-  documents: FileText,
-  pictures: ImageIcon,
-};
-const QUICK_PATH_LABELS: Record<string, string> = {
-  root: "quickRoot",
-  home: "quickHome",
-  desktop: "quickDesktop",
-  downloads: "quickDownloads",
-  documents: "quickDocuments",
-  pictures: "quickPictures",
-};
+// §8.1：后端按协议/根约束/stat 过滤后返回候选（根目录 + fs 协议的用户目录族）；
+// 展示形态为路径栏下拉（QuickPathsMenu，替代早期 chips 行，节省一整行空间）。
 const leftQuickPaths = ref<QuickPath[]>([]);
 const rightQuickPaths = ref<QuickPath[]>([]);
 
-function quickPathLabel(key: string): string {
-  return t(QUICK_PATH_LABELS[key] ?? "quickRoot");
-}
-
-/** files/quickPaths（§8.1）：后端按协议/根约束/stat 过滤决定 chips；方法缺失时整行隐藏。 */
+/** files/quickPaths（§8.1）：方法缺失或探针失败时下拉隐藏（旧 sidecar 降级）。 */
 async function loadQuickPaths(side: PaneSide) {
   try {
     const params: Record<string, unknown> = {};
     if (side === "right" && targetConnectionId.value) params.connectionId = targetConnectionId.value;
     const result = await call<{ paths: QuickPath[] }>("files/quickPaths", params);
-    const list = (result.paths ?? []).filter((item) => QUICK_PATH_ICONS[item.key] && item.path);
+    const list = normalizeQuickPaths(result.paths);
     if (side === "left") leftQuickPaths.value = list;
     else rightQuickPaths.value = list;
   } catch {
-    /* 方法缺失或探针失败：隐藏 chips（旧 sidecar 降级） */
+    /* 方法缺失或探针失败：隐藏下拉（旧 sidecar 降级） */
   }
 }
 
-function navigateQuickPath(side: PaneSide, target: QuickPath) {
-  if (side === "left") void loadDirectory(target.path).catch(() => undefined);
-  else void loadRightDirectory(target.path).catch(() => undefined);
+function navigateQuickPath(side: PaneSide, targetPath: string) {
+  if (side === "left") void loadDirectory(targetPath).catch(() => undefined);
+  else void loadRightDirectory(targetPath).catch(() => undefined);
 }
 
 const dockOpen = ref(true);
@@ -189,25 +169,6 @@ const rightSorted = computed(() => sortEntries(rightEntries.value, sort.value));
 // 右栏同款过滤（双栏对称性修复）：与左栏共用 filterEntries 语义。
 const rightSearchQuery = ref("");
 const filteredRightEntries = computed(() => filterEntries(rightSorted.value, rightSearchQuery.value));
-// 右栏路径输入框（与左栏工具栏同款交互：enter 跳转 / esc 还原）。
-const rightPathDraft = ref("");
-watch(rightPath, (next) => (rightPathDraft.value = next));
-
-function submitRightPath() {
-  const next = rightPathDraft.value.trim();
-  if (next && next !== rightPath.value) void loadRightDirectory(next).catch(() => undefined);
-  else rightPathDraft.value = rightPath.value;
-}
-
-// 左栏路径输入框（双栏对称性修复：与右栏同款交互，enter 跳转 / esc 还原）。
-const pathDraft = ref("");
-watch(path, (next) => (pathDraft.value = next));
-
-function submitPath() {
-  const next = pathDraft.value.trim();
-  if (next && next !== path.value) onToolbarNavigate(next);
-  else pathDraft.value = path.value;
-}
 
 watch([sort, dualPane, rightTab], () => {
   saveUiPrefs({ sort: sort.value, dualPane: dualPane.value, rightTab: rightTab.value });
@@ -1109,14 +1070,14 @@ onBeforeUnmount(() => {
           <button class="wb-icon-button wb-icon-neutral" :title="t('up')" :disabled="!path || path === '/'" @click="onToolbarNavigate(parentPath(path))"><ArrowUp /></button>
           <button class="wb-icon-button wb-icon-neutral" :title="t('refresh')" :disabled="loading" @click="refreshDirectory"><RefreshCw :class="{ 'wb-spin': loading }" /></button>
           <div class="wb-path-toolbar">
-            <Breadcrumbs :path="path" :max-visible="3" @navigate="onToolbarNavigate" />
-            <input
-              v-model="pathDraft"
-              class="wb-path-input"
-              :placeholder="t('pathPlaceholder')"
-              spellcheck="false"
-              @keydown.enter.prevent="submitPath"
-              @keydown.esc.prevent="pathDraft = path"
+            <PathField :path="path" :t="t" @navigate="onToolbarNavigate" />
+            <!-- 快速目录下拉（fs：主目录族 + 根目录；其它协议：仅根目录） -->
+            <QuickPathsMenu
+              v-if="leftQuickPaths.length"
+              :paths="leftQuickPaths"
+              :current-path="path"
+              :t="t"
+              @navigate="navigateQuickPath('left', $event)"
             />
             <span class="wb-search-box">
               <Search class="wb-search-icon" aria-hidden="true" />
@@ -1131,18 +1092,6 @@ onBeforeUnmount(() => {
               />
             </span>
           </div>
-        </div>
-        <!-- 快速目录 chips（fs：主目录族 + 根目录；其它协议：仅根目录） -->
-        <div v-if="leftQuickPaths.length" class="wb-quick-chips">
-          <button
-            v-for="qp in leftQuickPaths"
-            :key="qp.key"
-            class="wb-quick-chip"
-            :title="qp.path"
-            @click="navigateQuickPath('left', qp)"
-          >
-            <component :is="QUICK_PATH_ICONS[qp.key]" aria-hidden="true" /> {{ quickPathLabel(qp.key) }}
-          </button>
         </div>
         <FileTable
           pane-id="left"
@@ -1189,14 +1138,14 @@ onBeforeUnmount(() => {
             <button class="wb-icon-button wb-icon-neutral" :title="t('refresh')" :disabled="rightLoading" @click="refreshRightDirectory"><RefreshCw :class="{ 'wb-spin': rightLoading }" /></button>
             <!-- 与左栏工具栏同款：面包屑 + 路径输入 + 过滤框（双栏对称性修复） -->
             <div class="wb-path-toolbar">
-              <Breadcrumbs :path="rightPath" :max-visible="3" @navigate="(target) => loadRightDirectory(target)" />
-              <input
-                v-model="rightPathDraft"
-                class="wb-path-input"
-                :placeholder="t('pathPlaceholder')"
-                spellcheck="false"
-                @keydown.enter.prevent="submitRightPath"
-                @keydown.esc.prevent="rightPathDraft = rightPath"
+              <PathField :path="rightPath" :t="t" @navigate="(target) => loadRightDirectory(target)" />
+              <!-- 与左栏同款快速目录下拉（右栏切连接时数据面已随 loadQuickPaths 刷新） -->
+              <QuickPathsMenu
+                v-if="rightQuickPaths.length"
+                :paths="rightQuickPaths"
+                :current-path="rightPath"
+                :t="t"
+                @navigate="navigateQuickPath('right', $event)"
               />
               <span class="wb-search-box">
                 <Search class="wb-search-icon" aria-hidden="true" />
@@ -1215,17 +1164,6 @@ onBeforeUnmount(() => {
               <option value="">{{ t("sameConnection") }}</option>
               <option v-for="item in targetConnections" :key="item.id" :value="item.id">{{ item.name }}</option>
             </select>
-          </div>
-          <div v-if="rightQuickPaths.length" class="wb-quick-chips">
-            <button
-              v-for="qp in rightQuickPaths"
-              :key="qp.key"
-              class="wb-quick-chip"
-              :title="qp.path"
-              @click="navigateQuickPath('right', qp)"
-            >
-              <component :is="QUICK_PATH_ICONS[qp.key]" aria-hidden="true" /> {{ quickPathLabel(qp.key) }}
-            </button>
           </div>
           <FileTable
             pane-id="right"

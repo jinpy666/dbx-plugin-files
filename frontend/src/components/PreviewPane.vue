@@ -8,6 +8,7 @@ import { Download, Pencil, X } from "@lucide/vue";
 import { baseName, call, errorMessage, formatBytes, isMethodMissing } from "../lib/api";
 import { isArchivePath } from "../lib/archive";
 import { canEditBytes, hexDump, imageMimeFor, READ_MAX_BYTES, WRITE_MAX_BYTES } from "../lib/preview";
+import { highlightCode } from "../lib/highlight";
 
 const props = defineProps<{
   path: string | null;
@@ -39,6 +40,8 @@ const hex = ref("");
 const t = (key: string, values?: Record<string, string | number>) => props.t(key, values);
 
 const title = computed(() => (props.path ? baseName(props.path) : ""));
+/** 代码高亮（只读态）：按扩展名识别语言，未识别返回 null → 纯文本渲染。 */
+const highlighted = computed(() => (mode.value === "text" ? highlightCode(text.value, props.path ?? "") : null));
 /** truncated 时禁编辑：否则保存会把截断内容写回覆盖整个文件。 */
 const canEdit = computed(() => mode.value === "text" && props.canWrite && !truncated.value && !loading.value && !error.value && !editing.value);
 /** 编辑条：编辑态或可进入编辑态时显示。 */
@@ -220,6 +223,8 @@ watch(
         spellcheck="false"
         :disabled="saving"
       />
+      <!-- 只读文本：识别到语言时走 highlight.js 输出（v-html 安全：hljs 已转义） -->
+      <pre v-else-if="mode === 'text' && highlighted" class="wb-mono wb-code"><code v-html="highlighted" /></pre>
       <pre v-else-if="mode === 'text'">{{ text }}</pre>
       <pre v-else-if="mode === 'hex'" class="wb-mono wb-hex">{{ hex }}</pre>
       <div v-else-if="mode === 'archive'" class="wb-archive">
