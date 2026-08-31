@@ -48,10 +48,10 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 uuid = { version = "1", features = ["v4"] }
 
-# The SDK is consumed from the local DBX host checkout; crates.io does not
-# carry it. Adjust the path when the host repo lives elsewhere.
+# The SDK is consumed from the in-repo host/ submodule (t8y2/dbx); crates.io
+# does not carry it. Override with [patch] in a local config when needed.
 [patch.crates-io]
-dbx-plugin-sdk = { path = "../../../dbx-plugin-host-worktree/plugins/sdk/rust/dbx-plugin-sdk" }
+dbx-plugin-sdk = { path = "../../host/plugins/sdk/rust/dbx-plugin-sdk" }
 
 [dev-dependencies]
 tempfile = "3"
