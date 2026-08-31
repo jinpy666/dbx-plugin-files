@@ -32,9 +32,19 @@ pub const PROGRESS_MIN_DELTA: f64 = 0.01;
 pub const JSON_CHUNK_BYTES: usize = 1024 * 1024;
 
 /// Protocols understood by the engine. The quick protocols map onto a
-/// fixed OpenDAL scheme (`smb` via the custom `engine::smb` adapter); the
+/// fixed OpenDAL scheme (`smb` via the custom `engine::smb` adapter,
+/// `sftp-native` via the custom `engine::sftp_native` adapter); the
 /// generic pass-through is `opendal-custom`.
-pub const PROTOCOLS: [&str; 7] = ["fs", "s3", "webdav", "ftp", "sftp", "smb", "opendal-custom"];
+pub const PROTOCOLS: [&str; 8] = [
+    "fs",
+    "s3",
+    "webdav",
+    "ftp",
+    "sftp",
+    "smb",
+    "sftp-native",
+    "opendal-custom",
+];
 
 /// A validated connection parsed from lifecycle params. Secret fields
 /// (`password`, `secret_access_key`) are kept in memory only.
@@ -864,14 +874,14 @@ mod tests {
             ("region", &["s3"]),
             ("access_key_id", &["s3"]),
             ("secret_access_key", &["s3"]),
-            ("endpoint", &["s3", "webdav", "ftp", "sftp", "smb"]),
+            ("endpoint", &["s3", "webdav", "ftp", "sftp", "smb", "sftp-native"]),
             ("username", &["webdav", "smb"]),
             ("user", &["ftp"]),
             ("share", &["smb"]),
             ("domain", &["smb"]),
-            ("password", &["webdav", "ftp", "sftp", "smb"]),
-            ("key", &["sftp"]),
-            ("known_hosts_strategy", &["sftp"]),
+            ("password", &["webdav", "ftp", "sftp", "smb", "sftp-native"]),
+            ("key", &["sftp", "sftp-native"]),
+            ("known_hosts_strategy", &["sftp", "sftp-native"]),
             ("service", &["opendal-custom"]),
             ("config", &["opendal-custom"]),
             ("connection_mode", &["sftp", "ftp"]),

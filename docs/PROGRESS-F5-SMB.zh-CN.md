@@ -68,3 +68,42 @@
    认证覆盖 smoke。
 4. i18n 错误文案 key（`smbConnectFailed` 等）暂无组件消费点，UI 接线时用。
 5. Windows 真机（非 Samba）行为差异未验：SMB1 不支持属预期；真机差异记本档。
+
+## 5. 真机回归修复：SmbDeleter 缺 root 映射（2026-08-31）
+
+**真机发现**（真实服务器实例，share=Projects、root=/GCN_CostEntry/SHAAE_Report/Report）：
+`stat/read/write/create_dir/list/rename` 均经 `SmbAccess::smb_path()` 把
+OpenDAL 相对路径映射为 share 内路径，但 `SmbDeleter` 独缺该映射——
+`delete_once` 把裁掉尾斜杠的 OpenDAL 相对路径直接下发 wire。在配置了
+`root` 的连接上，删除实际作用于 share 根目录的同名路径（那里不存在）：
+
+- `files/delete`（文件/目录）与 `files/rmdir` 返回 success 但什么都没删：
+  错位目标的 NotFound 被幂等删除语义吞掉（`delete_single`/`delete_recursive`
+  的 `NotFound => Ok` 分支）；
+- `files/purge` 报 `NotFound (permanent) at delete ... STATUS_OBJECT_NAME_NOT_FOUND
+  during Create`（其内部 List 不吞 NotFound）；
+- 目录改名/移动的降级 job（transfers.rs 逐条 `source_operator.delete`）
+  "completed" 但源目录残留；
+- 最坏情况：share 根恰好存在同名路径时会被误删——root 约束逃逸。
+
+**根因实锤**：同一 purge 改用不带 root 的连接（相对路径恰等于 share 路径）
+即全部成功，证实 root 旁路。
+
+**修复**：路径映射抽为模块级 `smb_path(root, path)` helper（`SmbAccess::smb_path`
+委托之）；`SmbDeleter` 增加 `root: String` 字段（`SmbAccess::delete()` 构造时
+传入），`delete_once` 先取目录 hint（尾 `/`）再经映射得 wire 路径后分发
+`delete_recursive`/`delete_single`。`delete_recursive` 内部 List/DeleteDirectory
+基于已映射路径，无需另改。transfers.rs 无需改动——降级 job 的删除随 deleter
+归位。新增单测：root 路径代数（`/archive` 三例 + share 根连接一例）与
+`SmbDeleter` 携带 root 字段的形状守卫（对齐 sftp_native 的
+`sftp_deleter_type_carries_root` 写法）。
+
+**修复后验证**：
+
+| 套件 | 结果 |
+|---|---|
+| `cargo test`（backend/ 全量） | **133 passed / 0 failed / 3 ignored**（原 131 + 新增 2） |
+| `scripts/container_smoke.sh`（MinIO + OpenSSH + Samba 容器） | **PASS 103 / SKIP 1 / FAIL 0**；smb 段 21 场景全过（含 rename-dir-degrade、purge-directory、rmdir） |
+
+红线备忘：root 映射是全适配器的红线，新增 wire 操作必须经 `smb_path`；
+rootless 的 wire 路径 = 静默无效删除 + 错位误删隐患。

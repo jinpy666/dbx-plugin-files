@@ -48,7 +48,27 @@ describe("opendalServices", () => {
     for (const service of ["fs", "s3", "webdav", "ftp", "sftp", "gcs", "azblob", "oss", "obs", "cos"]) {
       expect(CUSTOM_SERVICES.has(service)).toBe(true);
     }
-    expect(quickProtocolIds()).toEqual(["fs", "s3", "webdav", "ftp", "sftp", "smb"]);
+    expect(quickProtocolIds()).toEqual(["fs", "s3", "webdav", "ftp", "sftp", "smb", "sftp-native"]);
+  });
+
+  it("maps sftp-native quick fields into an external config with secrets separated", () => {
+    const config = buildExternalConfig("sftp-native", {
+      endpoint: "mft.local:22",
+      password: "secret",
+      known_hosts_strategy: "Tolerate",
+      read_only: true,
+    });
+    expect(config).toEqual({
+      protocol: "sftp-native",
+      endpoint: "mft.local:22",
+      password: "secret",
+      known_hosts_strategy: "Tolerate",
+      read_only: true,
+    });
+    const template = templateFor("sftp-native")!;
+    expect(template.kind).toBe("quick");
+    expect(template.fields.filter((field) => field.required).map((field) => field.key)).toEqual(["endpoint"]);
+    expect(template.fields.find((field) => field.key === "password")?.secret).toBe(true);
   });
 
   it("maps smb quick fields into an external config with secrets separated", () => {

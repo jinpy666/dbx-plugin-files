@@ -89,6 +89,21 @@ export const SERVICE_TEMPLATES: Record<string, ServiceTemplate> = {
       { key: "domain", type: "text", placeholder: "NTLM domain or workgroup" },
     ],
   },
+  // sftp-native（双栈决策 2026-08-31）：russh + russh-sftp 自研 Access 适配层
+  // （与 smb 同类，不进 CUSTOM_SERVICES/CUSTOM_SERVICE_SCHEMAS）。密码认证
+  // 由宿主 secret binding 收集、仅在内存组装 Builder；OpenDAL sftp service
+  // 不支持 password，密码型账号（企业 MFT）走这里。置尾与后端 PROTOCOLS
+  // 顺序保持一致。
+  "sftp-native": {
+    id: "sftp-native",
+    kind: "quick",
+    fields: [
+      { key: "endpoint", type: "text", required: true, placeholder: "user@host:22 or ssh://user@host:22" },
+      { key: "password", type: "password", secret: true },
+      { key: "key", type: "text", placeholder: "private key content or path (optional)" },
+      { key: "known_hosts_strategy", type: "select", options: ["Tolerate", "Strict", "Trust"] },
+    ],
+  },
 };
 
 /**

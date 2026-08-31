@@ -33,6 +33,19 @@ impl std::fmt::Debug for SmbAccess {
     }
 }
 
+/// Maps an OpenDAL path onto a share-relative SMB wire path (no leading or
+/// trailing `/`; empty string = the configured root inside the share).
+/// Module-level so the deleter shares the exact mapping used by stat/read/
+/// write/create_dir/list/rename. RED LINE: every wire-facing path must go
+/// through this helper — a rootless op would hit same-named paths at the
+/// SHARE root (silent no-op deletes at best, wrong-target deletes at worst;
+/// real-machine regression recorded in docs/PROGRESS-F5-SMB.zh-CN.md §5).
+pub(super) fn smb_path(root: &str, path: &str) -> String {
+    build_abs_path(root, path)
+        .trim_matches('/')
+        .to_string()
+}
+
 impl SmbAccess {
     pub(super) fn new(pool: Arc<SmbPool>, root: String, share: &str) -> Self {
         let info = AccessorInfo::default();
@@ -67,11 +80,9 @@ impl SmbAccess {
     /// Converts an OpenDAL path into a share-relative SMB path (no leading or
     /// trailing `/`; empty string = the configured root inside the share).
     /// OpenDAL-relative input never starts with `/` and keeps the trailing
-    /// `/` for directory paths.
+    /// `/` for directory paths. Delegates to the module-level [`smb_path`].
     fn smb_path(&self, path: &str) -> String {
-        build_abs_path(&self.root, path)
-            .trim_matches('/')
-            .to_string()
+        smb_path(&self.root, path)
     }
 }
 
@@ -171,6 +182,7 @@ impl Access for SmbAccess {
             RpDelete::default(),
             oio::OneShotDeleter::new(SmbDeleter {
                 pool: self.pool.clone(),
+                root: self.root.clone(),
             }),
         ))
     }
@@ -415,14 +427,25 @@ impl oio::List for SmbLister {
 }
 
 /// One-shot deleter; recursive deletes walk the subtree bottom-up.
+///
+/// Holds the configured root: every `delete_once` wire path is mapped through
+/// [`smb_path`]. RED LINE (real-machine regression): a rootless deleter sent
+/// OpenDAL-relative paths straight to the wire, so on root-configured
+/// connections `delete`/`rmdir` reported success while deleting nothing
+/// (the mis-aimed NotFound was swallowed by the idempotent-delete mapping),
+/// `purge` failed with `STATUS_OBJECT_NAME_NOT_FOUND`, rename-dir degrade
+/// jobs left the source behind — and a same-named path at the share root
+/// would have been deleted instead.
 pub(super) struct SmbDeleter {
     pool: Arc<SmbPool>,
+    root: String,
 }
 
 impl SmbDeleter {
     /// Deletes one object; falls back to `delete_directory` for directory
     /// paths, and maps NotFound to Ok (delete is idempotent per the Access
-    /// contract).
+    /// contract). `path` must already be the mapped share-relative wire path
+    /// (see [`smb_path`]).
     ///
     /// `is_dir_hint` comes from the OpenDAL path shape (directories carry a
     /// trailing `/`): SMB Create rejects names with a trailing slash
@@ -489,15 +512,63 @@ impl SmbDeleter {
 
 impl oio::OneShotDelete for SmbDeleter {
     async fn delete_once(&self, path: String, args: OpDelete) -> Result<()> {
-        // OpenDAL directory paths carry a trailing `/`; normalize before any
-        // SMB call (trailing-slash names are rejected on the wire) and keep
-        // the dir-ness as an explicit hint for the non-recursive delete.
+        // OpenDAL directory paths carry a trailing `/`; keep the dir-ness as
+        // an explicit hint — smb_path strips the slash itself, and the
+        // non-recursive delete needs the hint to go straight to the
+        // directory op (SMB Create rejects trailing-slash names). The root
+        // mapping happens HERE so both the single and recursive paths
+        // operate inside the configured root.
         let is_dir = path.ends_with('/');
-        let path = path.trim_end_matches('/');
+        let target = smb_path(&self.root, &path);
         if args.recursive() {
-            self.delete_recursive(path).await
+            self.delete_recursive(&target).await
         } else {
-            self.delete_single(path, is_dir).await
+            self.delete_single(&target, is_dir).await
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn smb_paths_map_through_root_absolutely() {
+        // The whole point of the red line: relative OpenDAL paths map onto
+        // share-relative SMB paths inside the configured root (deleter
+        // included — see smb_deleter_type_carries_root).
+        let root = normalize_root("/archive");
+        assert_eq!(smb_path(&root, ""), "archive", "root itself");
+        assert_eq!(smb_path(&root, "docs/a.txt"), "archive/docs/a.txt");
+        assert_eq!(
+            smb_path(&root, "docs/"),
+            "archive/docs",
+            "dir hint is wire-irrelevant"
+        );
+        // Share-root connections map onto the share root unchanged.
+        let share_root = normalize_root("/");
+        assert_eq!(smb_path(&share_root, "a.txt"), "a.txt");
+    }
+
+    #[test]
+    fn smb_deleter_type_carries_root() {
+        // Compile-time guard of the red line: the deleter holds the root so
+        // delete_once can map paths (the real-machine bug was a rootless
+        // deleter: silent no-op deletes + wrong-target deletes on
+        // root-configured connections). Runtime behavior is exercised by
+        // the smoke's root-set sections and the real-machine run.
+        let pool = SmbPool::new(super::super::pool::SmbConnectParams {
+            host: "nas.local".into(),
+            port: 445,
+            share: "Projects".into(),
+            username: "bob".into(),
+            password: String::new(),
+            domain: String::new(),
+        });
+        let deleter = SmbDeleter {
+            pool,
+            root: "/archive".to_string(),
+        };
+        assert_eq!(deleter.root, "/archive");
     }
 }

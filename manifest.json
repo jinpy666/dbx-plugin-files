@@ -3,7 +3,7 @@
   "manifest_version": 1,
   "id": "io.dbx.files",
   "name": "DBX Files",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "publisher": "xynanan",
   "description": "Multi-backend storage workbench plugin for DBX, powered by Apache OpenDAL.",
   "icon": "assets/plugin.svg",
@@ -71,6 +71,10 @@
             {
               "label": "SFTP",
               "value": "sftp"
+            },
+            {
+              "label": "SFTP (native)",
+              "value": "sftp-native"
             },
             {
               "label": "SMB / CIFS",
@@ -164,10 +168,11 @@
               "webdav",
               "ftp",
               "sftp",
-              "smb"
+              "smb",
+              "sftp-native"
             ]
           },
-          "description": "S3/WebDAV/FTP: full URL, e.g. http://127.0.0.1:9000. SFTP: OpenSSH style user@host or ssh://user@host:port. SMB: host[:445] or smb://host[:445], e.g. nas.local:445 or smb://nas.local."
+          "description": "S3/WebDAV/FTP: full URL, e.g. http://127.0.0.1:9000. SFTP/SFTP native: OpenSSH style user@host or ssh://user@host:port (native also accepts host:port with the user field). SMB: host[:445] or smb://host[:445], e.g. nas.local:445 or smb://nas.local."
         },
         {
           "key": "share",
@@ -294,9 +299,11 @@
               "webdav",
               "ftp",
               "sftp",
-              "smb"
+              "smb",
+              "sftp-native"
             ]
-          }
+          },
+          "description": "Used for password login on SFTP native (falls back to keyboard-interactive automatically); also the webdav/ftp/smb login password."
         },
         {
           "key": "key",
@@ -307,10 +314,11 @@
           "visible_when": {
             "field": "protocol",
             "one_of": [
-              "sftp"
+              "sftp",
+              "sftp-native"
             ]
           },
-          "description": "Private key content or a path to the key file."
+          "description": "Private key content or a path to the key file. SFTP native uses the key when the password is empty."
         },
         {
           "key": "known_hosts_strategy",
@@ -335,7 +343,8 @@
           "visible_when": {
             "field": "protocol",
             "one_of": [
-              "sftp"
+              "sftp",
+              "sftp-native"
             ]
           }
         },
@@ -443,7 +452,8 @@
                 "ftp": "FTP",
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
-                "opendal-custom": "OpenDAL 自定义服务"
+                "opendal-custom": "OpenDAL 自定义服务",
+                "sftp-native": "SFTP（原生）"
               }
             },
             "root": {
@@ -541,7 +551,8 @@
                 "ftp": "FTP",
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
-                "opendal-custom": "OpenDAL 自訂服務"
+                "opendal-custom": "OpenDAL 自訂服務",
+                "sftp-native": "SFTP（原生）"
               }
             },
             "root": {
@@ -639,7 +650,8 @@
                 "ftp": "FTP",
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
-                "opendal-custom": "OpenDAL custom service"
+                "opendal-custom": "OpenDAL custom service",
+                "sftp-native": "SFTP (native)"
               }
             },
             "root": {
@@ -737,7 +749,8 @@
                 "ftp": "FTP",
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
-                "opendal-custom": "Servicio personalizado de OpenDAL"
+                "opendal-custom": "Servicio personalizado de OpenDAL",
+                "sftp-native": "SFTP (nativo)"
               }
             },
             "root": {
@@ -835,7 +848,8 @@
                 "ftp": "FTP",
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
-                "opendal-custom": "Servizio OpenDAL personalizzato"
+                "opendal-custom": "Servizio OpenDAL personalizzato",
+                "sftp-native": "SFTP (nativo)"
               }
             },
             "root": {
@@ -933,7 +947,8 @@
                 "ftp": "FTP",
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
-                "opendal-custom": "OpenDAL カスタムサービス"
+                "opendal-custom": "OpenDAL カスタムサービス",
+                "sftp-native": "SFTP（ネイティブ）"
               }
             },
             "root": {
@@ -1031,7 +1046,8 @@
                 "ftp": "FTP",
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
-                "opendal-custom": "Serviço personalizado do OpenDAL"
+                "opendal-custom": "Serviço personalizado do OpenDAL",
+                "sftp-native": "SFTP (nativo)"
               }
             },
             "root": {

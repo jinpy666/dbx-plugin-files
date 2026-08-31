@@ -11,6 +11,9 @@ Drives the sidecar over its stdio-framed protocol (sidecar_client.py):
   - s3 (MinIO), sftp and smb (Samba) container sections: SKIP unless the
     matching DBX_FILES_S3_* / DBX_FILES_SFTP_* / DBX_FILES_SMB_* environment
     variables are set
+  - sftp-native section: the russh+russh-sftp dual-stack adapter (password
+    auth the OpenDAL sftp service cannot do) — SKIP unless
+    DBX_FILES_SFTP_NATIVE_HOST/PORT/USER/PASSWORD/KEY/BASE are set
 
 Methods owned by parallel tracks (F-A lifecycle / F-B engine ops) that are not
 implemented yet are reported as SKIP, not FAIL, so the suite stays green while
@@ -768,6 +771,78 @@ def scenario_smb_public_link_refused(runner: Runner, base: str) -> None:
     runner.step("publiclink-unsupported", _refused)
 
 
+def run_sftp_native_section(client: SidecarClient) -> None:
+    """sftp-native (dual-stack, russh + russh-sftp) section.
+
+    The OpenDAL sftp service is keyfile-only; this section exercises the
+    native adapter with the PASSWORD form (plus keyboard-interactive
+    fallback) against a real host, env-gated SKIP like the s3/sftp/smb
+    sections:
+
+        DBX_FILES_SFTP_NATIVE_HOST   host (required)
+        DBX_FILES_SFTP_NATIVE_PORT   port (default 22)
+        DBX_FILES_SFTP_NATIVE_USER   login user (required)
+        DBX_FILES_SFTP_NATIVE_PASSWORD  login password (secret-bound)
+        DBX_FILES_SFTP_NATIVE_KEY    private key content or path (optional,
+                                     used when the password is unset)
+        DBX_FILES_SFTP_NATIVE_BASE   writable base dir (default /smoke-<ts>)
+
+    Every write lands under the self-generated base; teardown purges ONLY
+    that base.
+    """
+    host = os.environ.get("DBX_FILES_SFTP_NATIVE_HOST")
+    port = os.environ.get("DBX_FILES_SFTP_NATIVE_PORT", "22")
+    user = os.environ.get("DBX_FILES_SFTP_NATIVE_USER", "")
+    password = os.environ.get("DBX_FILES_SFTP_NATIVE_PASSWORD", "")
+    key = os.environ.get("DBX_FILES_SFTP_NATIVE_KEY", "")
+    print("\n==> section sftp-native (russh dual-stack)")
+    if not (host and user and (password or key)):
+        mark("sftp-native", "container", "skip",
+             "set DBX_FILES_SFTP_NATIVE_HOST/PORT/USER/PASSWORD (or KEY) to enable")
+        return
+    external = {"protocol": "sftp-native", "endpoint": f"{user}@{host}:{port}", "user": user}
+    if key:
+        external["key"] = key
+    connection_id = "smoke-sftp-native"
+    secrets = {"password": password} if password else None
+    try:
+        connect(client, connection_id, external, secrets=secrets)
+    except SidecarError as error:
+        mark("sftp-native", "connection/connect", "fail", str(error)[:160])
+        raise
+    runner = Runner(client, "sftp-native")
+    runner.connection_id = connection_id
+    base = os.environ.get("DBX_FILES_SFTP_NATIVE_BASE", f"/smoke-{int(time.time())}")
+    try:
+        scenario_sftp_native_capabilities(runner)
+        scenario_structure(runner, base)
+        scenario_smb_stat_rmdir(runner, base)
+        scenario_transfer_roundtrip(runner, base)
+        scenario_smb_public_link_refused(runner, base)
+
+        readonly_id = f"{connection_id}-readonly"
+        connect(client, readonly_id, {**external, "read_only": True}, secrets=secrets)
+        scenario_read_only(client, "sftp-native", readonly_id, base)
+    finally:
+        # best-effort teardown of the random base directory
+        try:
+            runner.call("files/purge", {"connectionId": runner.connection_id, "path": base})
+        except SidecarError as error:
+            print(f"    teardown: purge failed for {base}: {error}")
+
+
+def scenario_sftp_native_capabilities(runner: Runner) -> None:
+    """sftp-native capability contract: full files/* face with native rename;
+    copy degrades to the read→write job and presign never exists."""
+    def _caps():
+        caps = runner.call("files/capabilities", {"connectionId": runner.connection_id})
+        for key in ("list", "read", "write", "stat", "delete", "createDir", "rename"):
+            assert caps.get(key) is True, f"sftp-native capability {key!r} should be declared: {caps!r}"
+        assert caps.get("copy") is False, f"sftp-native must not declare copy (job degrade instead): {caps!r}"
+        assert caps.get("presign") is False, f"sftp-native must not declare presign: {caps!r}"
+    runner.step("capabilities-sftp-native-contract", _caps)
+
+
 def main() -> None:
     started = time.monotonic()
     sidecar = os.environ.get("DBX_PLUGIN_SIDECAR")
@@ -790,6 +865,7 @@ def main() -> None:
             run_s3_section(client)
             run_sftp_section(client)
             run_smb_section(client)
+            run_sftp_native_section(client)
         except SidecarError as error:
             print(f"\nFAIL: {error}", file=sys.stderr)
             # Close BEFORE draining stderr: drain_stderr blocks on read() until

@@ -23,6 +23,10 @@ pub mod transfer;
 // F5-SMB: custom OpenDAL Access adapter for the `smb` quick protocol
 // (`smb2 =0.20.1` behind `opendal::raw::Access`; IMPL_PLAN_SMB §1/§2).
 pub mod smb;
+// sftp-native (dual-stack decision 2026-08-31): russh + russh-sftp Access
+// adapter for the `sftp-native` quick protocol — password auth the OpenDAL
+// 0.57 sftp service cannot do. Additive; OpenDAL `sftp` stays available.
+pub mod sftp_native;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -147,6 +151,9 @@ impl Engine {
 ///
 /// - `smb` is NOT an OpenDAL service: it goes through `Operator::new`
 ///   static dispatch on the custom [`smb::SmbBuilder`] (IMPL_PLAN_SMB §1).
+/// - `sftp-native` likewise goes through `Operator::new` on the custom
+///   [`sftp_native::SftpNativeBuilder`] (russh + russh-sftp; dual-stack
+///   decision 2026-08-31).
 /// - Everything else funnels through `Operator::via_iter`:
 ///   - quick protocol (`fs`/`s3`/`webdav`/`ftp`/`sftp`): scheme is the
 ///     protocol name, kv assembled from the manifest-mapped OpenDAL keys
@@ -161,8 +168,32 @@ pub fn build_operator(connection: &StoredConnection) -> Result<Operator, String>
     if connection.protocol == "smb" {
         return build_smb_operator(connection);
     }
+    if connection.protocol == "sftp-native" {
+        return build_sftp_native_operator(connection);
+    }
     let (scheme, kv) = protocol_kv(connection)?;
     Operator::via_iter(scheme, kv)
+        .map_err(|error| format!("Failed to build storage operator: {error}"))
+}
+
+/// Builds the native SFTP Operator via static dispatch on
+/// [`sftp_native::SftpNativeBuilder`]. Credentials pass through the builder
+/// in memory only; building does not touch the network (the SSH handshake
+/// dials lazily on the first operation).
+fn build_sftp_native_operator(connection: &StoredConnection) -> Result<Operator, String> {
+    // Endpoint hygiene first so a bad endpoint fails with the scheme-level
+    // message instead of surfacing as a dial error.
+    validate_endpoints(connection)?;
+    let builder = sftp_native::SftpNativeBuilder::new()
+        .endpoint(&connection.endpoint)
+        .user(&connection.user)
+        .username(&connection.username)
+        .password(&connection.password)
+        .key(&connection.key)
+        .known_hosts_strategy(&connection.known_hosts_strategy)
+        .root(&connection.root);
+    Operator::new(builder)
+        .map(|builder| builder.finish())
         .map_err(|error| format!("Failed to build storage operator: {error}"))
 }
 
@@ -247,6 +278,20 @@ pub fn protocol_kv(
             push(&mut kv, "domain", &connection.domain);
             "smb".to_string()
         }
+        "sftp-native" => {
+            // Documents the manifest → adapter field mapping; the Operator
+            // itself is built via `Operator::new(SftpNativeBuilder)` in
+            // `build_sftp_native_operator` (via_iter has no "sftp-native"
+            // service registered). `password` is a secret-bound field.
+            push(&mut kv, "root", &connection.root);
+            push(&mut kv, "endpoint", &connection.endpoint);
+            push(&mut kv, "user", &connection.user);
+            push(&mut kv, "username", &connection.username);
+            push(&mut kv, "password", &connection.password);
+            push(&mut kv, "key", &connection.key);
+            push(&mut kv, "known_hosts_strategy", &connection.known_hosts_strategy);
+            "sftp-native".to_string()
+        }
         "opendal-custom" => {
             let service = connection.service.trim();
             if service.is_empty() {
@@ -310,6 +355,13 @@ fn validate_endpoints(connection: &StoredConnection) -> Result<(), String> {
     // every other scheme is rejected (IMPL_PLAN_SMB §2.3).
     if connection.protocol == "smb" && !connection.endpoint.is_empty() {
         check_smb_endpoint(&connection.endpoint)?;
+    }
+    // sftp-native: bare `host[:port]` or `ssh://[user@]host[:port]`; any
+    // other scheme is rejected at validation time (same fail-fast shape as
+    // smb — the adapter's parser re-checks at build).
+    if connection.protocol == "sftp-native" && !connection.endpoint.is_empty() {
+        sftp_native::parse_sftp_native_endpoint(&connection.endpoint)
+            .map_err(|error| format!("Invalid endpoint for {}: {error}", connection.protocol))?;
     }
     // opendal-custom: the config JSON carries the endpoint for the cloud
     // services (s3/oss/obs/cos/...); the quick `endpoint` field is empty.
