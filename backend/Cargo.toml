@@ -1,6 +1,6 @@
 [package]
 name = "dbx-plugin-files"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2021"
 license = "Apache-2.0"
 description = "DBX files plugin sidecar: Apache OpenDAL storage engine"
