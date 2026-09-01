@@ -13,6 +13,8 @@ import { highlightCode } from "../lib/highlight";
 const props = defineProps<{
   path: string | null;
   canWrite: boolean;
+  /** 预览所属栏的连接 id（双栏左栏可为本地 __local__）；缺省走默认注入。 */
+  connectionId?: string;
   t: (key: string, values?: Record<string, string | number>) => string;
 }>();
 
@@ -38,6 +40,11 @@ const dataUri = ref("");
 const hex = ref("");
 
 const t = (key: string, values?: Record<string, string | number>) => props.t(key, values);
+
+/** 该栏显式连接：预览/编辑/压缩包列表都跟随预览条目所在的栏。 */
+function withConnection(params: Record<string, unknown>): Record<string, unknown> {
+  return props.connectionId ? { ...params, connectionId: props.connectionId } : params;
+}
 
 const title = computed(() => (props.path ? baseName(props.path) : ""));
 /** 代码高亮（只读态）：按扩展名识别语言，未识别返回 null → 纯文本渲染。 */
@@ -68,10 +75,10 @@ async function load() {
       return;
     }
     const mime = imageMimeFor(props.path);
-    const result = await call<{ dataBase64: string; truncated?: boolean; size?: number }>("files/read", {
+    const result = await call<{ dataBase64: string; truncated?: boolean; size?: number }>("files/read", withConnection({
       path: props.path,
       maxBytes: READ_MAX_BYTES,
-    });
+    }));
     const bytes = window.dbxPlugin.decodeBase64(result.dataBase64);
     truncated.value = Boolean(result.truncated);
     size.value = result.size ?? bytes.byteLength;
@@ -132,11 +139,11 @@ async function loadArchivePage(reset: boolean) {
   if (archiveDone.value) return;
   const page = archivePage.value + 1;
   try {
-    const result = await call<{ entries: ArchiveEntry[]; total?: number }>("files/archiveList", {
+    const result = await call<{ entries: ArchiveEntry[]; total?: number }>("files/archiveList", withConnection({
       path: props.path,
       page,
       pageSize: ARCHIVE_PAGE_SIZE,
-    });
+    }));
     archivePage.value = page;
     archiveEntries.value.push(...(result.entries ?? []));
     archiveTotal.value = result.total ?? archiveEntries.value.length;
@@ -168,7 +175,7 @@ async function saveEdit() {
   }
   saving.value = true;
   try {
-    await call("files/write", { path: props.path, dataBase64: window.dbxPlugin.encodeBase64(bytes) });
+    await call("files/write", withConnection({ path: props.path, dataBase64: window.dbxPlugin.encodeBase64(bytes) }));
     text.value = draft.value;
     size.value = bytes.byteLength;
     editing.value = false;

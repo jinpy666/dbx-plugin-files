@@ -7,6 +7,10 @@
 //   &delay=300       files/list 人为延迟 ms（便于观察加载态）
 //   &job=1           copy/move 一律走降级 job（默认仅目录/`mockDir`）
 // 任何包含 "error" 的路径都会返回业务错误（便于验证错误横幅与重试）。
+// __local__ 连接（双栏左栏本地面）：list/listPaged/stat/quickPaths/read 路由到
+// 独立本地树（$HOME 家族 quickPaths）；写路径（mkdir/delete/copy/move 等）仍落
+// 远端 mock 树——浏览器验证以「左=本地、右=远端」浏览/预览为主，写面由 sidecar
+// 真实实现（cargo 单测 + smoke）覆盖。
 
 type MockEntry = { kind: "file" | "dir"; size: number; modifiedAt: string };
 
@@ -80,16 +84,47 @@ export function installMockHost(): void {
   put("/docs/dump.tar", "file", 96 * 1024);
   for (let i = 0; i < 10_000; i += 1) put(`/10k/file-${String(i).padStart(5, "0")}.txt`, "file", 1024 + i);
 
-  const children = (dir: string): Array<Record<string, unknown>> => {
+  // ---- 本地树（内置 __local__ 连接，模拟真实 sidecar 的本地文件系统）----------
+  // 双栏左栏默认面：独立路径空间 + $HOME 家族 quickPaths，供浏览器验证
+  // 「左=本地、右=远端」而不与远端 mock 树混淆。
+  const localTree = new Map<string, MockEntry>();
+  const localContents = new Map<string, Uint8Array>();
+  const putLocal = (path: string, kind: "file" | "dir", size = 0) =>
+    localTree.set(path.replace(/\/+$/, "") || "/", { kind, size, modifiedAt: stamp(localTree.size % 30) });
+  const LOCAL_HOME = "/Users/demo";
+  putLocal("/", "dir");
+  putLocal(LOCAL_HOME, "dir");
+  for (const dir of ["Desktop", "Downloads", "Documents", "Pictures", "Movies"]) putLocal(`${LOCAL_HOME}/${dir}`, "dir");
+  putLocal("/Applications", "dir");
+  putLocal("/tmp", "dir");
+  {
+    const localNote = new TextEncoder().encode("本地文件（__local__）\n\n这是 sidecar 本地文件系统的 mock 样例。\n");
+    localContents.set(`${LOCAL_HOME}/Documents/notes-local.txt`, localNote);
+    putLocal(`${LOCAL_HOME}/Documents/notes-local.txt`, "file", localNote.byteLength);
+  }
+  {
+    const png = window.atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");
+    const bytes = new Uint8Array(png.length);
+    for (let i = 0; i < png.length; i += 1) bytes[i] = png.charCodeAt(i);
+    localContents.set(`${LOCAL_HOME}/Desktop/logo-local.png`, bytes);
+    putLocal(`${LOCAL_HOME}/Desktop/logo-local.png`, "file", bytes.byteLength);
+  }
+  putLocal(`${LOCAL_HOME}/Downloads/installer.dmg`, "file", 32 * 1024 * 1024);
+
+  /** __local__ 连接 → 本地树；其余（含未带 connectionId 的当前连接）→ 远端 mock 树。 */
+  const treeFor = (connectionId: unknown) => (connectionId === "__local__" ? localTree : tree);
+  const contentsFor = (connectionId: unknown) => (connectionId === "__local__" ? localContents : contents);
+
+  const children = (source: Map<string, MockEntry>, dir: string): Array<Record<string, unknown>> => {
     const base = dir.replace(/\/+$/, "");
     const prefix = base === "" || base === "/" ? "/" : `${base}/`;
-    return [...tree.entries()]
+    return [...source.entries()]
       .filter(([path, entry]) => path !== "/" && path.startsWith(prefix) && !path.slice(prefix.length).includes("/"))
       .map(([path, entry]) => ({ name: path.slice(prefix.length), path, kind: entry.kind, size: entry.size, modifiedAt: entry.modifiedAt }))
       .sort((a, b) => String(a.name).localeCompare(String(b.name)));
   };
-  const isDir = (path: string) => tree.get(path.replace(/\/+$/, ""))?.kind === "dir";
-  const exists = (path: string) => tree.has(path.replace(/\/+$/, ""));
+  const isDir = (path: string, source: Map<string, MockEntry> = tree) => source.get(path.replace(/\/+$/, ""))?.kind === "dir";
+  const exists = (path: string, source: Map<string, MockEntry> = tree) => source.has(path.replace(/\/+$/, ""));
 
   const assertOk = (path: string) => {
     if (path.includes("error")) throw new Error(`mock backend failure for ${path}`);
@@ -176,19 +211,31 @@ export function installMockHost(): void {
       case "files/list": {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         assertOk(str("path"));
-        return { entries: children(str("path")) };
+        return { entries: children(treeFor(p.connectionId), str("path")) };
       }
       case "files/listPaged": {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
-        const all = children(str("path"));
+        const all = children(treeFor(p.connectionId), str("path"));
         const page = Number(p.page ?? 1);
         const size = Number(p.pageSize ?? 200);
         return { entries: all.slice((page - 1) * size, page * size), total: all.length };
       }
       case "files/capabilities":
         return { scheme: "mock", list: true, write: true, read: true, stat: true, delete: true, createDir: true, copy: true, rename: true, presign: false };
-      case "files/quickPaths":
-        // mock 无真实 $HOME：返回根目录 + 虚拟树里实际存在的样例目录 chips。
+      case "files/quickPaths": {
+        // mock 无真实 $HOME：远端树返回根目录 + 实际存在的样例目录 chips；
+        // __local__ 连接返回本地 home 家族（对齐真实 sidecar 的 fs 行为）。
+        if (p.connectionId === "__local__") {
+          return {
+            paths: [
+              { key: "root", path: "/" },
+              { key: "home", path: LOCAL_HOME },
+              ...["Desktop", "Downloads", "Documents", "Pictures"]
+                .map((dir) => ({ key: dir.toLowerCase(), path: `${LOCAL_HOME}/${dir}` }))
+                .filter((item) => localTree.has(item.path)),
+            ],
+          };
+        }
         return {
           paths: [
             { key: "root", path: "/" },
@@ -197,10 +244,11 @@ export function installMockHost(): void {
               .map((key) => ({ key, path: `/${key}` })),
           ],
         };
+      }
       case "files/stat": {
         const path = str("path");
         assertOk(path);
-        const entry = tree.get(path.replace(/\/+$/, ""));
+        const entry = treeFor(p.connectionId).get(path.replace(/\/+$/, ""));
         if (!entry) throw new Error(`NotFound: ${path}`);
         return { entry: { name: path.split("/").filter(Boolean).pop() ?? "/", path, kind: entry.kind, size: entry.size, modifiedAt: entry.modifiedAt } };
       }
@@ -298,12 +346,13 @@ export function installMockHost(): void {
         return { taskId };
       }
       case "files/read": {
-        // A-FILES ②：预览读取（≤2MiB base64 + truncated）
+        // A-FILES ②：预览读取（≤2MiB base64 + truncated）；按连接路由树。
         const path = str("path");
         assertOk(path);
-        const entry = tree.get(path.replace(/\/+$/, ""));
+        const source = treeFor(p.connectionId);
+        const entry = source.get(path.replace(/\/+$/, ""));
         if (!entry || entry.kind !== "file") throw new Error(`NotFound: ${path}`);
-        const all = contents.get(path.replace(/\/+$/, "")) ?? new Uint8Array(Math.min(entry.size, 64));
+        const all = contentsFor(p.connectionId).get(path.replace(/\/+$/, "")) ?? new Uint8Array(Math.min(entry.size, 64));
         const max = Number(p.maxBytes ?? 2 * 1024 * 1024);
         const data = all.length > max ? all.subarray(0, max) : all;
         return { dataBase64: b64encode(data), truncated: all.length > data.length, size: all.length };

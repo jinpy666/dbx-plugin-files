@@ -214,29 +214,32 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px
 .wb-pane-bridge .wb-icon-button { width: 22px; height: 22px; }
 .wb-pane-bridge .wb-toolbar-separator { width: 14px; height: 1px; margin: 1px 0; }
 .wb-flip-h { transform: scaleX(-1); }
-.wb-pane-tabs { display: flex; align-items: center; height: 28px; gap: 2px; border-bottom: 1px solid var(--border); padding: 3px 6px; }
-/* 双栏对齐：左栏无 tabs 内容，用等高空条占位（见 App.vue wb-pane-tabs-ghost）。 */
-.wb-pane-tabs-ghost { pointer-events: none; }
-.wb-pane-tabs button { border: 0; background: transparent; cursor: pointer; border-radius: 4px; padding: 3px 8px; color: var(--muted-foreground); font-size: 12px; }
-.wb-pane-tabs button.is-active { background: var(--accent); color: var(--foreground); }
+/* pane 顶条：双栏时两侧等高对齐，承载各栏连接选择器（右对齐）。 */
+.wb-pane-topbar { display: flex; align-items: center; justify-content: flex-end; min-height: 28px; border-bottom: 1px solid var(--border); padding: 3px 8px; background: color-mix(in srgb, var(--muted) 30%, var(--background)); }
+.wb-pane-topbar .wb-target-connection { max-width: 180px; }
+/* pane 主体：快速定位侧栏 + 内容列（工具行 + 文件表）横排。 */
+.wb-pane-body { display: flex; flex: 1 1 auto; min-height: 0; }
+.wb-pane-main { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; flex-direction: column; }
 .wb-pane-header { display: flex; align-items: center; gap: 4px; min-height: 36px; border-bottom: 1px solid var(--border); padding: 2px 8px; background: color-mix(in srgb, var(--background) 92%, transparent); }
 .wb-pane-header .wb-breadcrumbs { flex: 1 1 auto; min-width: 0; overflow: hidden; }
 .wb-pane-header .wb-path-toolbar { flex: 1 1 auto; min-width: 0; }
 
-/* 快速目录下拉（tiny-rdm quick paths 对标；路径栏内触发，两栏同款） */
-.wb-quick-menu { position: relative; display: inline-flex; flex: 0 0 auto; }
-.wb-quick-trigger { width: 20px; height: 20px; color: var(--muted-foreground); }
-.wb-quick-trigger:hover, .wb-quick-menu.is-open .wb-quick-trigger { background: var(--accent); color: var(--foreground); }
-.wb-quick-trigger svg { transition: transform 0.12s ease; }
-.wb-quick-menu.is-open .wb-quick-trigger svg { transform: rotate(180deg); }
-.wb-quick-menu-pop { position: absolute; top: calc(100% + 6px); right: 0; z-index: 40; min-width: 180px; max-height: 320px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius); padding: 3px; background: var(--popover); box-shadow: 0 8px 22px rgb(0 0 0 / 35%); }
-.wb-quick-menu-pop button { display: flex; width: 100%; align-items: center; gap: 7px; border-radius: 4px; padding: 4px 8px; text-align: left; font-size: 12px; }
-.wb-quick-menu-pop button:hover { background: var(--accent); }
-.wb-quick-menu-pop button.is-current { color: var(--muted-foreground); }
-.wb-quick-menu-pop svg { width: 14px; height: 14px; flex: 0 0 14px; stroke-width: 1.7; }
+/* 快速定位侧栏（文件管理器对标）：高频目录一列直达，当前目录高亮。 */
+.wb-quick-sidebar { display: flex; flex: 0 0 112px; flex-direction: column; gap: 1px; overflow-y: auto; overflow-x: hidden; border-right: 1px solid var(--border); padding: 6px 5px; background: color-mix(in srgb, var(--muted) 28%, var(--background)); }
+.wb-quick-sidebar-title { padding: 0 5px 5px; color: var(--muted-foreground); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; }
+.wb-quick-sidebar button { display: flex; align-items: center; gap: 7px; min-width: 0; border: 0; background: transparent; cursor: pointer; border-radius: 4px; padding: 5px 6px; text-align: left; color: var(--foreground); font-size: 12px; white-space: nowrap; }
+.wb-quick-sidebar button svg { width: 14px; height: 14px; flex: 0 0 14px; color: var(--muted-foreground); stroke-width: 1.7; }
+.wb-quick-sidebar button span { overflow: hidden; text-overflow: ellipsis; }
+.wb-quick-sidebar button:hover { background: var(--accent); }
+.wb-quick-sidebar button.is-current { background: var(--accent); }
+.wb-quick-sidebar button.is-current svg { color: var(--primary); }
 .wb-target-connection { max-width: 130px; border: 1px solid var(--border); border-radius: var(--radius); background: color-mix(in srgb, var(--background) 60%, var(--muted)); color: var(--foreground); padding: 2px 4px; font-size: 11px; }
 .wb-crumb-ellipsis { color: var(--primary); }
 .wb-breadcrumbs button.is-current { color: var(--foreground); font-weight: 600; }
+
+/* 文件概览弹窗：遮罩 + 居中面板（不再占用右栏 Tab）。 */
+.wb-preview-overlay { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 36px 44px; background: rgb(0 0 0 / 45%); }
+.wb-preview-overlay .wb-preview { flex: 0 1 auto; display: flex; flex-direction: column; width: min(860px, 100%); max-height: 100%; border: 1px solid var(--border); border-radius: var(--radius); background: var(--background); box-shadow: 0 18px 48px rgb(0 0 0 / 45%); }
 
 /* ---- skeleton（A-FILES ④d） -------------------------------------------------------- */
 .wb-skeleton { display: inline-block; height: 12px; border-radius: 4px; background: linear-gradient(90deg, var(--muted) 25%, color-mix(in srgb, var(--muted-foreground) 20%, var(--muted)) 50%, var(--muted) 75%); background-size: 200% 100%; animation: wb-shimmer 1.2s linear infinite; }

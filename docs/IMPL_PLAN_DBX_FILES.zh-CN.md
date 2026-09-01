@@ -250,6 +250,13 @@ Operator，幂等）。
 业务错误 -32000、方法未注册 -32601；路径均在 `root`（若配置）之内，
 越界拒绝；写操作过 `read_only` / `allow_delete` 门禁。
 
+**保留连接 `__local__`**（双栏本地面，2026-09）：engine 内置保留
+connectionId `__local__`——按需合成的 root=`/` fs 连接（可写、可删、
+不锁 root，与用户自建「本地文件系统」连接同策略），不占连接表、
+`connection/connect` 拒绝该 id 防遮蔽。所有 `files/*` 方法对该 id
+直接可用（浏览/读写/传输/quickPaths/capabilities），工作台双栏左栏
+默认指向它（左=本地、右=远端，tiny-rdm/FileZilla 对标）；无新增协议方法。
+
 ### 8.1 浏览与元数据
 
 | 方法 | 请求 | 返回 |

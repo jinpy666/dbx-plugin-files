@@ -1,5 +1,6 @@
-// UI 偏好持久化（A-FILES ①/④c）：localStorage 保存布局偏好（排序/双栏/右栏 Tab）。
+// UI 偏好持久化（A-FILES ①/④c）：localStorage 保存布局偏好（排序/双栏）。
 // 只存非敏感 UI 状态；沙箱环境 localStorage 可能不可用，全部 try/catch 兜底。
+// 历史版本存过 rightTab（预览已改弹窗），sanitize 直接忽略未知字段。
 
 import type { SortState } from "./sorting";
 import { DEFAULT_SORT } from "./sorting";
@@ -7,21 +8,15 @@ import { DEFAULT_SORT } from "./sorting";
 export interface UiPrefs {
   sort: SortState;
   dualPane: boolean;
-  rightTab: "target" | "preview";
 }
 
 export const UI_PREFS_KEY = "dbx-files.ui";
-
-const RIGHT_TABS: UiPrefs["rightTab"][] = ["target", "preview"];
 
 function sanitize(raw: unknown): Partial<UiPrefs> {
   if (!raw || typeof raw !== "object") return {};
   const value = raw as Record<string, unknown>;
   const prefs: Partial<UiPrefs> = {};
   if (typeof value.dualPane === "boolean") prefs.dualPane = value.dualPane;
-  if (typeof value.rightTab === "string" && (RIGHT_TABS as string[]).includes(value.rightTab)) {
-    prefs.rightTab = value.rightTab as UiPrefs["rightTab"];
-  }
   if (value.sort && typeof value.sort === "object") {
     const sort = value.sort as Record<string, unknown>;
     if (sort.column === "name" || sort.column === "size" || sort.column === "modified") {
@@ -41,12 +36,11 @@ export function loadUiPrefs(storage?: Storage): UiPrefs {
   } catch {
     raw = null;
   }
-  if (!raw) return { sort: { ...DEFAULT_SORT }, dualPane: true, rightTab: "target" };
+  if (!raw) return { sort: { ...DEFAULT_SORT }, dualPane: true };
   const prefs = sanitize(safeParse(raw));
   return {
     sort: prefs.sort ?? { ...DEFAULT_SORT },
     dualPane: prefs.dualPane ?? true,
-    rightTab: prefs.rightTab ?? "target",
   };
 }
 

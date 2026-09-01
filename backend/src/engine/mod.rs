@@ -44,6 +44,28 @@ pub struct OperatorEntry {
     pub operator: Operator,
 }
 
+/// Reserved `connectionId` for the sidecar-local filesystem (dual-pane left
+/// column, "local files" side). Never present in the host connection table:
+/// [`Engine::entry`] synthesizes it on demand so every `files/*` method
+/// (browse/read/write/copy/move/uploads) works against the local disk without
+/// a dedicated protocol surface.
+pub const LOCAL_CONNECTION_ID: &str = "__local__";
+
+/// Synthesized connection record behind [`LOCAL_CONNECTION_ID`]: an fs
+/// connection rooted at `/` with default gates (writable, deletable,
+/// unlocked root) — identical to a user-created "local filesystem"
+/// connection, so policy/quick-path behavior stays uniform.
+pub fn local_connection() -> StoredConnection {
+    StoredConnection::from_lifecycle_params(&serde_json::json!({
+        "connection": {
+            "id": LOCAL_CONNECTION_ID,
+            "name": "Local",
+            "external_config": { "protocol": "fs", "root": "/" }
+        }
+    }))
+    .expect("local connection record is a constant shape")
+}
+
 /// `connectionId -> OperatorEntry`. Handler concurrency (one request per task
 /// on the worker pool) requires every access to hold the mutex; entries are
 /// replaced wholesale on reconnect (M0 §3.2 idempotent connect).
@@ -83,6 +105,14 @@ impl Engine {
     /// `connection/connect`: idempotent — an existing entry for the same id is
     /// dropped before the new Operator is inserted.
     pub fn connect(&self, connection: StoredConnection) -> Result<(), String> {
+        // The reserved local id always resolves to the synthesized local
+        // entry; refuse the shadow attempt explicitly instead of silently
+        // making the host connection unreachable.
+        if connection.id == LOCAL_CONNECTION_ID {
+            return Err(format!(
+                "connectionId '{LOCAL_CONNECTION_ID}' is reserved for the built-in local filesystem"
+            ));
+        }
         // Build first so a bad config never evicts a good entry.
         let operator = build_operator(&connection)?;
         let mut table = self
@@ -122,6 +152,15 @@ impl Engine {
     }
 
     fn entry(&self, connection_id: &str) -> Result<OperatorEntry, String> {
+        if connection_id == LOCAL_CONNECTION_ID {
+            // Pure config construction (no I/O); the fs Operator dials
+            // nothing and each call goes straight to the local filesystem.
+            let connection = local_connection();
+            return Ok(OperatorEntry {
+                operator: build_operator(&connection)?,
+                connection,
+            });
+        }
         let table = self
             .connections
             .lock()
@@ -783,5 +822,42 @@ mod tests {
         let mut smb = smb_connection();
         smb.endpoint = "nas.local:notaport".into();
         assert!(build_operator(&smb).is_err(), "port must be numeric");
+    }
+
+    // -- built-in local filesystem connection (dual-pane left column) --------
+
+    #[test]
+    fn local_connection_resolves_as_rooted_fs_entry() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let engine = Engine::new();
+            // Not in the connection table, yet resolvable on demand.
+            let connection = engine
+                .connection(LOCAL_CONNECTION_ID)
+                .expect("local connection resolves without connect");
+            assert_eq!(connection.protocol, "fs");
+            assert_eq!(connection.root, "/");
+            assert!(!connection.read_only);
+            assert!(connection.allow_delete);
+            assert!(!connection.lock_to_root);
+            let operator = engine.operator(LOCAL_CONNECTION_ID).unwrap();
+            assert_eq!(operator.info().scheme(), "fs");
+            // check() runs a backend probe — the local fs must be there.
+            operator.check().await.expect("local fs checks");
+        });
+    }
+
+    #[test]
+    fn local_connection_id_is_reserved_against_connect() {
+        let engine = Engine::new();
+        let mut local = local_connection();
+        // A host connection attempting to shadow the reserved id is refused.
+        assert!(engine.connect(local.clone()).is_err());
+        // The reserved entry still resolves to the built-in fs operator.
+        assert_eq!(engine.operator(LOCAL_CONNECTION_ID).unwrap().info().scheme(), "fs");
+
+        local.id = "host-fs".into();
+        engine.connect(local).unwrap();
+        assert_eq!(engine.connection_ids().len(), 1);
     }
 }

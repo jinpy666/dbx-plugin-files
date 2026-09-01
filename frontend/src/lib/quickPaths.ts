@@ -1,6 +1,8 @@
 // 快速目录（tiny-rdm quick paths 对标，§8.1）：key 集合与后端
 // files/quickPaths 的候选（ops.rs fs_quick_path_candidates）对齐，
-// 归一化逻辑供工作台路径栏下拉（QuickPathsMenu）复用。
+// 归一化逻辑供工作台快速定位侧栏（QuickSidebar）复用。
+import type { Component } from "vue";
+import { Download, FileText, HardDrive, Home, Image as ImageIcon, Monitor } from "@lucide/vue";
 
 export interface QuickPath {
   key: string;
@@ -16,6 +18,24 @@ const QUICK_PATH_LABEL_KEYS: Record<string, string> = {
   documents: "quickDocuments",
   pictures: "quickPictures",
 };
+
+/** key → 图标（快速定位侧栏共用）；未知 key 回退硬盘图标。 */
+export function quickPathIcon(key: string): Component {
+  switch (key) {
+    case "home":
+      return Home;
+    case "desktop":
+      return Monitor;
+    case "downloads":
+      return Download;
+    case "documents":
+      return FileText;
+    case "pictures":
+      return ImageIcon;
+    default:
+      return HardDrive;
+  }
+}
 
 export function quickPathLabelKey(key: string): string {
   return QUICK_PATH_LABEL_KEYS[key] ?? "quickRoot";

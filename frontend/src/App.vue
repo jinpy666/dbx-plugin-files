@@ -9,7 +9,7 @@ import AuditPanel from "./components/AuditPanel.vue";
 import PreviewPane from "./components/PreviewPane.vue";
 import CustomConfigEditor from "./components/CustomConfigEditor.vue";
 import PathField from "./components/PathField.vue";
-import QuickPathsMenu from "./components/QuickPathsMenu.vue";
+import QuickSidebar from "./components/QuickSidebar.vue";
 import {
   bindApi,
   baseName,
@@ -81,7 +81,6 @@ const initialized = ref(false);
 
 // ---- 目标栏（右栏，A-FILES ①）---------------------------------------------
 const dualPane = ref(prefs.dualPane);
-const rightTab = ref<"target" | "preview">(prefs.rightTab);
 const rightPath = ref("/");
 const rightEntries = ref<FileEntry[]>([]);
 const rightSelection = ref<string[]>([]);
@@ -92,17 +91,40 @@ const targetConnectionId = ref("");
 const targetConnections = ref<Array<{ id: string; name: string }>>([]);
 const dragOverSide = ref<PaneSide | null>(null);
 
+// ---- 本地文件系统（双栏左栏默认面，对标 tiny-rdm/FileZilla 本地栏）-------------
+// sidecar 内置保留连接 `__local__`（engine 合成的 root="/" fs 连接），无需
+// 用户建连；双栏开启时左栏默认指向本地，右栏保持当前（远端）连接。
+const LOCAL_CONNECTION_ID = "__local__";
+/** 左栏连接（仅双栏模式路由）：__local__=本地，""=当前连接，其余=宿主其它连接。 */
+const leftConnectionId = ref<string>(LOCAL_CONNECTION_ID);
+const leftConnections = computed(() => [
+  { id: LOCAL_CONNECTION_ID, name: t("localFiles") },
+  { id: "", name: t("sameConnection") },
+  ...targetConnections.value,
+]);
+
 // ---- 快速目录（tiny-rdm quick paths 对标）------------------------------------
 // §8.1：后端按协议/根约束/stat 过滤后返回候选（根目录 + fs 协议的用户目录族）；
-// 展示形态为路径栏下拉（QuickPathsMenu，替代早期 chips 行，节省一整行空间）。
+// 展示形态为栏内快速定位侧栏（QuickSidebar，文件管理器对标），仅在候选多于
+// root 一项时挂载（非 fs/受限连接自动隐藏）。
 const leftQuickPaths = ref<QuickPath[]>([]);
 const rightQuickPaths = ref<QuickPath[]>([]);
+const leftSidePaths = computed(() => (leftQuickPaths.value.length > 1 ? leftQuickPaths.value : []));
+const rightSidePaths = computed(() => (rightQuickPaths.value.length > 1 ? rightQuickPaths.value : []));
+
+/** 该栏显式使用的连接 id；undefined = 当前连接（由 api 层默认注入）。 */
+function sideConnectionId(side: PaneSide): string | undefined {
+  if (side === "right") return targetConnectionId.value || undefined;
+  // 左栏仅双栏模式按选择路由（默认本地）；单栏即当前连接本体。
+  return dualPane.value && leftConnectionId.value ? leftConnectionId.value : undefined;
+}
 
 /** files/quickPaths（§8.1）：方法缺失或探针失败时下拉隐藏（旧 sidecar 降级）。 */
 async function loadQuickPaths(side: PaneSide) {
   try {
     const params: Record<string, unknown> = {};
-    if (side === "right" && targetConnectionId.value) params.connectionId = targetConnectionId.value;
+    const explicit = sideConnectionId(side);
+    if (explicit) params.connectionId = explicit;
     const result = await call<{ paths: QuickPath[] }>("files/quickPaths", params);
     const list = normalizeQuickPaths(result.paths);
     if (side === "left") leftQuickPaths.value = list;
@@ -122,6 +144,9 @@ const dockTab = ref<"transfers" | "audit" | "connection">("transfers");
 const auditRef = ref<InstanceType<typeof AuditPanel>>();
 
 const previewPath = ref<string | null>(null);
+/** 预览条目所属栏连接：openPreview 时固化为快照——单栏预览会顺手开启双栏
+ * （左栏随即切到本地），read/write 必须仍指向预览来源连接而非切换后的左栏。 */
+const previewConnectionId = ref<string | undefined>(undefined);
 const contextMenu = ref<{ x: number; y: number; entry: FileEntry; side: PaneSide }>();
 
 const tracker = createTransferTracker();
@@ -170,13 +195,28 @@ const rightSorted = computed(() => sortEntries(rightEntries.value, sort.value));
 const rightSearchQuery = ref("");
 const filteredRightEntries = computed(() => filterEntries(rightSorted.value, rightSearchQuery.value));
 
-watch([sort, dualPane, rightTab], () => {
-  saveUiPrefs({ sort: sort.value, dualPane: dualPane.value, rightTab: rightTab.value });
+watch([sort, dualPane], () => {
+  saveUiPrefs({ sort: sort.value, dualPane: dualPane.value });
 }, { deep: true });
 
-// 快速目录 chips 随连接面变化刷新（右栏切连接/开启双栏时重取）。
-watch(dualPane, (on) => {
-  if (on) void loadQuickPaths("right");
+// 双栏切换：开启时左栏默认本地（quickPaths 到位后若仍在根目录则落到主目录，
+// 对标 FileZilla/tiny-rdm 本地栏起点），右栏 quickPaths 随开启重取；关闭时
+// 左栏回到当前连接根目录。
+async function enterLocalPaneIfAtRoot() {
+  const home = leftQuickPaths.value.find((item) => item.key === "home");
+  if (home && path.value === "/") await loadDirectory(home.path).catch(() => undefined);
+}
+
+watch(dualPane, async (on) => {
+  if (on) {
+    await loadDirectory("/").catch(() => undefined);
+    await loadQuickPaths("left");
+    await enterLocalPaneIfAtRoot();
+    void loadQuickPaths("right");
+  } else {
+    await loadDirectory("/").catch(() => undefined);
+    void loadQuickPaths("left");
+  }
 });
 watch(targetConnectionId, () => {
   if (dualPane.value) void loadQuickPaths("right");
@@ -326,7 +366,7 @@ async function loadDirectory(target?: string) {
   const next = target ?? path.value;
   loading.value = true;
   try {
-    entries.value = await fetchListing(next);
+    entries.value = await fetchListing(next, sideConnectionId("left"));
     path.value = next;
     selection.value = [];
     activePath.value = "";
@@ -379,10 +419,11 @@ async function refreshRightDirectory() {
   }
 }
 
-function openPreview(target: string) {
+function openPreview(target: string, side: PaneSide = "left") {
+  // 文件概览弹窗：固化为来源栏连接快照；不再切右栏 Tab/强制开双栏，
+  // 弹窗期间两侧栏保持各自连接面可继续导航。
   previewPath.value = target;
-  if (!dualPane.value) dualPane.value = true;
-  rightTab.value = "preview";
+  previewConnectionId.value = sideConnectionId(side);
 }
 
 async function openEntry(entry: FileEntry, side: PaneSide = "left") {
@@ -395,7 +436,7 @@ async function openEntry(entry: FileEntry, side: PaneSide = "left") {
     }
     return;
   }
-  openPreview(entry.path);
+  openPreview(entry.path, side);
 }
 
 function toggleSort(column: SortColumn) {
@@ -425,6 +466,13 @@ async function probeConnections() {
   } catch {
     targetConnections.value = [];
   }
+}
+
+/** 左栏切换连接（双栏）：新连接回到根目录，quickPaths 随连接面刷新。 */
+async function onLeftConnectionChange() {
+  await loadDirectory("/").catch(() => undefined);
+  await loadQuickPaths("left");
+  await enterLocalPaneIfAtRoot();
 }
 
 // ---- dialogs ---------------------------------------------------------------
@@ -535,9 +583,10 @@ function startExtract(entry: FileEntry, side: PaneSide) {
   });
 }
 
-/** 指定栏的调用：右栏且选择了其它连接时显式带 connectionId（同连接时走默认注入）。 */
+/** 指定栏的调用：该栏选择了其它连接（含左栏本地 __local__）时显式带 connectionId（当前连接走默认注入）。 */
 function callFor<T = Record<string, unknown>>(side: PaneSide, method: string, params: Record<string, unknown> = {}): Promise<T> {
-  if (side === "right" && targetConnectionId.value) params.connectionId = targetConnectionId.value;
+  const explicit = sideConnectionId(side);
+  if (explicit) params.connectionId = explicit;
   return call<T>(method, params);
 }
 
@@ -553,7 +602,7 @@ async function onConfirm() {
       case "newFolder": {
         const name = confirmDraft.value.trim();
         if (!name) return;
-        await call("files/mkdir", { path: joinPath(path.value, name) });
+        await callFor(side, "files/mkdir", { path: joinPath(path.value, name) });
         showNotice(t("folderCreated"));
         break;
       }
@@ -605,7 +654,7 @@ async function onConfirm() {
       case "purge": {
         const target = confirmTarget.value.path;
         if (!target) return;
-        await call("files/purge", { path: target });
+        await callFor(side, "files/purge", { path: target });
         showNotice(t("deleted"));
         break;
       }
@@ -671,8 +720,9 @@ async function transferBetween(from: PaneSide, move: boolean, dragged?: FileEntr
   const list = dragged ?? pickSideEntries(from, paths);
   if (!list.length) return;
   const destPath = to === "left" ? path.value : rightPath.value;
-  const sourceConnectionId = from === "right" && targetConnectionId.value ? targetConnectionId.value : undefined;
-  const targetConnection = to === "right" && targetConnectionId.value ? targetConnectionId.value : undefined;
+  // 该栏显式连接（右栏其它连接 / 双栏左栏本地 __local__）；当前连接为 undefined（默认注入）。
+  const sourceConnectionId = sideConnectionId(from);
+  const targetConnection = sideConnectionId(to);
   try {
     for (const item of list) {
       const params: Record<string, unknown> = {
@@ -726,7 +776,11 @@ function writeU64(bytes: Uint8Array, value: number) {
 
 async function uploadSource(name: string, size: number, readChunk: (offset: number, length: number) => Promise<Uint8Array>) {
   const remotePath = joinPath(path.value, name);
-  const start = await call<{ taskId: string; chunkSize?: number }>("files/upload/start", { remotePath, size });
+  const startParams: Record<string, unknown> = { remotePath, size };
+  // 上传目标固定为左栏当前目录（双栏时左栏可为本地 __local__）。
+  const leftConnection = sideConnectionId("left");
+  if (leftConnection) startParams.connectionId = leftConnection;
+  const start = await call<{ taskId: string; chunkSize?: number }>("files/upload/start", startParams);
   const taskId = start.taskId;
   const chunkSize = start.chunkSize && start.chunkSize > 0 ? start.chunkSize : CHUNK_SIZE;
   registerJob({
@@ -828,7 +882,8 @@ async function downloadEntry(entry: FileEntry, side: PaneSide = "left") {
   const fileTransfer = window.dbxPlugin.fileTransfer;
   try {
     const startParams: Record<string, unknown> = { remotePath: entry.path };
-    if (side === "right" && targetConnectionId.value) startParams.connectionId = targetConnectionId.value;
+    const explicit = sideConnectionId(side);
+    if (explicit) startParams.connectionId = explicit;
     const info = await call<{ taskId: string; size: number; fileName?: string; chunkSize?: number }>("files/download/start", startParams);
     const taskId = info.taskId;
     const size = info.size;
@@ -942,7 +997,7 @@ function menuAction(action: MenuAction) {
       break;
     case "preview":
     case "archiveContents":
-      openPreview(entry.path);
+      openPreview(entry.path, side);
       break;
     case "download":
       if (entry.kind === "file") void downloadEntry(entry, side);
@@ -992,8 +1047,12 @@ async function initialize() {
   await loadCapabilities();
   await loadDirectory("/").catch(() => undefined);
   if (dualPane.value) await loadRightDirectory("/").catch(() => undefined);
-  void loadQuickPaths("left");
-  if (dualPane.value) void loadQuickPaths("right");
+  await loadQuickPaths("left");
+  if (dualPane.value) {
+    // 双栏左栏默认本地（__local__）：起点落到主目录（对标 tiny-rdm/FileZilla）。
+    await enterLocalPaneIfAtRoot();
+    void loadQuickPaths("right");
+  }
   void probeConnections();
   pollTimer = window.setInterval(() => {
     if (pollingDisabled) return;
@@ -1009,6 +1068,10 @@ function onContextClick() {
   contextMenu.value = undefined;
 }
 
+function onDocumentKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape" && previewPath.value) previewPath.value = null;
+}
+
 function onToolbarNavigate(target: string) {
   void loadDirectory(target).catch(() => undefined);
 }
@@ -1019,6 +1082,7 @@ watch(dockTab, (tab) => {
 
 onMounted(() => {
   document.addEventListener("click", onContextClick);
+  document.addEventListener("keydown", onDocumentKeydown);
   void initialize().catch((cause) => {
     error.value = t("operationFailed", { error: errorMessage(cause) });
   });
@@ -1026,6 +1090,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   document.removeEventListener("click", onContextClick);
+  document.removeEventListener("keydown", onDocumentKeydown);
   window.clearTimeout(noticeTimer);
   window.clearInterval(pollTimer);
   unsubscribeEvent?.();
@@ -1061,52 +1126,59 @@ onBeforeUnmount(() => {
     />
 
     <div class="wb-content">
-      <!-- 源栏（左栏）：当前连接浏览 -->
+      <!-- 源栏（左栏）：双栏默认本地 __local__，单栏为当前连接 -->
       <section class="wb-pane wb-pane-source" @dragover.prevent @dragenter="dragOverSide = 'left'" @dragleave="dragOverSide = dragOverSide === 'left' ? null : dragOverSide" @drop.prevent="onDropTo('left', $event)">
-        <!-- 与右栏 tabs 等高的空条：双栏模式下保证两侧工具行对齐 -->
-        <div v-if="dualPane" class="wb-pane-tabs wb-pane-tabs-ghost" aria-hidden="true"></div>
-        <!-- 左栏工具行（双栏对称性修复：路径行从全局工具栏移入栏内，与右栏同构） -->
-        <div class="wb-pane-header">
-          <button class="wb-icon-button wb-icon-neutral" :title="t('up')" :disabled="!path || path === '/'" @click="onToolbarNavigate(parentPath(path))"><ArrowUp /></button>
-          <button class="wb-icon-button wb-icon-neutral" :title="t('refresh')" :disabled="loading" @click="refreshDirectory"><RefreshCw :class="{ 'wb-spin': loading }" /></button>
-          <div class="wb-path-toolbar">
-            <PathField :path="path" :t="t" @navigate="onToolbarNavigate" />
-            <!-- 快速目录下拉（fs：主目录族 + 根目录；其它协议：仅根目录） -->
-            <QuickPathsMenu
-              v-if="leftQuickPaths.length"
-              :paths="leftQuickPaths"
-              :current-path="path"
+        <!-- pane 顶条：双栏时放左栏连接选择（与右栏顶条等高对齐）；单栏时整行隐藏 -->
+        <div v-if="dualPane" class="wb-pane-topbar">
+          <select v-model="leftConnectionId" class="wb-target-connection" :title="t('sourceConnection')" @change="onLeftConnectionChange">
+            <option v-for="item in leftConnections" :key="item.id" :value="item.id">{{ item.name }}</option>
+          </select>
+        </div>
+        <div class="wb-pane-body">
+          <!-- 快速定位侧栏：根/主目录/桌面/下载/文档/图片（quickPaths 多于 root 一项时挂载） -->
+          <QuickSidebar
+            v-if="leftSidePaths.length"
+            :paths="leftSidePaths"
+            :current-path="path"
+            :t="t"
+            @navigate="navigateQuickPath('left', $event)"
+          />
+          <div class="wb-pane-main">
+            <div class="wb-pane-header">
+              <button class="wb-icon-button wb-icon-neutral" :title="t('up')" :disabled="!path || path === '/'" @click="onToolbarNavigate(parentPath(path))"><ArrowUp /></button>
+              <button class="wb-icon-button wb-icon-neutral" :title="t('refresh')" :disabled="loading" @click="refreshDirectory"><RefreshCw :class="{ 'wb-spin': loading }" /></button>
+              <div class="wb-path-toolbar">
+                <PathField :path="path" :t="t" @navigate="onToolbarNavigate" />
+                <span class="wb-search-box">
+                  <Search class="wb-search-icon" aria-hidden="true" />
+                  <input
+                    :value="searchQuery"
+                    class="wb-search-input"
+                    :placeholder="t('searchPlaceholder')"
+                    type="search"
+                    spellcheck="false"
+                    @input="searchQuery = ($event.target as HTMLInputElement).value"
+                    @keydown.esc.prevent="searchQuery = ''"
+                  />
+                </span>
+              </div>
+            </div>
+            <FileTable
+              pane-id="left"
+              :entries="filteredEntries"
+              :selection="selection"
+              :active-path="activePath"
+              :sort="sort"
+              :loading="loading"
               :t="t"
-              @navigate="navigateQuickPath('left', $event)"
+              @update:selection="selection = $event"
+              @update:active-path="activePath = $event"
+              @open="(entry) => openEntry(entry, 'left')"
+              @contextmenu="(payload) => (contextMenu = { ...payload, side: 'left' })"
+              @sort="toggleSort"
             />
-            <span class="wb-search-box">
-              <Search class="wb-search-icon" aria-hidden="true" />
-              <input
-                :value="searchQuery"
-                class="wb-search-input"
-                :placeholder="t('searchPlaceholder')"
-                type="search"
-                spellcheck="false"
-                @input="searchQuery = ($event.target as HTMLInputElement).value"
-                @keydown.esc.prevent="searchQuery = ''"
-              />
-            </span>
           </div>
         </div>
-        <FileTable
-          pane-id="left"
-          :entries="filteredEntries"
-          :selection="selection"
-          :active-path="activePath"
-          :sort="sort"
-          :loading="loading"
-          :t="t"
-          @update:selection="selection = $event"
-          @update:active-path="activePath = $event"
-          @open="(entry) => openEntry(entry, 'left')"
-          @contextmenu="(payload) => (contextMenu = { ...payload, side: 'left' })"
-          @sort="toggleSort"
-        />
         <div v-if="dragOverSide === 'left' && dualPane" class="wb-drop-overlay">{{ t("dropToCopy") }}</div>
       </section>
 
@@ -1119,7 +1191,7 @@ onBeforeUnmount(() => {
         <button class="wb-icon-button wb-icon-neutral" :title="t('moveToSource')" :disabled="!rightSelection.length" @click="transferBetween('right', true)"><ArrowLeft /></button>
       </div>
 
-      <!-- 目标栏（右栏）：目标连接浏览 / 预览 Tab -->
+      <!-- 目标栏（右栏）：目标连接浏览（文件概览已改为弹窗，不占右栏 Tab） -->
       <section
         v-if="dualPane"
         class="wb-pane wb-pane-target"
@@ -1128,68 +1200,57 @@ onBeforeUnmount(() => {
         @dragleave="dragOverSide = dragOverSide === 'right' ? null : dragOverSide"
         @drop.prevent="onDropTo('right', $event)"
       >
-        <div class="wb-pane-tabs">
-          <button :class="{ 'is-active': rightTab === 'target' }" @click="rightTab = 'target'">{{ t("targetPane") }}</button>
-          <button :class="{ 'is-active': rightTab === 'preview' }" @click="rightTab = 'preview'">{{ t("previewTitle") }}</button>
+        <div class="wb-pane-topbar">
+          <select v-if="targetConnections.length" v-model="targetConnectionId" class="wb-target-connection" :title="t('targetConnection')" @change="loadRightDirectory(rightPath)">
+            <option value="">{{ t("sameConnection") }}</option>
+            <option v-for="item in targetConnections" :key="item.id" :value="item.id">{{ item.name }}</option>
+          </select>
         </div>
-        <template v-if="rightTab === 'target'">
-          <div class="wb-pane-header">
-            <button class="wb-icon-button wb-icon-neutral" :title="t('up')" :disabled="!rightPath || rightPath === '/'" @click="loadRightDirectory(parentPath(rightPath))"><ArrowUp /></button>
-            <button class="wb-icon-button wb-icon-neutral" :title="t('refresh')" :disabled="rightLoading" @click="refreshRightDirectory"><RefreshCw :class="{ 'wb-spin': rightLoading }" /></button>
-            <!-- 与左栏工具栏同款：面包屑 + 路径输入 + 过滤框（双栏对称性修复） -->
-            <div class="wb-path-toolbar">
-              <PathField :path="rightPath" :t="t" @navigate="(target) => loadRightDirectory(target)" />
-              <!-- 与左栏同款快速目录下拉（右栏切连接时数据面已随 loadQuickPaths 刷新） -->
-              <QuickPathsMenu
-                v-if="rightQuickPaths.length"
-                :paths="rightQuickPaths"
-                :current-path="rightPath"
-                :t="t"
-                @navigate="navigateQuickPath('right', $event)"
-              />
-              <span class="wb-search-box">
-                <Search class="wb-search-icon" aria-hidden="true" />
-                <input
-                  :value="rightSearchQuery"
-                  class="wb-search-input"
-                  :placeholder="t('searchPlaceholder')"
-                  type="search"
-                  spellcheck="false"
-                  @input="rightSearchQuery = ($event.target as HTMLInputElement).value"
-                  @keydown.esc.prevent="rightSearchQuery = ''"
-                />
-              </span>
-            </div>
-            <select v-if="targetConnections.length" v-model="targetConnectionId" class="wb-target-connection" :title="t('targetConnection')" @change="loadRightDirectory(rightPath)">
-              <option value="">{{ t("sameConnection") }}</option>
-              <option v-for="item in targetConnections" :key="item.id" :value="item.id">{{ item.name }}</option>
-            </select>
-          </div>
-          <FileTable
-            pane-id="right"
-            :entries="filteredRightEntries"
-            :selection="rightSelection"
-            :active-path="rightActivePath"
-            :sort="sort"
-            :loading="rightLoading"
+        <div class="wb-pane-body">
+          <QuickSidebar
+            v-if="rightSidePaths.length"
+            :paths="rightSidePaths"
+            :current-path="rightPath"
             :t="t"
-            @update:selection="rightSelection = $event"
-            @update:active-path="rightActivePath = $event"
-            @open="(entry) => openEntry(entry, 'right')"
-            @contextmenu="(payload) => (contextMenu = { ...payload, side: 'right' })"
-            @sort="toggleSort"
+            @navigate="navigateQuickPath('right', $event)"
           />
-        </template>
-        <PreviewPane
-          v-else
-          :path="previewPath"
-          :can-write="canWrite"
-          :t="t"
-          @close="previewPath = null"
-          @saved="onPreviewSaved"
-          @download="onPreviewDownload"
-        />
-        <div v-if="dragOverSide === 'right' && rightTab === 'target'" class="wb-drop-overlay">{{ t("dropToCopy") }}</div>
+          <div class="wb-pane-main">
+            <div class="wb-pane-header">
+              <button class="wb-icon-button wb-icon-neutral" :title="t('up')" :disabled="!rightPath || rightPath === '/'" @click="loadRightDirectory(parentPath(rightPath))"><ArrowUp /></button>
+              <button class="wb-icon-button wb-icon-neutral" :title="t('refresh')" :disabled="rightLoading" @click="refreshRightDirectory"><RefreshCw :class="{ 'wb-spin': rightLoading }" /></button>
+              <div class="wb-path-toolbar">
+                <PathField :path="rightPath" :t="t" @navigate="(target) => loadRightDirectory(target)" />
+                <span class="wb-search-box">
+                  <Search class="wb-search-icon" aria-hidden="true" />
+                  <input
+                    :value="rightSearchQuery"
+                    class="wb-search-input"
+                    :placeholder="t('searchPlaceholder')"
+                    type="search"
+                    spellcheck="false"
+                    @input="rightSearchQuery = ($event.target as HTMLInputElement).value"
+                    @keydown.esc.prevent="rightSearchQuery = ''"
+                  />
+                </span>
+              </div>
+            </div>
+            <FileTable
+              pane-id="right"
+              :entries="filteredRightEntries"
+              :selection="rightSelection"
+              :active-path="rightActivePath"
+              :sort="sort"
+              :loading="rightLoading"
+              :t="t"
+              @update:selection="rightSelection = $event"
+              @update:active-path="rightActivePath = $event"
+              @open="(entry) => openEntry(entry, 'right')"
+              @contextmenu="(payload) => (contextMenu = { ...payload, side: 'right' })"
+              @sort="toggleSort"
+            />
+          </div>
+        </div>
+        <div v-if="dragOverSide === 'right' && dualPane" class="wb-drop-overlay">{{ t("dropToCopy") }}</div>
       </section>
 
       <aside v-if="dockOpen" class="wb-dock">
@@ -1214,6 +1275,19 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </aside>
+    </div>
+
+    <!-- 文件概览弹窗：来自任一栏的预览/压缩包列表；遮罩点击 / Esc / 关闭按钮均可关闭 -->
+    <div v-if="previewPath" class="wb-preview-overlay" @click.self="previewPath = null">
+      <PreviewPane
+        :path="previewPath"
+        :can-write="canWrite"
+        :connection-id="previewConnectionId"
+        :t="t"
+        @close="previewPath = null"
+        @saved="onPreviewSaved"
+        @download="onPreviewDownload"
+      />
     </div>
 
     <!-- 统一右键菜单（A-FILES ④b）：源栏/目标栏共用 -->

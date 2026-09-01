@@ -129,3 +129,78 @@ editTooLarge, saved`（18 键）+ `previewTruncated` 文案更新——**七语�
 ## 6. 阻塞
 
 无。全部任务在本次实例内完成，三件套 + cargo test 全绿。
+
+## 7. 双栏本地/远端分面（2026-09-01，__local__ 内置连接）
+
+**需求**：双栏模式默认左=本地文件、右=远端文件（对标 tiny-rdm/FileZilla），
+而非两侧都打开当前（远端）连接。
+
+**改动**：
+- 后端（`backend/src/engine/mod.rs`）：内置保留连接 `__local__`——
+  `Engine::entry` 按需合成 root=`/` 的 fs 连接记录（可写、可删、不锁 root，
+  与用户自建本地 fs 连接同策略），不占连接表；`connection/connect` 拒绝该 id
+  防遮蔽。全部 `files/*` 方法（浏览/读写/传输/quickPaths/capabilities）对
+  `__local__` 直接生效，无新增协议方法。quickPaths 因 root=`/` + fs 自动透出
+  home 家族（逐个 stat 校验）。新增单测 2 例（合成记录解析 + 保留 id 拒绝）。
+- 前端（`App.vue`）：
+  - `leftConnectionId`（默认 `__local__`）+ `sideConnectionId(side)` 统一按栏
+    路由：loadDirectory / loadQuickPaths / callFor / upload / download /
+    transferBetween 全部改走该 helper（原右栏特判收编）；
+  - 双栏开启：左栏重载本地根目录，quickPaths 到位后若仍在 `/` 落到主目录
+    （对标 FileZilla 起点）；关闭：左栏回到当前连接根目录；
+  - 左栏连接选择器（双栏时显示）：本地文件 / 同连接 / 宿主其它连接
+    （`leftConnections`），切换后回根目录 + 重取 quickPaths；
+  - 预览：`openPreview(path, side)` 固化来源栏连接快照
+    （`previewConnectionId`）——单栏预览会顺手开启双栏、左栏随即切本地，
+    read/write/archiveList 必须仍指向预览来源连接；`PreviewPane` 新增
+    `connectionId` prop（缺省走默认注入，旧 sidecar 语义不变）。
+  - mock 宿主（`lib/mockHost.ts`，dev/验证专用）：`__local__` 路由到独立
+    本地树 + home 家族 quickPaths；写路径仍落远端树（写面由 sidecar 真实
+    实现覆盖）。
+- i18n：新增 `sourceConnection`、`localFiles` 七语（zh-CN/zh-TW/en/es/it/ja/pt-BR）。
+- 文档：IMPL_PLAN §8 公共约定补「保留连接 `__local__`」语义。
+
+**验证**（2026-09-01）：cargo test 135 passed / 3 ignored（含 2 新增）；前端三件套
+（typecheck / vitest 84 / build）全绿；`scripts/test.sh` 全套 all green
+（release 构建 + 打包 + framed smoke）。mock 浏览器走查：双栏初始左=本地树
+（选择器「本地文件」选中、面包屑落到主目录）右=远端树；本地目录导航、
+本地文件预览（read 路由正确读本地树）、左栏切「同连接」变远端树，均符合预期。
+
+**遗留**：真实宿主（dbx-host-e2e）双栏截图留档待下一轮 patrol；web Docker
+部署下 `__local__` 语义为「sidecar 所在机器的文件系统」（服务器本地盘），
+如需对 web 端隐藏可后续在 capabilities 加开关。
+
+## 8. 快速定位侧栏 + 路径行瘦身 + 概览弹窗（2026-09-01 第二轮）
+
+**需求**：① 本地/各栏支持高频目录快速定位（桌面/下载等，文件管理器对标）；
+② 路径行与搜索过挤，优化布局；③ 文件概览改弹窗，不再切换右栏 Tab。
+
+**改动**（纯前端，协议契约不变）：
+- 快速定位侧栏：新增 `components/QuickSidebar.vue`（根/主目录/桌面/下载/
+  文档/图片一列直达，图标 + 七语标签 + 当前目录高亮；quickPaths 多于
+  root 一项时挂载，非 fs/受限连接自动隐藏）。图标映射 `quickPathIcon`
+  下沉 `lib/quickPaths.ts`；`QuickPathsMenu.vue` 路径栏下拉删除（含
+  `.wb-quick-menu*` 样式）——快速定位统一走侧栏，root-only 时从面包屑
+  /路径栏到达根目录。
+- 布局：`wb-pane-tabs`（右栏 Tab 行 + 左栏 ghost 空条）退役，改为
+  `wb-pane-topbar`（等高顶条，承载各栏连接选择器，右对齐）；pane 内容
+  分层 `wb-pane-body`（侧栏 + `wb-pane-main`）。路径行瘦身为
+  上一级/刷新/面包屑/搜索四件，不再塞快速目录下拉与连接选择器。
+- 概览弹窗：`PreviewPane` 移入 `wb-preview-overlay` 居中浮层
+  （860px 上限，遮罩点击 / Esc / 关闭按钮均可关闭）；`openPreview`
+  不再强制开双栏、不再切 Tab——单栏模式预览同样弹窗，主视图保持不动；
+  `previewConnectionId` 快照语义保留（预览/编辑/压缩包列表仍指向来源
+  栏连接）。`rightTab` 状态与持久化删除（prefs 兼容旧 localStorage，
+  未知字段忽略），右栏恒为目标面板。
+- i18n：删除 `targetPane`、`previewTitle`（七语同步）；`quickPathsTitle`
+  复用为侧栏标题。
+
+**验证**（2026-09-01）：前端三件套全绿（typecheck / vitest 84 / build），
+`scripts/test.sh` 全套 all green（cargo 135 / smoke PASS 49 SKIP 4 / 打包
+0.1.18）。mock 浏览器走查：侧栏渲染与当前高亮、侧栏点击直达桌面目录、
+双栏/单栏双击文件均弹窗预览（右栏保持目标面板、单栏不再强制开双栏）、
+Esc 关闭、关闭双栏后左栏回当前连接根目录。
+
+**遗留**：窄窗（<900px）下双栏 + 双侧栏的表格列宽偏窄（名称列省略号），
+如需可加侧栏折叠按钮；概览弹窗编辑态 Esc 直接关闭（未保存内容丢失，
+与关闭按钮一致）。

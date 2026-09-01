@@ -11,10 +11,22 @@ fi
 export PATH="$HOME/.cargo/bin:$PATH"
 
 echo "==> frontend: install + typecheck + test + build"
-pnpm --dir frontend install --frozen-lockfile
+# Skip install when node_modules is fresh (lockfile unchanged since); saves
+# seconds on every warm build — same trade-off ldap already makes.
+if [ ! -d frontend/node_modules ] || [ frontend/pnpm-lock.yaml -nt frontend/node_modules ]; then
+  pnpm --dir frontend install --frozen-lockfile
+fi
 pnpm --dir frontend typecheck
 pnpm --dir frontend test
 pnpm --dir frontend build
+
+# dbx-plugin package runs its own `cargo build` for the Rust backend; without
+# CARGO_TARGET_DIR it builds into a throwaway dist/.build-rust-<triple> staging
+# dir (wiped afterwards) = full dep-tree rebuild on every release. Redirect it
+# to the warm backend/target — verified the CLI reuses and keeps it. Do NOT pin
+# RUSTUP_TOOLCHAIN here (docker builds via rust:1 + cargo-zigbuild lack 1.97.1);
+# the release pipeline pins it itself.
+export CARGO_TARGET_DIR="$PWD/backend/target"
 
 echo "==> sidecar release build"
 cargo build --release --manifest-path backend/Cargo.toml
