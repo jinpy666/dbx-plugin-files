@@ -1,6 +1,6 @@
 // 快速目录（tiny-rdm quick paths 对标，§8.1）：key 集合与后端
 // files/quickPaths 的候选（ops.rs fs_quick_path_candidates）对齐，
-// 归一化逻辑供工作台快速定位侧栏（QuickSidebar）复用。
+// 归一化逻辑供工作台侧栏 quick tab（SideNavPanel）复用。
 import type { Component } from "vue";
 import { Download, FileText, HardDrive, Home, Image as ImageIcon, Monitor } from "@lucide/vue";
 

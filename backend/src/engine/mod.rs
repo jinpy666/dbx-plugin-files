@@ -281,6 +281,16 @@ pub fn protocol_kv(
             push(&mut kv, "secret_access_key", &connection.secret_access_key);
             "s3".to_string()
         }
+        "oss" => {
+            // Alibaba OSS (services-oss). Reuses the s3-shaped connection
+            // fields; the secret maps to OpenDAL's `access_key_secret` key.
+            push(&mut kv, "root", &connection.root);
+            push(&mut kv, "bucket", &connection.bucket);
+            push(&mut kv, "endpoint", &connection.endpoint);
+            push(&mut kv, "access_key_id", &connection.access_key_id);
+            push(&mut kv, "access_key_secret", &connection.secret_access_key);
+            "oss".to_string()
+        }
         "webdav" => {
             push(&mut kv, "root", &connection.root);
             push(&mut kv, "endpoint", &connection.endpoint);
@@ -385,7 +395,7 @@ fn kv_from_custom_config(connection: &StoredConnection, kv: &mut Vec<(String, St
 fn validate_endpoints(connection: &StoredConnection) -> Result<(), String> {
     let http_class = matches!(
         connection.protocol.as_str(),
-        "s3" | "webdav" | "opendal-custom"
+        "s3" | "oss" | "webdav" | "opendal-custom"
     );
     if http_class && !connection.endpoint.is_empty() {
         check_http_scheme(&connection.endpoint)?;
@@ -619,6 +629,45 @@ mod tests {
         assert_eq!(scheme, "ftp");
         let map: HashMap<String, String> = kv.into_iter().collect();
         assert_eq!(map["user"], "anonymous");
+    }
+
+    #[test]
+    fn quick_protocol_oss_maps_s3_shaped_fields_to_oss_keys() {
+        let mut oss = connection("oss");
+        oss.bucket = "demo".into();
+        oss.endpoint = "https://oss-cn-hangzhou.aliyuncs.com".into();
+        oss.access_key_id = "ak".into();
+        oss.secret_access_key = "sk".into();
+        let (scheme, kv) = protocol_kv(&oss).unwrap();
+        assert_eq!(scheme, "oss");
+        let map: HashMap<String, String> = kv.into_iter().collect();
+        assert_eq!(map["bucket"], "demo");
+        assert_eq!(map["endpoint"], "https://oss-cn-hangzhou.aliyuncs.com");
+        assert_eq!(map["access_key_id"], "ak");
+        // The secret reuses the s3-shaped binding but lands on the OpenDAL
+        // oss service key.
+        assert_eq!(map["access_key_secret"], "sk");
+        assert!(!map.contains_key("secret_access_key"));
+        assert!(!map.contains_key("region"));
+
+        // Empty optionals are dropped; root passes through when set.
+        let mut bare = connection("oss");
+        bare.root = "/sub".into();
+        let (scheme, kv) = protocol_kv(&bare).unwrap();
+        assert_eq!(scheme, "oss");
+        let map: HashMap<String, String> = kv.into_iter().collect();
+        assert_eq!(map["root"], "/sub");
+        assert_eq!(map.len(), 1, "only root survives when everything else is empty");
+    }
+
+    #[test]
+    fn oss_endpoints_reject_non_http_schemes() {
+        let mut oss = connection("oss");
+        oss.endpoint = "file:///etc/passwd".into();
+        assert!(protocol_kv(&oss).is_err(), "file:// must be rejected for oss");
+
+        oss.endpoint = "https://oss-cn-hangzhou.aliyuncs.com".into();
+        assert!(protocol_kv(&oss).is_ok());
     }
 
     #[test]

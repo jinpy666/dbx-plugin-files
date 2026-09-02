@@ -35,9 +35,10 @@ pub const JSON_CHUNK_BYTES: usize = 1024 * 1024;
 /// fixed OpenDAL scheme (`smb` via the custom `engine::smb` adapter,
 /// `sftp-native` via the custom `engine::sftp_native` adapter); the
 /// generic pass-through is `opendal-custom`.
-pub const PROTOCOLS: [&str; 8] = [
+pub const PROTOCOLS: [&str; 9] = [
     "fs",
     "s3",
+    "oss",
     "webdav",
     "ftp",
     "sftp",
@@ -381,6 +382,17 @@ pub struct ArchiveListRequest {
 pub struct ExtractRequest {
     pub connection_id: String,
     pub path: String,
+    pub target_path: String,
+}
+
+/// `files/compress` (P-FILES round 13): packs same-connection `paths`
+/// (files and/or directories) into one tar / tar.gz archive. The format is
+/// derived from the `target_path` suffix (`.tar` / `.tar.gz` / `.tgz`).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompressRequest {
+    pub connection_id: String,
+    pub paths: Vec<String>,
     pub target_path: String,
 }
 
@@ -870,11 +882,11 @@ mod tests {
         // Protocol-gated field matrix: each protocol only surfaces its own
         // fields, global fields stay ungated.
         let expects: &[(&str, &[&str])] = &[
-            ("bucket", &["s3"]),
+            ("bucket", &["s3", "oss"]),
             ("region", &["s3"]),
-            ("access_key_id", &["s3"]),
-            ("secret_access_key", &["s3"]),
-            ("endpoint", &["s3", "webdav", "ftp", "sftp", "smb", "sftp-native"]),
+            ("access_key_id", &["s3", "oss"]),
+            ("secret_access_key", &["s3", "oss"]),
+            ("endpoint", &["s3", "oss", "webdav", "ftp", "sftp", "smb", "sftp-native"]),
             ("username", &["webdav", "smb"]),
             ("user", &["ftp"]),
             ("share", &["smb"]),

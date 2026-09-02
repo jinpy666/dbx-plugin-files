@@ -376,6 +376,18 @@ def scenario_transfer_roundtrip(runner: Runner, base: str) -> None:
         assert state in ("canceled", "cancelled"), f"cancel did not reach canceled state: {state}"
     runner.step("transfer-cancel", _cancel)
 
+    def _clear():
+        remote = f"{base}/clear-probe.bin"
+        upload_bytes(runner, remote, b"clear probe")
+        cleared = runner.call("files/transfers/clear", {"connectionId": runner.connection_id})
+        assert cleared.get("cleared", 0) >= 1, f"transfers/clear removed nothing: {cleared}"
+        jobs = runner.call("files/transfers/list", {"connectionId": runner.connection_id})
+        entries = jobs.get("jobs", [])
+        assert not any(
+            (job.get("remotePath") or "").endswith("clear-probe.bin") for job in entries
+        ), "cleared history still visible in transfers/list"
+    runner.step("transfers-clear", _clear)
+
 
 def scenario_read_only(client: SidecarClient, section: str, connection_id: str, base: str) -> None:
     runner = Runner(client, section)
@@ -489,6 +501,41 @@ def scenario_archive(runner: Runner, base: str) -> None:
         if not refused:
             raise SidecarError("extract on a zip unexpectedly succeeded")
     runner.step("archive-zip-phase2-refusal", _zip_phase2)
+
+    def _compress_sync():
+        """P-FILES: files/compress on a small source set (synchronous native)."""
+        runner.call("files/mkdir", {"connectionId": cid, "path": f"{base}/csrc"})
+        for name, text in (("c1.txt", "one"), ("c2.txt", "two")):
+            runner.call("files/write", {"connectionId": cid, "path": f"{base}/csrc/{name}", "dataBase64": base64.b64encode(text.encode()).decode()})
+        result = runner.call("files/compress", {"connectionId": cid, "paths": [f"{base}/csrc"], "targetPath": f"{base}/csrc.tar.gz"})
+        assert result.get("transport") == "native", f"small package must stay native: {result}"
+        listed = runner.call("files/archiveList", {"connectionId": cid, "path": f"{base}/csrc.tar.gz"})
+        paths = {entry["path"] for entry in listed.get("entries", [])}
+        assert paths == {"csrc/c1.txt", "csrc/c2.txt"}, f"compressed entries: {sorted(paths)}"
+    runner.step("compress-sync", _compress_sync)
+
+    def _compress_job():
+        """11 files exceed the synchronous budget → job degrade; plain .tar."""
+        runner.call("files/mkdir", {"connectionId": cid, "path": f"{base}/csrc-bulk"})
+        for i in range(11):
+            runner.call("files/write", {"connectionId": cid, "path": f"{base}/csrc-bulk/f{i:02d}.txt", "dataBase64": base64.b64encode(f"content-{i}".encode()).decode()})
+        result = runner.call("files/compress", {"connectionId": cid, "paths": [f"{base}/csrc-bulk"], "targetPath": f"{base}/csrc-bulk.tar"})
+        assert result.get("transport") == "job" and result.get("jobId"), f"big source must degrade to a job: {result}"
+        state = wait_job(runner, result["jobId"])
+        assert state == "completed", f"compress job ended as {state}"
+        listed = runner.call("files/archiveList", {"connectionId": cid, "path": f"{base}/csrc-bulk.tar"})
+        assert listed.get("total") == 11, f"job archive total mismatch: {listed}"
+    runner.step("compress-job", _compress_job)
+
+    def _compress_refusals():
+        """Bad suffix and overwrite attempts are refused with clear errors."""
+        refused = runner.expect_error("files/compress", {"connectionId": cid, "paths": [f"{base}/csrc"], "targetPath": f"{base}/nope.zip"}, needle=".tar")
+        if not refused:
+            raise SidecarError(METHOD_MISSING)
+        refused = runner.expect_error("files/compress", {"connectionId": cid, "paths": [f"{base}/csrc"], "targetPath": f"{base}/csrc.tar.gz"}, needle="already exists")
+        if not refused:
+            raise SidecarError(METHOD_MISSING)
+    runner.step("compress-refusals", _compress_refusals)
 
 
 def run_core_sections(client: SidecarClient, fs_root: str) -> None:

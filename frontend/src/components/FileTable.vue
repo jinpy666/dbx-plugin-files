@@ -19,6 +19,8 @@ const emit = defineEmits<{
   (event: "update:activePath", value: string): void;
   (event: "open", entry: FileEntry): void;
   (event: "contextmenu", payload: { entry: FileEntry; x: number; y: number }): void;
+  /** 空白区右键（表头/列表空余处）：弹插件菜单（新建/刷新），拦截浏览器默认菜单。 */
+  (event: "blank-context", payload: { x: number; y: number }): void;
   (event: "sort", column: "name" | "size" | "modified"): void;
   /** A-FILES ①：行拖拽开始，携带拖拽集（已选中项或单行）。 */
   (event: "drag-entries", payload: { paneId: string; entries: FileEntry[] }): void;
@@ -103,7 +105,7 @@ function onDragStart(entry: FileEntry, event: DragEvent) {
 </script>
 
 <template>
-  <div class="wb-file-header">
+  <div class="wb-file-header" @contextmenu.prevent.stop="emit('blank-context', { x: $event.clientX, y: $event.clientY })">
     <span class="wb-col-name">
       <button type="button" @click="emit('sort', 'name')">{{ t("colName") }}{{ sort.column === "name" ? (sort.direction === "asc" ? " ↑" : " ↓") : "" }}</button>
     </span>
@@ -114,7 +116,7 @@ function onDragStart(entry: FileEntry, event: DragEvent) {
       <button type="button" @click="emit('sort', 'modified')">{{ t("colModified") }}{{ sort.column === "modified" ? (sort.direction === "asc" ? " ↑" : " ↓") : "" }}</button>
     </span>
   </div>
-  <div ref="viewport" class="wb-file-scroll" @scroll="onScroll">
+  <div ref="viewport" class="wb-file-scroll" @scroll="onScroll" @contextmenu.prevent.stop="emit('blank-context', { x: $event.clientX, y: $event.clientY })">
     <div class="wb-file-spacer" :style="{ height: `${totalHeight}px` }">
       <div
         v-for="(entry, localIndex) in visibleEntries"
@@ -126,7 +128,7 @@ function onDragStart(entry: FileEntry, event: DragEvent) {
         draggable="true"
         @click="onClickRow(entry, $event)"
         @dblclick="emit('open', entry)"
-        @contextmenu.prevent="onContextRow(entry, $event)"
+        @contextmenu.prevent.stop="onContextRow(entry, $event)"
         @dragstart="onDragStart(entry, $event)"
       >
         <label class="wb-file-check" @click.stop>

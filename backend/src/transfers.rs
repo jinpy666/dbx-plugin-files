@@ -63,7 +63,7 @@ impl JobStatus {
         }
     }
 
-    fn is_terminal(&self) -> bool {
+    pub fn is_terminal(&self) -> bool {
         matches!(
             self,
             JobStatus::Completed | JobStatus::Failed | JobStatus::Canceled
@@ -113,6 +113,10 @@ pub enum DirJobKind {
     /// entries are read from the source archive and written under the
     /// target directory (B-ARCHIVE route).
     Extract,
+    /// Archive creation (`files/compress` beyond the synchronous inline
+    /// budget): planned sources are streamed into one tar / tar.gz file
+    /// (P-FILES round 13).
+    Compress,
 }
 
 /// Directory sync/copy job record (§7 self-built traversal job).
@@ -749,6 +753,55 @@ impl JobTable {
         Ok(self.inner.jobs.lock().await.get(job_id).cloned())
     }
 
+    /// P-FILES ⑥: `files/transfers/clear` — drop finished (completed/failed/
+    /// canceled) transfer history so the panel's history list can be emptied.
+    /// Queued/running jobs are never touched. Covers all three history
+    /// surfaces: single-file jobs table, dir-job table and the persisted
+    /// `transfers.json` records. Returns the number of removed entries.
+    pub async fn clear(
+        &self,
+        store: &crate::store::Store,
+        connection_id: Option<&str>,
+    ) -> Result<u64, String> {
+        let mut removed: u64 = 0;
+        {
+            let mut jobs = self.inner.jobs.lock().await;
+            let drop_ids: Vec<String> = jobs
+                .iter()
+                .filter(|(_, job)| {
+                    job.status.is_terminal()
+                        && connection_id
+                            .map(|id| job.connection_id == id)
+                            .unwrap_or(true)
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in drop_ids {
+                jobs.remove(&id);
+                removed += 1;
+            }
+        }
+        {
+            let mut dir_jobs = self.inner.dir_jobs.lock().await;
+            let drop_ids: Vec<String> = dir_jobs
+                .iter()
+                .filter(|(_, job)| {
+                    job.status.is_terminal()
+                        && connection_id
+                            .map(|id| job.source_connection_id == id || job.target_connection_id == id)
+                            .unwrap_or(true)
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in drop_ids {
+                dir_jobs.remove(&id);
+                removed += 1;
+            }
+        }
+        removed += store.clear_transfers(connection_id)? as u64;
+        Ok(removed)
+    }
+
     /// Directory-job status projection for `files/transfer/status` when the
     /// id refers to a syncDir/copyDir job.
     pub async fn dir_status(&self, job_id: &str) -> Result<Option<DirJob>, String> {
@@ -958,6 +1011,72 @@ impl JobTable {
             operator.clone(),
             archive_path.to_string(),
             target_path.to_string(),
+            cancel,
+            emitter.clone(),
+        ));
+        Ok(job_id)
+    }
+
+    /// `files/compress` degrade for sources beyond the synchronous inline
+    /// budget (> 10 files or > 8 MiB payload). Enqueues a
+    /// [`DirJobKind::Compress`] job on the dir-job table (same progress /
+    /// cancel / status semantics as copy/move) and returns the `jobId`
+    /// immediately. The plan (sources, archive paths, budgets) is validated
+    /// by the caller; payloads are re-read from storage inside the spawned
+    /// task.
+    pub async fn enqueue_compress_job(
+        &self,
+        connection: &StoredConnection,
+        operator: &opendal::Operator,
+        plan: Vec<crate::archive::TarPlanEntry>,
+        target_path: &str,
+        gzip: bool,
+        emitter: &PluginEmitter,
+    ) -> Result<String, String> {
+        validate_dir_job_gates(connection, false)?;
+        let job_id = uuid::Uuid::new_v4().to_string();
+        let now = store::unix_millis_now();
+        let job = DirJob {
+            job_id: job_id.clone(),
+            source_connection_id: connection.id.clone(),
+            source_path: plan
+                .first()
+                .map(|entry| entry.source_path.clone())
+                .unwrap_or_else(|| target_path.to_string()),
+            target_connection_id: connection.id.clone(),
+            target_path: target_path.to_string(),
+            sync: false,
+            delete_source: false,
+            kind: DirJobKind::Compress,
+            files_done: 0,
+            files_total: None,
+            bytes_done: 0,
+            bytes_total: None,
+            status: JobStatus::Queued,
+            error: None,
+            started_at: Some(now),
+            finished_at: None,
+        };
+        self.inner
+            .dir_jobs
+            .lock()
+            .await
+            .insert(job_id.clone(), job.clone());
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.inner
+            .dir_controls
+            .lock()
+            .await
+            .insert(job_id.clone(), cancel.clone());
+        emit_dir_progress(emitter, &job);
+        tokio::spawn(run_compress_job(
+            self.inner.clone(),
+            job_id.clone(),
+            connection.id.clone(),
+            operator.clone(),
+            plan,
+            target_path.to_string(),
+            gzip,
             cancel,
             emitter.clone(),
         ));
@@ -1525,6 +1644,172 @@ async fn run_extract_job(
         .await;
 }
 
+/// Streams the planned sources into one tar / tar.gz archive (job path of
+/// `files/compress`). Mirrors [`run_extract_job`]: plan totals upfront,
+/// per-entry table updates with short locks, throttled progress events and
+/// cooperative cancel between chunks. `gzip` wraps the tar stream in stored
+/// (uncompressed) DEFLATE blocks — see `archive::deflate_stored_blocks`.
+async fn run_compress_job(
+    inner: Arc<Inner>,
+    job_id: String,
+    connection_id: String,
+    operator: opendal::Operator,
+    plan: Vec<crate::archive::TarPlanEntry>,
+    target_path: String,
+    gzip: bool,
+    cancel: Arc<AtomicBool>,
+    emitter: PluginEmitter,
+) {
+    let fifo = inner.conn_lock(&connection_id).clone();
+    let _fifo_guard = fifo.lock().await;
+    let Ok(_permit) = inner.semaphore.acquire().await else {
+        return;
+    };
+    if cancel.load(Ordering::Acquire) {
+        inner
+            .complete_dir_job(&job_id, JobStatus::Canceled, None, &emitter)
+            .await;
+        return;
+    }
+    if let Some(job) = inner.dir_jobs.lock().await.get_mut(&job_id) {
+        if job.status == JobStatus::Queued {
+            job.status = JobStatus::Running;
+        }
+    }
+    emit_dir_running(&emitter, &job_id);
+
+    let bytes_total: u64 = plan.iter().map(|entry| entry.size).sum();
+    {
+        let mut dir_jobs = inner.dir_jobs.lock().await;
+        if let Some(job) = dir_jobs.get_mut(&job_id) {
+            job.files_total = Some(plan.len() as u64);
+            job.bytes_total = Some(bytes_total);
+        }
+    }
+    emit_dir_running(&emitter, &job_id);
+
+    let mut throttle = Throttle::default();
+    let mut files_done = 0u64;
+    let mut bytes_done = 0u64;
+    let mut crc: u32 = 0xFFFF_FFFF;
+    let mut archived_len: u64 = 0;
+    let outcome = async {
+        let mut writer = operator
+            .writer(&target_path)
+            .await
+            .map_err(|error| format!("Failed to open writer for '{target_path}': {error}"))?;
+        macro_rules! emit {
+            ($bytes:expr) => {{
+                let bytes: &[u8] = &$bytes;
+                if !bytes.is_empty() {
+                    if gzip {
+                        crc = crate::archive::crc32_update(crc, bytes);
+                        archived_len += bytes.len() as u64;
+                    }
+                    writer
+                        .write(bytes.to_vec())
+                        .await
+                        .map_err(|error| format!("Failed to write archive chunk: {error}"))?;
+                }
+            }};
+        }
+        if gzip {
+            emit!(crate::archive::GZIP_HEADER);
+        }
+        for entry in &plan {
+            if cancel.load(Ordering::Acquire) {
+                return Err("compression canceled".to_string());
+            }
+            if entry.size == 0 {
+                // Zero-size walk reports are ambiguous (empty file vs. a
+                // backend that does not report lengths) — read once so the
+                // header carries the real byte count.
+                let data = operator
+                    .read(&entry.source_path)
+                    .await
+                    .map_err(|error| format!("Failed to read '{}': {error}", entry.source_path))?
+                    .to_vec();
+                emit!(crate::archive::tar_entry_header(&entry.archive_path, data.len() as u64)?);
+                emit!(data);
+                emit!(vec![0u8; data.len().div_ceil(512) * 512 - data.len()]);
+            } else {
+                emit!(crate::archive::tar_entry_header(&entry.archive_path, entry.size)?);
+                let (reader, size) = slot::open_download_reader(&operator, &entry.source_path).await?;
+                let mut offset = 0u64;
+                while offset < size {
+                    if cancel.load(Ordering::Acquire) {
+                        return Err("compression canceled".to_string());
+                    }
+                    let end = offset.saturating_add(TRANSFER_CHUNK_SIZE as u64).min(size);
+                    let chunk = slot::read_chunk(&reader, offset, end).await?;
+                    if chunk.is_empty() {
+                        break;
+                    }
+                    offset += chunk.len() as u64;
+                    bytes_done += chunk.len() as u64;
+                    emit!(chunk);
+                }
+                let padding = (entry.size as usize).div_ceil(512) * 512 - entry.size as usize;
+                emit!(vec![0u8; padding]);
+            }
+            files_done += 1;
+            {
+                let mut dir_jobs = inner.dir_jobs.lock().await;
+                if let Some(job) = dir_jobs.get_mut(&job_id) {
+                    job.files_done = files_done;
+                    job.bytes_done = bytes_done;
+                }
+            }
+            if throttle.should_emit(bytes_done, Some(bytes_total)) {
+                if let Some(job) = inner.dir_jobs.lock().await.get(&job_id).cloned() {
+                    emit_dir_progress(&emitter, &job);
+                }
+            }
+        }
+        emit!(crate::archive::TAR_END);
+        if gzip {
+            // Empty final DEFLATE block terminates the stream; see
+            // `archive::deflate_stored_blocks`.
+            writer
+                .write(crate::archive::deflate_stored_blocks(&[], true))
+                .await
+                .map_err(|error| format!("Failed to write archive chunk: {error}"))?;
+            writer
+                .write(crate::archive::gzip_trailer(!crc, archived_len).to_vec())
+                .await
+                .map_err(|error| format!("Failed to write archive chunk: {error}"))?;
+        }
+        writer
+            .close()
+            .await
+            .map_err(|error| format!("Failed to close writer for '{target_path}': {error}"))?;
+        Ok::<(), String>(())
+    }
+    .await;
+    match outcome {
+        Ok(()) if cancel.load(Ordering::Acquire) => {
+            inner
+                .complete_dir_job(&job_id, JobStatus::Canceled, None, &emitter)
+                .await;
+        }
+        Ok(()) => {
+            inner
+                .complete_dir_job(&job_id, JobStatus::Completed, None, &emitter)
+                .await;
+        }
+        Err(_) if cancel.load(Ordering::Acquire) => {
+            inner
+                .complete_dir_job(&job_id, JobStatus::Canceled, None, &emitter)
+                .await;
+        }
+        Err(error) => {
+            inner
+                .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &emitter)
+                .await;
+        }
+    }
+}
+
 /// Streams one file `source → target` in `TRANSFER_CHUNK_SIZE` slices.
 async fn stream_copy(
     source_operator: &opendal::Operator,
@@ -2005,6 +2290,102 @@ mod tests {
             let mixed = table.list_merged(&store, Some("c1")).await.unwrap();
             assert_eq!(mixed.len(), 3, "single-file + dir jobs merged: {mixed:?}");
             assert!(mixed.iter().any(|item| item["taskId"] == "live-1"));
+        });
+    }
+
+    /// P-FILES ⑥: `files/transfers/clear` drops finished jobs/history only;
+    /// queued/running entries survive; optional connectionId scopes the wipe.
+    #[test]
+    fn clear_drops_finished_history_and_keeps_active_jobs() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::new(dir.path().to_path_buf());
+            let table = JobTable::new();
+
+            let mk_job = |task_id: &str, connection: &str, status: JobStatus| TransferJob {
+                task_id: task_id.into(),
+                connection_id: connection.into(),
+                kind: TransferKind::Upload,
+                remote_path: format!("/{task_id}.bin"),
+                total_bytes: Some(5),
+                transferred_bytes: 5,
+                status,
+                error: None,
+                started_at: None,
+                finished_at: None,
+            };
+            {
+                let mut jobs = table.inner.jobs.lock().await;
+                jobs.insert("done-1".into(), mk_job("done-1", "c1", JobStatus::Completed));
+                jobs.insert("fail-1".into(), mk_job("fail-1", "c2", JobStatus::Failed));
+                jobs.insert("run-1".into(), mk_job("run-1", "c1", JobStatus::Running));
+            }
+            {
+                let mut dir_jobs = table.inner.dir_jobs.lock().await;
+                let mut finished = DirJob {
+                    job_id: "dir-1".into(),
+                    source_connection_id: "c1".into(),
+                    source_path: "/s".into(),
+                    target_connection_id: "c2".into(),
+                    target_path: "/t".into(),
+                    sync: false,
+                    delete_source: false,
+                    kind: DirJobKind::CopyDir,
+                    files_done: 1,
+                    files_total: Some(1),
+                    bytes_done: 5,
+                    bytes_total: Some(5),
+                    status: JobStatus::Completed,
+                    error: None,
+                    started_at: Some(42),
+                    finished_at: Some(99),
+                };
+                dir_jobs.insert("dir-1".into(), finished.clone());
+                finished.job_id = "dir-run".into();
+                finished.status = JobStatus::Running;
+                dir_jobs.insert("dir-run".into(), finished);
+            }
+            for (task_id, connection) in [("hist-1", "c1"), ("hist-2", "c3")] {
+                store
+                    .record_transfer(store::TransferRecord {
+                        task_id: task_id.into(),
+                        connection_id: connection.into(),
+                        kind: "upload".into(),
+                        remote_path: format!("/{task_id}.bin"),
+                        total_bytes: Some(5),
+                        transferred_bytes: 5,
+                        status: "completed".into(),
+                        error: None,
+                        started_at: None,
+                        finished_at: None,
+                    })
+                    .unwrap();
+            }
+
+            // Scoped clear: only c1 surfaces.
+            let cleared = table.clear(&store, Some("c1")).await.unwrap();
+            assert_eq!(cleared, 3, "done-1 + dir-1 + hist-1: {cleared}");
+            let jobs = table.inner.jobs.lock().await;
+            assert!(jobs.contains_key("fail-1") && jobs.contains_key("run-1"));
+            assert!(!jobs.contains_key("done-1"));
+            drop(jobs);
+            assert!(!table.inner.dir_jobs.lock().await.contains_key("dir-1"));
+            assert!(table.inner.dir_jobs.lock().await.contains_key("dir-run"));
+            let history: Vec<String> = store
+                .load_transfers()
+                .into_iter()
+                .map(|record| record.task_id)
+                .collect();
+            assert_eq!(history, vec!["hist-2".to_string()], "c3 history kept");
+
+            // Unscoped clear removes the rest of the finished entries.
+            let cleared_all = table.clear(&store, None).await.unwrap();
+            assert_eq!(cleared_all, 2, "fail-1 + hist-2");
+            assert!(store.load_transfers().is_empty());
+            let remaining = table.inner.jobs.lock().await;
+            assert_eq!(remaining.len(), 1, "running job survives: {remaining:?}");
+            assert_eq!(remaining["run-1"].status, JobStatus::Running);
         });
     }
 }

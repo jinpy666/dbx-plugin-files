@@ -975,8 +975,237 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// Tests — fixtures are built in-process (minimal tar/gzip byte writers).
+// Compression (`files/compress`): tar writer + gzip (stored-DEFLATE) wrapper.
+// No new dependencies: the gzip layer emits stored (uncompressed) DEFLATE
+// blocks, so produced .tar.gz files are fully standard but trade compression
+// ratio for zero crate weight (real deflate stays a Phase-2 item with zip).
 // ---------------------------------------------------------------------------
+
+/// One planned tar input entry, produced by [`plan_compress`]: where to read
+/// the payload (`source_path`) and where it lands inside the archive
+/// (`archive_path`, sanitized, no leading slash). `size` is the walk-time
+/// content length (0 when the backend does not report it) for budget checks;
+/// written headers always carry the actual byte count.
+#[derive(Debug, Clone)]
+pub struct TarPlanEntry {
+    pub source_path: String,
+    pub archive_path: String,
+    pub size: u64,
+}
+
+/// Payload cap for one `files/compress` request (same guard class as the
+/// extraction budget).
+pub const MAX_COMPRESS_BYTES: u64 = MAX_ARCHIVE_BYTES;
+/// Entry-count cap for one `files/compress` request.
+pub const MAX_COMPRESS_ENTRIES: usize = MAX_ARCHIVE_ENTRIES;
+
+fn base_name(path: &str) -> &str {
+    let trimmed = path.trim_matches('/');
+    match trimmed.rfind('/') {
+        Some(index) => &trimmed[index + 1..],
+        None => trimmed,
+    }
+}
+
+/// Walks the requested sources into a tar plan (files only — directories are
+/// implicit through entry paths, matching our own extract semantics; empty
+/// directories are dropped). Applies the entry/payload budget guards.
+pub async fn plan_compress(operator: &Operator, sources: &[String]) -> Result<Vec<TarPlanEntry>, String> {
+    let mut plan: Vec<TarPlanEntry> = Vec::new();
+    for source in sources {
+        let trimmed = source.trim().trim_matches('/');
+        if trimmed.is_empty() {
+            return Err("Cannot compress the connection root; pick a subdirectory instead".to_string());
+        }
+        let base = base_name(trimmed);
+        if crate::engine::ops::is_dir_path(operator, source).await? {
+            for (relative, size) in crate::engine::transfer::walk_files(operator, trimmed).await? {
+                let archive_path = sanitize_entry_path(&format!("{base}/{relative}"))?;
+                plan.push(TarPlanEntry {
+                    source_path: format!("{trimmed}/{relative}"),
+                    archive_path,
+                    size,
+                });
+                if plan.len() > MAX_COMPRESS_ENTRIES {
+                    return Err(format!(
+                        "Compression source exceeds {MAX_COMPRESS_ENTRIES} entries"
+                    ));
+                }
+            }
+        } else {
+            let metadata = operator
+                .stat(trimmed)
+                .await
+                .map_err(|error| format!("Failed to stat '{trimmed}': {error}"))?;
+            let archive_path = sanitize_entry_path(base)?;
+            plan.push(TarPlanEntry {
+                source_path: trimmed.to_string(),
+                archive_path,
+                size: metadata.content_length(),
+            });
+        }
+    }
+    if plan.is_empty() {
+        return Err("Nothing to compress: the sources hold no files".to_string());
+    }
+    let total: u64 = plan.iter().map(|entry| entry.size).sum();
+    if total > MAX_COMPRESS_BYTES {
+        return Err(format!("Compression payload exceeds the {MAX_COMPRESS_BYTES} byte guard"));
+    }
+    Ok(plan)
+}
+
+fn write_octal_field(field: &mut [u8], value: u64) {
+    let width = field.len() - 1;
+    let text = format!("{value:0width$o}");
+    field[..width].copy_from_slice(text.as_bytes());
+    field[width] = 0;
+}
+
+fn ustar_header(name_bytes: &[u8], size: u64, typeflag: u8) -> Vec<u8> {
+    let mut header = [0u8; 512];
+    let copy_len = name_bytes.len().min(100);
+    header[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
+    write_octal_field(&mut header[100..108], if typeflag == b'5' { 0o755 } else { 0o644 });
+    write_octal_field(&mut header[108..116], 0);
+    write_octal_field(&mut header[116..124], 0);
+    write_octal_field(&mut header[124..136], size);
+    write_octal_field(&mut header[136..148], 0);
+    header[156] = typeflag;
+    header[257..263].copy_from_slice(b"ustar\0");
+    header[263..265].copy_from_slice(b"00");
+    let checksum: u32 = header
+        .iter()
+        .enumerate()
+        .map(|(index, &byte)| if (148..156).contains(&index) { 0x20 } else { byte as u32 })
+        .sum();
+    let text = format!("{checksum:06o}\0 ");
+    header[148..156].copy_from_slice(text.as_bytes());
+    header.to_vec()
+}
+
+fn payload_padding(len: usize) -> usize {
+    len.div_ceil(512) * 512 - len
+}
+
+/// Header blocks for one entry: a PAX `path=` extended header precedes the
+/// real ustar header when the archive path exceeds 100 bytes (long or
+/// multibyte UTF-8 names) — matched by the parser above and understood by
+/// GNU/BSD tar and Python tarfile.
+pub fn tar_entry_header(archive_path: &str, size: u64) -> Result<Vec<u8>, String> {
+    let sanitized = sanitize_entry_path(archive_path)?;
+    let mut out = Vec::new();
+    if sanitized.len() > 100 {
+        // Self-describing record length: `<len> path=<name>\n`, where `<len>`
+        // counts the record itself including its own decimal prefix. Iterate
+        // to the fixed point (writing a longer prefix can grow the number).
+        let mut total = sanitized.len() + 8; // lower bound: one digit + " path=" + "\n"
+        loop {
+            let next = total.to_string().len() + 1 + "path=".len() + sanitized.len() + 1;
+            if next == total {
+                break;
+            }
+            total = next;
+        }
+        let record = format!("{total} path={sanitized}\n").into_bytes();
+        out.extend_from_slice(&ustar_header(b"PaxHeaders/x", record.len() as u64, b'x'));
+        out.extend_from_slice(&record);
+        out.extend(std::iter::repeat(0u8).take(payload_padding(record.len())));
+        // Real entry carries a placeholder name; readers apply the override.
+        out.extend_from_slice(&ustar_header(b"longname", size, b'0'));
+    } else {
+        out.extend_from_slice(&ustar_header(sanitized.as_bytes(), size, b'0'));
+    }
+    Ok(out)
+}
+
+/// End-of-archive marker (two all-zero 512-byte blocks).
+pub const TAR_END: [u8; 1024] = [0u8; 1024];
+
+/// gzip file header: magic, deflate, no flags, no mtime, unknown OS.
+pub const GZIP_HEADER: [u8; 10] = [0x1F, 0x8B, 0x08, 0x00, 0, 0, 0, 0, 0x00, 0xFF];
+
+/// Wraps `data` into stored (BTYPE=00) DEFLATE blocks. The final block only
+/// appears when `is_final` is set, so a stream writer can emit chunks
+/// incrementally and finish with `deflate_stored_blocks(&[], true)` — an
+/// empty final block is legal and keeps the streaming path byte-exact with
+/// the in-memory one.
+pub fn deflate_stored_blocks(data: &[u8], is_final: bool) -> Vec<u8> {
+    let mut out = Vec::new();
+    if data.is_empty() {
+        if is_final {
+            // BFINAL=1, BTYPE=00, pad to byte, LEN=0x0000, NLEN=0xFFFF.
+            out.extend_from_slice(&[0x01, 0x00, 0x00, 0xFF]);
+        }
+        return out;
+    }
+    let total = data.len().div_ceil(65_535);
+    for (index, chunk) in data.chunks(65_535).enumerate() {
+        let bfinal = if is_final && index + 1 == total { 1u8 } else { 0u8 };
+        out.push(bfinal);
+        let len = chunk.len() as u16;
+        out.extend_from_slice(&len.to_le_bytes());
+        out.extend_from_slice(&(!len).to_le_bytes());
+        out.extend_from_slice(chunk);
+    }
+    out
+}
+
+pub fn gzip_trailer(crc: u32, length: u64) -> [u8; 8] {
+    let mut trailer = [0u8; 8];
+    trailer[..4].copy_from_slice(&crc.to_le_bytes());
+    // ISIZE is mod 2^32 (RFC 1952).
+    trailer[4..].copy_from_slice(&(length as u32).to_le_bytes());
+    trailer
+}
+
+/// Incremental CRC32 (pre/post condition identical to [`crc32`]: start from
+/// `0xFFFF_FFFF`, final value is the complement).
+pub fn crc32_update(state: u32, data: &[u8]) -> u32 {
+    let mut current = state;
+    for &byte in data {
+        current = CRC_TABLE[((current ^ byte as u32) & 0xff) as usize] ^ (current >> 8);
+    }
+    current
+}
+
+/// One-shot gzip (stored) wrapper for the in-memory synchronous path.
+pub fn gzip_stored_wrap(raw: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(raw.len() + 64);
+    out.extend_from_slice(&GZIP_HEADER);
+    out.extend_from_slice(&deflate_stored_blocks(raw, true));
+    out.extend_from_slice(&gzip_trailer(!crc32_update(0xFFFF_FFFF, raw), raw.len() as u64));
+    out
+}
+
+/// Builds the complete archive bytes in memory (synchronous small-package
+/// path): reads every planned file via `operator.read`. Header sizes carry
+/// the actual byte count (some backends report walk sizes as 0). The job
+/// path streams chunk-by-chunk from `transfers::run_compress_job` using the
+/// same pure helpers instead, keeping table locks and progress events in the
+/// established place.
+pub async fn build_archive(operator: &Operator, plan: &[TarPlanEntry], gzip: bool) -> Result<Vec<u8>, String> {
+    let mut tar: Vec<u8> = Vec::new();
+    let mut total = 0u64;
+    for entry in plan {
+        let data = operator
+            .read(&entry.source_path)
+            .await
+            .map_err(|error| format!("Failed to read '{}': {error}", entry.source_path))?
+            .to_vec();
+        total = total.saturating_add(data.len() as u64);
+        if total > MAX_COMPRESS_BYTES {
+            return Err(format!("Compression payload exceeds the {MAX_COMPRESS_BYTES} byte guard"));
+        }
+        tar.extend_from_slice(&tar_entry_header(&entry.archive_path, data.len() as u64)?);
+        tar.extend_from_slice(&data);
+        tar.extend(std::iter::repeat(0u8).take(payload_padding(data.len())));
+    }
+    tar.extend_from_slice(&TAR_END);
+    Ok(if gzip { gzip_stored_wrap(&tar) } else { tar })
+}
+
+
 
 #[cfg(test)]
 mod tests {
@@ -1403,5 +1632,78 @@ mod tests {
                 "paginate({total}, {page}, {page_size})"
             );
         }
+    }
+
+    // -- compression writer ---------------------------------------------------------
+
+    fn memory_operator() -> Operator {
+        opendal::Operator::via_iter("memory", Vec::<(String, String)>::new()).unwrap()
+    }
+
+    #[test]
+    fn gzip_stored_round_trips_multi_block() {
+        // Multi-chunk (>65535) + non-aligned tail exercises block splitting.
+        let payload: Vec<u8> = (0..150_000u32).map(|i| (i % 251) as u8).collect();
+        let wrapped = gzip_stored_wrap(&payload);
+        let decoded = gunzip(&wrapped, payload.len() as u64 + 1).unwrap();
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn deflate_empty_final_block_is_canonical() {
+        assert_eq!(deflate_stored_blocks(&[], true), vec![0x01, 0x00, 0x00, 0xFF]);
+        assert!(deflate_stored_blocks(&[], false).is_empty());
+    }
+
+    #[test]
+    fn tar_entry_header_rejects_unsanitized_paths() {
+        assert!(tar_entry_header("../escape.txt", 0).is_err());
+        assert!(tar_entry_header("/absolute.txt", 0).is_err());
+        assert!(tar_entry_header("ok.txt", 0).is_ok());
+    }
+
+    #[tokio::test]
+    async fn plan_and_build_round_trip_through_parser() {
+        let operator = memory_operator();
+        operator.write("/a.txt", b"alpha".to_vec()).await.unwrap();
+        operator.write("/pkg/inner.txt", "打包内容 longer payload".as_bytes().to_vec()).await.unwrap();
+        operator.write("/pkg/empty.bin", Vec::<u8>::new()).await.unwrap();
+
+        // Long directory name → PAX extended header path (>100 bytes).
+        let long_dir = format!("/{}", "长目录名-".repeat(20));
+        operator.create_dir(&format!("{long_dir}/")).await.unwrap();
+        operator.write(&format!("{long_dir}/leaf.txt"), b"leaf".to_vec()).await.unwrap();
+
+        let plan = plan_compress(&operator, &["/a.txt".to_string(), "/pkg".to_string(), long_dir.clone()])
+            .await
+            .unwrap();
+        assert_eq!(plan.len(), 4); // a.txt, pkg/inner.txt, pkg/empty.bin, long/leaf.txt
+        assert!(plan.iter().all(|entry| !entry.archive_path.starts_with('/')));
+
+        // Plain tar round-trip: header sizes carry actual byte counts.
+        let tar = build_archive(&operator, &plan, false).await.unwrap();
+        let entries = extract_entries(&tar, &DEFAULT_LIMITS).unwrap();
+        eprintln!("plan: {plan:?}");
+        eprintln!("entries: {:?}", entries.iter().map(|entry| (entry.path.as_str(), entry.size)).collect::<Vec<_>>());
+        let by_path = |path: &str| entries.iter().find(|entry| entry.path == path).map(|entry| entry.data.clone());
+        assert_eq!(by_path("a.txt").unwrap(), b"alpha");
+        assert_eq!(by_path("pkg/inner.txt").unwrap(), "打包内容 longer payload".as_bytes());
+        assert_eq!(by_path("pkg/empty.bin").unwrap(), Vec::<u8>::new());
+        assert_eq!(
+            by_path(&format!("{}/leaf.txt", long_dir.trim_start_matches('/'))).unwrap(),
+            b"leaf"
+        );
+
+        // gzip (stored) variant round-trips through the gzip/tar readers too.
+        let gz = build_archive(&operator, &plan, true).await.unwrap();
+        let listed = list_entries(&gz, &DEFAULT_LIMITS).unwrap();
+        assert_eq!(listed.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn plan_compress_rejects_root_and_budget() {
+        let operator = memory_operator();
+        assert!(plan_compress(&operator, &["/".to_string()]).await.is_err());
+        assert!(plan_compress(&operator, &[]).await.is_err());
     }
 }

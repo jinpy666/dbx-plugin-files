@@ -5,9 +5,14 @@
 import type { SortState } from "./sorting";
 import { DEFAULT_SORT } from "./sorting";
 
+/** 侧栏 tab（tree=目录树，quick=快捷目录）；默认 tree。 */
+export type SideTab = "tree" | "quick";
+
 export interface UiPrefs {
   sort: SortState;
   dualPane: boolean;
+  sideTab: SideTab;
+  sideCollapsed: boolean;
 }
 
 export const UI_PREFS_KEY = "dbx-files.ui";
@@ -17,6 +22,8 @@ function sanitize(raw: unknown): Partial<UiPrefs> {
   const value = raw as Record<string, unknown>;
   const prefs: Partial<UiPrefs> = {};
   if (typeof value.dualPane === "boolean") prefs.dualPane = value.dualPane;
+  if (value.sideTab === "tree" || value.sideTab === "quick") prefs.sideTab = value.sideTab;
+  if (typeof value.sideCollapsed === "boolean") prefs.sideCollapsed = value.sideCollapsed;
   if (value.sort && typeof value.sort === "object") {
     const sort = value.sort as Record<string, unknown>;
     if (sort.column === "name" || sort.column === "size" || sort.column === "modified") {
@@ -36,11 +43,13 @@ export function loadUiPrefs(storage?: Storage): UiPrefs {
   } catch {
     raw = null;
   }
-  if (!raw) return { sort: { ...DEFAULT_SORT }, dualPane: true };
+  if (!raw) return { sort: { ...DEFAULT_SORT }, dualPane: true, sideTab: "tree", sideCollapsed: false };
   const prefs = sanitize(safeParse(raw));
   return {
     sort: prefs.sort ?? { ...DEFAULT_SORT },
     dualPane: prefs.dualPane ?? true,
+    sideTab: prefs.sideTab ?? "tree",
+    sideCollapsed: prefs.sideCollapsed ?? false,
   };
 }
 

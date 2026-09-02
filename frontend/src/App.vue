@@ -9,7 +9,7 @@ import AuditPanel from "./components/AuditPanel.vue";
 import PreviewPane from "./components/PreviewPane.vue";
 import CustomConfigEditor from "./components/CustomConfigEditor.vue";
 import PathField from "./components/PathField.vue";
-import QuickSidebar from "./components/QuickSidebar.vue";
+import SideNavPanel from "./components/SideNavPanel.vue";
 import {
   bindApi,
   baseName,
@@ -22,7 +22,7 @@ import {
   type FileCapabilities,
   type FileEntry,
 } from "./lib/api";
-import { createTransferTracker, isActive, type TransferJob, type TransferKind } from "./lib/transfers";
+import { createTransferTracker, isActive, isRetryableKind, type TransferJob, type TransferKind } from "./lib/transfers";
 import { inspect, type DangerousHit } from "./lib/dangerousPaths";
 import { workbenchMessage } from "./lib/i18n";
 import { isArchivePath } from "./lib/archive";
@@ -30,13 +30,16 @@ import { loadUiPrefs, saveUiPrefs } from "./lib/prefs";
 import { sortEntries, toggleSortState, type SortColumn, type SortState } from "./lib/sorting";
 import { filterEntries } from "./lib/searchFilter";
 import { isLargeDirectory } from "./lib/largeDir";
+import { applyTreeChildren, createTreeRoot, markTreeStale, type DirTreeNode } from "./lib/dirTree";
 import { normalizeQuickPaths, type QuickPath } from "./lib/quickPaths";
 
-type ConfirmKind = "delete" | "purge" | "syncDir" | "copyDir" | "newFolder" | "rename" | "copy" | "move" | "extract";
+type ConfirmKind = "delete" | "purge" | "syncDir" | "copyDir" | "newFolder" | "newFile" | "rename" | "copy" | "move" | "extract" | "compress";
 type PaneSide = "left" | "right";
 type MenuAction =
-  | "open" | "preview" | "download" | "rename" | "delete" | "copyPath"
-  | "syncDir" | "copyDir" | "copy" | "move" | "extract" | "archiveContents";
+  | "open" | "preview" | "download" | "rename" | "delete" | "copyPath" | "copyName"
+  | "syncDir" | "copyDir" | "copy" | "move" | "extract" | "archiveContents" | "compress"
+  // 批量（多选右键，P-FILES 压缩轮）
+  | "downloadSelected" | "copySelected" | "moveSelected" | "deleteSelected" | "compressSelected";
 
 interface ConnectionSummary {
   name?: string;
@@ -81,6 +84,9 @@ const initialized = ref(false);
 
 // ---- 目标栏（右栏，A-FILES ①）---------------------------------------------
 const dualPane = ref(prefs.dualPane);
+// 侧栏形态偏好：tree/quick tab（默认 tree）与收起状态，随布局偏好持久化。
+const sideTab = ref<"tree" | "quick">(prefs.sideTab);
+const sideCollapsed = ref(prefs.sideCollapsed);
 const rightPath = ref("/");
 const rightEntries = ref<FileEntry[]>([]);
 const rightSelection = ref<string[]>([]);
@@ -105,12 +111,51 @@ const leftConnections = computed(() => [
 
 // ---- 快速目录（tiny-rdm quick paths 对标）------------------------------------
 // §8.1：后端按协议/根约束/stat 过滤后返回候选（根目录 + fs 协议的用户目录族）；
-// 展示形态为栏内快速定位侧栏（QuickSidebar，文件管理器对标），仅在候选多于
-// root 一项时挂载（非 fs/受限连接自动隐藏）。
+// 展示形态为侧栏 quick tab（SideNavPanel），tree tab 为懒加载目录树（默认）。
 const leftQuickPaths = ref<QuickPath[]>([]);
 const rightQuickPaths = ref<QuickPath[]>([]);
-const leftSidePaths = computed(() => (leftQuickPaths.value.length > 1 ? leftQuickPaths.value : []));
-const rightSidePaths = computed(() => (rightQuickPaths.value.length > 1 ? rightQuickPaths.value : []));
+
+// ---- 侧栏目录树（tree tab）----------------------------------------------------
+// 每栏一棵：根 = 连接根目录 "/"，展开时经 files/list 懒加载子目录（仅目录），
+// collapse 保留缓存，侧栏刷新按钮 markTreeStale 后重拉根。
+const leftTree = ref<DirTreeNode>(createTreeRoot("/", "/"));
+const rightTree = ref<DirTreeNode>(createTreeRoot("/", "/"));
+
+async function expandTreeNode(side: PaneSide, node: DirTreeNode) {
+  if (node.expanded) {
+    node.expanded = false;
+    return;
+  }
+  if (!node.loaded) {
+    node.loading = true;
+    try {
+      const list = await fetchListing(node.path, sideConnectionId(side));
+      const tree = side === "left" ? leftTree.value : rightTree.value;
+      applyTreeChildren(tree, node.path, list);
+    } catch (cause) {
+      showError(cause); // 树展开失败要有反馈，不能静默（P-FILES 用户反馈）
+    } finally {
+      node.loading = false;
+    }
+    return;
+  }
+  node.expanded = true;
+}
+
+/** tree tab 可见时确保根已展开（两侧各拉一次；quick tab 下不预取）。 */
+function ensureTreeRoots() {
+  for (const side of ["left", "right"] as const) {
+    const tree = side === "left" ? leftTree.value : rightTree.value;
+    if (!tree.loaded && !tree.loading) void expandTreeNode(side, tree);
+  }
+}
+
+function refreshTree(side: PaneSide) {
+  const tree = side === "left" ? leftTree.value : rightTree.value;
+  markTreeStale(tree);
+  tree.expanded = false;
+  void expandTreeNode(side, tree);
+}
 
 /** 该栏显式使用的连接 id；undefined = 当前连接（由 api 层默认注入）。 */
 function sideConnectionId(side: PaneSide): string | undefined {
@@ -147,15 +192,34 @@ const previewPath = ref<string | null>(null);
 /** 预览条目所属栏连接：openPreview 时固化为快照——单栏预览会顺手开启双栏
  * （左栏随即切到本地），read/write 必须仍指向预览来源连接而非切换后的左栏。 */
 const previewConnectionId = ref<string | undefined>(undefined);
-const contextMenu = ref<{ x: number; y: number; entry: FileEntry; side: PaneSide }>();
+const contextMenu = ref<{ x: number; y: number; entry: FileEntry; side: PaneSide; selection: string[] }>();
+// 空白区右键（P-FILES）：列表空白处不再弹浏览器菜单，改弹新建/刷新动作面。
+const blankMenu = ref<{ x: number; y: number; side: PaneSide }>();
+// 侧栏（目录树/快捷目录）行右键：打开 / 在另一栏打开 / 复制路径、文件名。
+const sideMenu = ref<{ x: number; y: number; side: PaneSide; path: string; name: string }>();
+
+/** 该栏当前所在目录（新建文件夹/新建文件落点）。 */
+function paneDirPath(side: PaneSide): string {
+  return side === "left" ? path.value : rightPath.value;
+}
 
 const tracker = createTransferTracker();
 const transferJobs = computed(() => Object.values(tracker.jobs));
 // P-FILES ①b：等待终态后刷新目录的 job 集（transport=job 的 copy/move/rename）。
 const awaitingRefresh = new Set<string>();
 
+// P-FILES ⑦：失败任务重试——提交时登记原始请求（方法 + 栏位 + 参数），
+// 失败后 TransferPanel 的 ↻ 按原样重发。会话级 Map（store 里的历史记录
+// 无参数形态，跨会话的历史任务不显示重试按钮）。
+interface TransferRetryParams {
+  method: string;
+  side: PaneSide;
+  params: Record<string, unknown>;
+}
+const transferRetryParams = new Map<string, TransferRetryParams>();
+
 /** 登记 sidecar 侧异步 job（提交后 jobId 已返回，首个进度事件未到达前的占位）。 */
-function trackSidecarJob(jobId: string, kind: TransferKind, remotePath: string) {
+function trackSidecarJob(jobId: string, kind: TransferKind, remotePath: string, retry?: TransferRetryParams) {
   registerJob({
     jobId,
     connectionId: connectionId.value,
@@ -166,8 +230,43 @@ function trackSidecarJob(jobId: string, kind: TransferKind, remotePath: string) 
     transferred: 0,
     updatedAt: Date.now(),
   });
+  if (retry) transferRetryParams.set(jobId, retry);
+  else transferRetryParams.delete(jobId);
   awaitingRefresh.add(jobId);
 }
+
+/** P-FILES ⑦：失败任务一键重试——按登记的原始请求原样重发，产生新 job。 */
+const retryTransferBusy = new Set<string>();
+async function retryTransfer(jobId: string) {
+  const retry = transferRetryParams.get(jobId);
+  if (!retry || retryTransferBusy.has(jobId)) return;
+  retryTransferBusy.add(jobId);
+  try {
+    const result = await callFor<{ jobId?: string | null; transport?: string }>(retry.side, retry.method, retry.params);
+    const newJobId = result.jobId;
+    if (!newJobId) {
+      error.value = t("operationFailed", { error: t("featureMissing") });
+      return;
+    }
+    const job = tracker.jobs[jobId];
+    trackSidecarJob(String(newJobId), job?.kind ?? "copy", job?.remotePath ?? "", retry);
+    awaitingRefresh.add(String(newJobId));
+    showNotice(t("jobStarted", { name: baseName(String(retry.params.targetPath ?? retry.params.newPath ?? "")) }));
+  } catch (cause) {
+    showError(cause);
+  } finally {
+    retryTransferBusy.delete(jobId);
+  }
+}
+
+/** TransferPanel 的重试按钮可用集：失败 + kind 可重发 + 有登记参数。 */
+const retryableTransferIds = computed(() => {
+  const ids: string[] = [];
+  for (const job of Object.values(tracker.jobs)) {
+    if (job.state === "failed" && isRetryableKind(job.kind) && transferRetryParams.has(job.jobId)) ids.push(job.jobId);
+  }
+  return ids;
+});
 
 const confirmOpen = ref(false);
 const confirmKind = ref<ConfirmKind>();
@@ -179,10 +278,11 @@ const confirmBusy = ref(false);
 const confirmDraft = ref("");
 const confirmTarget = ref<{ path?: string; entry?: FileEntry; targets?: FileEntry[] }>({});
 const confirmSide = ref<PaneSide>("left");
-const confirmInput = computed(() => confirmKind.value === "newFolder" || confirmKind.value === "rename" || confirmKind.value === "syncDir" || confirmKind.value === "copyDir" || confirmKind.value === "copy" || confirmKind.value === "move" || confirmKind.value === "extract");
+const confirmInput = computed(() => confirmKind.value === "newFolder" || confirmKind.value === "newFile" || confirmKind.value === "rename" || confirmKind.value === "syncDir" || confirmKind.value === "copyDir" || confirmKind.value === "copy" || confirmKind.value === "move" || confirmKind.value === "extract" || confirmKind.value === "compress");
 const confirmLabel = computed(() => {
-  if (confirmKind.value === "newFolder") return t("create");
+  if (confirmKind.value === "newFolder" || confirmKind.value === "newFile") return t("create");
   if (confirmKind.value === "rename") return t("save");
+  if (confirmKind.value === "compress") return t("compressAction");
   return t("confirm");
 });
 
@@ -195,9 +295,14 @@ const rightSorted = computed(() => sortEntries(rightEntries.value, sort.value));
 const rightSearchQuery = ref("");
 const filteredRightEntries = computed(() => filterEntries(rightSorted.value, rightSearchQuery.value));
 
-watch([sort, dualPane], () => {
-  saveUiPrefs({ sort: sort.value, dualPane: dualPane.value });
+watch([sort, dualPane, sideTab, sideCollapsed], () => {
+  saveUiPrefs({ sort: sort.value, dualPane: dualPane.value, sideTab: sideTab.value, sideCollapsed: sideCollapsed.value });
 }, { deep: true });
+
+// 切到 tree tab 时懒加载根目录子项（首次进入/从 quick 切回均适用）。
+watch(sideTab, (tab) => {
+  if (tab === "tree") ensureTreeRoots();
+});
 
 // 双栏切换：开启时左栏默认本地（quickPaths 到位后若仍在根目录则落到主目录，
 // 对标 FileZilla/tiny-rdm 本地栏起点），右栏 quickPaths 随开启重取；关闭时
@@ -502,9 +607,13 @@ function closeConfirm() {
   confirmBusy.value = false;
 }
 
-function startNewFolder() {
-  confirmDraft.value = "";
-  openConfirm("newFolder", { title: t("newFolderTitle"), draft: "" });
+function startNewFolder(side: PaneSide = "left") {
+  openConfirm("newFolder", { title: t("newFolderTitle"), draft: "", side });
+}
+
+/** 新建文件（P-FILES）：复用 files/write 写空内容（≤MAX_INLINE_WRITE_BYTES）。 */
+function startNewFile(side: PaneSide = "left") {
+  openConfirm("newFile", { title: t("newFileTitle"), draft: "", side });
 }
 
 function startRename(entry: FileEntry, side: PaneSide) {
@@ -590,6 +699,19 @@ function callFor<T = Record<string, unknown>>(side: PaneSide, method: string, pa
   return call<T>(method, params);
 }
 
+/** 压缩（P-FILES）：单选/多选共用；目标默认源目录下 <名称>.tar.gz。 */
+function startCompress(targets: FileEntry[], side: PaneSide) {
+  if (!targets.length) return;
+  const base = targets.length === 1 ? baseName(targets[0].path) || "archive" : "archive";
+  openConfirm("compress", {
+    title: t("compressTitle"),
+    body: t("compressBody"),
+    target: { targets },
+    draft: joinPath(parentPath(targets[0].path), `${base}.tar.gz`),
+    side,
+  });
+}
+
 async function onConfirm() {
   if (!confirmKind.value) return;
   confirmBusy.value = true;
@@ -602,8 +724,15 @@ async function onConfirm() {
       case "newFolder": {
         const name = confirmDraft.value.trim();
         if (!name) return;
-        await callFor(side, "files/mkdir", { path: joinPath(path.value, name) });
+        await callFor(side, "files/mkdir", { path: joinPath(paneDirPath(side), name) });
         showNotice(t("folderCreated"));
+        break;
+      }
+      case "newFile": {
+        const name = confirmDraft.value.trim();
+        if (!name) return;
+        await callFor(side, "files/write", { path: joinPath(paneDirPath(side), name), dataBase64: "" });
+        showNotice(t("fileCreated"));
         break;
       }
       case "rename": {
@@ -616,7 +745,11 @@ async function onConfirm() {
         });
         if (result.transport === "job" && result.jobId) {
           // 目录 rename 降级（P-FILES ②）：等终态再刷新。
-          trackSidecarJob(result.jobId, "rename", `${entry.path} → ${joinPath(parentPath(entry.path), name)}`);
+          trackSidecarJob(result.jobId, "rename", `${entry.path} → ${joinPath(parentPath(entry.path), name)}`, {
+            method: "files/rename",
+            side,
+            params: { path: entry.path, newPath: joinPath(parentPath(entry.path), name) },
+          });
           jobStarted = true;
         }
         showNotice(t("renamed"));
@@ -636,7 +769,11 @@ async function onConfirm() {
           targetPath,
         });
         if (result.transport === "job" && result.jobId) {
-          trackSidecarJob(result.jobId, confirmKind.value, `${entry.path} → ${targetPath}`);
+          trackSidecarJob(result.jobId, confirmKind.value, `${entry.path} → ${targetPath}`, {
+            method: `files/${confirmKind.value}`,
+            side,
+            params: { sourcePath: entry.path, targetPath },
+          });
           jobStarted = true;
         }
         showNotice(t("jobStarted", { name: baseName(targetPath) }));
@@ -667,7 +804,13 @@ async function onConfirm() {
           sourcePath: entry.path,
           targetPath,
         });
-        if (result.jobId) trackSidecarJob(result.jobId, confirmKind.value, `${entry.path} → ${targetPath}`);
+        if (result.jobId) {
+          trackSidecarJob(result.jobId, confirmKind.value, `${entry.path} → ${targetPath}`, {
+            method: `files/${confirmKind.value}`,
+            side,
+            params: { sourcePath: entry.path, targetPath },
+          });
+        }
         jobStarted = true;
         showNotice(t("jobStarted", { name: baseName(targetPath) }));
         break;
@@ -687,6 +830,23 @@ async function onConfirm() {
           jobStarted = true;
         }
         showNotice(t("jobStarted", { name: baseName(targetPath) }));
+        break;
+      }
+      case "compress": {
+        const targets = confirmTarget.value.targets ?? [];
+        const targetPath = confirmDraft.value.trim();
+        if (!targets.length || !targetPath) return;
+        const result = await callFor<{ success: boolean; transport?: string; jobId?: string | null }>(side, "files/compress", {
+          paths: targets.map((entry) => entry.path),
+          targetPath,
+        });
+        if (result.transport === "job" && result.jobId) {
+          trackSidecarJob(result.jobId, "compress", targetPath);
+          jobStarted = true;
+          showNotice(t("jobStarted", { name: baseName(targetPath) }));
+        } else {
+          showNotice(t("compressDone"));
+        }
         break;
       }
     }
@@ -804,26 +964,13 @@ async function uploadSource(name: string, size: number, readChunk: (offset: numb
       payload.set(chunk, 8);
       await window.dbxPlugin.sendBinary(`files/upload/${taskId}`, payload);
       offset += chunk.byteLength;
-      const job = tracker.jobs[taskId];
-      if (job) {
-        job.transferred = offset;
-        job.updatedAt = Date.now();
-      }
+      // 经 onProgress 走统一入口：保留速率采样（而非直接改 job 字段）。
+      tracker.onProgress({ jobId: taskId, taskId, state: "running", transferred: offset });
     }
     await window.dbxPlugin.invoke("files/upload/finish", { taskId }, { timeoutMs: 30 * 60 * 1000 });
-    const job = tracker.jobs[taskId];
-    if (job) {
-      job.state = "completed";
-      job.transferred = size;
-      job.updatedAt = Date.now();
-    }
+    tracker.onProgress({ jobId: taskId, taskId, state: "completed", transferred: size });
   } catch (cause) {
-    const job = tracker.jobs[taskId];
-    if (job) {
-      job.state = "failed";
-      job.error = errorMessage(cause);
-      job.updatedAt = Date.now();
-    }
+    tracker.onProgress({ jobId: taskId, taskId, state: "failed", error: errorMessage(cause) });
     await window.dbxPlugin.invoke("files/transfer/cancel", { taskId }).catch(() => undefined);
     throw cause;
   }
@@ -880,12 +1027,13 @@ async function onUpload(files: File[] | null) {
 
 async function downloadEntry(entry: FileEntry, side: PaneSide = "left") {
   const fileTransfer = window.dbxPlugin.fileTransfer;
+  let taskId: string | undefined;
   try {
     const startParams: Record<string, unknown> = { remotePath: entry.path };
     const explicit = sideConnectionId(side);
     if (explicit) startParams.connectionId = explicit;
     const info = await call<{ taskId: string; size: number; fileName?: string; chunkSize?: number }>("files/download/start", startParams);
-    const taskId = info.taskId;
+    taskId = info.taskId;
     const size = info.size;
     const channel = `files/download/${taskId}`;
     releaseFrames(channel);
@@ -915,11 +1063,7 @@ async function downloadEntry(entry: FileEntry, side: PaneSide = "left") {
         offset = Math.max(offset + chunk.data.byteLength, write.nextOffset);
       }
       if (!target && chunks) offset += chunk.data.byteLength;
-      const job = tracker.jobs[taskId];
-      if (job) {
-        job.transferred = offset;
-        job.updatedAt = Date.now();
-      }
+      tracker.onProgress({ jobId: taskId, taskId, state: "running", transferred: offset });
     }
     if (target) {
       await fileTransfer!.finish(target.handleId);
@@ -928,14 +1072,11 @@ async function downloadEntry(entry: FileEntry, side: PaneSide = "left") {
     }
     await window.dbxPlugin.invoke("files/download/finish", { taskId });
     releaseFrames(channel);
-    const job = tracker.jobs[taskId];
-    if (job) {
-      job.state = "completed";
-      job.transferred = size;
-      job.updatedAt = Date.now();
-    }
+    tracker.onProgress({ jobId: taskId, taskId, state: "completed", transferred: size });
     showNotice(t("downloaded", { name: info.fileName ?? entry.name }));
   } catch (cause) {
+    // 下载泵失败同样落终态（此前漏标，job 会永远停在 running）。
+    if (taskId) tracker.onProgress({ jobId: taskId, taskId, state: "failed", error: errorMessage(cause) });
     showError(cause);
   }
 }
@@ -980,6 +1121,17 @@ async function cancelTransfer(jobId: string) {
   void tracker.refresh(invokeAdapter);
 }
 
+/** 清理传输历史（P-FILES ⑥）：sidecar 清持久化历史 + 内存完成态 job，本地同步清。 */
+async function clearTransferHistory() {
+  try {
+    await call("files/transfers/clear", {});
+    tracker.clearFinished();
+    showNotice(t("historyCleared"));
+  } catch (cause) {
+    showError(cause);
+  }
+}
+
 function invokeAdapter<T>(method: string, params?: unknown) {
   return window.dbxPlugin.invoke<T>(method, params);
 }
@@ -990,7 +1142,7 @@ function menuAction(action: MenuAction) {
   const menu = contextMenu.value;
   contextMenu.value = undefined;
   if (!menu) return;
-  const { entry, side } = menu;
+  const { entry, side, selection: menuSelection } = menu;
   switch (action) {
     case "open":
       void openEntry(entry, side);
@@ -1011,6 +1163,9 @@ function menuAction(action: MenuAction) {
     case "copyPath":
       void window.dbxPlugin.clipboard?.writeText(entry.path).then(() => showNotice(t("copiedPath")));
       break;
+    case "copyName":
+      void window.dbxPlugin.clipboard?.writeText(baseName(entry.path)).then(() => showNotice(t("copiedName")));
+      break;
     case "syncDir":
     case "copyDir":
       startDirJob(action, entry, side);
@@ -1022,7 +1177,72 @@ function menuAction(action: MenuAction) {
     case "extract":
       startExtract(entry, side);
       break;
+    case "compress":
+      startCompress([entry], side);
+      break;
+    // ---- 批量（多选右键）------------------------------------------------
+    case "downloadSelected":
+      void (async () => {
+        const files = pickSideEntries(side, menuSelection).filter((item) => item.kind === "file");
+        for (const item of files) await downloadEntry(item, side);
+        if (files.length) showNotice(t("downloaded", { name: files[0].name }));
+      })();
+      break;
+    case "copySelected":
+    case "moveSelected":
+      void transferBetween(side, action === "moveSelected");
+      break;
+    case "deleteSelected":
+      startDelete(pickSideEntries(side, menuSelection), side);
+      break;
+    case "compressSelected":
+      startCompress(pickSideEntries(side, menuSelection), side);
+      break;
   }
+}
+
+/** 空白区右键：弹插件菜单前先关掉其它菜单（三菜单互斥）。 */
+function openBlankMenu(side: PaneSide, payload: { x: number; y: number }) {
+  contextMenu.value = undefined;
+  sideMenu.value = undefined;
+  blankMenu.value = { ...payload, side };
+}
+
+function blankMenuAction(action: "newFolder" | "newFile" | "refresh") {
+  const menu = blankMenu.value;
+  blankMenu.value = undefined;
+  if (!menu) return;
+  if (action === "refresh") {
+    if (menu.side === "left") void refreshDirectory();
+    else void refreshRightDirectory();
+    return;
+  }
+  if (action === "newFolder") startNewFolder(menu.side);
+  else startNewFile(menu.side);
+}
+
+/** 侧栏（目录树/快捷目录）行右键：打开 / 在另一栏打开 / 复制路径、文件名。 */
+function openSideMenu(side: PaneSide, payload: { path: string; name: string; x: number; y: number }) {
+  contextMenu.value = undefined;
+  blankMenu.value = undefined;
+  sideMenu.value = { ...payload, side };
+}
+
+function sideMenuAction(action: "open" | "openOther" | "copyPath" | "copyName") {
+  const menu = sideMenu.value;
+  sideMenu.value = undefined;
+  if (!menu) return;
+  const { side, path: target, name } = menu;
+  if (action === "open") {
+    navigateQuickPath(side, target);
+    return;
+  }
+  if (action === "openOther") {
+    navigateQuickPath(side === "left" ? "right" : "left", target);
+    return;
+  }
+  const value = action === "copyPath" ? target : name;
+  void window.dbxPlugin.clipboard?.writeText(value).then(() => showNotice(t(action === "copyPath" ? "copiedPath" : "copiedName")));
 }
 
 // ---- lifecycle -----------------------------------------------------------------
@@ -1048,6 +1268,7 @@ async function initialize() {
   await loadDirectory("/").catch(() => undefined);
   if (dualPane.value) await loadRightDirectory("/").catch(() => undefined);
   await loadQuickPaths("left");
+  if (sideTab.value === "tree") ensureTreeRoots();
   if (dualPane.value) {
     // 双栏左栏默认本地（__local__）：起点落到主目录（对标 tiny-rdm/FileZilla）。
     await enterLocalPaneIfAtRoot();
@@ -1066,10 +1287,23 @@ async function initialize() {
 
 function onContextClick() {
   contextMenu.value = undefined;
+  blankMenu.value = undefined;
+  sideMenu.value = undefined;
 }
 
 function onDocumentKeydown(event: KeyboardEvent) {
-  if (event.key === "Escape" && previewPath.value) previewPath.value = null;
+  if (event.key !== "Escape") return;
+  if (previewPath.value) {
+    previewPath.value = null;
+    return;
+  }
+  if (confirmOpen.value) {
+    closeConfirm();
+    return;
+  }
+  contextMenu.value = undefined;
+  blankMenu.value = undefined;
+  sideMenu.value = undefined;
 }
 
 function onToolbarNavigate(target: string) {
@@ -1135,13 +1369,21 @@ onBeforeUnmount(() => {
           </select>
         </div>
         <div class="wb-pane-body">
-          <!-- 快速定位侧栏：根/主目录/桌面/下载/文档/图片（quickPaths 多于 root 一项时挂载） -->
-          <QuickSidebar
-            v-if="leftSidePaths.length"
-            :paths="leftSidePaths"
+          <!-- 侧栏导航：tree（目录树，默认）/ quick（快捷目录）双 tab，可收起 -->
+          <SideNavPanel
+            side="left"
+            :tab="sideTab"
+            :collapsed="sideCollapsed"
+            :tree-root="leftTree"
+            :quick-paths="leftQuickPaths"
             :current-path="path"
             :t="t"
+            @update:tab="sideTab = $event"
+            @update:collapsed="sideCollapsed = $event"
             @navigate="navigateQuickPath('left', $event)"
+            @toggle-node="expandTreeNode('left', $event)"
+            @refresh-tree="refreshTree('left')"
+            @node-context="openSideMenu('left', $event)"
           />
           <div class="wb-pane-main">
             <div class="wb-pane-header">
@@ -1174,7 +1416,8 @@ onBeforeUnmount(() => {
               @update:selection="selection = $event"
               @update:active-path="activePath = $event"
               @open="(entry) => openEntry(entry, 'left')"
-              @contextmenu="(payload) => (contextMenu = { ...payload, side: 'left' })"
+              @contextmenu="(payload) => (contextMenu = { ...payload, side: 'left', selection: [...selection] })"
+              @blank-context="openBlankMenu('left', $event)"
               @sort="toggleSort"
             />
           </div>
@@ -1207,12 +1450,20 @@ onBeforeUnmount(() => {
           </select>
         </div>
         <div class="wb-pane-body">
-          <QuickSidebar
-            v-if="rightSidePaths.length"
-            :paths="rightSidePaths"
+          <SideNavPanel
+            side="right"
+            :tab="sideTab"
+            :collapsed="sideCollapsed"
+            :tree-root="rightTree"
+            :quick-paths="rightQuickPaths"
             :current-path="rightPath"
             :t="t"
+            @update:tab="sideTab = $event"
+            @update:collapsed="sideCollapsed = $event"
             @navigate="navigateQuickPath('right', $event)"
+            @toggle-node="expandTreeNode('right', $event)"
+            @refresh-tree="refreshTree('right')"
+            @node-context="openSideMenu('right', $event)"
           />
           <div class="wb-pane-main">
             <div class="wb-pane-header">
@@ -1245,7 +1496,8 @@ onBeforeUnmount(() => {
               @update:selection="rightSelection = $event"
               @update:active-path="rightActivePath = $event"
               @open="(entry) => openEntry(entry, 'right')"
-              @contextmenu="(payload) => (contextMenu = { ...payload, side: 'right' })"
+              @contextmenu="(payload) => (contextMenu = { ...payload, side: 'right', selection: [...rightSelection] })"
+              @blank-context="openBlankMenu('right', $event)"
               @sort="toggleSort"
             />
           </div>
@@ -1260,7 +1512,7 @@ onBeforeUnmount(() => {
           <button :class="{ 'is-active': dockTab === 'connection' }" @click="dockTab = 'connection'">{{ t("connectionPanel") }}</button>
         </div>
         <div class="wb-dock-body">
-          <TransferPanel v-if="dockTab === 'transfers'" :jobs="transferJobs" :t="t" @cancel="cancelTransfer" />
+          <TransferPanel v-if="dockTab === 'transfers'" :jobs="transferJobs" :t="t" :retryable-ids="retryableTransferIds" @cancel="cancelTransfer" @clear-history="clearTransferHistory" @retry="retryTransfer" />
           <AuditPanel v-else-if="dockTab === 'audit'" ref="auditRef" :t="t" />
           <div v-else style="display: flex; flex-direction: column; gap: 10px">
             <div class="wb-transfer-item">
@@ -1290,22 +1542,54 @@ onBeforeUnmount(() => {
       />
     </div>
 
-    <!-- 统一右键菜单（A-FILES ④b）：源栏/目标栏共用 -->
+    <!-- 统一右键菜单（A-FILES ④b）：源栏/目标栏共用；多选时切批量动作面 -->
     <div v-if="contextMenu" class="wb-context-menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @click.stop>
-      <button v-if="contextMenu.entry.kind === 'directory'" @click="menuAction('open')">{{ t("openDirectory") }}</button>
-      <button v-if="contextMenu.entry.kind === 'file' && !isArchivePath(contextMenu.entry.path)" @click="menuAction('preview')">{{ t("preview") }}</button>
-      <button v-if="contextMenu.entry.kind === 'file' && isArchivePath(contextMenu.entry.path)" @click="menuAction('archiveContents')">{{ t("archiveContents") }}</button>
-      <button v-if="contextMenu.entry.kind === 'file'" @click="menuAction('download')">{{ t("download") }}</button>
-      <button v-if="contextMenu.entry.kind === 'file' && isArchivePath(contextMenu.entry.path) && canWrite" @click="menuAction('extract')">{{ t("extractTo") }}</button>
-      <button v-if="contextMenu.entry.kind === 'directory' && canWrite" @click="menuAction('syncDir')">{{ t("transferKind.syncDir") }}…</button>
-      <button v-if="contextMenu.entry.kind === 'directory' && canWrite" @click="menuAction('copyDir')">{{ t("transferKind.copyDir") }}…</button>
+      <template v-if="contextMenu.selection.length > 1">
+        <button @click="menuAction('open')">{{ t("openDirectory") }}</button>
+        <button @click="menuAction('downloadSelected')">{{ t("downloadSelected") }}</button>
+        <button v-if="dualPane" @click="menuAction('copySelected')">{{ t("copyToTarget") }}</button>
+        <button v-if="dualPane && canWrite" @click="menuAction('moveSelected')">{{ t("moveToTarget") }}</button>
+        <button v-if="canWrite" @click="menuAction('compressSelected')">{{ t("compressSelected", { count: contextMenu.selection.length }) }}</button>
+        <hr />
+        <button class="is-danger" :disabled="!canWrite" @click="menuAction('deleteSelected')">{{ t("deleteSelected") }}</button>
+        <hr />
+        <button @click="menuAction('copyPath')">{{ t("copyPath") }}</button>
+      </template>
+      <template v-else>
+        <button v-if="contextMenu.entry.kind === 'directory'" @click="menuAction('open')">{{ t("openDirectory") }}</button>
+        <button v-if="contextMenu.entry.kind === 'file' && !isArchivePath(contextMenu.entry.path)" @click="menuAction('preview')">{{ t("preview") }}</button>
+        <button v-if="contextMenu.entry.kind === 'file' && isArchivePath(contextMenu.entry.path)" @click="menuAction('archiveContents')">{{ t("archiveContents") }}</button>
+        <button v-if="contextMenu.entry.kind === 'file'" @click="menuAction('download')">{{ t("download") }}</button>
+        <button v-if="contextMenu.entry.kind === 'file' && isArchivePath(contextMenu.entry.path) && canWrite" @click="menuAction('extract')">{{ t("extractTo") }}</button>
+        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" @click="menuAction('syncDir')">{{ t("transferKind.syncDir") }}…</button>
+        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" @click="menuAction('copyDir')">{{ t("transferKind.copyDir") }}…</button>
+        <button v-if="canWrite" @click="menuAction('compress')">{{ t("compress") }}</button>
+        <hr />
+        <button v-if="canWrite" @click="menuAction('copy')">{{ t("transferKind.copy") }}…</button>
+        <button v-if="canWrite" @click="menuAction('move')">{{ t("transferKind.move") }}…</button>
+        <button v-if="canWrite" @click="menuAction('rename')">{{ t("rename") }}</button>
+        <button class="is-danger" :disabled="!canWrite" @click="menuAction('delete')">{{ t("delete") }}</button>
+        <hr />
+        <button @click="menuAction('copyPath')">{{ t("copyPath") }}</button>
+        <button @click="menuAction('copyName')">{{ t("copyName") }}</button>
+      </template>
+    </div>
+
+    <!-- 空白区右键菜单（P-FILES）：拦截浏览器默认菜单，给出新建/刷新动作 -->
+    <div v-if="blankMenu" class="wb-context-menu" :style="{ left: `${blankMenu.x}px`, top: `${blankMenu.y}px` }" @click.stop>
+      <button :disabled="!canWrite" @click="blankMenuAction('newFolder')">{{ t("newFolder") }}</button>
+      <button :disabled="!canWrite" @click="blankMenuAction('newFile')">{{ t("newFileTitle") }}</button>
       <hr />
-      <button v-if="canWrite" @click="menuAction('copy')">{{ t("transferKind.copy") }}…</button>
-      <button v-if="canWrite" @click="menuAction('move')">{{ t("transferKind.move") }}…</button>
-      <button v-if="canWrite" @click="menuAction('rename')">{{ t("rename") }}</button>
-      <button class="is-danger" :disabled="!canWrite" @click="menuAction('delete')">{{ t("delete") }}</button>
+      <button @click="blankMenuAction('refresh')">{{ t("refresh") }}</button>
+    </div>
+
+    <!-- 侧栏右键菜单（P-FILES）：目录树/快捷目录行 → 打开 / 在另一栏打开 / 复制 -->
+    <div v-if="sideMenu" class="wb-context-menu" :style="{ left: `${sideMenu.x}px`, top: `${sideMenu.y}px` }" @click.stop>
+      <button @click="sideMenuAction('open')">{{ t("openDirectory") }}</button>
+      <button v-if="dualPane" @click="sideMenuAction('openOther')">{{ sideMenu.side === "left" ? t("openInRight") : t("openInLeft") }}</button>
       <hr />
-      <button @click="menuAction('copyPath')">{{ t("copyPath") }}</button>
+      <button @click="sideMenuAction('copyPath')">{{ t("copyPath") }}</button>
+      <button @click="sideMenuAction('copyName')">{{ t("copyName") }}</button>
     </div>
 
     <ConfirmDialog
@@ -1322,6 +1606,7 @@ onBeforeUnmount(() => {
     >
       <label v-if="confirmInput" style="display: flex; flex-direction: column; gap: 4px">
         <span v-if="confirmKind === 'newFolder'">{{ t("newFolderPlaceholder") }}</span>
+        <span v-else-if="confirmKind === 'newFile'">{{ t("newFilePlaceholder") }}</span>
         <span v-else-if="confirmKind === 'rename'">{{ t("renameTitle") }}</span>
         <span v-else>{{ t("pathPlaceholder") }}</span>
         <input v-model="confirmDraft" spellcheck="false" @keydown.enter.prevent="onConfirm" />

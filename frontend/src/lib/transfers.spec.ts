@@ -1,5 +1,18 @@
-import { describe, expect, it } from "vitest";
-import { applyList, applyProgress, percentOf, sortedJobs, type TransferJob } from "./transfers";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  RateSampler,
+  applyList,
+  applyProgress,
+  createTransferTracker,
+  etaSeconds,
+  formatEta,
+  formatRate,
+  isRetryableKind,
+  percentOf,
+  progressBytes,
+  sortedJobs,
+  type TransferJob,
+} from "./transfers";
 
 function job(overrides: Partial<TransferJob>): TransferJob {
   return {
@@ -92,5 +105,120 @@ describe("transfers", () => {
     expect(jobs.j1.remotePath).toBe("/x.bin");
     expect(jobs.j2.state).toBe("canceled");
     expect(jobs.j2.filesTotal).toBe(5);
+  });
+});
+
+describe("rate sampler (P-FILES ⑥)", () => {
+  it("returns undefined on the first sample and instant rate on the second", () => {
+    const sampler = new RateSampler();
+    expect(sampler.sample("j", 0, 1000)).toBeUndefined();
+    // 1000 字节 / 1s = 1000 B/s（首个有效窗口直接取瞬时值）。
+    expect(sampler.sample("j", 1000, 2000)).toBe(1000);
+  });
+
+  it("smooths jittering windows with EWMA", () => {
+    const sampler = new RateSampler();
+    sampler.sample("j", 0, 0);
+    const first = sampler.sample("j", 1000, 1000); // 1000 B/s
+    expect(first).toBe(1000);
+    // 第二个窗口 3000 B/s：0.35*3000 + 0.65*1000 = 1700。
+    expect(sampler.sample("j", 4000, 2000)).toBe(1700);
+  });
+
+  it("rebaselines when cumulative bytes go backwards and keeps rate on idle windows", () => {
+    const sampler = new RateSampler();
+    sampler.sample("j", 0, 0);
+    sampler.sample("j", 1000, 1000);
+    // 字节回退 → 重新基线，不产出速率。
+    expect(sampler.sample("j", 10, 2000)).toBeUndefined();
+    // 停滞窗口（无新字节）→ 维持上一速率。
+    expect(sampler.sample("j", 10, 3000)).toBe(0);
+    sampler.reset("j");
+    expect(sampler.sample("j", 500, 4000)).toBeUndefined();
+  });
+
+  it("picks dir-job bytes for sampling and formats rate/eta language-neutrally", () => {
+    expect(progressBytes(job({ kind: "syncDir", bytesDone: 300 }))).toBe(300);
+    expect(progressBytes(job({ transferred: 42 }))).toBe(42);
+    expect(formatRate(2048)).toBe("2.0 KiB/s");
+    expect(formatEta(45)).toBe("45s");
+    expect(formatEta(192)).toBe("3m12s");
+    expect(formatEta(3900)).toBe("1h05m");
+  });
+
+  it("computes eta only for running jobs with known rate and remaining bytes", () => {
+    const running = job({ state: "running", size: 1000, transferred: 250, rateBps: 250 });
+    expect(etaSeconds(running)).toBe(3);
+    expect(etaSeconds(job({ state: "running", size: 1000, transferred: 250 }))).toBeUndefined();
+    expect(etaSeconds(job({ state: "completed", size: 1000, transferred: 1000, rateBps: 250 }))).toBeUndefined();
+    expect(etaSeconds(job({ kind: "syncDir", state: "running", bytesTotal: 1000, bytesDone: 0, rateBps: 0 }))).toBeUndefined();
+  });
+});
+
+describe("transfer tracker", () => {
+  it("samples rate through onProgress and clears it on terminal states", () => {
+    // 采样时间取 Date.now()，用 fake timers 驱动确定性时间窗口。
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    try {
+      const tracker = createTransferTracker();
+      tracker.register({ ...job({ jobId: "j", state: "running", size: 1000, transferred: 0, updatedAt: 1 }) });
+      tracker.onProgress({ jobId: "j", state: "running", transferred: 500 });
+      // 只有一次采样窗口 → 无速率，等第二个事件。
+      expect(tracker.jobs.j.rateBps).toBeUndefined();
+      vi.setSystemTime(2_000);
+      tracker.onProgress({ jobId: "j", state: "running", transferred: 1000 });
+      expect(tracker.jobs.j.rateBps).toBe(500);
+      tracker.onProgress({ jobId: "j", state: "completed", transferred: 1000 });
+      expect(tracker.jobs.j.rateBps).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clearFinished removes only finished jobs and keeps active ones", () => {
+    const tracker = createTransferTracker();
+    tracker.register({ ...job({ jobId: "done", state: "completed", updatedAt: 1 }) });
+    tracker.register({ ...job({ jobId: "run", state: "running", updatedAt: 2 }) });
+    expect(tracker.clearFinished()).toBe(1);
+    expect(tracker.jobs.done).toBeUndefined();
+    expect(tracker.jobs.run).toBeDefined();
+  });
+
+  it("refresh feeds the sampler via list payloads (polling fallback)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    try {
+      const tracker = createTransferTracker();
+      let listCount = 0;
+      const payloads = [
+        { jobs: [{ jobId: "j", status: "running", kind: "upload", size: 1000, transferred: 100 }] },
+        { jobs: [{ jobId: "j", status: "running", kind: "upload", size: 1000, transferred: 600 }] },
+      ];
+      const invoke = async <T,>(_method: string): Promise<T> => payloads[Math.min(listCount++, payloads.length - 1)] as unknown as T;
+      await tracker.refresh(invoke);
+      expect(tracker.jobs.j.rateBps).toBeUndefined();
+      vi.setSystemTime(2_000);
+      await tracker.refresh(invoke);
+      expect(tracker.jobs.j.rateBps).toBe(500);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("isRetryableKind", () => {
+  it("accepts the job kinds that map 1:1 to a re-issuable backend method", () => {
+    expect(isRetryableKind("copy")).toBe(true);
+    expect(isRetryableKind("move")).toBe(true);
+    expect(isRetryableKind("rename")).toBe(true);
+    expect(isRetryableKind("syncDir")).toBe(true);
+    expect(isRetryableKind("copyDir")).toBe(true);
+  });
+
+  it("rejects kinds whose original request shape is not replayable", () => {
+    expect(isRetryableKind("upload")).toBe(false);
+    expect(isRetryableKind("download")).toBe(false);
+    expect(isRetryableKind("")).toBe(false);
   });
 });

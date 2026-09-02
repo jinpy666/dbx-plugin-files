@@ -31,6 +31,17 @@ function b64decode(value: string): Uint8Array {
   return bytes;
 }
 
+function concatBytes(chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
 export function installMockHost(): void {
   if (window.dbxPlugin) return;
   const params = new URLSearchParams(window.location.search);
@@ -155,7 +166,19 @@ export function installMockHost(): void {
     });
     schedule(400, () => {
       if (cancel.flag) return;
-      apply();
+      // 对齐 sidecar 失败契约：job 内异常 → failed progress 事件（带 error），
+      // 供 TransferPanel 失败态/重试按钮的全流程 UI 验证。源路径含 "error"
+      // 在提交期就会被 assertOk 拒绝，因此 job 级失败用目标路径注入
+      // （目标含 "fail" → 执行期失败；assertOk 只拒 "error"，可过提交）。
+      try {
+        if (target.includes("fail")) throw new Error(`mock job failure for ${target}`);
+        apply();
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        jobs.set(jobId, { ...jobs.get(jobId)!, status: "failed", error: message });
+        emit("files/transfer/progress", { jobId, kind, state: "failed", error: message, remotePath: `${source} → ${target}` });
+        return;
+      }
       jobs.set(jobId, { ...jobs.get(jobId)!, status: "completed", filesDone: 2, bytesDone: 4096 });
       emit("files/transfer/progress", { jobId, kind, state: "completed", filesDone: 2, filesTotal: 2, bytesDone: 4096, bytesTotal: 4096, remotePath: `${source} → ${target}` });
     });
@@ -255,7 +278,8 @@ export function installMockHost(): void {
       case "files/mkdir": {
         const path = str("path");
         assertOk(path);
-        put(path, "dir");
+        // 按连接路由（P-FILES）：双栏左栏 __local__ 的新建文件夹落本地树。
+        treeFor(p.connectionId).set(path.replace(/\/+$/, "") || "/", { kind: "dir", size: 0, modifiedAt: new Date().toISOString() });
         recordAudit(method, path);
         return { success: true };
       }
@@ -324,6 +348,19 @@ export function installMockHost(): void {
       }
       case "files/transfers/list":
         return { jobs: [...jobs.entries()].filter(([key]) => !key.startsWith("__")).map(([, job]) => job) };
+      case "files/transfers/clear": {
+        // 与 sidecar 语义一致：仅清完成态，queued/running 不动。
+        let cleared = 0;
+        for (const [key, job] of [...jobs.entries()]) {
+          if (key.startsWith("__")) continue;
+          const status = String((job as Record<string, unknown>).status ?? "");
+          if (status === "completed" || status === "failed" || status === "canceled") {
+            jobs.delete(key);
+            cleared += 1;
+          }
+        }
+        return { cleared };
+      }
       case "files/transfer/status": {
         const job = jobs.get(str("jobId"));
         if (!job) throw new Error(`Unknown jobId '${str("jobId")}'`);
@@ -363,10 +400,56 @@ export function installMockHost(): void {
         assertOk(path);
         const bytes = b64decode(String(p.dataBase64 ?? ""));
         if (bytes.byteLength > 4 * 1024 * 1024) throw new Error("payload exceeds 4MiB; use the upload slot instead");
-        contents.set(path.replace(/\/+$/, ""), bytes);
-        tree.set(path.replace(/\/+$/, ""), { kind: "file", size: bytes.byteLength, modifiedAt: new Date().toISOString() });
+        // 按连接路由（P-FILES）：新建文件走本方法，需与 list 的树一致。
+        contentsFor(p.connectionId).set(path.replace(/\/+$/, ""), bytes);
+        treeFor(p.connectionId).set(path.replace(/\/+$/, ""), { kind: "file", size: bytes.byteLength, modifiedAt: new Date().toISOString() });
         recordAudit(method, path);
         return { success: true };
+      }
+      case "files/compress": {
+        // P-FILES：压缩（tar/tar.gz 语义模拟）——收集 paths（文件/目录递归）
+        // 的伪归档字节；≤10 文件同步返回，否则降级 mock job。
+        const paths = Array.isArray(p.paths) ? (p.paths as unknown[]).map(String) : [];
+        const target = str("targetPath");
+        assertOk(target);
+        if (!paths.length) throw new Error("paths must not be empty");
+        if (!/\.(tar|tar\.gz|tgz)$/i.test(target)) throw new Error("Archive target must end with .tar, .tar.gz or .tgz");
+        if (treeFor(p.connectionId).has(target.replace(/\/+$/, ""))) throw new Error(`Archive target '${target}' already exists`);
+        const source = treeFor(p.connectionId);
+        const collected: Uint8Array[] = [];
+        for (const raw of paths) {
+          const path = raw.replace(/\/+$/, "");
+          const entry = source.get(path);
+          if (!entry) throw new Error(`NotFound: ${path}`);
+          if (entry.kind === "file") {
+            collected.push(contentsFor(p.connectionId).get(path) ?? new Uint8Array(0));
+            continue;
+          }
+          for (const [key, value] of source) {
+            if (key.startsWith(`${path}/`) && value.kind === "file") {
+              collected.push(contentsFor(p.connectionId).get(key) ?? new Uint8Array(0));
+            }
+          }
+        }
+        if (!collected.length) throw new Error("Nothing to compress: the sources hold no files");
+        // 伪归档字节（gzip 魔数前缀区分格式；mock 不消费真实 tar 结构）。
+        const gzip = /\.(tar\.gz|tgz)$/i.test(target);
+        const bytes = gzip ? concatBytes([new Uint8Array([0x1f, 0x8b]), concatBytes(collected)]) : concatBytes(collected);
+        const apply = () => {
+          const routed = treeFor(p.connectionId);
+          contentsFor(p.connectionId).set(target.replace(/\/+$/, ""), bytes);
+          routed.set(target.replace(/\/+$/, ""), { kind: "file", size: bytes.byteLength, modifiedAt: new Date().toISOString() });
+          recordAudit(method, target);
+        };
+        if (collected.length <= 10 && bytes.byteLength <= 8 * 1024 * 1024) {
+          apply();
+          return { success: true, transport: "native", jobId: null };
+        }
+        const jobId = `mock-job-${++jobSeq}`;
+        const cancel = { flag: false };
+        jobs.set(`__cancel_${jobId}`, cancel as unknown as Record<string, unknown>);
+        runJob(jobId, "compress", paths[0], target, apply, cancel);
+        return { success: true, transport: "job", jobId };
       }
       case "files/upload/finish": {
         const slot = uploads.get(str("taskId"));

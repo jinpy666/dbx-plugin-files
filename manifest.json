@@ -3,7 +3,7 @@
   "manifest_version": 1,
   "id": "io.dbx.files",
   "name": "DBX Files",
-  "version": "0.1.19",
+  "version": "0.1.22",
   "publisher": "xynanan",
   "description": "Multi-backend storage workbench plugin for DBX, powered by Apache OpenDAL.",
   "icon": "assets/plugin.svg",
@@ -61,6 +61,10 @@
               "value": "s3"
             },
             {
+              "label": "Alibaba OSS",
+              "value": "oss"
+            },
+            {
               "label": "WebDAV",
               "value": "webdav"
             },
@@ -92,6 +96,7 @@
           "type": "text",
           "binding": "config",
           "default": "",
+          "placeholder": "/srv/share or ~/data",
           "description": "All operations are confined under this root when set."
         },
         {
@@ -108,6 +113,8 @@
           "type": "text",
           "binding": "config",
           "default": "",
+          "placeholder": "gcs / azblob / oss / memory",
+          "description": "Any compiled OpenDAL service, e.g. gcs, azblob, oss, memory.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
@@ -119,8 +126,7 @@
             "one_of": [
               "opendal-custom"
             ]
-          },
-          "description": "Any compiled OpenDAL service, e.g. gcs, azblob, oss, memory."
+          }
         },
         {
           "key": "config",
@@ -128,13 +134,14 @@
           "type": "textarea",
           "binding": "config",
           "default": "{}",
+          "placeholder": "{ \"root\": \"/tmp\", \"bucket\": \"demo\" }",
+          "description": "JSON object passed verbatim as OpenDAL Builder key/values, e.g. {\"root\":\"/tmp\",\"bucket\":\"demo\"}.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
               "opendal-custom"
             ]
-          },
-          "description": "JSON object passed verbatim as OpenDAL Builder key/values, e.g. {\"root\":\"/tmp\",\"bucket\":\"demo\"}."
+          }
         },
         {
           "key": "bucket",
@@ -142,16 +149,20 @@
           "type": "text",
           "binding": "config",
           "default": "",
+          "placeholder": "my-bucket",
+          "description": "Object storage bucket name.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
-              "s3"
+              "s3",
+              "oss"
             ]
           },
           "required_when": {
             "field": "protocol",
             "one_of": [
-              "s3"
+              "s3",
+              "oss"
             ]
           }
         },
@@ -161,18 +172,20 @@
           "type": "text",
           "binding": "config",
           "default": "",
+          "placeholder": "http://127.0.0.1:9000",
+          "description": "S3/OSS/WebDAV/FTP: full URL (http://127.0.0.1:9000, https://oss-cn-hangzhou.aliyuncs.com). SFTP: user@host or ssh://user@host:port (native also accepts host:port with the user field). SMB: host[:445] or smb://host[:445].",
           "visible_when": {
             "field": "protocol",
             "one_of": [
               "s3",
+              "oss",
               "webdav",
               "ftp",
               "sftp",
               "smb",
               "sftp-native"
             ]
-          },
-          "description": "S3/WebDAV/FTP: full URL, e.g. http://127.0.0.1:9000. SFTP/SFTP native: OpenSSH style user@host or ssh://user@host:port (native also accepts host:port with the user field). SMB: host[:445] or smb://host[:445], e.g. nas.local:445 or smb://nas.local."
+          }
         },
         {
           "key": "share",
@@ -180,6 +193,8 @@
           "type": "text",
           "binding": "config",
           "default": "",
+          "placeholder": "media",
+          "description": "SMB share name used as the tree connect target.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
@@ -191,8 +206,7 @@
             "one_of": [
               "smb"
             ]
-          },
-          "description": "SMB share name used as the tree connect target."
+          }
         },
         {
           "key": "region",
@@ -200,6 +214,8 @@
           "type": "text",
           "binding": "config",
           "default": "",
+          "placeholder": "us-east-1",
+          "description": "S3 region; leave empty when the endpoint implies it.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
@@ -213,16 +229,20 @@
           "type": "text",
           "binding": "config",
           "default": "",
+          "placeholder": "my-access-key-id",
+          "description": "Access key ID for S3/OSS.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
-              "s3"
+              "s3",
+              "oss"
             ]
           },
           "required_when": {
             "field": "protocol",
             "one_of": [
-              "s3"
+              "s3",
+              "oss"
             ]
           }
         },
@@ -232,16 +252,19 @@
           "type": "password",
           "binding": "secret",
           "default": "",
+          "description": "Secret key kept in the host secret binding.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
-              "s3"
+              "s3",
+              "oss"
             ]
           },
           "required_when": {
             "field": "protocol",
             "one_of": [
-              "s3"
+              "s3",
+              "oss"
             ]
           }
         },
@@ -251,6 +274,8 @@
           "type": "text",
           "binding": "config",
           "default": "",
+          "placeholder": "user",
+          "description": "Login user for WebDAV/SMB.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
@@ -265,13 +290,14 @@
           "type": "text",
           "binding": "config",
           "default": "",
+          "placeholder": "WORKGROUP",
+          "description": "NTLM domain or workgroup; leave empty when not needed.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
               "smb"
             ]
-          },
-          "description": "NTLM domain or workgroup; leave empty when not needed."
+          }
         },
         {
           "key": "user",
@@ -279,13 +305,14 @@
           "type": "text",
           "binding": "config",
           "default": "",
+          "placeholder": "anonymous",
+          "description": "Leave empty for anonymous login.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
               "ftp"
             ]
-          },
-          "description": "Leave empty for anonymous login."
+          }
         },
         {
           "key": "password",
@@ -293,6 +320,7 @@
           "type": "password",
           "binding": "secret",
           "default": "",
+          "description": "Used for password login on SFTP native (falls back to keyboard-interactive automatically); also the webdav/ftp/smb login password.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
@@ -302,8 +330,7 @@
               "smb",
               "sftp-native"
             ]
-          },
-          "description": "Used for password login on SFTP native (falls back to keyboard-interactive automatically); also the webdav/ftp/smb login password."
+          }
         },
         {
           "key": "key",
@@ -311,14 +338,15 @@
           "type": "text",
           "binding": "config",
           "default": "",
+          "placeholder": "~/.ssh/id_ed25519",
+          "description": "Private key content or a path to the key file. SFTP native uses the key when the password is empty.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
               "sftp",
               "sftp-native"
             ]
-          },
-          "description": "Private key content or a path to the key file. SFTP native uses the key when the password is empty."
+          }
         },
         {
           "key": "known_hosts_strategy",
@@ -370,13 +398,6 @@
           "type": "select",
           "binding": "config",
           "default": "direct",
-          "visible_when": {
-            "field": "protocol",
-            "one_of": [
-              "sftp",
-              "ftp"
-            ]
-          },
           "options": [
             {
               "label": "Direct",
@@ -386,7 +407,14 @@
               "label": "Through DBX SSH tunnel",
               "value": "via-dbx-ssh"
             }
-          ]
+          ],
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "sftp",
+              "ftp"
+            ]
+          }
         },
         {
           "key": "dbx_ssh_connection",
@@ -394,6 +422,8 @@
           "type": "text",
           "binding": "config",
           "default": "",
+          "placeholder": "host-ssh-connection-id",
+          "description": "Host SSH connection id used to forward the tunnel.",
           "visible_when": {
             "field": "connection_mode",
             "one_of": [
@@ -405,15 +435,15 @@
             "one_of": [
               "via-dbx-ssh"
             ]
-          },
-          "description": "Host SSH connection id used to forward the tunnel."
+          }
         },
         {
           "key": "timeout_secs",
           "label": "Operation timeout (seconds)",
           "type": "number",
           "binding": "config",
-          "default": 30
+          "default": 30,
+          "description": "Per-operation timeout in seconds."
         }
       ],
       "workbench": "io.dbx.files.workbench",
@@ -438,7 +468,7 @@
       "contributions": {
         "io.dbx.files.connection": {
           "label": "存储",
-          "description": "经 Apache OpenDAL 的存储连接：本地文件系统、S3/MinIO、WebDAV、FTP、SFTP、SMB/CIFS 或任意已编译的 OpenDAL 服务。",
+          "description": "经 Apache OpenDAL 的存储连接：本地文件系统、S3/MinIO、阿里云 OSS、WebDAV、FTP、SFTP、SMB/CIFS 或任意已编译的 OpenDAL 服务。",
           "fields": {
             "display_name": {
               "label": "连接名称"
@@ -453,62 +483,92 @@
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
                 "opendal-custom": "OpenDAL 自定义服务",
-                "sftp-native": "SFTP（原生）"
+                "sftp-native": "SFTP（原生）",
+                "oss": "阿里云 OSS"
               }
             },
             "root": {
-              "label": "根路径"
+              "label": "根路径",
+              "placeholder": "/srv/share 或 ~/data",
+              "description": "设置后所有操作都限制在该根路径内。"
             },
             "lock_to_root": {
-              "label": "锁定在根路径内"
+              "label": "锁定在根路径内",
+              "description": "拒绝任何超出所配置根路径的操作。"
             },
             "service": {
-              "label": "OpenDAL 服务名"
+              "label": "OpenDAL 服务名",
+              "placeholder": "gcs / azblob / oss / memory",
+              "description": "任意已编译的 OpenDAL 服务，如 gcs、azblob、oss、memory。"
             },
             "config": {
-              "label": "服务配置（JSON）"
+              "label": "服务配置（JSON）",
+              "placeholder": "{ \"root\": \"/tmp\", \"bucket\": \"demo\" }",
+              "description": "以 JSON 对象原样传入 OpenDAL Builder 键值，如 {\"root\":\"/tmp\",\"bucket\":\"demo\"}。"
             },
             "bucket": {
-              "label": "存储桶"
+              "label": "存储桶",
+              "placeholder": "my-bucket",
+              "description": "对象存储桶名称。"
             },
             "endpoint": {
-              "label": "端点"
+              "label": "端点",
+              "placeholder": "http://127.0.0.1:9000",
+              "description": "S3/OSS/WebDAV/FTP：完整 URL（http://127.0.0.1:9000、https://oss-cn-hangzhou.aliyuncs.com）。SFTP：user@host 或 ssh://user@host:port（原生 SFTP 也支持 host:port 配合用户字段）。SMB：host[:445] 或 smb://host[:445]。"
             },
             "share": {
-              "label": "共享名"
+              "label": "共享名",
+              "placeholder": "media",
+              "description": "SMB 树连接目标使用的共享名。"
             },
             "region": {
-              "label": "区域"
+              "label": "区域",
+              "placeholder": "us-east-1",
+              "description": "S3 区域；端点已隐含时可留空。"
             },
             "access_key_id": {
-              "label": "Access Key ID"
+              "label": "Access Key ID",
+              "placeholder": "my-access-key-id",
+              "description": "S3/OSS 的 Access Key ID。"
             },
             "secret_access_key": {
-              "label": "Secret Access Key"
+              "label": "Secret Access Key",
+              "description": "密钥由宿主 secret binding 保管。"
             },
             "username": {
-              "label": "用户名"
+              "label": "用户名",
+              "placeholder": "user",
+              "description": "WebDAV/SMB 的登录用户。"
             },
             "domain": {
-              "label": "域"
+              "label": "域",
+              "placeholder": "WORKGROUP",
+              "description": "NTLM 域或工作组；不需要时留空。"
             },
             "user": {
-              "label": "用户"
+              "label": "用户",
+              "placeholder": "anonymous",
+              "description": "匿名登录时留空。"
             },
             "password": {
-              "label": "密码"
+              "label": "密码",
+              "description": "SFTP 原生密码登录（失败自动回退 keyboard-interactive）；也是 webdav/ftp/smb 的登录密码。"
             },
             "key": {
-              "label": "私钥或私钥路径"
+              "label": "私钥或私钥路径",
+              "placeholder": "~/.ssh/id_ed25519",
+              "description": "私钥内容或私钥文件路径。SFTP 原生在密码为空时使用私钥。"
             },
             "known_hosts_strategy": {
               "label": "Known Hosts 策略"
             },
             "read_only": {
-              "label": "只读"
+              "label": "只读",
+              "description": "拒绝该连接上的所有写操作。"
             },
             "allow_delete": {
-              "label": "允许删除"
+              "label": "允许删除",
+              "description": "关闭后，删除/清空操作会被拒绝。"
             },
             "connection_mode": {
               "label": "连接模式",
@@ -518,10 +578,13 @@
               }
             },
             "dbx_ssh_connection": {
-              "label": "DBX SSH 连接"
+              "label": "DBX SSH 连接",
+              "placeholder": "host-ssh-connection-id",
+              "description": "用于转发隧道的宿主 SSH 连接 id。"
             },
             "timeout_secs": {
-              "label": "操作超时（秒）"
+              "label": "操作超时（秒）",
+              "description": "单次操作的超时秒数。"
             }
           }
         },
@@ -537,7 +600,7 @@
       "contributions": {
         "io.dbx.files.connection": {
           "label": "儲存",
-          "description": "經 Apache OpenDAL 的儲存連線：本機檔案系統、S3/MinIO、WebDAV、FTP、SFTP、SMB/CIFS 或任意已編譯的 OpenDAL 服務。",
+          "description": "經 Apache OpenDAL 的儲存連線：本機檔案系統、S3/MinIO、阿里雲 OSS、WebDAV、FTP、SFTP、SMB/CIFS 或任意已編譯的 OpenDAL 服務。",
           "fields": {
             "display_name": {
               "label": "連線名稱"
@@ -552,62 +615,92 @@
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
                 "opendal-custom": "OpenDAL 自訂服務",
-                "sftp-native": "SFTP（原生）"
+                "sftp-native": "SFTP（原生）",
+                "oss": "阿里雲 OSS"
               }
             },
             "root": {
-              "label": "根路徑"
+              "label": "根路徑",
+              "placeholder": "/srv/share 或 ~/data",
+              "description": "設定後所有操作都限制在該根路徑內。"
             },
             "lock_to_root": {
-              "label": "鎖定在根路徑內"
+              "label": "鎖定在根路徑內",
+              "description": "拒絕任何超出所設定根路徑的操作。"
             },
             "service": {
-              "label": "OpenDAL 服務名稱"
+              "label": "OpenDAL 服務名稱",
+              "placeholder": "gcs / azblob / oss / memory",
+              "description": "任意已編譯的 OpenDAL 服務，如 gcs、azblob、oss、memory。"
             },
             "config": {
-              "label": "服務設定（JSON）"
+              "label": "服務設定（JSON）",
+              "placeholder": "{ \"root\": \"/tmp\", \"bucket\": \"demo\" }",
+              "description": "以 JSON 物件原樣傳入 OpenDAL Builder 鍵值，如 {\"root\":\"/tmp\",\"bucket\":\"demo\"}。"
             },
             "bucket": {
-              "label": "儲存儲存桶"
+              "label": "儲存儲存桶",
+              "placeholder": "my-bucket",
+              "description": "物件儲存儲存桶名稱。"
             },
             "endpoint": {
-              "label": "端點"
+              "label": "端點",
+              "placeholder": "http://127.0.0.1:9000",
+              "description": "S3/OSS/WebDAV/FTP：完整 URL（http://127.0.0.1:9000、https://oss-cn-hangzhou.aliyuncs.com）。SFTP：user@host 或 ssh://user@host:port（原生 SFTP 也支援 host:port 搭配使用者欄位）。SMB：host[:445] 或 smb://host[:445]。"
             },
             "share": {
-              "label": "共用名稱"
+              "label": "共用名稱",
+              "placeholder": "media",
+              "description": "SMB 樹狀連線目標使用的共用名稱。"
             },
             "region": {
-              "label": "區域"
+              "label": "區域",
+              "placeholder": "us-east-1",
+              "description": "S3 區域；端點已隱含時可留空。"
             },
             "access_key_id": {
-              "label": "Access Key ID"
+              "label": "Access Key ID",
+              "placeholder": "my-access-key-id",
+              "description": "S3/OSS 的 Access Key ID。"
             },
             "secret_access_key": {
-              "label": "Secret Access Key"
+              "label": "Secret Access Key",
+              "description": "金鑰由宿主 secret binding 保管。"
             },
             "username": {
-              "label": "使用者名稱"
+              "label": "使用者名稱",
+              "placeholder": "user",
+              "description": "WebDAV/SMB 的登入使用者。"
             },
             "domain": {
-              "label": "網域"
+              "label": "網域",
+              "placeholder": "WORKGROUP",
+              "description": "NTLM 網域或工作群組；不需要時留空。"
             },
             "user": {
-              "label": "使用者"
+              "label": "使用者",
+              "placeholder": "anonymous",
+              "description": "匿名登入時留空。"
             },
             "password": {
-              "label": "密碼"
+              "label": "密碼",
+              "description": "SFTP 原生密碼登入（失敗自動回退 keyboard-interactive）；也是 webdav/ftp/smb 的登入密碼。"
             },
             "key": {
-              "label": "私鑰或私鑰路徑"
+              "label": "私鑰或私鑰路徑",
+              "placeholder": "~/.ssh/id_ed25519",
+              "description": "私鑰內容或私鑰檔案路徑。SFTP 原生在密碼為空時使用私鑰。"
             },
             "known_hosts_strategy": {
               "label": "Known Hosts 策略"
             },
             "read_only": {
-              "label": "唯讀"
+              "label": "唯讀",
+              "description": "拒絕該連線上的所有寫入操作。"
             },
             "allow_delete": {
-              "label": "允許刪除"
+              "label": "允許刪除",
+              "description": "關閉後，刪除/清空操作會被拒絕。"
             },
             "connection_mode": {
               "label": "連線模式",
@@ -617,10 +710,13 @@
               }
             },
             "dbx_ssh_connection": {
-              "label": "DBX SSH 連線"
+              "label": "DBX SSH 連線",
+              "placeholder": "host-ssh-connection-id",
+              "description": "用於轉發隧道的宿主 SSH 連線 id。"
             },
             "timeout_secs": {
-              "label": "操作逾時（秒）"
+              "label": "操作逾時（秒）",
+              "description": "單次操作的逾時秒數。"
             }
           }
         },
@@ -636,7 +732,7 @@
       "contributions": {
         "io.dbx.files.connection": {
           "label": "Storage",
-          "description": "Storage connection through Apache OpenDAL: local filesystem, S3/MinIO, WebDAV, FTP, SFTP, SMB/CIFS, or any compiled OpenDAL service.",
+          "description": "Storage connection through Apache OpenDAL: local filesystem, S3/MinIO, Alibaba OSS, WebDAV, FTP, SFTP, SMB/CIFS, or any compiled OpenDAL service.",
           "fields": {
             "display_name": {
               "label": "Connection name"
@@ -651,62 +747,92 @@
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
                 "opendal-custom": "OpenDAL custom service",
-                "sftp-native": "SFTP (native)"
+                "sftp-native": "SFTP (native)",
+                "oss": "Alibaba OSS"
               }
             },
             "root": {
-              "label": "Root path"
+              "label": "Root path",
+              "placeholder": "/srv/share or ~/data",
+              "description": "All operations are confined under this root when set."
             },
             "lock_to_root": {
-              "label": "Lock navigation to root"
+              "label": "Lock navigation to root",
+              "description": "Reject any path outside the configured root."
             },
             "service": {
-              "label": "OpenDAL service name"
+              "label": "OpenDAL service name",
+              "placeholder": "gcs / azblob / oss / memory",
+              "description": "Any compiled OpenDAL service, e.g. gcs, azblob, oss, memory."
             },
             "config": {
-              "label": "Service config (JSON)"
+              "label": "Service config (JSON)",
+              "placeholder": "{ \"root\": \"/tmp\", \"bucket\": \"demo\" }",
+              "description": "JSON object passed verbatim as OpenDAL Builder key/values, e.g. {\"root\":\"/tmp\",\"bucket\":\"demo\"}."
             },
             "bucket": {
-              "label": "Bucket"
+              "label": "Bucket",
+              "placeholder": "my-bucket",
+              "description": "Object storage bucket name."
             },
             "endpoint": {
-              "label": "Endpoint"
+              "label": "Endpoint",
+              "placeholder": "http://127.0.0.1:9000",
+              "description": "S3/OSS/WebDAV/FTP: full URL (http://127.0.0.1:9000, https://oss-cn-hangzhou.aliyuncs.com). SFTP: user@host or ssh://user@host:port (native also accepts host:port with the user field). SMB: host[:445] or smb://host[:445]."
             },
             "share": {
-              "label": "Share"
+              "label": "Share",
+              "placeholder": "media",
+              "description": "SMB share name used as the tree connect target."
             },
             "region": {
-              "label": "Region"
+              "label": "Region",
+              "placeholder": "us-east-1",
+              "description": "S3 region; leave empty when the endpoint implies it."
             },
             "access_key_id": {
-              "label": "Access key ID"
+              "label": "Access key ID",
+              "placeholder": "my-access-key-id",
+              "description": "Access key ID for S3/OSS."
             },
             "secret_access_key": {
-              "label": "Secret access key"
+              "label": "Secret access key",
+              "description": "Secret key kept in the host secret binding."
             },
             "username": {
-              "label": "Username"
+              "label": "Username",
+              "placeholder": "user",
+              "description": "Login user for WebDAV/SMB."
             },
             "domain": {
-              "label": "Domain"
+              "label": "Domain",
+              "placeholder": "WORKGROUP",
+              "description": "NTLM domain or workgroup; leave empty when not needed."
             },
             "user": {
-              "label": "User"
+              "label": "User",
+              "placeholder": "anonymous",
+              "description": "Leave empty for anonymous login."
             },
             "password": {
-              "label": "Password"
+              "label": "Password",
+              "description": "Used for password login on SFTP native (falls back to keyboard-interactive automatically); also the webdav/ftp/smb login password."
             },
             "key": {
-              "label": "Private key or path"
+              "label": "Private key or path",
+              "placeholder": "~/.ssh/id_ed25519",
+              "description": "Private key content or a path to the key file. SFTP native uses the key when the password is empty."
             },
             "known_hosts_strategy": {
               "label": "Known hosts strategy"
             },
             "read_only": {
-              "label": "Read only"
+              "label": "Read only",
+              "description": "Reject every write operation on this connection."
             },
             "allow_delete": {
-              "label": "Allow delete"
+              "label": "Allow delete",
+              "description": "When off, delete/purge operations are rejected."
             },
             "connection_mode": {
               "label": "Connection mode",
@@ -716,10 +842,13 @@
               }
             },
             "dbx_ssh_connection": {
-              "label": "DBX SSH connection"
+              "label": "DBX SSH connection",
+              "placeholder": "host-ssh-connection-id",
+              "description": "Host SSH connection id used to forward the tunnel."
             },
             "timeout_secs": {
-              "label": "Operation timeout (seconds)"
+              "label": "Operation timeout (seconds)",
+              "description": "Per-operation timeout in seconds."
             }
           }
         },
@@ -735,7 +864,7 @@
       "contributions": {
         "io.dbx.files.connection": {
           "label": "Almacenamiento",
-          "description": "Conexión de almacenamiento mediante Apache OpenDAL: sistema de archivos local, S3/MinIO, WebDAV, FTP, SFTP, SMB/CIFS o cualquier servicio compilado de OpenDAL.",
+          "description": "Conexión de almacenamiento mediante Apache OpenDAL: sistema de archivos local, S3/MinIO, OSS de Alibaba, WebDAV, FTP, SFTP, SMB/CIFS o cualquier servicio compilado de OpenDAL.",
           "fields": {
             "display_name": {
               "label": "Nombre de la conexión"
@@ -750,62 +879,92 @@
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
                 "opendal-custom": "Servicio personalizado de OpenDAL",
-                "sftp-native": "SFTP (nativo)"
+                "sftp-native": "SFTP (nativo)",
+                "oss": "OSS de Alibaba"
               }
             },
             "root": {
-              "label": "Ruta raíz"
+              "label": "Ruta raíz",
+              "placeholder": "/srv/share o ~/data",
+              "description": "Si se establece, todas las operaciones quedan confinadas bajo esta raíz."
             },
             "lock_to_root": {
-              "label": "Restringir a la raíz"
+              "label": "Restringir a la raíz",
+              "description": "Rechaza cualquier ruta fuera de la raíz configurada."
             },
             "service": {
-              "label": "Nombre del servicio OpenDAL"
+              "label": "Nombre del servicio OpenDAL",
+              "placeholder": "gcs / azblob / oss / memory",
+              "description": "Cualquier servicio OpenDAL compilado, p. ej. gcs, azblob, oss, memory."
             },
             "config": {
-              "label": "Configuración del servicio (JSON)"
+              "label": "Configuración del servicio (JSON)",
+              "placeholder": "{ \"root\": \"/tmp\", \"bucket\": \"demo\" }",
+              "description": "Objeto JSON que se pasa tal cual como claves/valores del Builder de OpenDAL, p. ej. {\"root\":\"/tmp\",\"bucket\":\"demo\"}."
             },
             "bucket": {
-              "label": "Bucket"
+              "label": "Bucket",
+              "placeholder": "my-bucket",
+              "description": "Nombre del bucket de almacenamiento de objetos."
             },
             "endpoint": {
-              "label": "Endpoint"
+              "label": "Endpoint",
+              "placeholder": "http://127.0.0.1:9000",
+              "description": "S3/OSS/WebDAV/FTP: URL completa (http://127.0.0.1:9000, https://oss-cn-hangzhou.aliyuncs.com). SFTP: user@host o ssh://user@host:port (el nativo también acepta host:port con el campo de usuario). SMB: host[:445] o smb://host[:445]."
             },
             "share": {
-              "label": "Recurso compartido"
+              "label": "Recurso compartido",
+              "placeholder": "media",
+              "description": "Nombre del recurso compartido SMB usado como destino de tree connect."
             },
             "region": {
-              "label": "Región"
+              "label": "Región",
+              "placeholder": "us-east-1",
+              "description": "Región de S3; déjelo vacío si el endpoint ya la implica."
             },
             "access_key_id": {
-              "label": "ID de clave de acceso"
+              "label": "ID de clave de acceso",
+              "placeholder": "mi-id-de-acceso",
+              "description": "ID de clave de acceso para S3/OSS."
             },
             "secret_access_key": {
-              "label": "Clave de acceso secreta"
+              "label": "Clave de acceso secreta",
+              "description": "Clave secreta guardada en el secret binding del host."
             },
             "username": {
-              "label": "Usuario"
+              "label": "Usuario",
+              "placeholder": "usuario",
+              "description": "Usuario de inicio de sesión para WebDAV/SMB."
             },
             "domain": {
-              "label": "Dominio"
+              "label": "Dominio",
+              "placeholder": "WORKGROUP",
+              "description": "Dominio o grupo de trabajo NTLM; déjelo vacío si no es necesario."
             },
             "user": {
-              "label": "Usuario"
+              "label": "Usuario",
+              "placeholder": "anonymous",
+              "description": "Déjelo vacío para inicio de sesión anónimo."
             },
             "password": {
-              "label": "Contraseña"
+              "label": "Contraseña",
+              "description": "Se usa para el inicio con contraseña en SFTP nativo (retorna automáticamente a keyboard-interactive); también es la contraseña de webdav/ftp/smb."
             },
             "key": {
-              "label": "Clave privada o ruta"
+              "label": "Clave privada o ruta",
+              "placeholder": "~/.ssh/id_ed25519",
+              "description": "Contenido de la clave privada o ruta al archivo de clave. SFTP nativo usa la clave cuando la contraseña está vacía."
             },
             "known_hosts_strategy": {
               "label": "Estrategia de known hosts"
             },
             "read_only": {
-              "label": "Solo lectura"
+              "label": "Solo lectura",
+              "description": "Rechaza toda operación de escritura en esta conexión."
             },
             "allow_delete": {
-              "label": "Permitir eliminar"
+              "label": "Permitir eliminar",
+              "description": "Si se desactiva, se rechazan las operaciones de borrado/purga."
             },
             "connection_mode": {
               "label": "Modo de conexión",
@@ -815,10 +974,13 @@
               }
             },
             "dbx_ssh_connection": {
-              "label": "Conexión SSH de DBX"
+              "label": "Conexión SSH de DBX",
+              "placeholder": "id-conexion-ssh-host",
+              "description": "ID de la conexión SSH del host usada para reenviar el túnel."
             },
             "timeout_secs": {
-              "label": "Tiempo de espera de operación (segundos)"
+              "label": "Tiempo de espera de operación (segundos)",
+              "description": "Tiempo de espera por operación, en segundos."
             }
           }
         },
@@ -834,7 +996,7 @@
       "contributions": {
         "io.dbx.files.connection": {
           "label": "Archiviazione",
-          "description": "Connessione di archiviazione tramite Apache OpenDAL: filesystem locale, S3/MinIO, WebDAV, FTP, SFTP, SMB/CIFS o qualsiasi servizio OpenDAL compilato.",
+          "description": "Connessione di archiviazione tramite Apache OpenDAL: filesystem locale, S3/MinIO, OSS di Alibaba, WebDAV, FTP, SFTP, SMB/CIFS o qualsiasi servizio OpenDAL compilato.",
           "fields": {
             "display_name": {
               "label": "Nome connessione"
@@ -849,62 +1011,92 @@
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
                 "opendal-custom": "Servizio OpenDAL personalizzato",
-                "sftp-native": "SFTP (nativo)"
+                "sftp-native": "SFTP (nativo)",
+                "oss": "OSS di Alibaba"
               }
             },
             "root": {
-              "label": "Percorso radice"
+              "label": "Percorso radice",
+              "placeholder": "/srv/share o ~/data",
+              "description": "Se impostato, tutte le operazioni restano confinate sotto questa radice."
             },
             "lock_to_root": {
-              "label": "Blocca nella radice"
+              "label": "Blocca nella radice",
+              "description": "Rifiuta qualsiasi percorso fuori dalla radice configurata."
             },
             "service": {
-              "label": "Nome servizio OpenDAL"
+              "label": "Nome servizio OpenDAL",
+              "placeholder": "gcs / azblob / oss / memory",
+              "description": "Qualsiasi servizio OpenDAL compilato, es. gcs, azblob, oss, memory."
             },
             "config": {
-              "label": "Configurazione servizio (JSON)"
+              "label": "Configurazione servizio (JSON)",
+              "placeholder": "{ \"root\": \"/tmp\", \"bucket\": \"demo\" }",
+              "description": "Oggetto JSON passato verbatim come chiavi/valori del Builder OpenDAL, es. {\"root\":\"/tmp\",\"bucket\":\"demo\"}."
             },
             "bucket": {
-              "label": "Bucket"
+              "label": "Bucket",
+              "placeholder": "my-bucket",
+              "description": "Nome del bucket di object storage."
             },
             "endpoint": {
-              "label": "Endpoint"
+              "label": "Endpoint",
+              "placeholder": "http://127.0.0.1:9000",
+              "description": "S3/OSS/WebDAV/FTP: URL completo (http://127.0.0.1:9000, https://oss-cn-hangzhou.aliyuncs.com). SFTP: user@host o ssh://user@host:port (il nativo accetta anche host:port con il campo utente). SMB: host[:445] o smb://host[:445]."
             },
             "share": {
-              "label": "Condivisione"
+              "label": "Condivisione",
+              "placeholder": "media",
+              "description": "Nome della condivisione SMB usata come destinazione del tree connect."
             },
             "region": {
-              "label": "Regione"
+              "label": "Regione",
+              "placeholder": "us-east-1",
+              "description": "Regione S3; lasciare vuoto se l'endpoint la implica già."
             },
             "access_key_id": {
-              "label": "ID chiave di accesso"
+              "label": "ID chiave di accesso",
+              "placeholder": "mio-id-accesso",
+              "description": "ID chiave di accesso per S3/OSS."
             },
             "secret_access_key": {
-              "label": "Chiave di accesso segreta"
+              "label": "Chiave di accesso segreta",
+              "description": "Chiave segreta custodita nel secret binding dell'host."
             },
             "username": {
-              "label": "Nome utente"
+              "label": "Nome utente",
+              "placeholder": "utente",
+              "description": "Utente di accesso per WebDAV/SMB."
             },
             "domain": {
-              "label": "Dominio"
+              "label": "Dominio",
+              "placeholder": "WORKGROUP",
+              "description": "Dominio o workgroup NTLM; lasciare vuoto se non necessario."
             },
             "user": {
-              "label": "Utente"
+              "label": "Utente",
+              "placeholder": "anonymous",
+              "description": "Lasciare vuoto per l'accesso anonimo."
             },
             "password": {
-              "label": "Password"
+              "label": "Password",
+              "description": "Usata per l'accesso con password su SFTP nativo (ripiega automaticamente su keyboard-interactive); è anche la password di webdav/ftp/smb."
             },
             "key": {
-              "label": "Chiave privata o percorso"
+              "label": "Chiave privata o percorso",
+              "placeholder": "~/.ssh/id_ed25519",
+              "description": "Contenuto della chiave privata o percorso del file chiave. SFTP nativo usa la chiave quando la password è vuota."
             },
             "known_hosts_strategy": {
               "label": "Strategia known hosts"
             },
             "read_only": {
-              "label": "Sola lettura"
+              "label": "Sola lettura",
+              "description": "Rifiuta ogni operazione di scrittura su questa connessione."
             },
             "allow_delete": {
-              "label": "Consenti eliminazione"
+              "label": "Consenti eliminazione",
+              "description": "Se disattivato, le operazioni di eliminazione/pulizia vengono rifiutate."
             },
             "connection_mode": {
               "label": "Modalità di connessione",
@@ -914,10 +1106,13 @@
               }
             },
             "dbx_ssh_connection": {
-              "label": "Connessione SSH DBX"
+              "label": "Connessione SSH DBX",
+              "placeholder": "id-connessione-ssh-host",
+              "description": "ID della connessione SSH dell'host usata per inoltrare il tunnel."
             },
             "timeout_secs": {
-              "label": "Timeout operazione (secondi)"
+              "label": "Timeout operazione (secondi)",
+              "description": "Timeout per operazione, in secondi."
             }
           }
         },
@@ -933,7 +1128,7 @@
       "contributions": {
         "io.dbx.files.connection": {
           "label": "ストレージ",
-          "description": "Apache OpenDAL 経由のストレージ接続：ローカルファイルシステム、S3/MinIO、WebDAV、FTP、SFTP、SMB/CIFS、またはコンパイル済みの任意の OpenDAL サービス。",
+          "description": "Apache OpenDAL 経由のストレージ接続：ローカルファイルシステム、S3/MinIO、Alibaba OSS、WebDAV、FTP、SFTP、SMB/CIFS、またはコンパイル済みの任意の OpenDAL サービス。",
           "fields": {
             "display_name": {
               "label": "接続名"
@@ -948,62 +1143,92 @@
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
                 "opendal-custom": "OpenDAL カスタムサービス",
-                "sftp-native": "SFTP（ネイティブ）"
+                "sftp-native": "SFTP（ネイティブ）",
+                "oss": "Alibaba OSS"
               }
             },
             "root": {
-              "label": "ルートパス"
+              "label": "ルートパス",
+              "placeholder": "/srv/share または ~/data",
+              "description": "設定すると、すべての操作がこのルート配下に制限されます。"
             },
             "lock_to_root": {
-              "label": "ルート内に制限"
+              "label": "ルート内に制限",
+              "description": "設定されたルート外のパスを拒否します。"
             },
             "service": {
-              "label": "OpenDAL サービス名"
+              "label": "OpenDAL サービス名",
+              "placeholder": "gcs / azblob / oss / memory",
+              "description": "コンパイル済みの任意の OpenDAL サービス（例: gcs、azblob、oss、memory）。"
             },
             "config": {
-              "label": "サービス設定（JSON）"
+              "label": "サービス設定（JSON）",
+              "placeholder": "{ \"root\": \"/tmp\", \"bucket\": \"demo\" }",
+              "description": "OpenDAL Builder のキー/値としてそのまま渡す JSON オブジェクト（例: {\"root\":\"/tmp\",\"bucket\":\"demo\"}）。"
             },
             "bucket": {
-              "label": "バケット"
+              "label": "バケット",
+              "placeholder": "my-bucket",
+              "description": "オブジェクトストレージのバケット名。"
             },
             "endpoint": {
-              "label": "エンドポイント"
+              "label": "エンドポイント",
+              "placeholder": "http://127.0.0.1:9000",
+              "description": "S3/OSS/WebDAV/FTP: 完全な URL（http://127.0.0.1:9000、https://oss-cn-hangzhou.aliyuncs.com）。SFTP: user@host または ssh://user@host:port（ネイティブはユーザー欄と併せて host:port も可）。SMB: host[:445] または smb://host[:445]。"
             },
             "share": {
-              "label": "共有名"
+              "label": "共有名",
+              "placeholder": "media",
+              "description": "ツリー接続先として使う SMB 共有名。"
             },
             "region": {
-              "label": "リージョン"
+              "label": "リージョン",
+              "placeholder": "us-east-1",
+              "description": "S3 リージョン。エンドポイントで判別できる場合は空のままで構いません。"
             },
             "access_key_id": {
-              "label": "アクセスキー ID"
+              "label": "アクセスキー ID",
+              "placeholder": "my-access-key-id",
+              "description": "S3/OSS のアクセスキー ID。"
             },
             "secret_access_key": {
-              "label": "シークレットアクセスキー"
+              "label": "シークレットアクセスキー",
+              "description": "シークレットはホストの secret binding で保管されます。"
             },
             "username": {
-              "label": "ユーザー名"
+              "label": "ユーザー名",
+              "placeholder": "user",
+              "description": "WebDAV/SMB のログインユーザー。"
             },
             "domain": {
-              "label": "ドメイン"
+              "label": "ドメイン",
+              "placeholder": "WORKGROUP",
+              "description": "NTLM ドメインまたはワークグループ。不要なら空にします。"
             },
             "user": {
-              "label": "ユーザー"
+              "label": "ユーザー",
+              "placeholder": "anonymous",
+              "description": "匿名ログインの場合は空にします。"
             },
             "password": {
-              "label": "パスワード"
+              "label": "パスワード",
+              "description": "SFTP ネイティブのパスワード認証に使用（失敗時は自動で keyboard-interactive にフォールバック）。webdav/ftp/smb のログインパスワードも兼ねます。"
             },
             "key": {
-              "label": "秘密鍵またはパス"
+              "label": "秘密鍵またはパス",
+              "placeholder": "~/.ssh/id_ed25519",
+              "description": "秘密鍵の内容または鍵ファイルのパス。SFTP ネイティブはパスワードが空のときに秘密鍵を使用します。"
             },
             "known_hosts_strategy": {
               "label": "Known Hosts 戦略"
             },
             "read_only": {
-              "label": "読み取り専用"
+              "label": "読み取り専用",
+              "description": "この接続でのすべての書き込み操作を拒否します。"
             },
             "allow_delete": {
-              "label": "削除を許可"
+              "label": "削除を許可",
+              "description": "オフにすると、削除/パージ操作を拒否します。"
             },
             "connection_mode": {
               "label": "接続モード",
@@ -1013,10 +1238,13 @@
               }
             },
             "dbx_ssh_connection": {
-              "label": "DBX SSH 接続"
+              "label": "DBX SSH 接続",
+              "placeholder": "host-ssh-connection-id",
+              "description": "トンネル転送に使うホスト SSH 接続の id。"
             },
             "timeout_secs": {
-              "label": "操作タイムアウト（秒）"
+              "label": "操作タイムアウト（秒）",
+              "description": "1 操作あたりのタイムアウト秒数。"
             }
           }
         },
@@ -1032,7 +1260,7 @@
       "contributions": {
         "io.dbx.files.connection": {
           "label": "Armazenamento",
-          "description": "Conexão de armazenamento via Apache OpenDAL: sistema de arquivos local, S3/MinIO, WebDAV, FTP, SFTP, SMB/CIFS ou qualquer serviço OpenDAL compilado.",
+          "description": "Conexão de armazenamento via Apache OpenDAL: sistema de arquivos local, S3/MinIO, OSS da Alibaba, WebDAV, FTP, SFTP, SMB/CIFS ou qualquer serviço OpenDAL compilado.",
           "fields": {
             "display_name": {
               "label": "Nome da conexão"
@@ -1047,62 +1275,92 @@
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
                 "opendal-custom": "Serviço personalizado do OpenDAL",
-                "sftp-native": "SFTP (nativo)"
+                "sftp-native": "SFTP (nativo)",
+                "oss": "OSS da Alibaba"
               }
             },
             "root": {
-              "label": "Caminho raiz"
+              "label": "Caminho raiz",
+              "placeholder": "/srv/share ou ~/data",
+              "description": "Se definida, todas as operações ficam confinadas sob esta raiz."
             },
             "lock_to_root": {
-              "label": "Restringir à raiz"
+              "label": "Restringir à raiz",
+              "description": "Rejeita qualquer caminho fora da raiz configurada."
             },
             "service": {
-              "label": "Nome do serviço OpenDAL"
+              "label": "Nome do serviço OpenDAL",
+              "placeholder": "gcs / azblob / oss / memory",
+              "description": "Qualquer serviço OpenDAL compilado, ex.: gcs, azblob, oss, memory."
             },
             "config": {
-              "label": "Configuração do serviço (JSON)"
+              "label": "Configuração do serviço (JSON)",
+              "placeholder": "{ \"root\": \"/tmp\", \"bucket\": \"demo\" }",
+              "description": "Objeto JSON passado verbatim como chaves/valores do Builder do OpenDAL, ex.: {\"root\":\"/tmp\",\"bucket\":\"demo\"}."
             },
             "bucket": {
-              "label": "Bucket"
+              "label": "Bucket",
+              "placeholder": "my-bucket",
+              "description": "Nome do bucket de armazenamento de objetos."
             },
             "endpoint": {
-              "label": "Endpoint"
+              "label": "Endpoint",
+              "placeholder": "http://127.0.0.1:9000",
+              "description": "S3/OSS/WebDAV/FTP: URL completa (http://127.0.0.1:9000, https://oss-cn-hangzhou.aliyuncs.com). SFTP: user@host ou ssh://user@host:port (o nativo também aceita host:port com o campo de usuário). SMB: host[:445] ou smb://host[:445]."
             },
             "share": {
-              "label": "Compartilhamento"
+              "label": "Compartilhamento",
+              "placeholder": "media",
+              "description": "Nome do compartilhamento SMB usado como destino do tree connect."
             },
             "region": {
-              "label": "Região"
+              "label": "Região",
+              "placeholder": "us-east-1",
+              "description": "Região do S3; deixe vazio quando o endpoint já a implicar."
             },
             "access_key_id": {
-              "label": "ID da chave de acesso"
+              "label": "ID da chave de acesso",
+              "placeholder": "meu-id-de-acesso",
+              "description": "ID da chave de acesso para S3/OSS."
             },
             "secret_access_key": {
-              "label": "Chave de acesso secreta"
+              "label": "Chave de acesso secreta",
+              "description": "Chave secreta mantida no secret binding do host."
             },
             "username": {
-              "label": "Nome de usuário"
+              "label": "Nome de usuário",
+              "placeholder": "usuario",
+              "description": "Usuário de login para WebDAV/SMB."
             },
             "domain": {
-              "label": "Domínio"
+              "label": "Domínio",
+              "placeholder": "WORKGROUP",
+              "description": "Domínio ou workgroup NTLM; deixe vazio se não for necessário."
             },
             "user": {
-              "label": "Usuário"
+              "label": "Usuário",
+              "placeholder": "anonymous",
+              "description": "Deixe vazio para login anônimo."
             },
             "password": {
-              "label": "Senha"
+              "label": "Senha",
+              "description": "Usada para login por senha no SFTP nativo (retorna automaticamente ao keyboard-interactive); também é a senha de webdav/ftp/smb."
             },
             "key": {
-              "label": "Chave privada ou caminho"
+              "label": "Chave privada ou caminho",
+              "placeholder": "~/.ssh/id_ed25519",
+              "description": "Conteúdo da chave privada ou caminho do arquivo de chave. O SFTP nativo usa a chave quando a senha está vazia."
             },
             "known_hosts_strategy": {
               "label": "Estratégia de known hosts"
             },
             "read_only": {
-              "label": "Somente leitura"
+              "label": "Somente leitura",
+              "description": "Rejeita toda operação de gravação nesta conexão."
             },
             "allow_delete": {
-              "label": "Permitir exclusão"
+              "label": "Permitir exclusão",
+              "description": "Quando desativado, as operações de exclusão/purge são rejeitadas."
             },
             "connection_mode": {
               "label": "Modo de conexão",
@@ -1112,10 +1370,13 @@
               }
             },
             "dbx_ssh_connection": {
-              "label": "Conexão SSH do DBX"
+              "label": "Conexão SSH do DBX",
+              "placeholder": "id-conexao-ssh-host",
+              "description": "ID da conexão SSH do host usada para encaminhar o túnel."
             },
             "timeout_secs": {
-              "label": "Tempo limite da operação (segundos)"
+              "label": "Tempo limite da operação (segundos)",
+              "description": "Tempo limite por operação, em segundos."
             }
           }
         },

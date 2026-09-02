@@ -118,6 +118,25 @@ impl Store {
         self.write_json_atomic("transfers.json", &serde_json::to_value(records).map_err(|error| error.to_string())?)
     }
 
+    /// Removes finished-transfer history (optionally scoped to one
+    /// connection) and returns how many records were dropped.
+    /// P-FILES ⑥: backing store of `files/transfers/clear`.
+    pub fn clear_transfers(&self, connection_id: Option<&str>) -> Result<usize, String> {
+        let records = self.load_transfers();
+        // None → 清空全部；Some(id) → 只清该连接的记录。
+        let kept: Vec<TransferRecord> = records
+            .iter()
+            .filter(|record| match connection_id {
+                Some(id) => record.connection_id != id,
+                None => false,
+            })
+            .cloned()
+            .collect();
+        let removed = records.len() - kept.len();
+        self.write_json_atomic("transfers.json", &serde_json::to_value(kept).map_err(|error| error.to_string())?)
+            .map(|_| removed)
+    }
+
     // -- audit.jsonl --------------------------------------------------------
 
     /// Appends one audit line. Never rewrites the file.
@@ -244,6 +263,43 @@ mod tests {
         assert_eq!(records.len(), TRANSFER_HISTORY_LIMIT);
         assert_eq!(records.last().unwrap().task_id, "t224", "newest kept");
         assert_eq!(records.first().unwrap().task_id, "t25", "oldest dropped");
+    }
+
+    /// P-FILES ⑥: `clear_transfers` — None wipes everything, Some(id) is
+    /// scoped to one connection.
+    #[test]
+    fn transfer_history_clear_scopes_by_connection() {
+        let (store, _dir) = store();
+        for (task_id, connection) in [("a1", "c1"), ("b1", "c2"), ("a2", "c1")] {
+            store
+                .record_transfer(TransferRecord {
+                    task_id: task_id.into(),
+                    connection_id: connection.into(),
+                    kind: "upload".into(),
+                    remote_path: format!("/{task_id}"),
+                    total_bytes: Some(1),
+                    transferred_bytes: 1,
+                    status: "completed".into(),
+                    error: None,
+                    started_at: None,
+                    finished_at: None,
+                })
+                .unwrap();
+        }
+        let removed = store.clear_transfers(Some("c1")).unwrap();
+        assert_eq!(removed, 2);
+        assert_eq!(
+            store
+                .load_transfers()
+                .iter()
+                .map(|record| record.task_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b1"],
+            "other connection's history kept"
+        );
+        assert_eq!(store.clear_transfers(None).unwrap(), 1);
+        assert!(store.load_transfers().is_empty());
+        assert_eq!(store.clear_transfers(None).unwrap(), 0, "idempotent");
     }
 
     #[test]

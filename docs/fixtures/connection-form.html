@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DBX Files — connection form fixture</title>
+<!--
+  浏览器验证 fixture（测试产物，不入插件构建）：按真实 manifest.json 渲染
+  connection-provider 字段，复刻宿主 PluginConnectionFields + 
+  pluginFieldConditions 的显隐/必填/默认值语义，用于 Playwright 验证
+  「切换协议类型时表单字段动态变化、必填/默认值回填、七语 hint」。
+  用 http 服务 files/ 根目录后访问 /docs/fixtures/connection-form.html。
+-->
+<style>
+  :root { color-scheme: light; font-family: -apple-system, "Segoe UI", sans-serif; }
+  body { margin: 0; padding: 24px; background: #f6f7f9; color: #1c1e21; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  .sub { font-size: 12px; color: #667085; margin-bottom: 16px; }
+  .panel { max-width: 560px; background: #fff; border: 1px solid #e4e7ec; border-radius: 10px; padding: 20px 24px; }
+  .row { margin-bottom: 14px; }
+  label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+  .req { color: #d92d20; }
+  input[type=text], input[type=password], input[type=number], textarea, select {
+    width: 100%; box-sizing: border-box; padding: 7px 10px; font-size: 13px;
+    border: 1px solid #d0d5dd; border-radius: 6px; background: #fff; color: inherit;
+  }
+  textarea { min-height: 72px; resize: vertical; }
+  .hint { font-size: 11px; color: #667085; margin-top: 3px; line-height: 1.5; }
+  .toolbar { display: flex; gap: 8px; margin-bottom: 16px; align-items: center; }
+  .toolbar select { width: auto; }
+  .switch-row { display: flex; align-items: center; gap: 8px; }
+  .visible-count { font-size: 12px; color: #667085; margin-left: auto; }
+</style>
+</head>
+<body>
+<h1>DBX Files — connection form fixture</h1>
+<div class="sub">Rendered from the real <code>manifest.json</code> with host-equivalent visible_when / required_when semantics.</div>
+<div class="toolbar">
+  <label style="margin:0">Locale</label>
+  <select id="locale"></select>
+  <span class="visible-count" id="visibleCount"></span>
+</div>
+<div class="panel" id="form"></div>
+<script>
+"use strict";
+let manifest = null;
+let values = {};       // current form values
+let locale = "en";
+
+const FIELDS_ROOT = () => manifest.contributions[0];
+const LOCALES = ["zh-CN", "zh-TW", "en", "es", "it", "ja", "pt-BR"];
+
+function loc() { return manifest.localizations[locale].contributions["io.dbx.files.connection"]; }
+function fieldDef(key) { return FIELDS_ROOT().fields.find(f => f.key === key); }
+
+/** host pluginFieldConditionMatches semantics */
+function conditionMatches(condition, value) {
+  if (!condition) return true;
+  if (value === undefined || value === null || (typeof value === "string" && value.trim().length === 0)) return false;
+  return condition.one_of.includes(String(value));
+}
+function readValue(key) {
+  const def = fieldDef(key);
+  return values[key] !== undefined ? values[key] : (def && def.default !== undefined ? def.default : undefined);
+}
+function isVisible(field) { return conditionMatches(field.visible_when, readValue(field.visible_when && field.visible_when.field || "")); }
+function isRequired(field) {
+  if (field.required) return true;
+  if (!field.required_when) return false;
+  return conditionMatches(field.required_when, readValue(field.required_when.field));
+}
+function labelOf(field) {
+  const l = loc().fields[field.key];
+  return (l && l.label) || field.label;
+}
+function placeholderOf(field) {
+  const l = loc().fields[field.key];
+  return (l && l.placeholder) || field.placeholder || "";
+}
+function descriptionOf(field) {
+  const l = loc().fields[field.key];
+  return (l && l.description) || field.description || "";
+}
+function optionLabel(field, value) {
+  const l = loc().fields[field.key];
+  if (l && l.options && l.options[value] != null) return l.options[value];
+  const o = (field.options || []).find(o => String(o.value) === String(value));
+  return o ? o.label : value;
+}
+
+function render() {
+  const fields = FIELDS_ROOT().fields.filter(isVisible);
+  document.getElementById("visibleCount").textContent =
+    `${fields.length} visible fields @ protocol=${values.protocol || "fs"} · locale=${locale}`;
+  const root = document.getElementById("form");
+  root.textContent = "";
+  for (const field of fields) {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.dataset.field = field.key;
+    const label = document.createElement("label");
+    label.htmlFor = "f-" + field.key;
+    label.textContent = labelOf(field);
+    if (isRequired(field)) {
+      const star = document.createElement("span");
+      star.className = "req";
+      star.textContent = " *";
+      label.appendChild(star);
+    }
+    row.appendChild(label);
+    let input;
+    if (field.type === "select") {
+      input = document.createElement("select");
+      for (const o of field.options || []) {
+        const opt = document.createElement("option");
+        opt.value = o.value;
+        opt.textContent = optionLabel(field, o.value);
+        if (String(readValue(field.key)) === String(o.value)) opt.selected = true;
+        input.appendChild(opt);
+      }
+      input.addEventListener("change", () => { values[field.key] = input.value; render(); });
+    } else if (field.type === "boolean") {
+      const wrap = document.createElement("div");
+      wrap.className = "switch-row";
+      input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = Boolean(readValue(field.key));
+      input.addEventListener("change", () => { values[field.key] = input.checked; render(); });
+      wrap.appendChild(input);
+      input = wrap;
+    } else if (field.type === "textarea") {
+      input = document.createElement("textarea");
+      input.value = String(readValue(field.key) ?? "");
+      input.addEventListener("input", () => { values[field.key] = input.value; });
+    } else {
+      input = document.createElement("input");
+      input.type = field.type === "password" ? "password" : field.type === "number" ? "number" : "text";
+      input.value = String(readValue(field.key) ?? "");
+      input.addEventListener("input", () => { values[field.key] = field.type === "number" ? Number(input.value) : input.value; });
+    }
+    if (input.nodeType === 1 && input.tagName !== "DIV") { input.id = "f-" + field.key; input.dataset.field = field.key; }
+    else { input.querySelector("input").id = "f-" + field.key; }
+    row.appendChild(input);
+    const desc = descriptionOf(field);
+    if (desc) {
+      const hint = document.createElement("div");
+      hint.className = "hint";
+      hint.textContent = desc;
+      row.appendChild(hint);
+    }
+    // placeholder for text/number/password inputs
+    const inner = input.nodeType === 1 && input.tagName === "DIV" ? input.querySelector("input") : input;
+    const ph = placeholderOf(field);
+    if (ph && inner && (inner.tagName === "INPUT" || inner.tagName === "TEXTAREA")) inner.placeholder = ph;
+    root.appendChild(row);
+  }
+}
+
+fetch("../../manifest.json").then(r => r.json()).then(m => {
+  manifest = m;
+  const sel = document.getElementById("locale");
+  for (const l of LOCALES) {
+    const o = document.createElement("option");
+    o.value = l; o.textContent = l;
+    sel.appendChild(o);
+  }
+  sel.value = locale;
+  sel.addEventListener("change", () => { locale = sel.value; render(); });
+  render();
+});
+</script>
+</body>
+</html>

@@ -1,16 +1,27 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { formatBytes, formatTime } from "../lib/api";
-import { isByteBased, percentOf, type TransferJob } from "../lib/transfers";
+import { etaSeconds, formatEta, formatRate, isByteBased, isRetryableKind, percentOf, type TransferJob } from "../lib/transfers";
 
 const props = defineProps<{
   jobs: TransferJob[];
   t: (key: string, values?: Record<string, string | number>) => string;
+  /** 提交时登记了原始请求参数的失败 job（App 侧权威判定）。 */
+  retryableIds?: string[];
 }>();
 
 const emit = defineEmits<{
   (event: "cancel", jobId: string): void;
+  (event: "clear-history"): void;
+  (event: "retry", jobId: string): void;
 }>();
+
+const retryable = computed(() => new Set(props.retryableIds ?? []));
+
+/** 失败且可原样重发的历史任务才显示 ↻（kind 可重发 + App 有登记参数）。 */
+function canRetry(job: TransferJob): boolean {
+  return job.state === "failed" && isRetryableKind(job.kind) && retryable.value.has(job.jobId);
+}
 
 const active = computed(() => props.jobs.filter((job) => job.state === "queued" || job.state === "running"));
 const history = computed(() => props.jobs.filter((job) => job.state !== "queued" && job.state !== "running"));
@@ -32,6 +43,13 @@ function progressMeta(job: TransferJob): string {
   return `${formatBytes(job.transferred)} / ${formatBytes(job.size)}`;
 }
 
+/** 运行中且速率已知 → `「2.3 MiB/s · 剩余 ~45s` 形态的速率段（语言无关）。 */
+function speedMeta(job: TransferJob): string {
+  if (job.state !== "running" || !job.rateBps) return "";
+  const eta = etaSeconds(job);
+  return [formatRate(job.rateBps), eta !== undefined ? `~${formatEta(eta)}` : ""].filter(Boolean).join(" · ");
+}
+
 function timeLabel(job: TransferJob): string {
   return formatTime(new Date(job.updatedAt).toISOString());
 }
@@ -50,16 +68,21 @@ function timeLabel(job: TransferJob): string {
         <span>{{ t(`transferKind.${job.kind}`) }}</span>
         <span>{{ progressMeta(job) }} · {{ percentOf(job) }}%</span>
       </div>
+      <div v-if="speedMeta(job)" class="wb-transfer-meta"><span class="wb-transfer-speed">{{ speedMeta(job) }}</span></div>
       <div class="wb-progress"><div class="wb-progress-bar" :class="`is-${job.state}`" :style="{ width: `${percentOf(job)}%` }" /></div>
       <div v-if="job.error" class="wb-transfer-error">{{ job.error }}</div>
     </div>
   </div>
   <div v-if="history.length">
-    <div class="wb-muted" style="margin: 8px 0 6px">{{ t("history") }}</div>
+    <div class="wb-transfer-history-head" style="margin: 8px 0 6px">
+      <span class="wb-muted">{{ t("history") }}</span>
+      <button class="wb-icon-button" :title="t('clearHistory')" @click="emit('clear-history')">🗑</button>
+    </div>
     <div v-for="job in history" :key="job.jobId" class="wb-transfer-item">
       <div class="wb-transfer-title">
         <strong :title="label(job)">{{ label(job) }}</strong>
         <span class="wb-transfer-state" :class="`is-${job.state}`">{{ stateLabel(job) }}</span>
+        <button v-if="canRetry(job)" class="wb-icon-button" :title="t('retryTransfer')" @click="emit('retry', job.jobId)">↻</button>
       </div>
       <div class="wb-transfer-meta">
         <span>{{ t(`transferKind.${job.kind}`) }} · {{ timeLabel(job) }}</span>

@@ -470,6 +470,79 @@ impl Plugin {
                     "jobId": job_id,
                 }))
             }
+            "files/compress" => {
+                let request: model::CompressRequest = parse(params)?;
+                let connection = self.engine.connection(&request.connection_id)?;
+                ensure_writable(&connection)?;
+                let operator = self.engine.operator(&request.connection_id)?;
+                let gate = engine::ops::Gate::from_connection(&connection);
+                if request.paths.is_empty() {
+                    return Err("paths must not be empty".to_string());
+                }
+                // Archive file (not a directory): no trailing-slash rewrite.
+                let target_path = gate.ensure_writable_path(&request.target_path, false)?;
+                let gzip = if target_path.to_lowercase().ends_with(".tar.gz")
+                    || target_path.to_lowercase().ends_with(".tgz")
+                {
+                    true
+                } else if target_path.to_lowercase().ends_with(".tar") {
+                    false
+                } else {
+                    return Err(format!(
+                        "Archive target '{target_path}' must end with .tar, .tar.gz or .tgz"
+                    ));
+                };
+                // Refuse to overwrite: an existing target is never clobbered
+                // by a compression run (the caller picks another name).
+                if self
+                    .runtime
+                    .block_on(operator.stat(&target_path))
+                    .is_ok()
+                {
+                    return Err(format!("Archive target '{target_path}' already exists"));
+                }
+                for source in &request.paths {
+                    gate.readable_path(source, false)?;
+                }
+                let plan = self
+                    .runtime
+                    .block_on(archive::plan_compress(&operator, &request.paths))?;
+                let payload_bytes: u64 = plan.iter().map(|entry| entry.size).sum();
+                if plan.len() <= archive::MAX_SYNC_EXTRACT_ENTRIES
+                    && payload_bytes <= archive::MAX_SYNC_EXTRACT_BYTES
+                {
+                    let data = self
+                        .runtime
+                        .block_on(archive::build_archive(&operator, &plan, gzip))?;
+                    self.runtime
+                        .block_on(operator.write(&target_path, data))
+                        .map_err(|error| {
+                            format!("Failed to write archive '{target_path}': {error}")
+                        })?;
+                    self.audit(&connection, method, &request.target_path, "ok")?;
+                    return Ok(json!({
+                        "success": true,
+                        "transport": "native",
+                        "jobId": Option::<String>::None,
+                    }));
+                }
+                let job_id = self
+                    .runtime
+                    .block_on(self.transfers.enqueue_compress_job(
+                        &connection,
+                        &operator,
+                        plan,
+                        &target_path,
+                        gzip,
+                        emitter,
+                    ))?;
+                self.audit(&connection, method, &request.target_path, "ok")?;
+                Ok(json!({
+                    "success": true,
+                    "transport": "job",
+                    "jobId": job_id,
+                }))
+            }
 
             // ------------------------------------------------------------------
             // Large transfers over binary channels (§8.3)
@@ -543,6 +616,16 @@ impl Plugin {
                     request.connection_id.as_deref(),
                 ))?;
                 Ok(json!({ "jobs": jobs }))
+            }
+            "files/transfers/clear" => {
+                // P-FILES ⑥: drop finished transfer history (all connections
+                // or scoped by optional connectionId). Queued/running jobs
+                // are never touched.
+                let request: model::TransfersListRequest = parse(params)?;
+                let cleared = self
+                    .runtime
+                    .block_on(self.transfers.clear(&self.store, request.connection_id.as_deref()))?;
+                Ok(json!({ "cleared": cleared }))
             }
             "files/transfer/status" => {
                 let request: model::JobRequest = parse(params)?;

@@ -111,7 +111,7 @@ connection-provider `io.dbx.files.connection`，`database_type: "storage"`，
 | key | 类型 | binding | 默认 | visible_when (protocol ∈) | OpenDAL 键 |
 |---|---|---|---|---|---|
 | `display_name` | text | name | `Storage` | — | — |
-| `protocol` | select | config | `fs` | —（fs/s3/webdav/ftp/sftp/opendal-custom） |
+| `protocol` | select | config | `fs` | —（fs/s3/oss/webdav/ftp/sftp/smb/sftp-native/opendal-custom） |
 | `root` / `lock_to_root` | text/boolean | config | 空/false | — | Operator root |
 | `service` | text | config | 空 | opendal-custom | 任意已编译服务名（gcs/azblob/oss/…） |
 | `config` | textarea(JSON) | config | `{}` | opendal-custom | 整体作为 Builder 配置 kv |
@@ -122,6 +122,11 @@ connection-provider `io.dbx.files.connection`，`database_type: "storage"`，
 | `endpoint` / `region` | text | config | 空 | s3 | 同名（MinIO 填 endpoint + `enable_virtual_host_style=false` 类似项照 OpenDAL 键名） |
 | `access_key_id` | text | config | 空 | s3 | 同名 |
 | `secret_access_key` | password | secret | 空 | s3 | 同名 |
+| — oss —（v0.1.20，F3-3 云服务快捷模板首个落地） | | | | | |
+| `bucket` | text | config | 空 | s3/oss | 同名 |
+| `endpoint` | text | config | 空 | s3/oss | oss 键 `endpoint`（如 `https://oss-cn-hangzhou.aliyuncs.com`） |
+| `access_key_id` | text | config | 空 | s3/oss | 同名 |
+| `secret_access_key` | password | secret | 空 | s3/oss | 映射 OpenDAL oss 键 `access_key_secret` |
 | — webdav — | | | | | |
 | `endpoint` / `username` / `password` | text/password | config/secret | 空 | webdav | OpenDAL 键 `endpoint`/`username`/`password` |
 | — ftp — | | | | | |
@@ -137,7 +142,7 @@ connection-provider `io.dbx.files.connection`，`database_type: "storage"`，
 | `timeout_secs` | number | config | 30 | — | 插件超时 |
 
 **必填规则（v0.1.4 起）**：静态 `required: true` 仅限 `display_name` 与
-`protocol` 两个无条件字段。协议特定必填项（s3 的
+`protocol` 两个无条件字段。协议特定必填项（s3/oss 的
 bucket/access_key_id/secret_access_key、smb 的 share、opendal-custom 的
 service、via-dbx-ssh 的 dbx_ssh_connection）一律 `required_when` 与
 `visible_when` 成对声明——宿主校验静态 `required` 时不评估 `visible_when`，
@@ -145,7 +150,8 @@ service、via-dbx-ssh 的 dbx_ssh_connection）一律 `required_when` 与
 required"）。`required_when` 由连接表单按条件拦截；运行时兜底强制在引擎
 构建层（OpenDAL builder / smb adapter 自带清晰报错）。
 
-> manifest 快捷协议覆盖 fs/s3/webdav/ftp/sftp 五类；其余全部走
+> manifest 快捷协议覆盖 fs/s3/oss/webdav/ftp/sftp 六类（v0.1.20 起 oss
+> 从 custom 透传升级为快捷协议）；其余全部走
 > `opendal-custom`（service + config JSON 透传，能力面 = 编译白名单内
 > 全部服务）。
 
@@ -234,7 +240,7 @@ Operator，幂等）。
 状态机 `queued → running → completed | failed | canceled`；全局并发信号量 3、
 同 `connectionId` 串行（per-connection FIFO）；进度经 `files/transfer/progress`
 事件（≥200ms 或 ≥1% 变化才发）+ `files/transfers/list|status|cancel` 轮询
-兜底；完成态历史持久化 `store/transfers.json`（上限 200 条环形覆盖）。
+兜底；历史清理 `files/transfers/clear`（P-FILES ⑥，§8.4）；完成态历史持久化 `store/transfers.json`（上限 200 条环形覆盖）。
 
 差异点：
 - **目录 sync/copyDir 为自研遍历 job**：lister 递归枚举源 → 逐文件
@@ -309,6 +315,7 @@ web 模式兜底：宿主无 `host.binary` 能力时，降级提供 JSON+base64 
 | `files/syncDir` | `sourceConnectionId/path`、`targetConnectionId/path` | `{jobId}`（异步遍历 job，§7） |
 | `files/copyDir` | 同上 | `{jobId}` |
 | `files/transfers/list` | `connectionId?` | `{jobs:[…]}`（进行中 + 历史） |
+| `files/transfers/clear` | `connectionId?`（缺省全量） | `{cleared:n}`（清理完成态历史：单文件 job 表 + dir job 表 + transfers.json 持久化记录；queued/running 不受影响。P-FILES ⑥） |
 | `files/transfer/status` | `jobId` | `{job}` |
 | `files/transfer/cancel` | `jobId` | `{success:true}` |
 | `files/audit/list` | `limit?`（缺省 100，clamp 1..=1000）、`connectionId?`（缺省全量） | `{entries:[{at,action,connectionId,path,result}]}`（audit.jsonl 只读透出，最新在前；shape 以 AuditPanel.vue 解析为准。凭据红线：AuditRecord 仅含路径，无密文字段） |
@@ -319,6 +326,7 @@ web 模式兜底：宿主无 `host.binary` 能力时，降级提供 JSON+base64 
 |---|---|---|
 | `files/archiveList` | `path`、`page?`、`pageSize?`（缺省 1/200，clamp ≤1000） | `{entries:[{name,path(条目内路径，无前导/),kind:"file"\|"directory",size,modifiedAt?}],total}` |
 | `files/extract` | `path`、`targetPath`（目录，不存在则创建） | 小包（≤10 文件且 ≤8MiB）同步 `{success,transport:"native",jobId:null}`；超限降级 `{success,transport:"job",jobId}`（§7 dir job，`kind:"extract"`，进度/取消/列表全复用） |
+| `files/compress`（P-FILES 13 轮） | `paths`（≥1，同连接文件/目录混选）、`targetPath`（`.tar`/`.tar.gz`/`.tgz` 后缀定格式；已存在则拒绝） | 预算同解压（条目 ≤50k、载荷 ≤1GiB）；小包（≤10 文件且 ≤8MiB）同步 `{success,transport:"native",jobId:null}`；超限降级 `{success,transport:"job",jobId}`（`kind:"compress"`）。归档内路径以各源 basename 为根；目录条目不落盘（解压按父路径隐式建目录，空目录丢弃）；gzip 为 stored 档位（无压缩率、零新依赖，真 deflate 与 zip 同为 Phase 2） |
 
 约束：`read_only` 拒绝 extract（`allow_delete` 不适用——不删源归档）；归档路径与
 targetPath 均过 policy 白名单；条目路径拒绝 `..`/绝对/盘符/反斜杠与链接条目

@@ -133,6 +133,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px
 .wb-transfer-state.is-completed { color: #10b981; border-color: color-mix(in srgb, #10b981 55%, transparent); }
 .wb-transfer-state.is-failed, .wb-transfer-state.is-canceled { color: var(--destructive); border-color: color-mix(in srgb, var(--destructive) 55%, transparent); }
 .wb-transfer-error { margin-top: 4px; color: var(--destructive); font-size: 11px; overflow-wrap: anywhere; }
+.wb-transfer-speed { color: var(--primary); font-variant-numeric: tabular-nums; }
+.wb-transfer-history-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 
 /* ---- audit panel -------------------------------------------------------------- */
 .wb-audit-list { display: flex; flex-direction: column; gap: 4px; }
@@ -224,15 +226,38 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px
 .wb-pane-header .wb-breadcrumbs { flex: 1 1 auto; min-width: 0; overflow: hidden; }
 .wb-pane-header .wb-path-toolbar { flex: 1 1 auto; min-width: 0; }
 
-/* 快速定位侧栏（文件管理器对标）：高频目录一列直达，当前目录高亮。 */
-.wb-quick-sidebar { display: flex; flex: 0 0 112px; flex-direction: column; gap: 1px; overflow-y: auto; overflow-x: hidden; border-right: 1px solid var(--border); padding: 6px 5px; background: color-mix(in srgb, var(--muted) 28%, var(--background)); }
-.wb-quick-sidebar-title { padding: 0 5px 5px; color: var(--muted-foreground); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; }
-.wb-quick-sidebar button { display: flex; align-items: center; gap: 7px; min-width: 0; border: 0; background: transparent; cursor: pointer; border-radius: 4px; padding: 5px 6px; text-align: left; color: var(--foreground); font-size: 12px; white-space: nowrap; }
-.wb-quick-sidebar button svg { width: 14px; height: 14px; flex: 0 0 14px; color: var(--muted-foreground); stroke-width: 1.7; }
-.wb-quick-sidebar button span { overflow: hidden; text-overflow: ellipsis; }
-.wb-quick-sidebar button:hover { background: var(--accent); }
-.wb-quick-sidebar button.is-current { background: var(--accent); }
-.wb-quick-sidebar button.is-current svg { color: var(--primary); }
+/* 侧栏导航（P-FILES）：tree（目录树）/ quick（快捷目录）双 tab + 收起窄条。 */
+.wb-side-panel { display: flex; flex: 0 0 148px; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); background: color-mix(in srgb, var(--muted) 28%, var(--background)); }
+.wb-side-tabs { display: flex; align-items: center; gap: 2px; border-bottom: 1px solid var(--border); padding: 4px 5px; }
+.wb-side-tabs button { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border: 0; border-radius: 4px; background: transparent; cursor: pointer; color: var(--muted-foreground); padding: 0; }
+.wb-side-tabs button svg { width: 13px; height: 13px; }
+.wb-side-tabs button:hover { background: var(--accent); color: var(--foreground); }
+.wb-side-tabs button.is-active { background: var(--accent); color: var(--primary); }
+.wb-side-spacer { flex: 1 1 auto; }
+.wb-side-body { flex: 1 1 auto; overflow: auto; overflow-x: hidden; padding: 4px 3px; }
+.wb-side-empty { padding: 6px; color: var(--muted-foreground); font-size: 11px; }
+.wb-side-quick button { display: flex; align-items: center; gap: 7px; min-width: 0; border: 0; background: transparent; cursor: pointer; border-radius: 4px; padding: 5px 6px; text-align: left; color: var(--foreground); font-size: 12px; white-space: nowrap; }
+.wb-side-quick button svg { width: 14px; height: 14px; flex: 0 0 14px; color: var(--muted-foreground); stroke-width: 1.7; }
+.wb-side-quick button span { overflow: hidden; text-overflow: ellipsis; }
+.wb-side-quick button:hover { background: var(--accent); }
+.wb-side-quick button.is-current { background: var(--accent); }
+.wb-side-quick button.is-current svg { color: var(--primary); }
+/* 目录树：缩进行 + caret 展开/收缩，加载中转圈。 */
+.wb-tree-row { display: flex; align-items: center; gap: 2px; width: 100%; height: 24px; padding-right: 4px; border: 0; border-radius: 4px; background: transparent; cursor: pointer; color: var(--foreground); font-size: 12px; white-space: nowrap; text-align: left; }
+.wb-tree-row:hover { background: var(--accent); }
+.wb-tree-row.is-current { background: var(--accent); }
+.wb-tree-row.is-current .wb-tree-name { color: var(--primary); font-weight: 600; }
+.wb-tree-caret { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 14px; width: 14px; height: 14px; border: 0; border-radius: 3px; background: transparent; cursor: pointer; color: var(--muted-foreground); padding: 0; }
+.wb-tree-caret svg { width: 11px; height: 11px; }
+.wb-tree-caret:hover { background: color-mix(in srgb, var(--muted-foreground) 20%, transparent); color: var(--foreground); }
+.wb-tree-row > svg.wb-icon-dir { width: 13px; height: 13px; flex: 0 0 13px; color: var(--muted-foreground); }
+.wb-tree-name { overflow: hidden; text-overflow: ellipsis; }
+.wb-tree-spinner { width: 9px; height: 9px; border: 1.5px solid var(--muted-foreground); border-top-color: transparent; border-radius: 50%; animation: wb-rotate 0.7s linear infinite; }
+/* 收起态窄条：仅保留展开按钮。 */
+.wb-side-rail { display: flex; flex-direction: column; align-items: center; flex: 0 0 26px; padding-top: 6px; border-right: 1px solid var(--border); background: color-mix(in srgb, var(--muted) 28%, var(--background)); }
+.wb-side-rail button { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border: 0; border-radius: 4px; background: transparent; cursor: pointer; color: var(--muted-foreground); padding: 0; }
+.wb-side-rail button svg { width: 13px; height: 13px; }
+.wb-side-rail button:hover { background: var(--accent); color: var(--foreground); }
 .wb-target-connection { max-width: 130px; border: 1px solid var(--border); border-radius: var(--radius); background: color-mix(in srgb, var(--background) 60%, var(--muted)); color: var(--foreground); padding: 2px 4px; font-size: 11px; }
 .wb-crumb-ellipsis { color: var(--primary); }
 .wb-breadcrumbs button.is-current { color: var(--foreground); font-weight: 600; }

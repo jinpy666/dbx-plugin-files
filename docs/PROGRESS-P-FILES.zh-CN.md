@@ -168,3 +168,217 @@ Storage 连接记录，需在 UI 删除或重新编辑保存（新版表单会�
 增量约 +20KB gzip 量级）。
 
 **验证**：前端三件套 + mock 浏览器截图（路径栏单控件交互、md/json 预览高亮）。
+
+## 10. 连接表单动态化落地盘点 + oss 快捷协议（v0.1.20，2026-09-02）
+
+### 10.1 「连接 UI 表单不能按协议类型动态编辑」调研结论
+
+- **宿主 SDK（host/ 子仓库，plugin-framework-current）已支持** manifest 字段的
+  `visible_when` / `required_when` 条件显隐/条件必填（`PluginConnectionFields.vue`
+  + `lib/plugins/pluginFieldConditions.ts`），并支持 `placeholder` 与字段
+  label/description/placeholder/options 的七语本地化（`manifest.rs`
+  `PluginFormFieldLocalization`）。插件 manifest 自 v0.1.4 起即按该形态声明，
+  **条件显隐机制无需插件侧自绘降级表单**。
+- 用户体验到「切协议字段不变」的两个真实根因都在宿主侧（已新建
+  `docs/HOST_FEEDBACK.zh-CN.md` 正式记录）：
+  1. **F-1**：宿主 Rust 校验 `host.rs::validate_plugin_connection_values`
+     只看静态 `required`，不评估 `required_when`/`visible_when`（MCP/导入等
+     非对话框写路径无条件校验缺口）；
+  2. **F-2**：用户安装的宿主构建若早于 §7（2026-08-30）的前端修复，
+     ConnectionDialog 兜底抹除 external_config + `pluginFieldIsRequired`
+     误判必填两个 bug 会同时表现为「表单不动态」，需随宿主 daily build 发布。
+
+### 10.2 本轮改动（插件侧，方案 a/b 落地）
+
+- **manifest 字段整理（v0.1.20）**：
+  - 13 个字段新增 `placeholder`（endpoint/bucket/share/key/root/service/
+    config JSON/region/access_key_id/username/domain/user/dbx_ssh_connection）；
+  - 19 条字段 `description` 补齐并七语本地化（zh-CN/zh-TW/en/es/it/ja/pt-BR），
+    placeholder 同步七语（宿主表单 hint 在任意语言下不再缺翻译）；
+  - s3/oss 共享字段的 `visible_when`/`required_when` 成对扩展。
+- **oss 快捷协议（第 9 个协议，IMPL_PLAN F3-3 云服务模板方向首个落地）**：
+  此前阿里云 OSS 只能经 `opendal-custom` 手写 JSON；现升级为快捷协议——
+  `model.rs` PROTOCOLS 扩容、`engine/mod.rs` `protocol_kv` oss 分支
+  （bucket/endpoint/access_key_id + secret 按 OpenDAL oss 键
+  `access_key_secret` 落 kv）、`validate_endpoints` http 类白名单纳入 oss；
+  manifest 协议选项/字段条件/七语同步。前端 `opendalServices.ts` 的 oss
+  custom 模板本轮无需改动。
+- 新增 `docs/fixtures/connection-form.html`：直接消费真实 manifest.json、
+  复刻宿主 `pluginFieldConditions` 语义的动态表单 fixture（浏览器验证载体 +
+  后续表单联调工具）。
+
+### 10.3 验证证据
+
+- 后端 `cargo test`：**137 passed / 0 failed**（新增
+  `quick_protocol_oss_maps_s3_shaped_fields_to_oss_keys`、
+  `oss_endpoints_reject_non_http_schemes`；manifest 契约测试矩阵同步 oss）。
+- 前端三件套：typecheck 通过；vitest **84 passed（13 files）**；build 通过。
+- smoke：`scripts/smoke_test.py` **PASS 49 / SKIP 4 / FAIL 0**（容器段无 env）。
+- 浏览器（Playwright，fixture @127.0.0.1:5188）：
+  fs 态 7 个全局字段 → s3 态 12 字段（Bucket/Access key ID/Secret access key
+  条件必填星号 + placeholder/hint）→ oss 态 11 字段（Region 正确隐藏）→
+  smb 态（Share\* 出现、s3/oss 字段隐藏）→ zh-CN 全量本地化 →
+  sftp → connection_mode=via-dbx-ssh → dbx_ssh_connection 二级条件链显现
+  （13 字段）；oss 新建填写流程值保留正常。截图留档
+  `files/docs/screenshots/files-form-{fs,oss,oss-filled-zhcn,smb-zhcn}.png`
+  （不入库）。
+
+### 10.4 剩余风险与遗留
+
+1. 宿主侧 F-1/F-2/F-3（见 `HOST_FEEDBACK.zh-CN.md`）未修复前，旧宿主构建上
+   动态表单体验与条件必填校验仍缺失——插件侧无法单方面解决。
+2. oss 快捷协议仅过本地单测（kv 映射/出网校验），无真实 OSS 端到端 smoke
+   （无 env 凭据）；同 s3 段以容器/真机 env 门控为准，后续可补
+   `DBX_FILES_OSS_*` 段。
+3. 真实宿主 ConnectionDialog 的动态显隐回归需待含 §7 修复的宿主构建
+   （本轮 fixture 复刻语义验证，非宿主真机）。
+
+## 11. 传输体验轮：速率/ETA 显示 + transfers/clear 历史清空（P-FILES ⑥，2026-09-02）
+
+第二轮 agent（传输/浏览体验方向）主体完成但因「Model request failed」中断于
+验证/文档阶段；收尾 agent 亦空转无产出。主 agent 接手完成验证与本文档。
+改动横跨前后端（协议新增 1 方法）：
+
+1. **新协议方法 `files/transfers/clear`**（camelCase，与既有 transfers 域一
+   致）：入参 `TransfersListRequest`（可选 `connectionId`），仅清完成态
+   （completed/failed/canceled）历史，queued/running 永不触碰；后端
+   `transfers.clear_transfers`（None 清全部 / Some(id) 按连接清，原子写
+   transfers.json）+ main.rs 分发；smoke 新增用例（+2）。
+2. **传输速率与 ETA**：`RateSampler`（EWMA α=0.35 平滑瞬时速率，累计字节回退
+   自动重基线，时钟注入可测）；`etaSeconds`（运行态按剩余字节/速率估剩余秒）；
+   `formatRate`/`formatEta`（`1.2 MB/s` / `45s|3m12s|1h04m`，语言无关）；
+   TransferPanel 运行态 job 显示 `2.3 MiB/s · 剩余 ~45s` 形态速率段。
+3. **历史清空 UI**：TransferPanel 历史区头新增 🗑 按钮（仅完成态可清），
+   `clearHistory`/`historyCleared` 七语文案；mock 桥同步 `files/transfers/clear`
+   语义与 `&job=1` 说明。
+4. **历史环形上限**：store 传输历史按上限环形淘汰（防 transfers.json 无限
+   膨胀）+ 200 条 hydration 开销 bench 单测。
+
+### 11.1 验证证据
+
+| 套件 | 结果 |
+| --- | --- |
+| 前端 typecheck + vitest | 过 / **92 绿**（84→92：RateSampler/ETA/format 8 例） |
+| 前端 build | 过 |
+| 后端 `cargo test`（cargo 1.88；系统 1.69 读不了 lock v4） | **139 passed**（137→139：history ring + hydration bench） |
+| smoke `scripts/smoke_test.py` | **PASS 51 / SKIP 4 / FAIL 0**（49→51，transfers/clear 用例；容器段无 env SKIP） |
+| 后端 cargo build | 过（debug sidecar 重建后 smoke 复跑） |
+
+浏览器验证（Playwright @ vite 5181 `mock.html?mock=1`，截图
+`docs/screenshots/transfer-history-clear-round-p11.png`）：
+双栏同连接选 /docs 复制到 /docs → mock job（queued→running→completed）入
+传输面板历史（`mock-job-1 · 已完成 · 2/2 个文件 · 4.0 KiB`）；点 🗑 后完成态
+清空、面板回「暂无传输任务」；源=目标复制被正确拒绝
+（"Destination must differ from the source"——既有防御语义回归通过）。
+
+### 11.2 剩余风险与遗留
+
+1. 速率段仅在 running 态可见：mock job 全程 ~450ms，浏览器实测窗口内未抓到
+   运行态截图——速率/ETA 语义由 8 个纯函数单测覆盖（EWMA 平滑/回退重基线/
+   format），真实慢速大文件场景待真机连接回归；
+2. 宿主侧 F-1/F-2/F-3（见 `HOST_FEEDBACK.zh-CN.md`）沿袭：动态表单体验与
+   条件必填校验待含修复的宿主构建；
+3. oss 快捷协议真实端到端 smoke（`DBX_FILES_OSS_*` env 门控）沿袭待补；
+4. `files/transfers/clear` 需随下次发版进 .dbxp（本轮未动 manifest 版本号）。
+
+## 12. 右键菜单与侧栏导航轮：空白右键 / 新建文件 / 目录树 tab / 复制文件名（P-FILES，2026-09-02）
+
+用户反馈驱动的前端体验轮（纯前端，无新协议方法；"新建文件"复用既有
+`files/write` 写空 payload，≤MAX_INLINE_WRITE_BYTES 语义不变）：
+
+1. **空白区右键插件化**：FileTable 表头/列表空白处（含空目录占位）右键弹
+   插件菜单（新建文件夹/新建文件/刷新，只读连接禁用新建），`contextmenu.prevent`
+   拦截浏览器默认菜单；行右键补 `.stop` 修复冒泡被空白菜单覆盖的回归。
+2. **新建文件**：ConfirmKind 新增 `newFile`（文件名输入 → `files/write` 空
+   base64），与 newFolder 同用"创建"按钮文案；支持按栏（side）落目标路径，
+   双栏右栏空白菜单的新建落 `rightPath`（既有 newFolder 仅落左栏的隐含限定
+   一并打通）。
+3. **右键菜单新增"复制文件名"**（既有"复制路径"即绝对路径保持），剪贴板经
+   宿主 `clipboard.writeText`，提示 `copiedName`。
+4. **侧栏导航面板 SideNavPanel**（替换 QuickSidebar，文件已删除）：
+   - `tree` / `quick` 双 tab，**默认 tree**；tab 与收起状态入 `ui prefs`
+     （`sideTab`/`sideCollapsed`，localStorage）；
+   - tree tab：懒加载目录树（`dirTree.ts` 纯函数：find/apply/markStale，
+     仅目录、名称排序、collapse 保留缓存、刷新按钮 markTreeStale 重拉根），
+     根节点显示 quickRoot 文案，当前目录高亮，单击行=本栏进入；
+   - quick tab：沿用 §8.1 quickPaths 契约（根/主目录/桌面/下载/文档/图片）；
+   - 侧栏可收起为窄条再展开（ChevronsLeft/Right）；
+   - tree/quick 行右键统一侧栏菜单：打开 / **在右侧打开**（双栏时；右栏侧栏
+     对应"在左侧打开"）/ 复制路径 / 复制文件名。
+5. **mockHost 修复**：`files/write`、`files/mkdir` 按 `connectionId` 路由
+   （treeFor/contentsFor）；此前固定写默认树，双栏左栏 `__local__` 的新建
+   不显示。delete/purge/rename/copy 族仍未路由（既有遗留，本轮不动）。
+6. 七语新增 11 键：copyName/copiedName/newFileTitle/newFilePlaceholder/
+   fileCreated/sideTree/sideCollapse/sideExpand/openInRight/openInLeft/quickEmpty。
+
+### 12.1 验证证据
+
+| 套件 | 结果 |
+| --- | --- |
+| 前端 vitest | **98 绿**（92→98：dirTree 4 例 + prefs 路由 2 例改写） |
+| 前端 typecheck / build | 过 |
+| 后端 `cargo test`（cargo/rustc 1.88，需前置 ~/.cargo/bin 到 PATH） | **139 passed / 0 failed / 3 ignored**（后端未动，无回归） |
+| smoke `scripts/smoke_test.py` | **PASS 51 / SKIP 4 / FAIL 0**（容器段无 env SKIP） |
+| `scripts/test.sh` 全量（含 release 构建 + 打包） | exit 0（"all green"），产出 `io.dbx.files-0.1.21-darwin-arm64.dbxp` |
+| 浏览器验证（Playwright @ 静态 ui `?mock=1`，截图不入库） | 空白右键弹插件菜单（无浏览器菜单）；新建文件/新建文件夹落列表并提示；行右键菜单含复制文件名且提示"文件名已复制"；树节点右键→在右侧打开→右栏导航 `/Applications`；树 caret 展开/收缩、quick tab 切换、侧栏收起/展开、Esc 关菜单全部通过 |
+
+### 12.2 剩余风险与遗留
+
+1. 目录树子节点缓存不随目录变更自动失效（侧栏刷新按钮/收起重开触发重拉）；
+   跨栏传输后树内新目录需手动刷新侧栏才可见。
+2. mockHost delete/purge/rename/copy 仍固定默认树（既有遗留）：浏览器 mock
+   下对 `__local__` 的删除/重命名不落本地树，真机 sidecar 不受影响。
+3. 宿主侧 F-1/F-2/F-3（见 `HOST_FEEDBACK.zh-CN.md`）沿袭待宿主构建修复。
+
+## 13. 压缩/解压与批量右键轮：files/compress + 多选动作面（P-FILES，2026-09-02）
+
+用户第二轮反馈（右键要常规操作 + 压缩/解压；空白右键新建/刷新；左树展开）。
+解压（§8.5 files/extract）与空白右键（§12）已具备，本轮补齐压缩与多选批量，
+并修正树展开的静默失败：
+
+1. **新协议方法 `files/compress`**（camelCase，IMPL_PLAN §8.5 已同步）：
+   入参 `paths`（≥1，同连接文件/目录混选）+ `targetPath`（`.tar`/`.tar.gz`/
+   `.tgz` 后缀定格式，已存在拒绝）；预算同解压（条目 ≤50k、载荷 ≤1 GiB）；
+   小包（≤10 文件且 ≤8 MiB，复用 extract 阈值）同步 `{transport:"native"}`，
+   超限降级 dir job（`kind:"compress"`，进度/取消/列表复用 §7）。
+   归档内路径以各源 basename 为根；不写目录条目（解压按父路径隐式建目录，
+   空目录丢弃）；目标不覆盖（已存在报错）。
+2. **实现无新依赖**（`archive.rs`）：手写 ustar 头 writer（octal 字段、
+   checksum、>100 字节名走 PAX `path=` 扩展头——与既有 parser 闭环）+
+   gzip stored（BTYPE=00）包装器（增量 CRC32/ISIZE，空 final 块终止流）；
+   计划收集 `plan_compress`（walk_files 递归 + 预算）。gzip 为 stored 档位
+   （无压缩率），真 deflate 与 zip 同为 Phase 2。单测：gzip 多块往返、
+   空 final 块、不安全路径拒绝、plan+build 经 parser 全往返（含中文长名
+   PAX 与空文件）、root/空源拒绝。
+3. **前端右键菜单分层**：
+   - 单选：新增「压缩…」（文件/目录均可），对话框默认目标 `<源>.tar.gz`，
+     按钮"压缩"；job 登记传输面板（kind compress，七语文案）；
+   - **多选（>1）批量动作面**：下载所选 / 复制到目标栏 / 移动到目标栏
+     （双栏）/ 压缩 N 项… / 删除所选（危险色）/ 复制路径；
+   - 其余常规操作（打开/预览/下载/重命名/复制/移动/解压到/复制路径/文件名）
+     沿用 §12 菜单。
+4. **修 bug**：`expandTreeNode` 展开失败由静默改为错误横幅（用户实测"树不
+   展开"的反馈路径）；ConfirmDialog 支持 Esc 关闭（优先级：预览 > 对话框 >
+   右键菜单）；`TransferKind` 联合类型补漏 `"extract"` 并加 `"compress"`；
+   mockHost 新增 files/compress 模拟（≤10 文件 native / 超限 job）。
+5. **修复 `ensure_writable_path` 误用**：compress 目标是文件，第二参数须为
+   false（目录语义会补尾斜杠，smoke 首跑即暴露）。
+
+### 13.1 验证证据
+
+| 套件 | 结果 |
+| --- | --- |
+| 后端 `cargo test` | **144 passed / 0 failed / 3 ignored**（139→144：archive writer 5 例） |
+| 前端 vitest / typecheck / build | 98 绿 / 过 / 过 |
+| smoke `scripts/smoke_test.py` | **PASS 57 / SKIP 4 / FAIL 0**（51→57：compress-sync / compress-job / compress-refusals × fs+memory） |
+| `scripts/test.sh` 全量（含 release 构建 + 打包） | exit 0（"all green"），产出 `io.dbx.files-0.1.21-darwin-arm64.dbxp` |
+| 浏览器验证（Playwright @ `?mock=1`，截图不入库） | 单选右键「压缩…」→ 对话框默认 `<名称>.tar.gz` → 确认后「压缩包已创建」+ 列表出现归档；多选 2 项右键出批量面（下载所选/复制/移动到目标栏/压缩 2 项…/删除所选）→ 压缩 2 项成功；树 caret 展开/收缩正常；Esc 关确认对话框 |
+
+### 13.2 剩余风险与遗留
+
+1. gzip 为 stored 档位：.tar.gz 体积≈源数据（无压缩率）；真 deflate 与 zip
+   写入同为 Phase 2（`archive.rs` 头注释已标注）。
+2. compress job 写出中途取消/失败会在目标留下半成品归档（copy/extract 系
+   dir job 同风险模型）；目标不覆盖语义使重跑需先改名或删除残留。
+3. mockHost delete/purge/rename/copy 仍固定默认树（§12.2 遗留沿袭）。
+4. 宿主侧 F-1/F-2/F-3（`HOST_FEEDBACK.zh-CN.md`）沿袭待宿主构建修复。

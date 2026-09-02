@@ -15,7 +15,7 @@ function memoryStorage(initial: Record<string, string> = {}): Storage {
   } as Storage;
 }
 
-const prefs: UiPrefs = { sort: { column: "size", direction: "desc" }, dualPane: false };
+const prefs: UiPrefs = { sort: { column: "size", direction: "desc" }, dualPane: false, sideTab: "quick", sideCollapsed: true };
 
 describe("ui prefs", () => {
   it("round-trips prefs through storage", () => {
@@ -26,17 +26,23 @@ describe("ui prefs", () => {
   });
 
   it("falls back to defaults for missing or corrupt data", () => {
-    expect(loadUiPrefs(memoryStorage())).toEqual({ sort: { column: "name", direction: "asc" }, dualPane: true });
+    expect(loadUiPrefs(memoryStorage())).toEqual({
+      sort: { column: "name", direction: "asc" },
+      dualPane: true,
+      sideTab: "tree",
+      sideCollapsed: false,
+    });
     expect(loadUiPrefs(memoryStorage({ [UI_PREFS_KEY]: "{broken" })).sort.column).toBe("name");
     expect(loadUiPrefs(memoryStorage({ [UI_PREFS_KEY]: '{"dualPane":"yes"}' })).dualPane).toBe(true);
   });
 
   it("sanitizes unknown sort columns and legacy fields", () => {
     const storage = memoryStorage({
-      [UI_PREFS_KEY]: JSON.stringify({ sort: { column: "hacker", direction: "sideways" }, rightTab: "admin" }),
+      [UI_PREFS_KEY]: JSON.stringify({ sort: { column: "hacker", direction: "sideways" }, rightTab: "admin", sideTab: "magic" }),
     });
     const loaded = loadUiPrefs(storage);
     expect(loaded.sort.column).toBe("name");
+    expect(loaded.sideTab).toBe("tree");
     expect("rightTab" in loaded).toBe(false);
   });
 });
