@@ -204,3 +204,26 @@ Esc 关闭、关闭双栏后左栏回当前连接根目录。
 **遗留**：窄窗（<900px）下双栏 + 双侧栏的表格列宽偏窄（名称列省略号），
 如需可加侧栏折叠按钮；概览弹窗编辑态 Esc 直接关闭（未保存内容丢失，
 与关闭按钮一致）。
+
+## 9. 2026-09-04 追加：宿主 1.1 theme 通道主题同步
+
+宿主 `dev/plugin-framework-current`（cd3ee5a45，2026-09-03）向沙箱推送
+`PluginBridgeTheme { appearance, tokens }`：init 携带 + env 消息实时推送，tokens
+为宿主根节点解析后的 `--color-*` 设计令牌；`api.appearance` 契约在当前宿主恒
+缺失（宿主侧 `pluginAppearance` 未接线）。本任务让工作台跟随宿主明暗与调色板
+实时切换：
+
+- `env.d.ts`：新增 `DbxPluginTheme` 与 `DbxPluginApi.theme?`。
+- `lib/hostTheme.ts`（新）+ `hostTheme.spec.ts`：token→colors 映射、
+  `dbx-plugin-env` CustomEvent 订阅、输入校验（7 例单测）。
+- `App.vue`：init 时 `api.appearance` 缺失改用 `api.theme` 初始化；宿主无
+  `onAppearanceChange` 时订阅 env 主题推送；退订随 `onBeforeUnmount` 清理。
+- `lib/mockHost.ts`：新增 `?theme=light|dark` 开关（默认 dark，与真实宿主一致），
+  镜像宿主 theme 形状供浏览器走查。
+
+**验证**：`pnpm typecheck` 绿；vitest 104 全绿（含新增 hostTheme.spec 7 例）。
+sidecar 未改动，协议契约不变。
+
+**遗留**：CSS 变量沿用 `--background` 命名（非宿主 `--color-*`），由适配层翻译；
+后续接入宿主官方 `dbx-*` UI kit 类时可直接消费注入令牌。本次无新增用户可见
+文案，七语无增量。

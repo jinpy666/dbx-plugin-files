@@ -64,6 +64,11 @@ engine/smb/
 
 - 参数：`host[:port]`（缺省 445）、`share`、`username`、`password`（secret）、
   `domain?`（NTLM 域/工作组，可空）。连接目标 = `\\host\share` UncPath。
+  **嵌套 share**（真机回归 2026-09，jobnote 服务器）：`share` 允许
+  `共享名/子路径`（Icewind/smbclient 惯例，`/`、`\` 均可）——Windows 服务器
+  拒绝对 share 子目录做 tree connect（`STATUS_BAD_NETWORK_NAME`），故
+  `SmbBuilder::build` 先拆分：首段做 tree connect 目标，其余段落并入 root
+  前缀（用户 `root` 拼在其下），后续路径代数全部复用既有 root 映射红线。
 - `SmbClient` 持有 TCP 连接 + session，**非 Clone**——适配层以
   `Arc<SmbAccess>` 单客户端承载全部请求，利用 crate 的 pipelined credit
   window 做块级并发；方法级并发初版用 `tokio::sync::Mutex` 串行化目录类
@@ -71,8 +76,12 @@ engine/smb/
   再评估是否升级为客户端池。
 - 断线恢复：接入 crate 的 `ReconnectPolicy`/`SessionReviver`；恢复失败映射
   业务错误（宿主层重连语义不变：`connection/connect` 幂等重建 Operator）。
-- `connection/test` = 临时 Operator 上 `check()`（实现为 negotiate +
-  session setup + tree connect + share 根 stat）。
+- `connection/test`：临时 Operator 上探测（真机回归 2026-09 起改法）：smb
+  不走 OpenDAL `check()`——适配器对根路径 stat 是本地合成的 DIR 应答（smb2
+  crate 无法 Create share 根路径），`check()` 从不拨号、坏 share 也假通过；
+  改为真实 `files/list` 根列表（negotiate + session setup + tree connect +
+  QUERY_DIRECTORY）。其余协议维持 `check()`。与 sftp_native 的真探测 stat
+  同源教训（假阳性 test）。
 
 ### 2.2 操作映射与 capability 声明
 
@@ -115,7 +124,7 @@ root 语义：OpenDAL `root` = share 内可选子路径（缺省 `/` = share 根
 | key | 类型 | binding | 默认 | 说明 |
 |---|---|---|---|---|
 | `endpoint` | text | config | 空 | `host[:445]` 或 `smb://host[:445]` |
-| `share` | text | config | 空 | 共享名（tree connect 目标） |
+| `share` | text | config | 空 | 共享名或 `共享名/子路径`（嵌套段转 root 前缀，见 §2.1） |
 | `username` | text | config | 空 | NTLM 账号 |
 | `password` | password | **secret** | 空 | secret binding |
 | `domain` | text | config | 空 | NTLM 域/工作组，可空 |

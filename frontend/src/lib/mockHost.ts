@@ -4,6 +4,7 @@
 // 行为开关（query 参数）：
 //   ?mock=1          启用
 //   &locale=zh-CN    宿主 locale（默认 zh-CN）
+//   &theme=light     宿主 1.1 theme 通道方案（默认 dark，与真实宿主一致）
 //   &delay=300       files/list 人为延迟 ms（便于观察加载态）
 //   &job=1           copy/move 一律走降级 job（默认仅目录/`mockDir`）
 // 任何包含 "error" 的路径都会返回业务错误（便于验证错误横幅与重试）。
@@ -207,7 +208,8 @@ export function installMockHost(): void {
 
   // ---- 监听器 ---------------------------------------------------------------
   const eventListeners: Array<(event: { method: string; params: Record<string, unknown> }) => void> = [];
-  const binaryListeners: Array<(event: { channel: string; dataBase64: string }) => void> = [];
+  // mock 镜像当前宿主桥的二进制事件形状（零拷贝 data 字段），与真实宿主一致。
+  const binaryListeners: Array<(event: { channel: string; data?: Uint8Array }) => void> = [];
 
   // ---- 审计（files/audit/list 对齐后端 store 审计语义）-----------------------
   // 与 backend/src/main.rs::audit_list_response 同形：{entries:[{at,action,
@@ -474,7 +476,7 @@ export function installMockHost(): void {
           const frame = new Uint8Array(8 + length);
           new DataView(frame.buffer).setBigUint64(0, BigInt(offset), false);
           frame.fill((offset / 7) % 251, 8);
-          for (const listener of binaryListeners) listener({ channel: `files/download/${taskId}`, dataBase64: b64encode(frame) });
+          for (const listener of binaryListeners) listener({ channel: `files/download/${taskId}`, data: frame });
           window.setTimeout(() => push(offset + length), 1);
         };
         window.setTimeout(() => push(0), 10);
@@ -489,12 +491,22 @@ export function installMockHost(): void {
   }
 
   // ---- 组装宿主桥 -----------------------------------------------------------
+  // 与 DBX globals.css 的 :root（pearl 浅色）和 .dark 规范块保持一致；
+  // 镜像宿主 1.1 theme 通道形状（当前宿主只推 theme，不推 appearance）。
+  const light = params.get("theme") === "light";
+  const theme: DbxPluginTheme = {
+    appearance: light ? "light" : "dark",
+    tokens: light
+      ? { "--color-background": "rgb(255 255 255)", "--color-foreground": "rgb(10 10 10)", "--color-muted": "rgb(245 245 245)", "--color-muted-foreground": "rgb(115 115 115)", "--color-accent": "rgb(245 245 245)", "--color-accent-foreground": "rgb(23 23 23)", "--color-border": "rgb(229 229 229)", "--color-destructive": "rgb(231 0 11)" }
+      : { "--color-background": "rgb(19 20 22)", "--color-foreground": "rgb(215 215 219)", "--color-muted": "rgb(42 42 45)", "--color-muted-foreground": "rgb(151 152 157)", "--color-accent": "rgb(46 47 51)", "--color-accent-foreground": "rgb(221 221 226)", "--color-border": "rgb(110 110 114 / 0.28)", "--color-destructive": "rgb(243 98 95)" },
+  };
   window.dbxPlugin = {
     ready: Promise.resolve({ connectionId: "mock-conn" }),
     context: {
       connectionId: "mock-conn",
       connection: { name: "Mock Storage", host: "mock.local", readOnly: false, protocol: "fs" },
     },
+    theme,
     locale: params.get("locale") ?? "zh-CN",
     request: async <T>() => ({}) as T,
     invoke: async <T>(method: string, payload?: Record<string, unknown>) => invoke(method, payload ?? {}) as Promise<T>,

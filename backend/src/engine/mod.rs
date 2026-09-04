@@ -94,8 +94,22 @@ impl Engine {
 
     /// `connection/test`: builds a temporary Operator and probes it with
     /// `check()`. No state is stored; a failure surfaces as a business error.
+    ///
+    /// `smb` overrides the probe: OpenDAL `check()` stats the operator root,
+    /// and the SMB adapter answers a root stat locally (the smb2 crate cannot
+    /// Create the share root path), so `check()` would pass without ever
+    /// dialing — a bad share/host only surfaced later as a browse NotFound.
+    /// A real root listing exercises negotiate + session + tree connect and
+    /// is what the UI promises ("reachable and listable"); same false-positive
+    /// lesson the sftp_native stat already encodes (real-machine run 2026-09).
     pub async fn test(&self, connection: &StoredConnection) -> Result<(), String> {
         let operator = build_operator(connection)?;
+        if connection.protocol == "smb" {
+            return ops::list(&operator, "/", false)
+                .await
+                .map(|_| ())
+                .map_err(|error| format!("Storage check failed: {error}"));
+        }
         operator
             .check()
             .await
@@ -279,6 +293,9 @@ pub fn protocol_kv(
             push(&mut kv, "region", &connection.region);
             push(&mut kv, "access_key_id", &connection.access_key_id);
             push(&mut kv, "secret_access_key", &connection.secret_access_key);
+            if connection.enable_virtual_host_style {
+                push(&mut kv, "enable_virtual_host_style", "true");
+            }
             "s3".to_string()
         }
         "oss" => {
@@ -621,6 +638,18 @@ mod tests {
         assert_eq!(map["endpoint"], "http://127.0.0.1:9000");
         assert_eq!(map["secret_access_key"], "minioadmin");
         assert!(!map.contains_key("password"));
+        assert!(
+            !map.contains_key("enable_virtual_host_style"),
+            "virtual-host style stays off unless the connection opts in"
+        );
+
+        let mut vhs = connection("s3");
+        vhs.bucket = "demo".into();
+        vhs.enable_virtual_host_style = true;
+        let (scheme, kv) = protocol_kv(&vhs).unwrap();
+        assert_eq!(scheme, "s3");
+        let map: HashMap<String, String> = kv.into_iter().collect();
+        assert_eq!(map["enable_virtual_host_style"], "true");
 
         let mut ftp = connection("ftp");
         ftp.endpoint = "ftp://127.0.0.1:2121".into();

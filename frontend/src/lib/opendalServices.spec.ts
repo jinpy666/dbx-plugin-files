@@ -121,7 +121,9 @@ describe("custom service schemas", () => {
     expect(requiredOf("s3")).toEqual(["bucket", "access_key_id", "secret_access_key"]);
     expect(requiredOf("webdav")).toEqual(["endpoint"]);
     expect(requiredOf("ftp")).toEqual(["endpoint"]);
-    expect(requiredOf("sftp")).toEqual(["endpoint"]);
+    // OpenDAL sftp service is keyfile-only: the key is required, the old
+    // password field was dropped (password accounts belong to sftp-native).
+    expect(requiredOf("sftp")).toEqual(["endpoint", "key"]);
     expect(requiredOf("oss")).toEqual(["bucket", "endpoint", "access_key_id", "access_key_secret"]);
     expect(requiredOf("obs")).toEqual(["bucket", "endpoint", "access_key_id", "secret_access_key"]);
     expect(requiredOf("cos")).toEqual(["bucket", "secret_id", "secret_key"]);

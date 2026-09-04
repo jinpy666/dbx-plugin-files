@@ -70,6 +70,9 @@ pub struct StoredConnection {
     pub access_key_id: String,
     /// Secret (`connection_secrets.secret_access_key`).
     pub secret_access_key: String,
+    /// s3 only: address the bucket as `bucket.host` instead of a path-style
+    /// URL (`external_config.enable_virtual_host_style`).
+    pub enable_virtual_host_style: bool,
     // --- webdav / ftp / sftp ---
     pub username: String,
     pub user: String,
@@ -179,6 +182,7 @@ impl StoredConnection {
             region: optional_string(external_config, "region"),
             access_key_id: optional_string(external_config, "access_key_id"),
             secret_access_key: optional_string(connection_secrets, "secret_access_key"),
+            enable_virtual_host_style: bool_field(external_config, "enable_virtual_host_style", false),
             username: optional_string(external_config, "username"),
             user: optional_string(external_config, "user"),
             password: optional_string(connection_secrets, "password"),
@@ -517,6 +521,23 @@ mod tests {
         assert_eq!(connection.timeout_secs, 45);
         assert_eq!(connection.runtime_host, "127.0.0.1");
         assert_eq!(connection.runtime_port, 9000);
+        assert!(!connection.enable_virtual_host_style, "virtual-host style defaults to off");
+    }
+
+    #[test]
+    fn parses_s3_virtual_host_style_flag() {
+        let connection = StoredConnection::from_lifecycle_params(&json!({
+            "connection": {
+                "id": "conn-vhs",
+                "external_config": {
+                    "protocol": "s3",
+                    "bucket": "demo",
+                    "enable_virtual_host_style": true
+                }
+            }
+        }))
+        .unwrap();
+        assert!(connection.enable_virtual_host_style);
     }
 
     #[test]
@@ -886,12 +907,16 @@ mod tests {
             ("region", &["s3"]),
             ("access_key_id", &["s3", "oss"]),
             ("secret_access_key", &["s3", "oss"]),
+            ("enable_virtual_host_style", &["s3"]),
             ("endpoint", &["s3", "oss", "webdav", "ftp", "sftp", "smb", "sftp-native"]),
             ("username", &["webdav", "smb"]),
             ("user", &["ftp"]),
             ("share", &["smb"]),
             ("domain", &["smb"]),
-            ("password", &["webdav", "ftp", "sftp", "smb", "sftp-native"]),
+            // password deliberately excludes `sftp`: the OpenDAL sftp service
+            // is key-only (the backend never forwards a password), password
+            // accounts belong to `sftp-native`.
+            ("password", &["webdav", "ftp", "smb", "sftp-native"]),
             ("key", &["sftp", "sftp-native"]),
             ("known_hosts_strategy", &["sftp", "sftp-native"]),
             ("service", &["opendal-custom"]),
@@ -993,6 +1018,44 @@ mod tests {
                 "field '{key}' required_when must match its visible_when"
             );
         }
+
+        // endpoint is conditionally required on a SUBSET of its visible
+        // protocols: webdav/ftp/sftp/smb/sftp-native need it, s3/oss stay
+        // optional (the AWS default endpoint applies when unset). The host
+        // evaluates required_when independently of visible_when, so the
+        // subset must never leave the required scope hidden — asserted here
+        // by keeping it inside the endpoint visible list.
+        let endpoint = field_of("endpoint");
+        assert!(required("endpoint") == false, "endpoint must not be statically required");
+        let endpoint_visible: Vec<&str> = endpoint["visible_when"]["one_of"]
+            .as_array()
+            .expect("endpoint visible_when")
+            .iter()
+            .map(|value| value.as_str().expect("one_of value"))
+            .collect();
+        let endpoint_required: Vec<&str> = endpoint
+            .get("required_when")
+            .expect("endpoint must carry required_when")
+            .get("one_of")
+            .and_then(Value::as_array)
+            .expect("required_when.one_of")
+            .iter()
+            .map(|value| value.as_str().expect("one_of value"))
+            .collect();
+        assert!(
+            endpoint_required.iter().all(|value| endpoint_visible.contains(value)),
+            "endpoint required_when must stay inside its visible_when"
+        );
+        for required_protocol in ["webdav", "ftp", "sftp", "smb", "sftp-native"] {
+            assert!(
+                endpoint_required.contains(&required_protocol),
+                "endpoint must be conditionally required for '{required_protocol}'"
+            );
+        }
+        assert!(
+            !endpoint_required.contains(&"s3") && !endpoint_required.contains(&"oss"),
+            "endpoint stays optional for s3/oss (AWS default endpoint)"
+        );
     }
 
     #[test]

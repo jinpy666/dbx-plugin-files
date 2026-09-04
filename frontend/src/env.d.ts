@@ -1,6 +1,8 @@
 interface DbxPluginBinaryEvent {
   channel: string;
-  dataBase64: string;
+  /** 当前宿主桥投递零拷贝字节；旧桥（Host API 1.0）投递 base64 字符串。 */
+  data?: Uint8Array;
+  dataBase64?: string;
 }
 
 interface DbxPluginEvent {
@@ -17,6 +19,12 @@ interface DbxPluginFileTransferApi {
   cancel(handleId: string): Promise<void>;
   onDragState(listener: (active: boolean) => void): () => void;
   onDrop(listener: (files: Array<{ handleId: string; name: string; size: number; contentType: string }>) => void): () => void;
+}
+
+interface DbxPluginTheme {
+  appearance: "light" | "dark";
+  /** 宿主根节点解析后的设计令牌（--color-* / --radius-* / --font-*），Host API 1.0 无此字段。 */
+  tokens: Record<string, string>;
 }
 
 interface DbxPluginAppearance {
@@ -39,6 +47,7 @@ interface DbxPluginApi {
   ready: Promise<Record<string, unknown>>;
   readonly context?: Record<string, unknown>;
   readonly appearance?: DbxPluginAppearance;
+  readonly theme?: DbxPluginTheme;
   readonly locale: string;
   request<T = unknown>(method: string, params?: unknown): Promise<T>;
   invoke<T = unknown>(method: string, params?: unknown, options?: { timeoutMs?: number }): Promise<T>;

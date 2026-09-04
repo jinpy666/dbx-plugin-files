@@ -382,3 +382,139 @@ Storage 连接记录，需在 UI 删除或重新编辑保存（新版表单会�
    dir job 同风险模型）；目标不覆盖语义使重跑需先改名或删除残留。
 3. mockHost delete/purge/rename/copy 仍固定默认树（§12.2 遗留沿袭）。
 4. 宿主侧 F-1/F-2/F-3（`HOST_FEEDBACK.zh-CN.md`）沿袭待宿主构建修复。
+
+## 14. 宿主桥 binary 事件契约对齐（2026-09-04）
+
+上游宿主 b15281024（随 DBX.app 0.6.2 生效）把沙箱 binary 事件从
+`{ channel, dataBase64 }` 改为零拷贝 `{ channel, data: Uint8Array }`，
+`dataBase64` 字段不复存在。`files/download/` 分块流的消费方
+（App.vue `handleBinary`）仍读旧字段 → `atob(undefined)` 抛异常 → 下载分块
+永不送达（浏览/invoke 正常，与 ssh 插件终端无输出同根因）。
+
+**改动**（纯前端，双形状兼容，Host API 1.0 基线不破坏）：
+- 新增 `lib/binaryEvent.ts`：`bridgeBinaryBytes` 归一化（优先 `data`，回退
+  base64）+ `binaryEvent.spec.ts` 3 用例（与 ssh 插件同款实现）；
+- `App.vue` `handleBinary` 改走归一化函数，签名改用全局 `DbxPluginBinaryEvent`；
+- `env.d.ts`：`data?` 新增、`dataBase64` 转 optional；
+- `lib/mockHost.ts`：binaryListeners 类型与 `files/download/` 投递改镜像真实
+  桥当前形状（`data` 字段）。
+
+**验证**：typecheck 0 错；vitest **107 绿**（16 文件，含 3 个新用例）。
+**打包/安装随并行 SMB 会话（PROGRESS-F5）下次发版流程执行**：backend 当前有
+未提交的 SMB 改动，避免把半成品 sidecar 编进安装包。宿主异动跟进机制见
+AGENTS.md 硬性规则 7 与 `scripts/host-sync.sh contract`。
+
+**§14 增补（同日收敛）**：`binaryEvent` 上移 `shared/frontend/` 公共适配层，
+App.vue 改相对引用、`lib/binaryEvent.spec.ts` 保留为薄 spec；本地副本删除。
+复验：typecheck 0 错、vitest 107 绿。
+
+## 15. 容器冒烟全覆盖：webdav/ftp 段落地 + sftp-native 容器接线（2026-09-05）
+
+目标：七种连接协议（fs/s3/webdav/ftp/sftp/smb/sftp-native）全部有真实容器
+覆盖，跑通完整协议面 + 多个连接设置项（connection/test、read_only 门禁、
+root 限定、凭据形态），消除 smoke 容器段 SKIP。
+
+**改动**（纯测试编排，无后端/前端代码改动）：
+- `scripts/smoke_test.py`：
+  - 新增 `run_webdav_section`（mod_dav 容器）：connection/test（真实
+    PROPFIND）、capabilities 契约（**原生 copy/rename**、无 presign）、结构
+    操作、stat/rmdir、audit、二进制通道往返、transfers
+    list/status/cancel/clear、publicLink 明确不支持、read-only 门禁、
+    root-confined 连接设置变体；
+  - 新增 `run_ftp_section`（pyftpdlib 容器）：同上协议面，capabilities 契约
+    断言 **copy 不声明**（OpenDAL 0.57 ftp 无原生 copy/rename → 结构场景走
+    read→write job 降级，真实 FTP 线上验证 PASV/RETR/STOR/RNFR/RNTO）；
+  - 新增 `scenario_root_confinement`：同一后端以 `root=<base>` 重拨，断言
+    列表被限定到子树（连接表单 root 字段的真实线路覆盖）；
+  - 密码均走 `connection.connection_secrets`（secret-bound），不进
+    external_config、不打印。
+- `scripts/container_smoke.sh`：
+  - 新增 WebDAV 容器（httpd:2.4-alpine，手写最小 mod_dav httpd.conf +
+    运行时随机凭据 htpasswd，容器内生成）与 FTP 容器（python:3-alpine +
+    pyftpdlib，PASV masquerade 127.0.0.1、随机凭据经容器 env 注入）；
+  - openssh-server 增加 `USER_PASSWORD`（随机生成）→ 同一容器同时服务 sftp
+    段（OpenDAL keyfile）与 sftp-native 段（russh **密码认证**）；
+  - MinIO `/data` 改 tmpfs(4g)（见下排障 ②）。
+
+**排障记录（本轮真机发现并修复）**：
+1. httpd:alpine 不带 apr-util 的 DBM 驱动 → mod_dav_fs 锁库打不开，**一切写
+   方法（MKCOL/PUT/…）500 "The DBM driver could not be loaded"**，而读方法
+   PROPFIND 正常，极易误判为认证/权限问题。修复：容器启动时
+   `apk add apr-util-dbm_gdbm` 后再起 httpd。
+2. MinIO 新版按宿主剩余磁盘**百分比**拒绝写入（XMinioStorageFull，新版无
+   配置面可关闭）；宿主盘富余度低时 sparse Docker 虚拟盘会误触发。修复：测试
+   容器 `/data` 改 tmpfs + `MINIO_API_ODIRECT=off`（tmpfs 不支持 O_DIRECT）。
+   注意：XMinioStorageFull 同时也是宿主盘真实容量告警（当前仅剩 ~15Gi）。
+3. stilliard/pure-ftpd 镜像无 arm64 manifest → 按 Samba 选型先例改用
+   python:3-alpine + pyftpdlib（arm64 原生、PASV 地址/端口段可控）。
+
+**验证**：`scripts/container_smoke.sh` **PASS 185 / SKIP 0 / FAIL 0**：
+fs 29（含 quickpaths 探针）、memory 28、s3(MinIO) 18、sftp(OpenSSH) 17、
+webdav(mod_dav) 24+1(confined)、ftp(pyftpdlib) 24+1(confined)、smb(Samba) 22、
+sftp-native(russh 密码) 21。无 UI 文案改动，七语不涉及。
+
+## 16. 连接表单优化轮：鉴权条件、加密引导、条件必填与参数组合（v0.1.26，2026-09-05）
+
+目标：优化各文件协议的连接表单——加密、鉴权、参数组合的条件变化、必填与
+参数校验。
+
+**能力边界（决定声明方式）**：宿主 `pluginFieldConditions` 仅支持单字段
+`one_of` 白名单（无 not_one_of / AND / OR / 空值判断）；manifest schema 无
+字段级 pattern/min/max 值校验——值级格式仍由后端 fail-fast 承担
+（`validate_endpoints`、builder 错误）。宿主 Rust 校验已评估 `required_when`
+（host.rs `plugin_field_is_required`，HOST_FEEDBACK F-1 已修），条件必填
+真正生效。
+
+**改动**：
+1. 鉴权组合修正：
+   - `password` 从 sftp 表单剔除（visible_when 仅剩 webdav/ftp/smb/
+     sftp-native）：OpenDAL 0.57 sftp service 仅支持 keyfile，后端从不转发
+     password，旧表单展示该字段是误导；密码账号引导至 sftp-native；
+   - `key` 描述写明三种形态：直连 SFTP 必填（key-only）、SFTP（原生）密码
+     为空时使用、DBX SSH 隧道无需填写；
+   - sftp-native「密码/私钥至少一项」单字段条件无法表达，由后端 fail-fast
+     （"sftp-native requires a password or a private key"）+ 描述引导。
+2. 加密/传输安全：
+   - `endpoint` 描述按协议写明 scheme→安全语义：WebDAV/S3/OSS https=TLS；
+     FTP `ftps://`=显式 TLS（AUTH TLS，OpenDAL 从 scheme 推导，无独立键）；
+     SFTP/SMB 传输层协议自带加密；
+   - `known_hosts_strategy` 新增描述（Strict 校验 known hosts 推荐 /
+     Tolerate 记忆新主机 / Trust 任意接受有中间人风险）+ **选项七语 label**
+     （此前选项 label 只有英文原文）；
+   - `connection_mode` 选项七语 label（直连 / 经 DBX SSH 隧道）。
+3. 必填与参数组合：
+   - `endpoint` 条件必填：required_when = webdav/ftp/sftp/smb/sftp-native
+     （s3/oss 留空走 AWS 默认端点，required ⊆ visible）；
+   - s3 `enable_virtual_host_style` 全栈补齐（此前前端模板有、后端链路断）：
+     manifest boolean（visible_when s3）→ model.rs 解析 → engine
+     `protocol_kv` push OpenDAL `enable_virtual_host_style` 键，默认关；
+   - `timeout_secs` 描述补默认 30s/下限 1s 语义。
+4. 七语（zh-CN/zh-TW/en/es/it/ja/pt-BR）：endpoint/password/key/
+   known_hosts_strategy/timeout_secs 描述刷新 + 两个 select 的选项 label +
+   新字段文案，全量同步。
+5. 前端模板同步（`opendalServices.ts`）：sftp 快捷模板与 custom schema 移除
+   password、key 转 required；custom JSON hint 改 key 形态；spec 断言同步。
+6. 契约测试矩阵（model.rs）：visible 矩阵 password 行剔除 sftp、新增
+   enable_virtual_host_style 行；required-shape 测试新增 endpoint
+   required_when 子集断言（required ⊆ visible 且显式排除 s3/oss）。
+
+**验证证据**：
+- cargo test：**146 passed / 0 failed**（新增
+  `parses_s3_virtual_host_style_flag`、kv 映射断言、契约矩阵更新）。
+- 前端：typecheck 0 错；vitest **107 passed**；build 通过。
+- 浏览器（Playwright × `docs/fixtures/connection-form.html` 消费真实
+  manifest）：sftp 态无 Password、Endpoint 带 `*`、主机密钥策略选项/描述
+  中文化；webdav Endpoint `*`；s3 态出现「虚拟主机风格」开关且 Endpoint
+  无 `*`；sftp-native 密码+私钥双字段齐备；zh-CN 连接模式选项
+  「直连/经 DBX SSH 隧道」。截图留档 `docs/screenshots/files-form-s*.png`
+  （不入库）。
+- smoke：`scripts/container_smoke.sh` **PASS 185 / SKIP 0 / FAIL 0**（重建
+  sidecar 后复跑）。
+
+**剩余风险**：
+- sftp-native 凭据互斥、sftp 直连 key 必填（隧道模式除外）无法用单字段
+  required_when 表达，仍靠描述 + 后端 fail-fast；宿主条件引擎支持多字段
+  组合后可收紧。
+- 值级格式校验（endpoint scheme、SSRF 护栏）在插件侧只作用于自绘 custom
+  编辑器（`opendalServices.ts` validate*）；宿主对话框路径依赖宿主校验演进
+  （F-1 必填已修，值格式校验待宿主支持 pattern）。

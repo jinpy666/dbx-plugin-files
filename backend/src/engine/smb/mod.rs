@@ -121,16 +121,13 @@ impl Builder for SmbBuilder {
         let config = self.config;
         let endpoint = config.endpoint.clone().unwrap_or_default();
         let (host, port) = parse_smb_endpoint(&endpoint)?;
-        let share = config.share.unwrap_or_default().trim().to_string();
+        let (share, root) = split_share_and_root(&config.share.unwrap_or_default(), config.root.as_deref());
         if share.is_empty() {
             return Err(Error::new(
                 ErrorKind::ConfigInvalid,
                 "smb share is required (the tree connect target)",
             ));
         }
-        // The OpenDAL root is an optional sub-path inside the share; locking
-        // semantics (`lock_to_root`) are enforced by the engine policy layer.
-        let root = normalize_root(config.root.as_deref().unwrap_or("/"));
         let params = pool::SmbConnectParams {
             host,
             port,
@@ -145,6 +142,30 @@ impl Builder for SmbBuilder {
             &share,
         ))
     }
+}
+
+/// Splits the configured share into the tree connect target and an OpenDAL
+/// root prefix (real-machine regression, jobnote server 2026-09: tree
+/// connect to a subdirectory of a share is rejected with
+/// `STATUS_BAD_NETWORK_NAME`, so an Icewind/smbclient-style nested share
+/// value like `Projects/UIPath/JobNotes/InputFile` must tree connect to
+/// `Projects` and serve `/UIPath/JobNotes/InputFile` as the operator root).
+/// Both `/` and `\` act as separators; empty segments collapse; the user
+/// root (if any) is joined UNDER the nested prefix. Locking semantics
+/// (`lock_to_root`) are enforced by the engine policy layer as before.
+fn split_share_and_root(share: &str, user_root: Option<&str>) -> (String, String) {
+    let mut segments = share
+        .split(['/', '\\'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let share = segments.next().unwrap_or_default().to_string();
+    let nested: Vec<&str> = segments.collect();
+    let root = if nested.is_empty() {
+        normalize_root(user_root.unwrap_or("/"))
+    } else {
+        normalize_root(&format!("/{}/{}", nested.join("/"), user_root.unwrap_or("/").trim_matches('/')))
+    };
+    (share, root)
 }
 
 /// Parses the endpoint into `(host, port)`. Accepts bare `host[:port]` (same
@@ -325,6 +346,47 @@ mod tests {
             .build()
             .expect_err("empty endpoint must fail");
         assert_eq!(error.kind(), ErrorKind::ConfigInvalid);
+    }
+
+    #[test]
+    fn split_share_and_root_table() {
+        // Plain shares keep the configured root unchanged.
+        let cases: Vec<(&str, Option<&str>, (String, String))> = vec![
+            ("media", None, ("media".into(), "/".into())),
+            ("media", Some("/archive"), ("media".into(), "/archive/".into())),
+            ("  media  ", None, ("media".into(), "/".into())),
+            // Trailing/leading separators and backslash notation all collapse
+            // onto the plain share.
+            ("media/", None, ("media".into(), "/".into())),
+            ("/media", None, ("media".into(), "/".into())),
+            (r"Projects\UIPath", None, ("Projects".into(), "/UIPath/".into())),
+            // Nested shares: first segment tree connects, the rest becomes
+            // the root prefix (jobnote real-machine shape).
+            (
+                "Projects/UIPath/JobNotes/InputFile",
+                None,
+                ("Projects".into(), "/UIPath/JobNotes/InputFile/".into()),
+            ),
+            (
+                "Projects/UIPath/JobNotes/InputFile",
+                Some("/sub"),
+                ("Projects".into(), "/UIPath/JobNotes/InputFile/sub/".into()),
+            ),
+            ("Projects//UIPath", None, ("Projects".into(), "/UIPath/".into())),
+            ("Projects/", Some("x"), ("Projects".into(), "/x/".into())),
+        ];
+        for (share, root, expected) in cases {
+            assert_eq!(
+                split_share_and_root(share, root),
+                expected,
+                "split('{share}', {root:?})"
+            );
+        }
+        // Separator-only values leave an empty share → build-time error.
+        for bad in ["", "   ", "/", r"\\", "//"] {
+            let (share, _) = split_share_and_root(bad, None);
+            assert!(share.is_empty(), "split('{bad}') must yield an empty share");
+        }
     }
 
     #[test]

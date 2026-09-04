@@ -8,12 +8,20 @@ Drives the sidecar over its stdio-framed protocol (sidecar_client.py):
   - archive section (both fs + memory): files/archiveList (+pagination) /
     files/extract (sync + job degrade) / zip Phase-2 refusal (B-ARCHIVE)
   - memory:// section: the same subset with zero external dependencies
-  - s3 (MinIO), sftp and smb (Samba) container sections: SKIP unless the
-    matching DBX_FILES_S3_* / DBX_FILES_SFTP_* / DBX_FILES_SMB_* environment
-    variables are set
+  - s3 (MinIO), sftp (OpenSSH) and smb (Samba) container sections: SKIP
+    unless the matching DBX_FILES_S3_* / DBX_FILES_SFTP_* / DBX_FILES_SMB_*
+    environment variables are set
+  - webdav section (Apache mod_dav container): full protocol face (native
+    copy/rename, no presign) — SKIP unless DBX_FILES_WEBDAV_* is set
+  - ftp section (pyftpdlib container): full protocol face with the read→write
+    job-degrade paths (OpenDAL 0.57 ftp has no native copy/rename) — SKIP
+    unless DBX_FILES_FTP_* is set
   - sftp-native section: the russh+russh-sftp dual-stack adapter (password
     auth the OpenDAL sftp service cannot do) — SKIP unless
     DBX_FILES_SFTP_NATIVE_HOST/PORT/USER/PASSWORD/KEY/BASE are set
+  - webdav/ftp sections additionally re-dial the same backend with a
+    confined root (root-connection-settings variant) to prove the root field
+    scopes listings on a real wire
 
 Methods owned by parallel tracks (F-A lifecycle / F-B engine ops) that are not
 implemented yet are reported as SKIP, not FAIL, so the suite stays green while
@@ -27,6 +35,7 @@ Usage:
         python3 scripts/smoke_test.py              # adds the MinIO section
     DBX_FILES_SMB_HOST=... DBX_FILES_SMB_SHARE=... \
     DBX_FILES_SMB_USER=... DBX_FILES_SMB_PASSWORD=... \
+    [DBX_FILES_SMB_ROOT=... creates the smoke tree inside the root] \
         python3 scripts/smoke_test.py              # adds the Samba section
 """
 
@@ -687,6 +696,165 @@ def run_sftp_section(client: SidecarClient) -> None:
         mark("sftp", "auth-password", "skip", "password form not supported by OpenDAL 0.57 sftp (keyfile only); key path exercised above")
 
 
+def run_webdav_section(client: SidecarClient) -> None:
+    """Container coverage: WebDAV (Apache mod_dav) section, env-gated SKIP
+    like the s3/sftp/smb sections:
+
+        DBX_FILES_WEBDAV_ENDPOINT   DAV tree base URL, e.g. http://127.0.0.1:18080/dav
+        DBX_FILES_WEBDAV_USER       basic-auth user (optional)
+        DBX_FILES_WEBDAV_PASSWORD   basic-auth password (secret-bound, optional)
+        DBX_FILES_WEBDAV_BASE       base dir inside the DAV tree (default /smoke-<ts>)
+
+    Password travels in connection.connection_secrets (model.rs parses it
+    from there only) — never printed, never in external_config. OpenDAL 0.57
+    webdav declares native copy/rename → the structure scenarios stay inline
+    (no job degrade) on this backend; presign is never declared so publicLink
+    must take the backend-unsupported path.
+    """
+    endpoint = os.environ.get("DBX_FILES_WEBDAV_ENDPOINT")
+    user = os.environ.get("DBX_FILES_WEBDAV_USER", "")
+    password = os.environ.get("DBX_FILES_WEBDAV_PASSWORD", "")
+    print("\n==> section webdav (mod_dav container)")
+    if not endpoint:
+        mark("webdav", "container", "skip", "set DBX_FILES_WEBDAV_ENDPOINT/USER/PASSWORD to enable")
+        return
+    external = {"protocol": "webdav", "endpoint": endpoint}
+    if user:
+        external["username"] = user
+    secrets = {"password": password} if password else None
+    # connection/test = real PROPFIND against the server root (not a local no-op).
+    connection = {
+        "id": "smoke-webdav",
+        "name": "smoke-webdav",
+        "db_type": "storage",
+        "host": "",
+        "port": 0,
+        "external_config": external,
+        "connection_secrets": secrets or {},
+    }
+    try:
+        client.request("connection/test", lifecycle_params(connection))
+        mark("webdav", "connection-test", "pass")
+    except SidecarError as error:
+        mark("webdav", "connection-test", "fail", str(error)[:160])
+        raise
+    try:
+        connect(client, "smoke-webdav", external, secrets=secrets)
+    except SidecarError as error:
+        mark("webdav", "connection/connect", "fail", str(error)[:160])
+        raise
+    runner = Runner(client, "webdav")
+    runner.connection_id = "smoke-webdav"
+    base = os.environ.get("DBX_FILES_WEBDAV_BASE", f"/smoke-{int(time.time())}")
+    try:
+        scenario_webdav_capabilities(runner)
+        scenario_structure(runner, base)
+        scenario_smb_stat_rmdir(runner, base)
+        scenario_audit(runner)
+        scenario_transfer_roundtrip(runner, base)
+        scenario_smb_public_link_refused(runner, base)
+        scenario_root_confinement(client, "webdav", external, base, secrets)
+        readonly_id = "smoke-webdav-readonly"
+        connect(client, readonly_id, {**external, "read_only": True}, secrets=secrets)
+        scenario_read_only(client, "webdav", readonly_id, base)
+    finally:
+        # best-effort teardown of the random base directory
+        try:
+            runner.call("files/purge", {"connectionId": runner.connection_id, "path": base})
+        except SidecarError:
+            pass
+
+
+def scenario_webdav_capabilities(runner: Runner) -> None:
+    """webdav capability contract: native copy/rename (declared by the OpenDAL
+    webdav service), full files/* face, presign never declared."""
+    def _caps():
+        caps = runner.call("files/capabilities", {"connectionId": runner.connection_id})
+        for key in ("list", "read", "write", "stat", "delete", "createDir"):
+            assert caps.get(key) is True, f"webdav capability {key!r} should be declared: {caps!r}"
+        assert caps.get("copy") is True, f"webdav must declare native copy: {caps!r}"
+        assert caps.get("rename") is True, f"webdav must declare native rename: {caps!r}"
+        assert caps.get("presign") is False, f"webdav must not declare presign: {caps!r}"
+    runner.step("capabilities-webdav-contract", _caps)
+
+
+def run_ftp_section(client: SidecarClient) -> None:
+    """Container coverage: FTP (pyftpdlib) section, env-gated SKIP:
+
+        DBX_FILES_FTP_ENDPOINT   e.g. ftp://127.0.0.1:2121 (required)
+        DBX_FILES_FTP_USER       login user
+        DBX_FILES_FTP_PASSWORD   login password (secret-bound)
+        DBX_FILES_FTP_BASE       base dir inside the FTP home (default /smoke-<ts>)
+
+    OpenDAL 0.57 ftp declares no native copy/rename → the structure scenarios
+    exercise the read→write job-degrade paths over a real FTP wire (PASV,
+    RETR/STOR/RNFR/RNTO). presign is never declared → publicLink unsupported.
+    """
+    endpoint = os.environ.get("DBX_FILES_FTP_ENDPOINT")
+    user = os.environ.get("DBX_FILES_FTP_USER", "")
+    password = os.environ.get("DBX_FILES_FTP_PASSWORD", "")
+    print("\n==> section ftp (pyftpdlib container)")
+    if not endpoint:
+        mark("ftp", "container", "skip", "set DBX_FILES_FTP_ENDPOINT/USER/PASSWORD to enable")
+        return
+    external = {"protocol": "ftp", "endpoint": endpoint}
+    if user:
+        external["user"] = user
+    secrets = {"password": password} if password else None
+    connection = {
+        "id": "smoke-ftp",
+        "name": "smoke-ftp",
+        "db_type": "storage",
+        "host": "",
+        "port": 0,
+        "external_config": external,
+        "connection_secrets": secrets or {},
+    }
+    try:
+        client.request("connection/test", lifecycle_params(connection))
+        mark("ftp", "connection-test", "pass")
+    except SidecarError as error:
+        mark("ftp", "connection-test", "fail", str(error)[:160])
+        raise
+    try:
+        connect(client, "smoke-ftp", external, secrets=secrets)
+    except SidecarError as error:
+        mark("ftp", "connection/connect", "fail", str(error)[:160])
+        raise
+    runner = Runner(client, "ftp")
+    runner.connection_id = "smoke-ftp"
+    base = os.environ.get("DBX_FILES_FTP_BASE", f"/smoke-{int(time.time())}")
+    try:
+        scenario_ftp_capabilities(runner)
+        scenario_structure(runner, base)
+        scenario_smb_stat_rmdir(runner, base)
+        scenario_audit(runner)
+        scenario_transfer_roundtrip(runner, base)
+        scenario_smb_public_link_refused(runner, base)
+        scenario_root_confinement(client, "ftp", external, base, secrets)
+        readonly_id = "smoke-ftp-readonly"
+        connect(client, readonly_id, {**external, "read_only": True}, secrets=secrets)
+        scenario_read_only(client, "ftp", readonly_id, base)
+    finally:
+        # best-effort teardown of the random base directory
+        try:
+            runner.call("files/purge", {"connectionId": runner.connection_id, "path": base})
+        except SidecarError:
+            pass
+
+
+def scenario_ftp_capabilities(runner: Runner) -> None:
+    """ftp capability contract: full read/write face but no native copy
+    (job degrade instead) and no presign."""
+    def _caps():
+        caps = runner.call("files/capabilities", {"connectionId": runner.connection_id})
+        for key in ("list", "read", "write", "stat", "delete", "createDir"):
+            assert caps.get(key) is True, f"ftp capability {key!r} should be declared: {caps!r}"
+        assert caps.get("copy") is False, f"ftp must not declare copy (job degrade instead): {caps!r}"
+        assert caps.get("presign") is False, f"ftp must not declare presign: {caps!r}"
+    runner.step("capabilities-ftp-contract", _caps)
+
+
 def run_smb_section(client: SidecarClient) -> None:
     """F5-S6: Samba container section (IMPL_PLAN_SMB §5), env-gated SKIP like
     the s3/sftp sections so parallel tracks never block each other.
@@ -706,6 +874,7 @@ def run_smb_section(client: SidecarClient) -> None:
     user = os.environ.get("DBX_FILES_SMB_USER")
     password = os.environ.get("DBX_FILES_SMB_PASSWORD")
     domain = os.environ.get("DBX_FILES_SMB_DOMAIN", "")
+    root = os.environ.get("DBX_FILES_SMB_ROOT", "")
     print("\n==> section smb (Samba container)")
     if not (host and share and user and password):
         mark("smb", "container", "skip", "set DBX_FILES_SMB_HOST/PORT/SHARE/USER/PASSWORD to enable")
@@ -713,6 +882,8 @@ def run_smb_section(client: SidecarClient) -> None:
     external = {"protocol": "smb", "endpoint": f"{host}:{port}", "share": share, "username": user}
     if domain:
         external["domain"] = domain
+    if root:
+        external["root"] = root
     connection = {
         "id": "smoke-smb",
         "name": "smoke-smb",
@@ -722,8 +893,9 @@ def run_smb_section(client: SidecarClient) -> None:
         "external_config": external,
         "connection_secrets": {"password": password},
     }
-    # connection/test = negotiate + session setup + tree connect + share root
-    # stat (IMPL_PLAN_SMB §2.1).
+    # connection/test = negotiate + session setup + tree connect + a real
+    # root listing (the smb test override; a root-only stat would answer
+    # locally and never dial — real-machine false-positive lesson 2026-09).
     try:
         client.request("connection/test", lifecycle_params(connection))
         mark("smb", "connection-test", "pass")
@@ -816,6 +988,31 @@ def scenario_smb_public_link_refused(runner: Runner, base: str) -> None:
         if not refused:
             raise SidecarError("files/publicLink on smb unexpectedly succeeded")
     runner.step("publiclink-unsupported", _refused)
+
+
+def scenario_root_confinement(client: SidecarClient, section: str, external: dict, base: str, secrets: dict | None = None) -> None:
+    """Connection-settings variant: the same backend re-dialed with
+    root=<base> must scope listings to the confined subtree instead of the
+    service root. Exercises the `root` field of the connection form on a
+    real wire (the fs/memory sections confine via the temp root directly)."""
+    confined_id = f"smoke-{section}-confined"
+    try:
+        connect(client, confined_id, external, root=base, secrets=secrets)
+    except SidecarError as error:
+        if is_method_missing(str(error)):
+            mark(f"{section}-confined", "connection/connect", "skip", str(error)[:120])
+            return
+        raise
+    runner = Runner(client, f"{section}-confined")
+    runner.connection_id = confined_id
+
+    def _confined_list():
+        names = [
+            entry["name"]
+            for entry in runner.call("files/list", {"connectionId": runner.connection_id, "path": "/"}).get("entries", [])
+        ]
+        assert "dir" in names, f"confined root should surface the smoke tree: {names}"
+    runner.step("root-confined-list", _confined_list)
 
 
 def run_sftp_native_section(client: SidecarClient) -> None:
@@ -911,6 +1108,8 @@ def main() -> None:
             run_core_sections(client, fs_root)
             run_s3_section(client)
             run_sftp_section(client)
+            run_webdav_section(client)
+            run_ftp_section(client)
             run_smb_section(client)
             run_sftp_native_section(client)
         except SidecarError as error:

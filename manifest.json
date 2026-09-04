@@ -3,7 +3,7 @@
   "manifest_version": 1,
   "id": "io.dbx.files",
   "name": "DBX Files",
-  "version": "0.1.22",
+  "version": "0.1.27",
   "publisher": "xynanan",
   "description": "Multi-backend storage workbench plugin for DBX, powered by Apache OpenDAL.",
   "icon": "assets/plugin.svg",
@@ -173,12 +173,22 @@
           "binding": "config",
           "default": "",
           "placeholder": "http://127.0.0.1:9000",
-          "description": "S3/OSS/WebDAV/FTP: full URL (http://127.0.0.1:9000, https://oss-cn-hangzhou.aliyuncs.com). SFTP: user@host or ssh://user@host:port (native also accepts host:port with the user field). SMB: host[:445] or smb://host[:445].",
+          "description": "Full address of the storage server, scheme sets transport security: WebDAV http(s)://host/dav (https = TLS). S3/OSS http(s)://host:9000 (https = TLS; optional for AWS). FTP ftp://host:21 plain or ftps://host:990 explicit TLS. SFTP ssh://user@host:22 (native also takes host:port with the user field). SMB host[:445] or smb://host[:445].",
           "visible_when": {
             "field": "protocol",
             "one_of": [
               "s3",
               "oss",
+              "webdav",
+              "ftp",
+              "sftp",
+              "smb",
+              "sftp-native"
+            ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
               "webdav",
               "ftp",
               "sftp",
@@ -194,7 +204,7 @@
           "binding": "config",
           "default": "",
           "placeholder": "media",
-          "description": "SMB share name used as the tree connect target.",
+          "description": "SMB share name used as the tree connect target; share/sub/path tree connects to share and serves /sub/path as the root.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
@@ -320,13 +330,12 @@
           "type": "password",
           "binding": "secret",
           "default": "",
-          "description": "Used for password login on SFTP native (falls back to keyboard-interactive automatically); also the webdav/ftp/smb login password.",
+          "description": "Login password: WebDAV/FTP/SMB basic or password login (empty user = anonymous FTP); SFTP (native) password auth with keyboard-interactive fallback. OpenDAL SFTP is key-only — use SFTP (native) for password accounts.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
               "webdav",
               "ftp",
-              "sftp",
               "smb",
               "sftp-native"
             ]
@@ -339,7 +348,7 @@
           "binding": "config",
           "default": "",
           "placeholder": "~/.ssh/id_ed25519",
-          "description": "Private key content or a path to the key file. SFTP native uses the key when the password is empty.",
+          "description": "Private key content or a path to the key file. Direct SFTP requires a key (key-only auth); SFTP (native) uses it when the password is empty; not needed through a DBX SSH tunnel.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
@@ -374,7 +383,8 @@
               "sftp",
               "sftp-native"
             ]
-          }
+          },
+          "description": "SSH host-key verification policy: Strict verifies against known hosts (recommended); Tolerate accepts and remembers new host keys; Trust accepts any host key — man-in-the-middle risk, testing only."
         },
         {
           "key": "read_only",
@@ -443,7 +453,21 @@
           "type": "number",
           "binding": "config",
           "default": 30,
-          "description": "Per-operation timeout in seconds."
+          "description": "Per-operation timeout in seconds; leave empty for the 30s default (minimum 1)."
+        },
+        {
+          "key": "enable_virtual_host_style",
+          "label": "Virtual-host style",
+          "type": "boolean",
+          "binding": "config",
+          "default": false,
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "s3"
+            ]
+          },
+          "description": "Address the bucket as a virtual hostname (bucket.s3.region.amazonaws.com) instead of a path-style URL; enable when the provider requires it."
         }
       ],
       "workbench": "io.dbx.files.workbench",
@@ -514,12 +538,12 @@
             "endpoint": {
               "label": "端点",
               "placeholder": "http://127.0.0.1:9000",
-              "description": "S3/OSS/WebDAV/FTP：完整 URL（http://127.0.0.1:9000、https://oss-cn-hangzhou.aliyuncs.com）。SFTP：user@host 或 ssh://user@host:port（原生 SFTP 也支持 host:port 配合用户字段）。SMB：host[:445] 或 smb://host[:445]。"
+              "description": "存储服务器完整地址，scheme 决定传输安全：WebDAV http(s)://host/dav（https 即 TLS）。S3/OSS http(s)://host:9000（https 即 TLS；AWS 可留空）。FTP ftp://host:21 明文或 ftps://host:990 显式 TLS。SFTP ssh://user@host:22（原生适配也支持 host:port，配合用户名字段）。SMB host[:445] 或 smb://host[:445]。"
             },
             "share": {
               "label": "共享名",
               "placeholder": "media",
-              "description": "SMB 树连接目标使用的共享名。"
+              "description": "SMB 树连接目标使用的共享名；支持 共享名/子路径 形式，树连接共享名、子路径作为根目录。"
             },
             "region": {
               "label": "区域",
@@ -552,15 +576,21 @@
             },
             "password": {
               "label": "密码",
-              "description": "SFTP 原生密码登录（失败自动回退 keyboard-interactive）；也是 webdav/ftp/smb 的登录密码。"
+              "description": "登录密码：WebDAV/FTP/SMB 基本或密码登录（FTP 用户留空即匿名）；SFTP（原生）密码认证，失败自动回退 keyboard-interactive。OpenDAL SFTP 仅支持密钥——密码账号请用 SFTP（原生）。"
             },
             "key": {
               "label": "私钥或私钥路径",
               "placeholder": "~/.ssh/id_ed25519",
-              "description": "私钥内容或私钥文件路径。SFTP 原生在密码为空时使用私钥。"
+              "description": "私钥内容或私钥文件路径。直连 SFTP 必填（仅支持密钥认证）；SFTP（原生）在密码为空时使用；经 DBX SSH 隧道时无需填写。"
             },
             "known_hosts_strategy": {
-              "label": "Known Hosts 策略"
+              "label": "Known Hosts 策略",
+              "description": "SSH 主机密钥校验策略：Strict 对照 known hosts 校验（推荐）；Tolerate 接受并记住新主机密钥；Trust 接受任意主机密钥——存在中间人风险，仅限测试。",
+              "options": {
+                "Tolerate": "宽容（记住新主机）",
+                "Strict": "严格（校验已知主机）",
+                "Trust": "信任任意（不安全）"
+              }
             },
             "read_only": {
               "label": "只读",
@@ -584,7 +614,11 @@
             },
             "timeout_secs": {
               "label": "操作超时（秒）",
-              "description": "单次操作的超时秒数。"
+              "description": "单次操作超时秒数；留空使用默认 30 秒（最小 1）。"
+            },
+            "enable_virtual_host_style": {
+              "label": "虚拟主机风格",
+              "description": "以虚拟主机名（bucket.s3.region.amazonaws.com）而非路径风格 URL 寻址存储桶；服务商要求时开启。"
             }
           }
         },
@@ -646,12 +680,12 @@
             "endpoint": {
               "label": "端點",
               "placeholder": "http://127.0.0.1:9000",
-              "description": "S3/OSS/WebDAV/FTP：完整 URL（http://127.0.0.1:9000、https://oss-cn-hangzhou.aliyuncs.com）。SFTP：user@host 或 ssh://user@host:port（原生 SFTP 也支援 host:port 搭配使用者欄位）。SMB：host[:445] 或 smb://host[:445]。"
+              "description": "儲存伺服器完整位址，scheme 決定傳輸安全：WebDAV http(s)://host/dav（https 即 TLS）。S3/OSS http(s)://host:9000（https 即 TLS；AWS 可留空）。FTP ftp://host:21 明文或 ftps://host:990 明確 TLS。SFTP ssh://user@host:22（原生配接也支援 host:port，配合使用者欄位）。SMB host[:445] 或 smb://host[:445]。"
             },
             "share": {
               "label": "共用名稱",
               "placeholder": "media",
-              "description": "SMB 樹狀連線目標使用的共用名稱。"
+              "description": "SMB 樹狀連線目標使用的共用名稱；支援 共用名稱/子路徑 形式，樹狀連線共用名稱、子路徑作為根目錄。"
             },
             "region": {
               "label": "區域",
@@ -684,15 +718,21 @@
             },
             "password": {
               "label": "密碼",
-              "description": "SFTP 原生密碼登入（失敗自動回退 keyboard-interactive）；也是 webdav/ftp/smb 的登入密碼。"
+              "description": "登入密碼：WebDAV/FTP/SMB 基本或密碼登入（FTP 使用者留空即匿名）；SFTP（原生）密碼認證，失敗自動回退 keyboard-interactive。OpenDAL SFTP 僅支援金鑰——密碼帳號請用 SFTP（原生）。"
             },
             "key": {
               "label": "私鑰或私鑰路徑",
               "placeholder": "~/.ssh/id_ed25519",
-              "description": "私鑰內容或私鑰檔案路徑。SFTP 原生在密碼為空時使用私鑰。"
+              "description": "私鑰內容或私鑰檔案路徑。直連 SFTP 必填（僅支援金鑰認證）；SFTP（原生）在密碼為空時使用；經 DBX SSH 隧道時無需填寫。"
             },
             "known_hosts_strategy": {
-              "label": "Known Hosts 策略"
+              "label": "Known Hosts 策略",
+              "description": "SSH 主機金鑰驗證策略：Strict 對照 known hosts 驗證（建議）；Tolerate 接受並記住新主機金鑰；Trust 接受任意主機金鑰——存在中間人風險，僅限測試。",
+              "options": {
+                "Tolerate": "寬容（記住新主機）",
+                "Strict": "嚴格（驗證已知主機）",
+                "Trust": "信任任意（不安全）"
+              }
             },
             "read_only": {
               "label": "唯讀",
@@ -706,7 +746,7 @@
               "label": "連線模式",
               "options": {
                 "direct": "直連",
-                "via-dbx-ssh": "經 DBX SSH 隧道"
+                "via-dbx-ssh": "經 DBX SSH 通道"
               }
             },
             "dbx_ssh_connection": {
@@ -716,7 +756,11 @@
             },
             "timeout_secs": {
               "label": "操作逾時（秒）",
-              "description": "單次操作的逾時秒數。"
+              "description": "單次操作逾時秒數；留空使用預設 30 秒（最小 1）。"
+            },
+            "enable_virtual_host_style": {
+              "label": "虛擬主機風格",
+              "description": "以虛擬主機名（bucket.s3.region.amazonaws.com）而非路徑風格 URL 定址儲存貯體；服務商要求時開啟。"
             }
           }
         },
@@ -778,12 +822,12 @@
             "endpoint": {
               "label": "Endpoint",
               "placeholder": "http://127.0.0.1:9000",
-              "description": "S3/OSS/WebDAV/FTP: full URL (http://127.0.0.1:9000, https://oss-cn-hangzhou.aliyuncs.com). SFTP: user@host or ssh://user@host:port (native also accepts host:port with the user field). SMB: host[:445] or smb://host[:445]."
+              "description": "Full address of the storage server, scheme sets transport security: WebDAV http(s)://host/dav (https = TLS). S3/OSS http(s)://host:9000 (https = TLS; optional for AWS). FTP ftp://host:21 plain or ftps://host:990 explicit TLS. SFTP ssh://user@host:22 (native also takes host:port with the user field). SMB host[:445] or smb://host[:445]."
             },
             "share": {
               "label": "Share",
               "placeholder": "media",
-              "description": "SMB share name used as the tree connect target."
+              "description": "SMB share name used as the tree connect target; share/sub/path tree connects to share and serves /sub/path as the root."
             },
             "region": {
               "label": "Region",
@@ -816,15 +860,21 @@
             },
             "password": {
               "label": "Password",
-              "description": "Used for password login on SFTP native (falls back to keyboard-interactive automatically); also the webdav/ftp/smb login password."
+              "description": "Login password: WebDAV/FTP/SMB basic or password login (empty user = anonymous FTP); SFTP (native) password auth with keyboard-interactive fallback. OpenDAL SFTP is key-only — use SFTP (native) for password accounts."
             },
             "key": {
               "label": "Private key or path",
               "placeholder": "~/.ssh/id_ed25519",
-              "description": "Private key content or a path to the key file. SFTP native uses the key when the password is empty."
+              "description": "Private key content or a path to the key file. Direct SFTP requires a key (key-only auth); SFTP (native) uses it when the password is empty; not needed through a DBX SSH tunnel."
             },
             "known_hosts_strategy": {
-              "label": "Known hosts strategy"
+              "label": "Known hosts strategy",
+              "description": "SSH host-key verification policy: Strict verifies against known hosts (recommended); Tolerate accepts and remembers new host keys; Trust accepts any host key — man-in-the-middle risk, testing only.",
+              "options": {
+                "Tolerate": "Tolerate (remember new hosts)",
+                "Strict": "Strict (verify known hosts)",
+                "Trust": "Trust (any key, insecure)"
+              }
             },
             "read_only": {
               "label": "Read only",
@@ -837,7 +887,7 @@
             "connection_mode": {
               "label": "Connection mode",
               "options": {
-                "direct": "Direct",
+                "direct": "Direct connection",
                 "via-dbx-ssh": "Through DBX SSH tunnel"
               }
             },
@@ -848,7 +898,11 @@
             },
             "timeout_secs": {
               "label": "Operation timeout (seconds)",
-              "description": "Per-operation timeout in seconds."
+              "description": "Per-operation timeout in seconds; leave empty for the 30s default (minimum 1)."
+            },
+            "enable_virtual_host_style": {
+              "label": "Virtual-host style",
+              "description": "Address the bucket as a virtual hostname (bucket.s3.region.amazonaws.com) instead of a path-style URL; enable when the provider requires it."
             }
           }
         },
@@ -910,7 +964,7 @@
             "endpoint": {
               "label": "Endpoint",
               "placeholder": "http://127.0.0.1:9000",
-              "description": "S3/OSS/WebDAV/FTP: URL completa (http://127.0.0.1:9000, https://oss-cn-hangzhou.aliyuncs.com). SFTP: user@host o ssh://user@host:port (el nativo también acepta host:port con el campo de usuario). SMB: host[:445] o smb://host[:445]."
+              "description": "Dirección completa del servidor; el esquema define la seguridad de transporte: WebDAV http(s)://host/dav (https = TLS). S3/OSS http(s)://host:9000 (https = TLS; opcional para AWS). FTP ftp://host:21 en claro o ftps://host:990 TLS explícito. SFTP ssh://user@host:22 (el nativo también acepta host:port junto al campo de usuario). SMB host[:445] o smb://host[:445]."
             },
             "share": {
               "label": "Recurso compartido",
@@ -948,15 +1002,21 @@
             },
             "password": {
               "label": "Contraseña",
-              "description": "Se usa para el inicio con contraseña en SFTP nativo (retorna automáticamente a keyboard-interactive); también es la contraseña de webdav/ftp/smb."
+              "description": "Contraseña: login básico o por contraseña de WebDAV/FTP/SMB (usuario vacío = FTP anónimo); autenticación por contraseña de SFTP (nativo) con alternativa keyboard-interactive. El SFTP de OpenDAL solo acepta clave: use SFTP (nativo) para cuentas con contraseña."
             },
             "key": {
               "label": "Clave privada o ruta",
               "placeholder": "~/.ssh/id_ed25519",
-              "description": "Contenido de la clave privada o ruta al archivo de clave. SFTP nativo usa la clave cuando la contraseña está vacía."
+              "description": "Contenido de la clave privada o ruta del archivo. El SFTP directo la requiere (solo clave); SFTP (nativo) la usa si la contraseña está vacía; no hace falta por el túnel SSH de DBX."
             },
             "known_hosts_strategy": {
-              "label": "Estrategia de known hosts"
+              "label": "Estrategia de known hosts",
+              "description": "Política de verificación de la clave de host SSH: Strict verifica contra known hosts (recomendado); Tolerate acepta y recuerda hosts nuevos; Trust acepta cualquier clave — riesgo de man-in-the-middle, solo pruebas.",
+              "options": {
+                "Tolerate": "Tolerante (recordar hosts nuevos)",
+                "Strict": "Estricto (verificar known hosts)",
+                "Trust": "Confiar (cualquier clave, inseguro)"
+              }
             },
             "read_only": {
               "label": "Solo lectura",
@@ -969,7 +1029,7 @@
             "connection_mode": {
               "label": "Modo de conexión",
               "options": {
-                "direct": "Directa",
+                "direct": "Conexión directa",
                 "via-dbx-ssh": "A través del túnel SSH de DBX"
               }
             },
@@ -980,7 +1040,11 @@
             },
             "timeout_secs": {
               "label": "Tiempo de espera de operación (segundos)",
-              "description": "Tiempo de espera por operación, en segundos."
+              "description": "Tiempo de espera por operación en segundos; vacío = 30 s por defecto (mínimo 1)."
+            },
+            "enable_virtual_host_style": {
+              "label": "Estilo virtual-host",
+              "description": "Direcciona el bucket como nombre de host virtual (bucket.s3.region.amazonaws.com) en vez de URL estilo ruta; actívalo si el proveedor lo exige."
             }
           }
         },
@@ -1042,7 +1106,7 @@
             "endpoint": {
               "label": "Endpoint",
               "placeholder": "http://127.0.0.1:9000",
-              "description": "S3/OSS/WebDAV/FTP: URL completo (http://127.0.0.1:9000, https://oss-cn-hangzhou.aliyuncs.com). SFTP: user@host o ssh://user@host:port (il nativo accetta anche host:port con il campo utente). SMB: host[:445] o smb://host[:445]."
+              "description": "Indirizzo completo del server; lo schema definisce la sicurezza del trasporto: WebDAV http(s)://host/dav (https = TLS). S3/OSS http(s)://host:9000 (https = TLS; opzionale per AWS). FTP ftp://host:21 in chiaro oppure ftps://host:990 TLS esplicito. SFTP ssh://user@host:22 (il nativo accetta anche host:port con il campo utente). SMB host[:445] o smb://host[:445]."
             },
             "share": {
               "label": "Condivisione",
@@ -1080,15 +1144,21 @@
             },
             "password": {
               "label": "Password",
-              "description": "Usata per l'accesso con password su SFTP nativo (ripiega automaticamente su keyboard-interactive); è anche la password di webdav/ftp/smb."
+              "description": "Password: login basic o con password di WebDAV/FTP/SMB (utente vuoto = FTP anonimo); autenticazione con password di SFTP (nativo) con fallback keyboard-interactive. L'SFTP OpenDAL accetta solo chiavi: per account con password usa SFTP (nativo)."
             },
             "key": {
               "label": "Chiave privata o percorso",
               "placeholder": "~/.ssh/id_ed25519",
-              "description": "Contenuto della chiave privata o percorso del file chiave. SFTP nativo usa la chiave quando la password è vuota."
+              "description": "Contenuto della chiave privata o percorso del file. L'SFTP diretto la richiede (solo chiave); SFTP (nativo) la usa se la password è vuota; non serve tramite il tunnel SSH di DBX."
             },
             "known_hosts_strategy": {
-              "label": "Strategia known hosts"
+              "label": "Strategia known hosts",
+              "description": "Politica di verifica della host key SSH: Strict verifica contro i known hosts (consigliato); Tolerate accetta e ricorda le nuove host key; Trust accetta qualsiasi chiave — rischio man-in-the-middle, solo test.",
+              "options": {
+                "Tolerate": "Tollerante (ricorda i nuovi host)",
+                "Strict": "Rigoroso (verifica i known hosts)",
+                "Trust": "Fiducia (qualsiasi chiave, non sicuro)"
+              }
             },
             "read_only": {
               "label": "Sola lettura",
@@ -1101,8 +1171,8 @@
             "connection_mode": {
               "label": "Modalità di connessione",
               "options": {
-                "direct": "Diretta",
-                "via-dbx-ssh": "Tramite tunnel SSH di DBX"
+                "direct": "Connessione diretta",
+                "via-dbx-ssh": "Attraverso il tunnel SSH di DBX"
               }
             },
             "dbx_ssh_connection": {
@@ -1112,7 +1182,11 @@
             },
             "timeout_secs": {
               "label": "Timeout operazione (secondi)",
-              "description": "Timeout per operazione, in secondi."
+              "description": "Timeout per operazione in secondi; vuoto = 30 s predefiniti (minimo 1)."
+            },
+            "enable_virtual_host_style": {
+              "label": "Stile virtual-host",
+              "description": "Indirizza il bucket come nome host virtuale (bucket.s3.region.amazonaws.com) invece che URL in stile percorso; attivalo se il provider lo richiede."
             }
           }
         },
@@ -1174,12 +1248,12 @@
             "endpoint": {
               "label": "エンドポイント",
               "placeholder": "http://127.0.0.1:9000",
-              "description": "S3/OSS/WebDAV/FTP: 完全な URL（http://127.0.0.1:9000、https://oss-cn-hangzhou.aliyuncs.com）。SFTP: user@host または ssh://user@host:port（ネイティブはユーザー欄と併せて host:port も可）。SMB: host[:445] または smb://host[:445]。"
+              "description": "ストレージサーバーの完全なアドレス。スキームが通信の安全方式を決めます：WebDAV http(s)://host/dav（https で TLS）。S3/OSS http(s)://host:9000（https で TLS、AWS では省略可）。FTP は ftp://host:21 が平文、ftps://host:990 が明示的 TLS。SFTP ssh://user@host:22（ネイティブはユーザー欄と組み合わせて host:port も可）。SMB host[:445] または smb://host[:445]。"
             },
             "share": {
               "label": "共有名",
               "placeholder": "media",
-              "description": "ツリー接続先として使う SMB 共有名。"
+              "description": "ツリー接続先として使う SMB 共有名。共有名/サブパス 形式に対応：共有名にツリー接続し、サブパスをルートとして扱います。"
             },
             "region": {
               "label": "リージョン",
@@ -1212,15 +1286,21 @@
             },
             "password": {
               "label": "パスワード",
-              "description": "SFTP ネイティブのパスワード認証に使用（失敗時は自動で keyboard-interactive にフォールバック）。webdav/ftp/smb のログインパスワードも兼ねます。"
+              "description": "ログインパスワード：WebDAV/FTP/SMB の basic・パスワード認証（FTP はユーザー空欄で匿名）；SFTP（ネイティブ）のパスワード認証（失敗時 keyboard-interactive に自動フォールバック）。OpenDAL SFTP は鍵認証専用 — パスワードアカウントは SFTP（ネイティブ）を使用してください。"
             },
             "key": {
               "label": "秘密鍵またはパス",
               "placeholder": "~/.ssh/id_ed25519",
-              "description": "秘密鍵の内容または鍵ファイルのパス。SFTP ネイティブはパスワードが空のときに秘密鍵を使用します。"
+              "description": "秘密鍵の内容または鍵ファイルのパス。直接接続の SFTP では必須（鍵認証のみ）；SFTP（ネイティブ）はパスワード未設定時に使用；DBX SSH トンネル経由では不要です。"
             },
             "known_hosts_strategy": {
-              "label": "Known Hosts 戦略"
+              "label": "Known Hosts 戦略",
+              "description": "SSH ホスト鍵の検証ポリシー：Strict は known hosts と照合（推奨）；Tolerate は新しいホスト鍵を承認して記憶；Trust は任意のホスト鍵を承認 — 中間者攻撃のリスクがあるためテスト専用。",
+              "options": {
+                "Tolerate": "許容（新しいホストを記憶）",
+                "Strict": "厳格（known hosts を検証）",
+                "Trust": "信頼（任意の鍵・非安全）"
+              }
             },
             "read_only": {
               "label": "読み取り専用",
@@ -1244,7 +1324,11 @@
             },
             "timeout_secs": {
               "label": "操作タイムアウト（秒）",
-              "description": "1 操作あたりのタイムアウト秒数。"
+              "description": "1 操作あたりのタイムアウト秒数。空欄で既定 30 秒（最小 1）。"
+            },
+            "enable_virtual_host_style": {
+              "label": "バーチャルホスト形式",
+              "description": "パス形式の URL ではなく仮想ホスト名（bucket.s3.region.amazonaws.com）でバケットを指定します。プロバイダーが要求する場合に有効化。"
             }
           }
         },
@@ -1306,7 +1390,7 @@
             "endpoint": {
               "label": "Endpoint",
               "placeholder": "http://127.0.0.1:9000",
-              "description": "S3/OSS/WebDAV/FTP: URL completa (http://127.0.0.1:9000, https://oss-cn-hangzhou.aliyuncs.com). SFTP: user@host ou ssh://user@host:port (o nativo também aceita host:port com o campo de usuário). SMB: host[:445] ou smb://host[:445]."
+              "description": "Endereço completo do servidor; o esquema define a segurança do transporte: WebDAV http(s)://host/dav (https = TLS). S3/OSS http(s)://host:9000 (https = TLS; opcional na AWS). FTP ftp://host:21 em texto puro ou ftps://host:990 TLS explícito. SFTP ssh://user@host:22 (o nativo também aceita host:port com o campo de usuário). SMB host[:445] ou smb://host[:445]."
             },
             "share": {
               "label": "Compartilhamento",
@@ -1344,15 +1428,21 @@
             },
             "password": {
               "label": "Senha",
-              "description": "Usada para login por senha no SFTP nativo (retorna automaticamente ao keyboard-interactive); também é a senha de webdav/ftp/smb."
+              "description": "Senha de login: basic ou senha de WebDAV/FTP/SMB (usuário vazio = FTP anônimo); autenticação por senha do SFTP (nativo) com fallback keyboard-interactive. O SFTP do OpenDAL é somente por chave — use SFTP (nativo) para contas com senha."
             },
             "key": {
               "label": "Chave privada ou caminho",
               "placeholder": "~/.ssh/id_ed25519",
-              "description": "Conteúdo da chave privada ou caminho do arquivo de chave. O SFTP nativo usa a chave quando a senha está vazia."
+              "description": "Conteúdo da chave privada ou caminho do arquivo. O SFTP direto exige chave (somente chave); o SFTP (nativo) usa quando a senha está vazia; desnecessário pelo túnel SSH do DBX."
             },
             "known_hosts_strategy": {
-              "label": "Estratégia de known hosts"
+              "label": "Estratégia de known hosts",
+              "description": "Política de verificação da host key SSH: Strict verifica contra known hosts (recomendado); Tolerate aceita e lembra novas host keys; Trust aceita qualquer host key — risco de man-in-the-middle, apenas para testes.",
+              "options": {
+                "Tolerate": "Tolerar (lembrar novos hosts)",
+                "Strict": "Estrito (verificar known hosts)",
+                "Trust": "Confiar (qualquer chave, inseguro)"
+              }
             },
             "read_only": {
               "label": "Somente leitura",
@@ -1365,7 +1455,7 @@
             "connection_mode": {
               "label": "Modo de conexão",
               "options": {
-                "direct": "Direta",
+                "direct": "Conexão direta",
                 "via-dbx-ssh": "Via túnel SSH do DBX"
               }
             },
@@ -1376,7 +1466,11 @@
             },
             "timeout_secs": {
               "label": "Tempo limite da operação (segundos)",
-              "description": "Tempo limite por operação, em segundos."
+              "description": "Tempo limite por operação em segundos; vazio = 30 s padrão (mínimo 1)."
+            },
+            "enable_virtual_host_style": {
+              "label": "Estilo virtual-host",
+              "description": "Endereça o bucket como nome de host virtual (bucket.s3.region.amazonaws.com) em vez de URL estilo caminho; ative se o provedor exigir."
             }
           }
         },

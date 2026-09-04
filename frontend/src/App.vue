@@ -10,6 +10,8 @@ import PreviewPane from "./components/PreviewPane.vue";
 import CustomConfigEditor from "./components/CustomConfigEditor.vue";
 import PathField from "./components/PathField.vue";
 import SideNavPanel from "./components/SideNavPanel.vue";
+import { isDbxPluginTheme, onHostThemeChange, themeToAppearance } from "./lib/hostTheme";
+import { bridgeBinaryBytes } from "../../../shared/frontend/binaryEvent";
 import {
   bindApi,
   baseName,
@@ -334,6 +336,7 @@ let unsubscribeEvent: (() => void) | undefined;
 let unsubscribeBinary: (() => void) | undefined;
 let unsubscribeLocale: (() => void) | undefined;
 let unsubscribeContext: (() => void) | undefined;
+let unsubscribeTheme: (() => void) | undefined;
 
 function showNotice(message: string) {
   notice.value = message;
@@ -366,7 +369,7 @@ async function waitForHostApi(timeoutMs = 8000) {
   return window.dbxPlugin;
 }
 
-function applyAppearance(root: HTMLElement, appearance: { colors?: Record<string, string>; colorScheme?: string }) {
+function applyAppearance(root: HTMLElement, appearance: { colors?: Partial<Record<string, string>>; colorScheme?: string }) {
   const colors = appearance.colors ?? {};
   for (const [key, value] of Object.entries(colors)) {
     if (typeof value === "string") root.style.setProperty(`--${key.replace(/([A-Z])/g, "-$1").toLowerCase()}`, value);
@@ -401,9 +404,9 @@ interface FrameWaiter {
 const frameQueue = new Map<string, DownloadChunk[]>();
 const frameWaiters = new Map<string, FrameWaiter[]>();
 
-function handleBinary(event: { channel: string; dataBase64: string }) {
+function handleBinary(event: DbxPluginBinaryEvent) {
   if (!event.channel.startsWith("files/download/")) return;
-  const data = window.dbxPlugin.decodeBase64(event.dataBase64);
+  const data = bridgeBinaryBytes(event, window.dbxPlugin.decodeBase64);
   if (data.byteLength < 8) return;
   const offset = Number(new DataView(data.buffer, data.byteOffset, 8).getBigUint64(0, false));
   const chunk: DownloadChunk = { offset, data: data.slice(8) };
@@ -1256,6 +1259,9 @@ async function initialize() {
   }
   locale.value = api.locale || "zh-CN";
   if (api.appearance) applyAppearance(document.documentElement, api.appearance);
+  else if (isDbxPluginTheme(api.theme)) applyAppearance(document.documentElement, themeToAppearance(api.theme));
+  // appearance 契约缺失（当前 1.1 桥只推 theme）时订阅 env 主题推送，两套不同时挂。
+  if (!api.onAppearanceChange) unsubscribeTheme = onHostThemeChange((theme) => applyAppearance(document.documentElement, themeToAppearance(theme)));
   unsubscribeLocale = api.onLocaleChange?.((next) => (locale.value = next || "zh-CN"));
   unsubscribeContext = api.onContextChange?.((context) => {
     hostContext.value = context;
@@ -1331,6 +1337,7 @@ onBeforeUnmount(() => {
   unsubscribeBinary?.();
   unsubscribeLocale?.();
   unsubscribeContext?.();
+  unsubscribeTheme?.();
 });
 </script>
 

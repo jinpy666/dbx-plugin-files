@@ -107,3 +107,43 @@ OpenDAL 相对路径映射为 share 内路径，但 `SmbDeleter` 独缺该映射
 
 红线备忘：root 映射是全适配器的红线，新增 wire 操作必须经 `smb_path`；
 rootless 的 wire 路径 = 静默无效删除 + 错位误删隐患。
+
+## 6. 真机回归修复：嵌套 share 拆分 + connection/test 空转（2026-09-04）
+
+**真机发现**（jobnote 服务器 `hktkoms146.corp.int.kn`，acct-frtinv
+`jobnote_smb` 同源配置：domain=corp、`share=Projects/UIPath/JobNotes/InputFile`、
+sv.apac.reportminer2）：按 Icewind/smbclient 惯例把嵌套路径填进 share 字段，
+`connection/test` 报"可达"但浏览一律"找不到目录"（`files/list` → NotFound）。
+
+**根因实锤**（两个叠加缺陷）：
+
+1. **嵌套 share 树连接被拒**：smb2 crate 的 `Tree::connect` 直接拼
+   `\\host\{share}`，嵌套值（无论 `/` 还是 `\` 分隔）触发服务器
+   `STATUS_BAD_NETWORK_NAME`；该 Windows 服务器不接受对 share 子目录的
+   tree connect（反斜杠形式同样实测拒绝）。首通连接发生在首次 list（懒
+   拨号），错误映射 NotFound → UI"找不到目录"。
+2. **`connection/test` 空转**：`engine::test` 用 OpenDAL `check()` = 根路径
+   stat，而 SMB 适配器对根 stat 是本地合成 DIR（smb2 无法 Create share 根），
+   **从不拨号**——坏 share/坏 host 全部假通过（sftp_native 已在同一年记过
+   同款教训，SMB 侧漏改）。
+
+**修复**：
+
+- `SmbBuilder::build`：share 字段先经 `split_share_and_root` 拆分——首段
+  （`/`、`\` 均为分隔符，空段折叠、逐段 trim）做 tree connect 目标，其余
+  段落并入 root 前缀（用户 root 拼在其下）；路径代数复用既有 `smb_path`
+  红线映射，deleter/lister 无需另改。acct-frtinv 形态的嵌套 share 配置
+  从此与 `share=Projects + root=/UIPath/JobNotes/InputFile` 完全等价。
+- `engine::test`：smb 分支改跑真实根列表（negotiate + session + tree
+  connect + QUERY_DIRECTORY），其余协议维持 `check()`；坏嵌套路径报
+  `OBJECT_NAME_NOT_FOUND`、坏 share 报 `BAD_NETWORK_NAME`，不再假阳性。
+
+**修复后验证（jobnote 真机 + 本地）**：
+
+| 套件 | 结果 |
+|---|---|
+| `cargo test`（backend/ 全量） | **145 passed / 0 failed / 3 ignored**（新增 `split_share_and_root_table`：嵌套/反斜杠/空白/边界 10 例 + 空值表） |
+| 前端 vitest + vue-tsc | **98 passed** / typecheck ✅（opendalServices smb 模板占位符 + i18n 七语 smbSharePlaceholder 同步；键集不变） |
+| jobnote 三变体真机浏览 | A `share=Projects/UIPath/JobNotes/InputFile` ≡ B `share=Projects + root=/UIPath/JobNotes/InputFile`（均列出 JobNote CSV）≡ C share 根（24 条目、22 dir 判定正确、子目录 stat/list 全通） |
+| 负向用例 | 坏嵌套路径 / 坏 share 的 `connection/test` 均 FAIL（不再假通过） |
+| `smoke_test.py` smb 段 × 真机（root 形态 + 嵌套形态各一轮） | **两轮均 PASS 79 / SKIP 3 / FAIL 0**（smb 21 场景全绿：结构/传输/只读门禁/publicLink 拒绝）；smoke 新增 `DBX_FILES_SMB_ROOT` env 门控（对齐 sftp 段 BASE 先例），真机两轮写入均限定 smoke 基目录并自清理 |

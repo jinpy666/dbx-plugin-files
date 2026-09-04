@@ -69,8 +69,9 @@ export const SERVICE_TEMPLATES: Record<string, ServiceTemplate> = {
     kind: "quick",
     fields: [
       { key: "endpoint", type: "text", required: true, placeholder: "user@host or ssh://user@host:22" },
-      { key: "key", type: "text", placeholder: "private key content or path" },
-      { key: "password", type: "password", secret: true },
+      // OpenDAL 0.57 的 sftp service 仅支持 keyfile 认证（password 无对应
+      // builder 键，后端也不转发）——密码型账号走 sftp-native 快捷协议。
+      { key: "key", type: "text", required: true, placeholder: "private key content or path" },
       { key: "known_hosts_strategy", type: "select", options: ["Tolerate", "Strict", "Trust"] },
     ],
   },
@@ -83,7 +84,7 @@ export const SERVICE_TEMPLATES: Record<string, ServiceTemplate> = {
     kind: "quick",
     fields: [
       { key: "endpoint", type: "text", required: true, placeholder: "nas.local:445 or smb://nas.local" },
-      { key: "share", type: "text", required: true, placeholder: "share name" },
+      { key: "share", type: "text", required: true, placeholder: "share or share/sub/path" },
       { key: "username", type: "text" },
       { key: "password", type: "password", secret: true },
       { key: "domain", type: "text", placeholder: "NTLM domain or workgroup" },
@@ -136,7 +137,7 @@ export const CUSTOM_CONFIG_HINTS: Readonly<Record<string, string>> = {
   oss: '{ "bucket": "bucket", "endpoint": "https://oss-cn-xxx.aliyuncs.com", "access_key_id": "...", "access_key_secret": "..." }',
   webdav: '{ "endpoint": "https://dav.example.com/dav", "username": "...", "password": "..." }',
   ftp: '{ "endpoint": "ftp.example.com:21" }',
-  sftp: '{ "endpoint": "user@host:22", "password": "..." }',
+  sftp: '{ "endpoint": "ssh://user@host:22", "key": "~/.ssh/id_ed25519" }',
 };
 
 export function quickProtocolIds(): string[] {
@@ -215,8 +216,8 @@ export const CUSTOM_SERVICE_SCHEMAS: Readonly<Record<string, readonly CustomFiel
   ],
   sftp: [
     { key: "endpoint", type: "text", required: true, security: "host", placeholder: "user@host or ssh://user@host:22" },
-    { key: "key", type: "text", placeholder: "private key content or path" },
-    { key: "password", type: "password", secret: true },
+    // sftp service 是 keyfile-only：不收 password（OpenDAL 无此 builder 键）。
+    { key: "key", type: "text", required: true, placeholder: "private key content or path" },
     SFTP_KNOWN_HOSTS,
   ],
   gcs: [
