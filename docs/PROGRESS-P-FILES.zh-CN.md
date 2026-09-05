@@ -518,3 +518,12 @@ sftp-native(russh 密码) 21。无 UI 文案改动，七语不涉及。
 - 值级格式校验（endpoint scheme、SSRF 护栏）在插件侧只作用于自绘 custom
   编辑器（`opendalServices.ts` validate*）；宿主对话框路径依赖宿主校验演进
   （F-1 必填已修，值格式校验待宿主支持 pattern）。
+
+## 主题令牌桥（2026-09-05）
+
+- 接入 `shared/frontend/themeSync.ts`：`main.ts` 挂载前 `installHostThemeBridge()`，
+  插件变量桥接宿主 `--color-*` 令牌——首绘即命中宿主主题（不再等 init 后 JS 回写），
+  主题切换自动跟随，primary/radius/字体纳入同步面。宿主无令牌（mock/旧宿主）回退
+  暗色规范值，行为不变。
+- 验证：`vue-tsc` 0 错；`vitest run` 17 文件 110 用例全绿（含新增
+  `themeSync.spec.ts` 薄 spec）；v0.1.31 发版。
