@@ -147,3 +147,116 @@
   - ~~只读态 UI（徽章、写按钮禁用、右键菜单禁用）因夹具无 `?ro=1` 未走查~~ 已随 P2-13① 补夹具并走查（见上）。
   - ~~跨连接双栏（`host.listConnections` 多连接）真实宿主行为未验证，mock 下跨栏复制因夹具缺路由报错（P2-13②）~~ 夹具路由已修（API 层复验通过）；多连接真机行为仍建议随下次真机验证例行覆盖。
 - 走查用截图与 `/tmp/uiscan-files` 下脚本为扫描工具产物，不入库；报告落盘后已清理。
+
+## 五、第 3 轮（专家视角深度测试，2026-09-06）
+
+> 扫描角色：文件管理/存储工程师（FileZilla/WinSCP 重度用户视角）+ 软件测试专家。
+> 只读扫描，未改任何代码；不重复前 2 轮已收口项，全部为本轮新发现。
+> 脚本 10 轮（t1/t1b/t1c/t2/t2b/t3/t3b/t3d/t45/t6/t7/t7b），装于 `/tmp/uiscan-files-r3`（playwright-core + 系统 Chrome，收尾已清理，截图本轮零留存）。
+
+### 一、本轮环境
+
+| 项 | 值 |
+| --- | --- |
+| Dev server | 5293 端口复用上一轮遗留 vite（PID 30394，vite 从磁盘实时读源码，与新建等价；本轮结束已 kill） |
+| 视口 | 1280×900 / 1440×900 |
+| 夹具参数 | `?mock=1` 基线；`&delay=900/300/200`（加载/竞态观察）；`&job=1`（job 失败注入：目标含 `fail`）；`&ro=1`（只读矩阵）；路径含 `error`/`notfound`（业务错误）；另用页面内 monkey-patch `window.dbxPlugin.invoke` 对特定路径注入不对称延迟（竞态实证用，不改源码） |
+| 数据播种 | 经 `window.dbxPlugin.invoke` 真实写入 mock 树（文件名边界/排序样例/删除探针），与后端返回等价 |
+
+### 二、新发现清单
+
+统计：**P0 × 0，P1 × 2，P2 × 10**。
+
+> **第 4 轮修复（2026-09-06）**：本章 P1 × 2、P2 × 10 全部修复完毕并通过浏览器
+> 复验（playwright-core + 系统 Chrome，13/13 断言通过，覆盖竞态/活动栏/只读
+> 门禁/自然序/文件名校验/覆盖确认/两态空文案/a11y/批量取消/图标），详见各条目
+> 「修复」标注与 `PROGRESS-P-FILES.zh-CN.md` 同日小节。至此本章全部条目闭环。
+
+#### P1
+
+**R3-P1-1 目录导航无竞态守卫：慢响应晚到覆盖，最终展示目录与用户最后点击不符**
+- 位置：`App.vue` `loadDirectory` / `loadRightDirectory`（无请求序号/AbortController，`entries.value`/`path.value` 由最后完成者决定）。
+- 复现：`?mock=1&delay=200` + monkey-patch 对 `path` 含 `/docs` 的 `files/list` 额外延迟 1500ms。右栏先双击 `/docs`（慢，~1700ms 返回），400ms 后双击 `/10k`（快，~200ms 返回）。实测结果：10k 列表先渲染，随后 docs 响应晚到覆盖——最终面包屑 `/docs`、7 项、无任何提示，而用户最后点击的是 `/10k`。
+- 影响：慢连接/大目录下快速切换目录是 FileZilla 类工具高频操作；晚到覆盖后 ① 用户停在非预期目录；② 后续写操作（新建文件夹/上传落点、删除目标）全部基于错误目录上下文。竞态窗口与延迟成正比，真实远端下远大于 mock。
+- 建议：按栏维护请求序号（或 AbortController），响应到达时丢弃过期序号结果；至少在路径跳转时使前一请求失效。两栏同修。
+- **修复（2026-09-06，第 4 轮）**：新 lib `navGuard.ts`（`createNavGuard` 按栏请求序号守卫），`App.vue` `loadDirectory`/`loadRightDirectory` 发请求前取号，响应到达（含错误与 loading 收尾）验号，过期序号一律丢弃——面包屑/列表/选中态/加载态均以最新导航为准。复验：monkey-patch 对 `/docs` 的 `files/list` 注入 1500ms 延迟，先双击 /docs、400ms 后双击 /10k，最终停在 /10k（file-*.txt 列表、无 readme.md），docs 晚到响应不再覆盖。新增 `navGuard.spec.ts` 4 例。✅ 已修复并复验。
+
+**R3-P1-2 工具栏动作只绑定左栏（源栏）：右栏选中时「下载/删除所选」禁用，「新建文件夹」无视焦点永远落左栏**
+- 位置：`App.vue` `:has-selection="selection.length > 0"`（只绑左栏 `selection`）；`@delete="startDelete(sortedEntries.filter(...))"`（只读左栏）；`startNewFolder()` 默认 `side="left"`；`downloadSelection` 只读 `sortedEntries`。
+- 复现（实测）：右栏选中 1 项 → 工具栏「下载」「删除所选」仍 disabled（左栏选中 1 项则正常启用）；右栏 10000 项全选 → 工具栏删除仍不可用，只能走右键菜单。
+- 影响：① 双栏语义割裂——「上传文件」固定传向右栏（P1-5 已定语义），「新建文件夹/新建文件」却永远落左栏；用户焦点在右栏（远端主工作面）时点工具栏新建，会在本地栏凭空创建目录，属跨栏误操作且无提示。② 右栏选中的删除/下载在工具栏灰置，与右键菜单可达性不一致，用户易判定为「功能坏了」。
+- 建议：工具栏动作跟随「当前活动栏」（最近交互的 pane，FileZilla 惯例）路由 side 与 selection；至少：has-selection 取两栏并集、delete/download 按最近活动栏解析、新建类动作落活动栏。
+- **修复（2026-09-06，第 4 轮）**：新 lib `toolbarTarget.ts`（`resolveToolbarTarget` 纯函数，参照 uploadTarget.ts 模式）+ App `activeSide` 活动栏状态（FileTable 选择/焦点行/排序/右键、路径跳转/上一级/刷新、树导航、连接切换均记账）；工具栏「有所选」取两栏并集（单栏只看左栏，防收起双栏后的幽灵选中集），下载/删除/新建文件夹按活动栏路由（`toolbarSelectionEntries` 按栏解析选择集），`downloadSelection(side)` 按栏取池；上传不受 activeSide 影响（P1-5「上传=传向远端」语义保持，仍走 `resolveUploadTarget`）。复验：右栏选中一项后工具栏「下载/删除所选」立即可用，工具栏新建文件夹落右栏（右栏出现、左栏无残留）。新增 `toolbarTarget.spec.ts` 6 例。✅ 已修复并复验。
+
+#### P2
+
+**R3-P2-1 只读态下跨栏「复制」不受写门禁约束**
+- 位置：桥按钮 `:title="t('copyToTarget')" :disabled="!selection.length"`（无 `!canWrite`，同排 move 按钮有）；批量菜单 `copySelected` 同样只判 `dualPane`。
+- 复现（`?ro=1` 实测）：桥按钮组中「复制到目标栏」enabled、「移动到目标栏/源栏」disabled；多选右键「复制到目标栏」同样可用。
+- 影响：复制进只读存储与只读徽章承诺矛盾；真实后端会拒绝，前端却放行提交。建议与 move 同门禁（copy 的写发生在目标栏）。
+- **修复（2026-09-06，第 4 轮）**：桥按钮「复制到目标栏/复制到来源栏」disabled 补 `|| !canWrite`；批量右键「复制到目标栏」改 `v-if="dualPane && canWrite"`；`transferBetween` 入口对 copy/move 统一 `canWrite` 门禁（写发生在目标栏，与 move 同闸）。复验（`?ro=1`）：选中左栏条目后「复制到目标栏」与「移动到目标栏」均 disabled。✅ 已修复并复验。
+
+**R3-P2-2 mock `files/delete`/`files/purge` 不按 connectionId 路由：本地栏删除假成功**
+- 位置：`mockHost.ts` 两 case 仍写死 `tree`（远端树）；mkdir/write/rename/copy/move 已按连接路由（P2-13②/P1-5 收口），唯独 delete/purge 漏掉。
+- 复现（实测）：左栏（`__local__`）播种文件/目录 → 删除 → 通知成功、弹层关闭，刷新后条目原样存在；stat 确认本地树与远端树均未变。
+- 影响：双栏左栏的删除旅程在浏览器验证中「成功即无效」，与 P1-5 修复前的上传假成功同构；也阻碍 `?ro=1` 之外的本地面操作走查。夹具缺口（同 P2-13 族），建议补路由。
+- **修复（2026-09-06，第 4 轮）**：`mockHost.ts` `files/delete`/`files/purge` 改按 `connectionId` 路由（`treeFor(p.connectionId)` / `deleteEntry(path, treeFor(...))`），与 mkdir/write/rename/copy/move 的既有收口对齐。复验：左栏（`__local__`）播种文件→工具栏删除→通知后条目真实消失、本地树确认不含该条目。新增 `mockHost.spec.ts` 3 例（delete/purge 按连接路由 + 默认连接远端树回归）。✅ 已修复并复验。
+
+**R3-P2-3 文件名排序非自然序（数字字典序）**
+- 位置：`sorting.ts` `localeCompare` 未传 `{ numeric: true }`。
+- 复现（实测播种 `a2/a10/A3/B/b1/文件9/文件10`）：默认升序为 `文件10 < 文件9 < a10 < a2 < A3`。FileZilla/Finder 惯例为自然序 `a2 < a3 < a10`。
+- 影响：10k 序号文件（日志切片、分卷）浏览时次序错乱，与用户心智不符。建议 `a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "collation" })` 单点修复。
+- **修复（2026-09-06，第 4 轮）**：`sorting.ts` `compareEntries` 名称比较改 `localeCompare(b.name, undefined, { numeric: true })`（数字感知自然序；报告建议中的 `sensitivity: "collation"` 并非 `localeCompare` 合法取值，未采用）。复验：播种 a2/a10/A3 → 升序 a2 < A3 < a10。`sorting.spec.ts` 补自然序用例。✅ 已修复并复验。
+
+**R3-P2-4 文件名零校验：`/`、`..` 可作为名字创建（`a/b` 隐形、`..` 条目可见可操作）**
+- 复现（实测）：新建文件夹名 `a/b` → 提交成功、无横幅，列表**不显示**该条目（children 按 `/` 切层过滤，父段 `a` 不存在）；名 `..` → 列表出现可点击、可选中、可删除的「..」目录条目。
+- 影响：`a/b` 隐形成功让用户以为操作丢失；`..` 条目在文件管理器属反模式（误点击后导航/删除行为不可预期，真实后端语义依赖实现）。建议提交前校验：名字不得含 `/`、不得为 `.`/`..`（`newFolder/newFile/rename` 三分支共用校验）。
+- **修复（2026-09-06，第 4 轮）**：新 lib `fileName.ts`（`validateFileName`：trim 后空→empty、含 `/` 或 `\`→slash、`.`/`..`→dot），`App.vue` newFolder/newFile/rename 三分支提交前统一 `checkConfirmName()`；命中行内提示（ConfirmDialog 新 `warning` prop，`role="alert"`，新样式 `.wb-dialog-warning`）且弹层保持打开、草稿不丢，可直接改名重提。七语新键 `fileNameRequired`/`invalidFileName`。复验：`a/b`、`..` 均行内拦截不提交，合法名正常创建。新增 `fileName.spec.ts` 5 例、`ConfirmDialog.spec.ts` warning 1 例。✅ 已修复并复验。
+
+**R3-P2-5 复制/移动目标冲突无预检无确认：静默覆盖**
+- 复现（实测）：复制 `a2.txt` 到已存在的 `B.txt` → 无横幅无确认弹层，通知「已开始」，目标内容被覆盖（stat 确认）。跨栏拖拽/`transferBetween`、`move` 同路。
+- 影响：rename/newFolder/newFile 已有 `pathExists` 预检（P2-10），copy/move/跨栏拖拽没有——同名即覆盖可能造成数据丢失。建议复用 `pathExists` 预检 + 覆盖确认弹层（或后端冲突语义透出后前端确认）。
+- **修复（2026-09-06，第 4 轮）**：双层收口——① 弹层 copy/move 提交前 `pathExists` 预检（沿用 P2-10 通道），命中后弹层转危险态、确认钮变「覆盖」（`overwriteAsk` 七语），二次确认才执行；确认后草稿再改动则重新预检（`confirmForce`/`confirmForcePath`）。② 跨栏 copy/move（含拖拽）`transferBetween`：目标目录一次 list 取同名集合（`findTargetConflicts`，避免逐条 stat 的万级开销），命中即整批挂起（`pendingPaneTransfer`）弹覆盖确认（`overwriteBatch` 七语），确认后经 `executePaneTransfer` 原样执行。七语新键 `overwrite`/`overwriteAsk`/`overwriteBatch`。复验：复制左栏 overwrite-probe.txt 到右栏 /docs 同名条目 → 弹「覆盖」确认 → 确认后目标内容变为左栏版本。✅ 已修复并复验。
+
+**R3-P2-6 过滤无匹配时误显示「此文件夹为空」**
+- 复现（实测）：搜索框输入无匹配关键字 → 空态文案为「此文件夹为空」、计数 0 项。目录明明非空，文案误导（应区分「无匹配结果」并给清空过滤入口）。建议 `FileTable` 增加 `is-filtered` 空态（新 i18n 键）。
+- **修复（2026-09-06，第 4 轮）**：`FileTable` 新 `filtered` prop，空态区分两态——过滤态显示 `noMatchResults`（「没有符合过滤条件的条目」）、真空目录保持 `emptyDirectory`；App 按过滤框非空传参（左右栏各自）。七语新键 `noMatchResults`。复验：过滤无匹配显示新文案，清空过滤后列表恢复。`FileTable.spec.ts` 补 2 例。✅ 已修复并复验。
+
+**R3-P2-7 zh-TW 语言包简体残留：`move: "移动"`（应为「移動」）**
+- 复现（实测 `?locale=zh-TW`）：目录右键菜单显示「移动…」，其余相邻项（移動到目標欄/移動到來源欄）均为繁体。全块扫描仅此一处简体残留（i18n.ts zh-TW 段 `move` 键）。同报七语约定（规约#1）。
+- **修复（2026-09-06，第 4 轮）**：i18n.ts zh-TW 段 `transferKind.move` 「移动」→「移動」（最小改动，仅此一键）。复验（`?locale=zh-TW`）：目录右键菜单显示「移動…」，全菜单无简体残留。✅ 已修复并复验。
+
+**R3-P2-8 文件列表 a11y 语义缺失（表格/排序/复选框/菜单/lang）**
+- 实测结构：`wb-file-row` 无 role（无 grid/table/option 语义，屏幕阅读器读不出行/列）；表头排序按钮无 `aria-sort`；行复选框无 aria-label（读作「未命名复选框」）；三个右键菜单无 `role="menu"`/`menuitem`；文件滚动容器无 role/aria-label（键盘可达但 AT 不可知）。另 `document.documentElement.lang` 恒为 mock.html 写死的 `"en"`，locale 切 zh/ja 后不更新，屏幕阅读器按英语音素读中文。对比度无问题（次要文字 6.4:1）。建议按 WAI-ARIA treegrid/listbox 模式补语义 + locale 变更时同步 `lang`。
+- **修复（2026-09-06，第 4 轮）**：`FileTable` 表头 role=row + 各列 role=columnheader + `aria-sort`（ascending/descending 跟随排序状态，非活动列省略）；滚动容器 role=listbox + `aria-multiselectable` + `aria-label`（新键 `fileListLabel`）；行 role=option + `aria-selected`；行复选框 `aria-label`（新键 `selectEntry`，含文件名）。App 三个右键菜单补 role=menu、全部按钮 role=menuitem；App watch(locale)（immediate）同步 `document.documentElement.lang`。七语新键 `selectEntry`/`fileListLabel`。复验：listbox/option/aria-selected/aria-sort/checkbox aria-label 全命中、菜单 role=menu（10 个 menuitem）、lang 随 locale=zh-CN/zh-TW 正确切换；`FileTable.spec.ts` 补 a11y 2 例。✅ 已修复并复验。
+
+**R3-P2-9 批量删除（本地伪 job）无取消能力：取消按钮假成功**
+- 位置：`runBatch` 无中断机制；传输面板对 running 态 job 一律渲染取消按钮；`cancelTransfer` 对 `local-batch-*` 调 `files/transfer/cancel`，mock（及真实 sidecar）无此 job 记录仍返回 success → 提示「已取消」，任务继续跑完。
+- 影响：万级批量删除（实测 2.2s，真实远端分钟级）期间取消无效且被误报成功。建议 runBatch 支持取消标志（worker 循环检查），伪 job 的 cancel 直接本地置 failed/canceled。
+- **修复（2026-09-06，第 4 轮）**：新 lib `batchRunner.ts`（`runBatchTasks`：固定并发 + `isCanceled` 检查点，取消后 worker 不再领取新分片，在跑的等待自然结束）；App `runBatch` 改走 batchRunner 并登记 `batchCancelFlags`（jobId→flag），`cancelTransfer` 对 `local-batch-*` 直接翻转本地标志并置 job `canceled` 终态——不再调 `files/transfer/cancel`（sidecar 无该记录仍返回 success 的假成功路径）；已取消时不补「已删除」通知。七语无新增（复用 jobCanceled/transferStatus.canceled）。复验：/10k 全选删除（注入 5ms/条延迟打开取消窗口）→ 传输面板取消 → job 状态「已取消」、剩余 9160/10000 未删（真实中断）。新增 `batchRunner.spec.ts` 4 例（并发上限/取消中断/错误收集/空批次）。✅ 已修复并复验。
+
+**R3-P2-10 图标体系统一漏网：错误横幅与传输重试按钮仍用文本字符 `↻`/`✕`**
+- 位置：`App.vue` 错误横幅重试 `↻`、关闭 `✕`；`TransferPanel.vue` 历史重试按钮 `↻`（取消/清空历史已换 lucide，P2-14 只收口了这两处）。与工具栏 lucide SVG 体系不统一，跨平台字形不一致。
+- **修复（2026-09-06，第 4 轮）**：App 错误横幅 ↻/✕ 换 lucide `RefreshCw`/`X`（补 title，关闭钮用既有 `close` 键）；TransferPanel 历史重试 ↻ 换 lucide `RotateCw`。复验：错误横幅两按钮均渲染 SVG；`?job=1` 注入目标含 fail 的复制失败后，传输历史重试按钮渲染 SVG。✅ 已修复并复验。
+
+### 三、本轮验证无问题的维度（含测法）
+
+| 维度 | 测法与结论 |
+| --- | --- |
+| 性能/压力 | `?mock=1` 默认参：10k 目录列表加载 273ms（可见 50 行虚拟滚动）；过滤逐键 40ms/键（10k 全量过滤）；Ctrl+A 全选 10000 项 13ms；End 跳底 310ms 且滚入行正确；双栏同时浏览两个 10k 目录 554ms、左右滚动互不干扰；10k 批量删除（并发 8 + 进度落面板）2.2s 完成、终态后空态/计数正确；heap 稳定在 20–22MB，无泄漏迹象。全部无问题 |
+| 键盘全流程 | 方向键→Shift 扩选→Space 勾选（首按生效）→Home/End（焦点行滚入视口）→Enter 打开，全链路实测通过；Ctrl+A 两栏各自生效 |
+| 拖拽跨栏 | DataTransfer 注入实测：左栏拖 `drag-probe.txt` 放到右栏 `/docs` → 落地成功、通知「已向对侧发起 1 项传输」；drop 遮罩（「松开以复制到此处」）dragenter 出现/dragleave 消失；方向语义与 P1-5 定义的「上传=传向远端」一致 |
+| 传输失败重试链 | `?job=1` + 目标含 `fail`：job 五态/失败原因展示正常，失败项「重试传输」按钮可用，重试产生新 job 并再次落到失败态（登记参数原样重发） |
+| 防重 | 删除确认按钮双击：busy 禁用生效、弹层仅出现一次、后端仅一次删除（stat 验证）；刷新按钮 busy 期禁用（disabled 标志实测翻转）；重试按钮有 `retryTransferBusy` 防抖（代码审查） |
+| 只读矩阵（`?ro=1`） | 只读徽章、新建/上传/删除禁用、右键写项隐藏（syncDir/copyDir/压缩/复制/移动/重命名 v-if canWrite）、空白区新建禁用、移动桥按钮禁用——均正确；唯一漏网见 R3-P2-1 |
+| 文件名边界（其余） | emoji+中文+空格名创建/显示/面包屑正常；前导点 `.hidden-dir` 正常创建与显示；200 字符极长名正常；首尾空格名 trim 后落盘（合理）；空文件预览（0 B 正常展示+编辑入口）；面包屑⇄路径编辑往返一致（含 emoji 路径与尾斜杠输入） |
+| 归档流 | 压缩包内容列表（backup.zip → 3 条目）正常；压缩 `/docs → /docs.tar.gz` 默认名/落盘/通知正常；解压在方法未实现时按设计给「该能力暂不可用：files/extract」+ title 原文 |
+| P1 抽查（前 2 轮收口项复核） | P1-1 面包屑无双斜杠（根段 `/` 单独渲染）✓；P1-3 弹层打开即聚焦输入框、Tab 8 次不出弹层、Esc 后焦点归还触发钮 ✓；P1-5 双栏上传落右栏远端目录、通知带目标路径（「已上传 1 个文件到 /docs」）、左栏无残留 ✓ |
+| i18n（ja/zh-TW 抽查） | ja-JP：工具栏 8 项/右键菜单 10 项/dock 三 tab/传输空态/上一级/刷新/编辑路径全部成句无漏翻；zh-TW：同位抽查除 R3-P2-7 的 `move` 外全部为繁体；en-US 对照正常 |
+| 对比度 | dark 下次要文字/页脚 `rgb(151,152,157)` on `rgb(19,20,22)` = 6.4:1（AA 过线）；图标按钮 title 覆盖率 100%（0 个缺失） |
+
+### 四、本轮统计与说明
+
+- 新发现：P0 × 0、P1 × 2（R3-P1-1/2）、P2 × 10（R3-P2-1～10）；零删除前 2 轮任何条目。
+- 测试脚本与运行日志均在 `/tmp/uiscan-files-r3`（未入库），未拍摄留存截图；未改任何源码，未提交 git。
+- 夹具缺口（R3-P2-2）虽记在 mock 层，但其暴露面是「双栏左栏写操作在浏览器验证中不可自证」，建议随下一轮夹具收口一并处理。

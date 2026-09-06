@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { Trash2, X } from "@lucide/vue";
+import { RotateCw, Trash2, X } from "@lucide/vue";
 import { formatBytes, formatTime } from "../lib/api";
 import { etaSeconds, formatEta, formatRate, isByteBased, isRetryableKind, percentOf, type TransferJob } from "../lib/transfers";
 
@@ -83,7 +83,7 @@ function timeLabel(job: TransferJob): string {
       <div class="wb-transfer-title">
         <strong :title="label(job)">{{ label(job) }}</strong>
         <span class="wb-transfer-state" :class="`is-${job.state}`">{{ stateLabel(job) }}</span>
-        <button v-if="canRetry(job)" class="wb-icon-button" :title="t('retryTransfer')" @click="emit('retry', job.jobId)">↻</button>
+        <button v-if="canRetry(job)" class="wb-icon-button" :title="t('retryTransfer')" @click="emit('retry', job.jobId)"><RotateCw /></button>
       </div>
       <div class="wb-transfer-meta">
         <span>{{ t(`transferKind.${job.kind}`) }} · {{ timeLabel(job) }}</span>

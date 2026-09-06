@@ -12,6 +12,8 @@ const props = defineProps<{
   loading?: boolean;
   /** 双栏拖拽标识：写入 dataTransfer，接收端据此判断来源与目标。 */
   paneId?: string;
+  /** R3-P2-6：当前处于文件名过滤态——空列表时区分「无匹配」与「空目录」。 */
+  filtered?: boolean;
   t: (key: string, values?: Record<string, string | number>) => string;
 }>();
 
@@ -154,24 +156,28 @@ function onDragStart(entry: FileEntry, event: DragEvent) {
 </script>
 
 <template>
-  <div class="wb-file-header" @contextmenu.prevent.stop="emit('blank-context', { x: $event.clientX, y: $event.clientY })">
-    <span class="wb-col-name">
+  <!-- R3-P2-8：表头 role=row/columnheader + aria-sort（排序方向对屏幕阅读器可感知）。 -->
+  <div class="wb-file-header" role="row" @contextmenu.prevent.stop="emit('blank-context', { x: $event.clientX, y: $event.clientY })">
+    <span class="wb-col-name" role="columnheader" :aria-sort="sort.column === 'name' ? (sort.direction === 'asc' ? 'ascending' : 'descending') : undefined">
       <button type="button" @click="emit('sort', 'name')">{{ t("colName") }}{{ sort.column === "name" ? (sort.direction === "asc" ? " ↑" : " ↓") : "" }}</button>
     </span>
-    <span class="wb-numeric" style="width: 90px">
+    <span class="wb-numeric" style="width: 90px" role="columnheader" :aria-sort="sort.column === 'size' ? (sort.direction === 'asc' ? 'ascending' : 'descending') : undefined">
       <button type="button" @click="emit('sort', 'size')">{{ t("colSize") }}{{ sort.column === "size" ? (sort.direction === "asc" ? " ↑" : " ↓") : "" }}</button>
     </span>
-    <span style="width: 130px">
+    <span style="width: 130px" role="columnheader" :aria-sort="sort.column === 'modified' ? (sort.direction === 'asc' ? 'ascending' : 'descending') : undefined">
       <button type="button" @click="emit('sort', 'modified')">{{ t("colModified") }}{{ sort.column === "modified" ? (sort.direction === "asc" ? " ↑" : " ↓") : "" }}</button>
     </span>
   </div>
-  <div ref="viewport" class="wb-file-scroll" tabindex="0" @scroll="onScroll" @keydown="onListKeydown" @contextmenu.prevent.stop="emit('blank-context', { x: $event.clientX, y: $event.clientY })">
+  <!-- R3-P2-8：滚动容器 role=listbox + aria-label，行 role=option + aria-selected。 -->
+  <div ref="viewport" class="wb-file-scroll" role="listbox" aria-multiselectable="true" :aria-label="t('fileListLabel')" tabindex="0" @scroll="onScroll" @keydown="onListKeydown" @contextmenu.prevent.stop="emit('blank-context', { x: $event.clientX, y: $event.clientY })">
     <div class="wb-file-spacer" :style="{ height: `${totalHeight}px` }">
       <div
         v-for="(entry, localIndex) in visibleEntries"
         v-show="!loading"
         :key="entry.path"
         class="wb-file-row"
+        role="option"
+        :aria-selected="selectedSet.has(entry.path)"
         :class="{ 'is-selected': selectedSet.has(entry.path), 'is-active': entry.path === activePath }"
         :style="rowStyle(firstIndex + localIndex)"
         draggable="true"
@@ -184,6 +190,7 @@ function onDragStart(entry: FileEntry, event: DragEvent) {
           <input
             type="checkbox"
             :checked="selectedSet.has(entry.path)"
+            :aria-label="t('selectEntry', { name: entry.name })"
             @change="toggleSelection(entry, { meta: true, shift: false })"
           />
         </label>
@@ -204,7 +211,8 @@ function onDragStart(entry: FileEntry, event: DragEvent) {
           <span class="wb-skeleton wb-skeleton-cell" />
         </div>
       </template>
-      <div v-else-if="!entries.length" class="wb-file-empty">{{ t("emptyDirectory") }}</div>
+      <!-- R3-P2-6：区分「过滤无匹配」与「目录确认为空」两态，避免误导。 -->
+      <div v-else-if="!entries.length" class="wb-file-empty" role="status">{{ filtered ? t("noMatchResults") : t("emptyDirectory") }}</div>
     </div>
   </div>
   <div class="wb-file-footer">

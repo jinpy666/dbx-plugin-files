@@ -95,4 +95,21 @@ describe("ConfirmDialog (P1-3 焦点管理)", () => {
     expect(wrapper.find(".wb-dialog").exists()).toBe(false);
     wrapper.unmount();
   });
+
+  it("renders the inline warning with alert semantics when provided (R3-P2-4)", async () => {
+    const wrapper = mount(ConfirmDialog, {
+      props: { ...baseProps, open: true, warning: "名称不能包含“/”" },
+      slots: { default: '<input data-test="name" />' },
+      attachTo: document.body,
+    });
+    await flush();
+    const warning = wrapper.find(".wb-dialog-warning");
+    expect(warning.exists()).toBe(true);
+    expect(warning.attributes("role")).toBe("alert");
+    expect(warning.text()).toBe("名称不能包含“/”");
+    // 无 warning 时不渲染占位
+    await wrapper.setProps({ warning: undefined });
+    expect(wrapper.find(".wb-dialog-warning").exists()).toBe(false);
+    wrapper.unmount();
+  });
 });

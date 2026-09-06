@@ -26,7 +26,9 @@ export function compareEntries(a: FileEntry, b: FileEntry, column: SortColumn, d
   const sign = direction === "asc" ? 1 : -1;
   if (column === "size") return ((a.size ?? 0) - (b.size ?? 0)) * sign;
   if (column === "modified") return (a.modifiedAt ?? "").localeCompare(b.modifiedAt ?? "") * sign;
-  return a.name.localeCompare(b.name) * sign;
+  // R3-P2-3：数字感知自然序（a2 < a10，对标 FileZilla/Finder）——日志切片、
+  // 分卷等序号文件不再按字典序排成 a10 < a2。
+  return a.name.localeCompare(b.name, undefined, { numeric: true }) * sign;
 }
 
 export function sortEntries(entries: readonly FileEntry[], state: SortState): FileEntry[] {

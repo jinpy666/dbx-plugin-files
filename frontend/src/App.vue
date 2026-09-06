@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { ArrowLeft, ArrowRight, Copy, ArrowUp, RefreshCw, Search } from "@lucide/vue";
+import { ArrowLeft, ArrowRight, Copy, ArrowUp, RefreshCw, Search, X } from "@lucide/vue";
 import FileTable from "./components/FileTable.vue";
 import FileToolbar from "./components/FileToolbar.vue";
 import TransferPanel from "./components/TransferPanel.vue";
@@ -38,8 +38,12 @@ import { normalizeQuickPaths, type QuickPath } from "./lib/quickPaths";
 import { isNarrowViewport } from "./lib/responsive";
 import { resolveUploadTarget, type UploadTarget } from "./lib/uploadTarget";
 import { friendlyError, isNotFoundMessage, isTransportFailure } from "./lib/friendlyError";
+import { createNavGuard } from "./lib/navGuard";
+import { resolveToolbarTarget } from "./lib/toolbarTarget";
+import { validateFileName } from "./lib/fileName";
+import { runBatchTasks } from "./lib/batchRunner";
 
-type ConfirmKind = "delete" | "purge" | "syncDir" | "copyDir" | "newFolder" | "newFile" | "rename" | "copy" | "move" | "extract" | "compress";
+type ConfirmKind = "delete" | "purge" | "syncDir" | "copyDir" | "newFolder" | "newFile" | "rename" | "copy" | "move" | "extract" | "compress" | "overwrite";
 type PaneSide = "left" | "right";
 type MenuAction =
   | "open" | "preview" | "download" | "rename" | "delete" | "copyPath" | "copyName"
@@ -76,6 +80,10 @@ const connectionLabel = computed(() => {
 const canWrite = computed(() => !connection.value.readOnly && !capabilities.value?.readOnly);
 
 const t = (key: string, values: Record<string, string | number> = {}) => workbenchMessage(locale.value, key, values);
+
+// R3-P2-8：html lang 跟随 locale——mock.html 写死 lang="en"，locale 切 zh/ja
+// 后屏幕阅读器按英语音素读中文；真实宿主下同样由插件侧兜底同步。
+watch(locale, (next) => (document.documentElement.lang = next || "zh-CN"), { immediate: true });
 
 // ---- 源栏（左栏）-----------------------------------------------------------
 const path = ref("/");
@@ -194,7 +202,14 @@ async function loadQuickPaths(side: PaneSide) {
   }
 }
 
+// R3-P1-1：按栏请求序号守卫——慢响应晚到不得覆盖新导航（先点慢 /docs 再点
+// 快 /10k，晚到的 docs 响应会把面包屑/列表/选中态整体拖回 /docs）。响应到达
+// 时验号，过期序号的结果（含错误与 loading 收尾）一律丢弃。
+const leftNav = createNavGuard();
+const rightNav = createNavGuard();
+
 function navigateQuickPath(side: PaneSide, targetPath: string) {
+  markActiveSide(side);
   if (side === "left") void loadDirectory(targetPath).catch(() => undefined);
   else void loadRightDirectory(targetPath).catch(() => undefined);
 }
@@ -309,6 +324,14 @@ const confirmBusy = ref(false);
 const confirmDraft = ref("");
 const confirmTarget = ref<{ path?: string; entry?: FileEntry; targets?: FileEntry[] }>({});
 const confirmSide = ref<PaneSide>("left");
+// R3-P2-4：新建/重命名文件名行内校验提示（七语），弹层保持打开可直接改名重提。
+const confirmNameIssue = ref("");
+// R3-P2-5：copy/move 目标冲突——首次提交预检命中后转入覆盖确认（二次确认），
+// confirmForcePath 记录已确认的路径；草稿再改动则重新预检。
+const confirmForce = ref(false);
+const confirmForcePath = ref("");
+// R3-P2-5：跨栏 copy/move 冲突预检命中时挂起整批传输，弹「覆盖确认」后原样执行。
+const pendingPaneTransfer = ref<{ from: PaneSide; move: boolean; list: FileEntry[]; destPath: string }>();
 const confirmInput = computed(() => confirmKind.value === "newFolder" || confirmKind.value === "newFile" || confirmKind.value === "rename" || confirmKind.value === "syncDir" || confirmKind.value === "copyDir" || confirmKind.value === "copy" || confirmKind.value === "move" || confirmKind.value === "extract" || confirmKind.value === "compress");
 // P2-2：危险确认列表走 i18n 七语（lib 侧 label 为英文兜底，路径类条目原样展示）。
 const confirmDangerList = computed(() =>
@@ -329,6 +352,7 @@ const confirmDangerList = computed(() =>
   }),
 );
 const confirmLabel = computed(() => {
+  if (confirmKind.value === "overwrite" || confirmForce.value) return t("overwrite");
   if (confirmKind.value === "newFolder" || confirmKind.value === "newFile") return t("create");
   if (confirmKind.value === "rename") return t("save");
   if (confirmKind.value === "compress") return t("compressAction");
@@ -345,6 +369,50 @@ const rightSorted = computed(() => sortEntries(rightEntries.value, rightSort.val
 // 右栏同款过滤（双栏对称性修复）：与左栏共用 filterEntries 语义。
 const rightSearchQuery = ref("");
 const filteredRightEntries = computed(() => filterEntries(rightSorted.value, rightSearchQuery.value));
+
+// R3-P1-2：最近活动栏（最后点击/键盘操作侧）——工具栏「新建/上传/下载/删除」
+// 路由到该栏（上传除外：P1-5 已定「上传=传向远端」，固定走 resolveUploadTarget）。
+const activeSide = ref<PaneSide>("left");
+const toolbarTarget = computed(() =>
+  resolveToolbarTarget({
+    dualPane: dualPane.value,
+    activeSide: activeSide.value,
+    leftSelection: selection.value,
+    rightSelection: rightSelection.value,
+  }),
+);
+function markActiveSide(side: PaneSide) {
+  activeSide.value = side;
+}
+/** FileTable 选择回写（同时把该栏标记为活动栏）。 */
+function setPaneSelection(side: PaneSide, paths: string[]) {
+  markActiveSide(side);
+  if (side === "left") selection.value = paths;
+  else rightSelection.value = paths;
+}
+function setPaneActivePath(side: PaneSide, value: string) {
+  markActiveSide(side);
+  if (side === "left") activePath.value = value;
+  else rightActivePath.value = value;
+}
+function sortRouted(side: PaneSide, column: SortColumn) {
+  markActiveSide(side);
+  toggleSort(side, column);
+}
+function openContextMenu(side: PaneSide, payload: { entry: FileEntry; x: number; y: number }) {
+  markActiveSide(side);
+  contextMenu.value = { ...payload, side, selection: [...(side === "left" ? selection.value : rightSelection.value)] };
+}
+function openBlank(side: PaneSide, payload: { x: number; y: number }) {
+  markActiveSide(side);
+  openBlankMenu(side, payload);
+}
+/** 工具栏「删除所选」：按活动栏解析选择集对应条目。 */
+function toolbarSelectionEntries(side: PaneSide): FileEntry[] {
+  const pool = side === "right" ? rightSorted.value : sortedEntries.value;
+  const sel = side === "right" ? rightSelection.value : selection.value;
+  return pool.filter((entry) => sel.includes(entry.path));
+}
 
 watch([sort, dualPane, sideTab, sideCollapsed], () => {
   saveUiPrefs({ sort: sort.value, dualPane: dualPane.value, sideTab: sideTab.value, sideCollapsed: sideCollapsed.value });
@@ -370,6 +438,9 @@ watch(dualPane, async (on) => {
     await enterLocalPaneIfAtRoot();
     void loadQuickPaths("right");
   } else {
+    // 收起双栏时清掉右栏残留选择/焦点，避免工具栏与跨栏动作引用幽灵选中集。
+    rightSelection.value = [];
+    rightActivePath.value = "";
     await loadDirectory("/").catch(() => undefined);
     void loadQuickPaths("left");
   }
@@ -559,9 +630,13 @@ async function fetchListing(target: string, explicitConnectionId?: string) {
 
 async function loadDirectory(target?: string) {
   const next = target ?? path.value;
+  const token = leftNav.next();
   loading.value = true;
   try {
-    entries.value = await fetchListing(next, sideConnectionId("left"));
+    const list = await fetchListing(next, sideConnectionId("left"));
+    // 晚到的过期响应：直接丢弃，面包屑/列表/选中态保持最新导航的结果。
+    if (!leftNav.isCurrent(token)) return;
+    entries.value = list;
     path.value = next;
     selection.value = [];
     activePath.value = "";
@@ -571,27 +646,34 @@ async function loadDirectory(target?: string) {
     // 了不切 listPaged 的 bench 依据）。
     if (isLargeDirectory(entries.value.length)) showNotice(t("largeDirectory", { count: entries.value.length }));
   } catch (cause) {
+    // 过期请求的失败同样不打扰新目录（横幅不闪旧导航的错误）。
+    if (!leftNav.isCurrent(token)) return;
     showError(cause, "left");
     throw cause;
   } finally {
-    loading.value = false;
+    // loading 由最新一次请求收尾（过期请求不抢着关，避免闪烁）。
+    if (leftNav.isCurrent(token)) loading.value = false;
   }
 }
 
 async function loadRightDirectory(target?: string) {
   const next = target ?? rightPath.value;
+  const token = rightNav.next();
   rightLoading.value = true;
   try {
-    rightEntries.value = await fetchListing(next, targetConnectionId.value || undefined);
+    const list = await fetchListing(next, targetConnectionId.value || undefined);
+    if (!rightNav.isCurrent(token)) return;
+    rightEntries.value = list;
     rightPath.value = next;
     rightSelection.value = [];
     rightActivePath.value = "";
     if (isLargeDirectory(rightEntries.value.length)) showNotice(t("largeDirectory", { count: rightEntries.value.length }));
   } catch (cause) {
+    if (!rightNav.isCurrent(token)) return;
     showError(cause, "right");
     throw cause;
   } finally {
-    rightLoading.value = false;
+    if (rightNav.isCurrent(token)) rightLoading.value = false;
   }
 }
 
@@ -666,6 +748,7 @@ async function probeConnections() {
 
 /** 左栏切换连接（双栏）：新连接回到根目录，quickPaths 随连接面刷新。 */
 async function onLeftConnectionChange() {
+  markActiveSide("left");
   await loadDirectory("/").catch(() => undefined);
   await loadQuickPaths("left");
   await enterLocalPaneIfAtRoot();
@@ -705,12 +788,30 @@ function openConfirm(kind: ConfirmKind, options: {
   confirmTarget.value = options.target ?? {};
   confirmDraft.value = options.draft ?? "";
   confirmSide.value = options.side ?? "left";
+  confirmNameIssue.value = "";
+  confirmForce.value = false;
+  confirmForcePath.value = "";
   confirmOpen.value = true;
 }
 
 function closeConfirm() {
   confirmOpen.value = false;
   confirmBusy.value = false;
+  confirmForce.value = false;
+  confirmForcePath.value = "";
+  pendingPaneTransfer.value = undefined;
+}
+
+/** R3-P2-4：新建/重命名提交前文件名校验（禁 `/`、禁 `.`/`..`、禁空值）。
+ * 命中即行内提示且弹层保持打开，可直接改名重提。 */
+function checkConfirmName(): boolean {
+  const issue = validateFileName(confirmDraft.value);
+  if (!issue) {
+    confirmNameIssue.value = "";
+    return true;
+  }
+  confirmNameIssue.value = issue === "empty" ? t("fileNameRequired") : t("invalidFileName");
+  return false;
 }
 
 function startNewFolder(side: PaneSide = "left") {
@@ -825,9 +926,13 @@ function startCompress(targets: FileEntry[], side: PaneSide) {
 
 const BATCH_CONCURRENCY = 8;
 let batchSeq = 0;
+// R3-P2-9：本地伪 job 的取消标志（jobId → flag）。取消真实中断 runBatch
+// （worker 跳过剩余分批），job 置已取消态——此前对 local-batch-* 调
+// files/transfer/cancel，mock/真实 sidecar 无此记录仍返回 success（假成功）。
+const batchCancelFlags = new Map<string, { canceled: boolean }>();
 
-async function runBatch(kind: TransferKind, remotePath: string, count: number, task: (index: number) => Promise<void>): Promise<void> {
-  if (count <= 0) return;
+async function runBatch(kind: TransferKind, remotePath: string, count: number, task: (index: number) => Promise<void>): Promise<{ canceled: boolean }> {
+  if (count <= 0) return { canceled: false };
   const jobId = `local-batch-${++batchSeq}`;
   registerJob({
     jobId,
@@ -841,27 +946,28 @@ async function runBatch(kind: TransferKind, remotePath: string, count: number, t
     filesTotal: count,
     updatedAt: Date.now(),
   });
-  let done = 0;
-  let cursor = 0;
-  let firstError: unknown;
-  const workers = Array.from({ length: Math.min(BATCH_CONCURRENCY, count) }, async () => {
-    while (cursor < count) {
-      const index = cursor++;
-      try {
-        await task(index);
-      } catch (cause) {
-        firstError ??= cause;
-      }
-      done += 1;
+  const cancelFlag = { canceled: false };
+  batchCancelFlags.set(jobId, cancelFlag);
+  const result = await runBatchTasks({
+    count,
+    concurrency: BATCH_CONCURRENCY,
+    isCanceled: () => cancelFlag.canceled,
+    task,
+    onProgress: (done) => {
       tracker.onProgress({ jobId, kind, state: "running", transferred: done, size: count, filesDone: done, filesTotal: count });
-    }
+    },
   });
-  await Promise.all(workers);
-  if (firstError) {
-    tracker.onProgress({ jobId, kind, state: "failed", error: errorMessage(firstError), transferred: done, size: count, filesDone: done, filesTotal: count });
-    throw firstError;
+  batchCancelFlags.delete(jobId);
+  if (result.canceled) {
+    tracker.onProgress({ jobId, kind, state: "canceled", transferred: result.done, size: count, filesDone: result.done, filesTotal: count });
+    return { canceled: true };
+  }
+  if (result.error) {
+    tracker.onProgress({ jobId, kind, state: "failed", error: errorMessage(result.error), transferred: result.done, size: count, filesDone: result.done, filesTotal: count });
+    throw result.error;
   }
   tracker.onProgress({ jobId, kind, state: "completed", transferred: count, size: count, filesDone: count, filesTotal: count });
+  return { canceled: false };
 }
 
 async function onConfirm() {
@@ -875,7 +981,8 @@ async function onConfirm() {
     switch (confirmKind.value) {
       case "newFolder": {
         const name = confirmDraft.value.trim();
-        if (!name) return;
+        // R3-P2-4：文件名校验（禁 /、禁 . / ..、禁空值），行内提示不关弹层。
+        if (!checkConfirmName()) return;
         const fullPath = joinPath(paneDirPath(side), name);
         // P2-10：提交前重名预检，命中即提示且弹层保持打开。
         if ((await pathExists(side, fullPath)) === true) return rejectDuplicate(name);
@@ -885,7 +992,7 @@ async function onConfirm() {
       }
       case "newFile": {
         const name = confirmDraft.value.trim();
-        if (!name) return;
+        if (!checkConfirmName()) return;
         const fullPath = joinPath(paneDirPath(side), name);
         if ((await pathExists(side, fullPath)) === true) return rejectDuplicate(name);
         await callFor(side, "files/write", { path: fullPath, dataBase64: "" });
@@ -895,7 +1002,9 @@ async function onConfirm() {
       case "rename": {
         const entry = confirmTarget.value.entry;
         const name = confirmDraft.value.trim();
-        if (!entry || !name || name === entry.name) return;
+        if (!entry) return;
+        if (!checkConfirmName()) return;
+        if (!name || name === entry.name) return;
         const newPath = joinPath(parentPath(entry.path), name);
         if ((await pathExists(side, newPath)) === true) return rejectDuplicate(name);
         const result = await callFor<{ transport?: string; jobId?: string | null }>(side, "files/rename", {
@@ -923,6 +1032,18 @@ async function onConfirm() {
           error.value = t("operationFailed", { error: t("destMustDiffer") });
           return;
         }
+        // R3-P2-5：目标冲突预检——同名即静默覆盖（数据丢失风险），命中后转入
+        // 覆盖确认（弹层保持打开、危险态、按钮变「覆盖」），确认后才执行。
+        // 草稿在确认后又被改动则重新预检。
+        if (!confirmForce.value || confirmForcePath.value !== targetPath) {
+          if ((await pathExists(side, targetPath)) === true) {
+            confirmForce.value = true;
+            confirmForcePath.value = targetPath;
+            confirmDanger.value = true;
+            confirmBody.value = t("overwriteAsk", { path: targetPath });
+            return;
+          }
+        }
         const result = await callFor<{ success: boolean; transport?: string; jobId?: string | null }>(side, `files/${confirmKind.value}`, {
           sourcePath: entry.path,
           targetPath,
@@ -938,15 +1059,24 @@ async function onConfirm() {
         showNotice(t("jobStarted", { name: baseName(targetPath) }));
         break;
       }
+      // R3-P2-5：跨栏 copy/move 的覆盖确认终站——确认后原样执行挂起的整批传输。
+      case "overwrite": {
+        const pending = pendingPaneTransfer.value;
+        pendingPaneTransfer.value = undefined;
+        if (!pending) return;
+        await executePaneTransfer(pending.from, pending.move, pending.list, pending.destPath);
+        break;
+      }
       case "delete": {
         const targets = confirmTarget.value.targets ?? [];
         // P2-7：批量删除并发分批执行，进度实时落传输面板（单项目为 1 批同语义）。
-        await runBatch("delete", paneDirPath(side), targets.length, async (index) => {
+        // R3-P2-9：取消真实中断剩余分批；已取消时不再补「已删除」通知。
+        const batch = await runBatch("delete", paneDirPath(side), targets.length, async (index) => {
           const target = targets[index];
           if (target.kind === "directory") await callFor(side, "files/purge", { path: target.path });
           else await callFor(side, "files/delete", { path: target.path });
         });
-        showNotice(t("deleted"));
+        if (!batch.canceled) showNotice(t("deleted"));
         break;
       }
       case "purge": {
@@ -1035,13 +1165,46 @@ function pickSideEntries(side: PaneSide, paths: string[]): FileEntry[] {
 /**
  * 跨栏 copy/move：同一连接直接传路径；跨连接（目标栏选择了其它连接）时
  * 契约字段 targetConnectionId / sourceConnectionId 由方向决定。
+ * R3-P2-1：copy 与 move 的写都发生在目标栏，同受 canWrite 门禁。
+ * R3-P2-5：目标冲突预检——命中同名即挂起整批，弹覆盖确认后原样执行。
  */
 async function transferBetween(from: PaneSide, move: boolean, dragged?: FileEntry[]) {
+  if (!canWrite.value) return;
   const to: PaneSide = from === "left" ? "right" : "left";
   const paths = dragged ? dragged.map((entry) => entry.path) : from === "left" ? selection.value : rightSelection.value;
   const list = dragged ?? pickSideEntries(from, paths);
   if (!list.length) return;
   const destPath = to === "left" ? path.value : rightPath.value;
+  // 目标冲突预检（R3-P2-5）：一次 list 目标目录取同名集合（避免逐条 stat），
+  // 命中即整批挂起等覆盖确认；目标不可列（不存在/失败）交后端兜底。
+  const conflicts = await findTargetConflicts(to, destPath, list);
+  if (conflicts.length) {
+    pendingPaneTransfer.value = { from, move, list, destPath };
+    openConfirm("overwrite", {
+      title: move ? t("moveTitle") : t("copyTitle"),
+      body: t("overwriteBatch", { count: conflicts.length }),
+      danger: true,
+      side: from,
+    });
+    return;
+  }
+  await executePaneTransfer(from, move, list, destPath);
+}
+
+/** R3-P2-5：目标目录一次性拉取，返回与传入列表同名的冲突条目。 */
+async function findTargetConflicts(to: PaneSide, destPath: string, list: FileEntry[]): Promise<FileEntry[]> {
+  try {
+    const existing = await fetchListing(destPath, sideConnectionId(to));
+    const names = new Set(existing.map((entry) => entry.name));
+    return list.filter((item) => names.has(item.name));
+  } catch {
+    return [];
+  }
+}
+
+/** 跨栏传输执行体（R3-P2-5 拆出）：overwrite 确认与无冲突路径共用。 */
+async function executePaneTransfer(from: PaneSide, move: boolean, list: FileEntry[], destPath: string) {
+  const to: PaneSide = from === "left" ? "right" : "left";
   // 该栏显式连接（右栏其它连接 / 双栏左栏本地 __local__）；当前连接为 undefined（默认注入）。
   const sourceConnectionId = sideConnectionId(from);
   const targetConnection = sideConnectionId(to);
@@ -1274,15 +1437,18 @@ function saveBrowserDownload(chunks: Uint8Array[], fileName: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
-async function downloadSelection() {
-  const files = sortedEntries.value.filter((entry) => selection.value.includes(entry.path) && entry.kind === "file");
+async function downloadSelection(side: PaneSide = "left") {
+  // R3-P1-2：按活动栏解析选择集（此前只读左栏，右栏选中时工具栏下载灰置）。
+  const pool = side === "right" ? rightSorted.value : sortedEntries.value;
+  const sel = side === "right" ? rightSelection.value : selection.value;
+  const files = pool.filter((entry) => sel.includes(entry.path) && entry.kind === "file");
   // P2-6：过滤后为空（如只选了目录）不再静默，给出明确提示。
   if (!files.length) {
     showNotice(t("downloadNoneSelected"));
     return;
   }
   for (const entry of files) {
-    await downloadEntry(entry);
+    await downloadEntry(entry, side);
   }
 }
 
@@ -1300,6 +1466,14 @@ function onPreviewSaved() {
 }
 
 async function cancelTransfer(jobId: string) {
+  // R3-P2-9：本地伪 job 取消走本地标志（真实中断 runBatch），不再调
+  // files/transfer/cancel——sidecar 无该 job 记录仍返回 success（假成功）。
+  const flag = batchCancelFlags.get(jobId);
+  if (flag) {
+    flag.canceled = true;
+    showNotice(t("jobCanceled"));
+    return;
+  }
   try {
     await call("files/transfer/cancel", { taskId: jobId });
     showNotice(t("jobCanceled"));
@@ -1517,7 +1691,14 @@ function onDocumentKeydown(event: KeyboardEvent) {
 }
 
 function onToolbarNavigate(target: string) {
+  markActiveSide("left");
   void loadDirectory(target).catch(() => undefined);
+}
+
+/** 右栏路径跳转（路径栏/上一级/刷新）：同时把右栏标记为活动栏（R3-P1-2）。 */
+function onRightNavigate(target: string) {
+  markActiveSide("right");
+  void loadRightDirectory(target).catch(() => undefined);
 }
 
 watch(dockTab, (tab) => {
@@ -1552,15 +1733,16 @@ onBeforeUnmount(() => {
   <main class="wb-workbench">
     <div v-if="error" class="wb-error-banner">
       <span :title="errorDetail">{{ error }}</span>
-      <button class="wb-icon-button wb-icon-neutral" :title="t('retry')" @click="retryAfterError">↻</button>
-      <button class="wb-icon-button wb-icon-neutral" @click="error = ''">✕</button>
+      <!-- R3-P2-10：文本字符 ↻/✕ 换 lucide 图标（对齐 P2-14 先例）。 -->
+      <button class="wb-icon-button wb-icon-neutral" :title="t('retry')" @click="retryAfterError"><RefreshCw /></button>
+      <button class="wb-icon-button wb-icon-neutral" :title="t('close')" @click="error = ''"><X /></button>
     </div>
     <div v-if="notice" class="wb-notice">{{ notice }}</div>
 
     <FileToolbar
       :can-write="canWrite"
       :busy="loading"
-      :has-selection="selection.length > 0"
+      :has-selection="toolbarTarget.hasSelection"
       :dock-open="dockOpen"
       :dock-tab="dockTab"
       :dual-pane="dualPane"
@@ -1569,10 +1751,10 @@ onBeforeUnmount(() => {
       :read-only="!canWrite"
       :conn-state="connState"
       :t="t"
-      @new-folder="startNewFolder"
+      @new-folder="startNewFolder(toolbarTarget.side)"
       @upload="onUpload"
-      @download="downloadSelection"
-      @delete="startDelete(sortedEntries.filter((entry) => selection.includes(entry.path)))"
+      @download="downloadSelection(toolbarTarget.side)"
+      @delete="startDelete(toolbarSelectionEntries(toolbarTarget.side), toolbarTarget.side)"
       @toggle-dual-pane="dualPane = !dualPane"
       @toggle-dock="(tab) => { if (dockOpen && dockTab === tab) dockOpen = false; else { dockOpen = true; dockTab = tab; if (tab === 'audit') auditRef?.refresh(); } }"
     />
@@ -1606,7 +1788,7 @@ onBeforeUnmount(() => {
           <div class="wb-pane-main">
             <div class="wb-pane-header">
               <button class="wb-icon-button wb-icon-neutral" :title="t('up')" :disabled="!path || path === '/'" @click="onToolbarNavigate(parentPath(path))"><ArrowUp /></button>
-              <button class="wb-icon-button wb-icon-neutral" :title="t('refresh')" :disabled="loading" @click="refreshDirectory"><RefreshCw :class="{ 'wb-spin': loading }" /></button>
+              <button class="wb-icon-button wb-icon-neutral" :title="t('refresh')" :disabled="loading" @click="markActiveSide('left'); refreshDirectory()"><RefreshCw :class="{ 'wb-spin': loading }" /></button>
               <div class="wb-path-toolbar">
                 <PathField :path="path" :t="t" @navigate="onToolbarNavigate" />
                 <span class="wb-search-box">
@@ -1630,26 +1812,28 @@ onBeforeUnmount(() => {
               :active-path="activePath"
               :sort="sort"
               :loading="loading"
+              :filtered="Boolean(searchQuery.trim())"
               :t="t"
-              @update:selection="selection = $event"
-              @update:active-path="activePath = $event"
-              @open="(entry) => openEntry(entry, 'left')"
-              @contextmenu="(payload) => (contextMenu = { ...payload, side: 'left', selection: [...selection] })"
-              @blank-context="openBlankMenu('left', $event)"
-              @sort="(column) => toggleSort('left', column)"
+              @update:selection="setPaneSelection('left', $event)"
+              @update:active-path="setPaneActivePath('left', $event)"
+              @open="(entry) => { markActiveSide('left'); openEntry(entry, 'left'); }"
+              @contextmenu="openContextMenu('left', $event)"
+              @blank-context="openBlank('left', $event)"
+              @sort="(column) => sortRouted('left', column)"
             />
           </div>
         </div>
         <div v-if="dragOverSide === 'left' && dualPane" class="wb-drop-overlay">{{ t("dropToCopy") }}</div>
       </section>
 
-      <!-- 双栏桥：跨栏 copy/move 按钮（A-FILES ①） -->
+      <!-- 双栏桥：跨栏 copy/move 按钮（A-FILES ①）。R3-P2-1：copy 与 move 的写
+           都发生在目标栏，同受 canWrite 门禁（只读态「复制到目标/源栏」禁用）。 -->
       <div v-if="dualPane" class="wb-pane-bridge">
-        <button class="wb-icon-button wb-icon-neutral" :title="t('copyToTarget')" :disabled="!selection.length" @click="transferBetween('left', false)"><Copy /></button>
+        <button class="wb-icon-button wb-icon-neutral" :title="t('copyToTarget')" :disabled="!selection.length || !canWrite" @click="transferBetween('left', false)"><Copy /></button>
         <button class="wb-icon-button wb-icon-neutral" :title="t('moveToTarget')" :disabled="!selection.length || !canWrite" @click="transferBetween('left', true)"><ArrowRight /></button>
         <span class="wb-toolbar-separator" />
-        <button class="wb-icon-button wb-icon-neutral" :title="t('copyToSource')" :disabled="!rightSelection.length" @click="transferBetween('right', false)"><Copy class="wb-flip-h" /></button>
-        <button class="wb-icon-button wb-icon-neutral" :title="t('moveToSource')" :disabled="!rightSelection.length" @click="transferBetween('right', true)"><ArrowLeft /></button>
+        <button class="wb-icon-button wb-icon-neutral" :title="t('copyToSource')" :disabled="!rightSelection.length || !canWrite" @click="transferBetween('right', false)"><Copy class="wb-flip-h" /></button>
+        <button class="wb-icon-button wb-icon-neutral" :title="t('moveToSource')" :disabled="!rightSelection.length || !canWrite" @click="transferBetween('right', true)"><ArrowLeft /></button>
       </div>
 
       <!-- 目标栏（右栏）：目标连接浏览（文件概览已改为弹窗，不占右栏 Tab） -->
@@ -1663,7 +1847,7 @@ onBeforeUnmount(() => {
       >
         <!-- P2-11：无可切换连接时整个 topbar 不渲染（v-if 提到容器级），不再留 28px 空条 -->
         <div v-if="targetConnections.length" class="wb-pane-topbar">
-          <select v-model="targetConnectionId" class="wb-target-connection" :title="t('targetConnection')" @change="loadRightDirectory(rightPath)">
+          <select v-model="targetConnectionId" class="wb-target-connection" :title="t('targetConnection')" @change="markActiveSide('right'); loadRightDirectory(rightPath)">
             <option value="">{{ t("sameConnection") }}</option>
             <option v-for="item in targetConnections" :key="item.id" :value="item.id">{{ item.name }}</option>
           </select>
@@ -1686,10 +1870,10 @@ onBeforeUnmount(() => {
           />
           <div class="wb-pane-main">
             <div class="wb-pane-header">
-              <button class="wb-icon-button wb-icon-neutral" :title="t('up')" :disabled="!rightPath || rightPath === '/'" @click="loadRightDirectory(parentPath(rightPath))"><ArrowUp /></button>
-              <button class="wb-icon-button wb-icon-neutral" :title="t('refresh')" :disabled="rightLoading" @click="refreshRightDirectory"><RefreshCw :class="{ 'wb-spin': rightLoading }" /></button>
+              <button class="wb-icon-button wb-icon-neutral" :title="t('up')" :disabled="!rightPath || rightPath === '/'" @click="onRightNavigate(parentPath(rightPath))"><ArrowUp /></button>
+              <button class="wb-icon-button wb-icon-neutral" :title="t('refresh')" :disabled="rightLoading" @click="markActiveSide('right'); refreshRightDirectory()"><RefreshCw :class="{ 'wb-spin': rightLoading }" /></button>
               <div class="wb-path-toolbar">
-                <PathField :path="rightPath" :t="t" @navigate="(target) => loadRightDirectory(target)" />
+                <PathField :path="rightPath" :t="t" @navigate="onRightNavigate" />
                 <span class="wb-search-box">
                   <Search class="wb-search-icon" aria-hidden="true" />
                   <input
@@ -1711,13 +1895,14 @@ onBeforeUnmount(() => {
               :active-path="rightActivePath"
               :sort="rightSort"
               :loading="rightLoading"
+              :filtered="Boolean(rightSearchQuery.trim())"
               :t="t"
-              @update:selection="rightSelection = $event"
-              @update:active-path="rightActivePath = $event"
-              @open="(entry) => openEntry(entry, 'right')"
-              @contextmenu="(payload) => (contextMenu = { ...payload, side: 'right', selection: [...rightSelection] })"
-              @blank-context="openBlankMenu('right', $event)"
-              @sort="(column) => toggleSort('right', column)"
+              @update:selection="setPaneSelection('right', $event)"
+              @update:active-path="setPaneActivePath('right', $event)"
+              @open="(entry) => { markActiveSide('right'); openEntry(entry, 'right'); }"
+              @contextmenu="openContextMenu('right', $event)"
+              @blank-context="openBlank('right', $event)"
+              @sort="(column) => sortRouted('right', column)"
             />
           </div>
         </div>
@@ -1762,54 +1947,56 @@ onBeforeUnmount(() => {
       />
     </div>
 
-    <!-- 统一右键菜单（A-FILES ④b）：源栏/目标栏共用；多选时切批量动作面 -->
-    <div v-if="contextMenu" ref="menuEl" class="wb-context-menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @click.stop>
+    <!-- 统一右键菜单（A-FILES ④b）：源栏/目标栏共用；多选时切批量动作面。
+         R3-P2-8：role="menu"/menuitem 语义。 -->
+    <div v-if="contextMenu" ref="menuEl" class="wb-context-menu" role="menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @click.stop>
       <template v-if="contextMenu.selection.length > 1">
-        <button @click="menuAction('open')">{{ t("openDirectory") }}</button>
-        <button @click="menuAction('downloadSelected')">{{ t("downloadSelected") }}</button>
-        <button v-if="dualPane" @click="menuAction('copySelected')">{{ t("copyToTarget") }}</button>
-        <button v-if="dualPane && canWrite" @click="menuAction('moveSelected')">{{ t("moveToTarget") }}</button>
-        <button v-if="canWrite" @click="menuAction('compressSelected')">{{ t("compressSelected", { count: contextMenu.selection.length }) }}</button>
+        <button role="menuitem" @click="menuAction('open')">{{ t("openDirectory") }}</button>
+        <button role="menuitem" @click="menuAction('downloadSelected')">{{ t("downloadSelected") }}</button>
+        <!-- R3-P2-1：只读态「复制到目标栏」与 move 同受 canWrite 门禁（写发生在目标栏）。 -->
+        <button v-if="dualPane && canWrite" role="menuitem" @click="menuAction('copySelected')">{{ t("copyToTarget") }}</button>
+        <button v-if="dualPane && canWrite" role="menuitem" @click="menuAction('moveSelected')">{{ t("moveToTarget") }}</button>
+        <button v-if="canWrite" role="menuitem" @click="menuAction('compressSelected')">{{ t("compressSelected", { count: contextMenu.selection.length }) }}</button>
         <hr />
-        <button class="is-danger" :disabled="!canWrite" @click="menuAction('deleteSelected')">{{ t("deleteSelected") }}</button>
+        <button role="menuitem" class="is-danger" :disabled="!canWrite" @click="menuAction('deleteSelected')">{{ t("deleteSelected") }}</button>
         <hr />
-        <button @click="menuAction('copyPath')">{{ t("copyPath") }}</button>
+        <button role="menuitem" @click="menuAction('copyPath')">{{ t("copyPath") }}</button>
       </template>
       <template v-else>
-        <button v-if="contextMenu.entry.kind === 'directory'" @click="menuAction('open')">{{ t("openDirectory") }}</button>
-        <button v-if="contextMenu.entry.kind === 'file' && !isArchivePath(contextMenu.entry.path)" @click="menuAction('preview')">{{ t("preview") }}</button>
-        <button v-if="contextMenu.entry.kind === 'file' && isArchivePath(contextMenu.entry.path)" @click="menuAction('archiveContents')">{{ t("archiveContents") }}</button>
-        <button v-if="contextMenu.entry.kind === 'file'" @click="menuAction('download')">{{ t("download") }}</button>
-        <button v-if="contextMenu.entry.kind === 'file' && isArchivePath(contextMenu.entry.path) && canWrite" @click="menuAction('extract')">{{ t("extractTo") }}</button>
-        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" @click="menuAction('syncDir')">{{ t("transferKind.syncDir") }}…</button>
-        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" @click="menuAction('copyDir')">{{ t("transferKind.copyDir") }}…</button>
-        <button v-if="canWrite" @click="menuAction('compress')">{{ t("compress") }}</button>
+        <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('open')">{{ t("openDirectory") }}</button>
+        <button v-if="contextMenu.entry.kind === 'file' && !isArchivePath(contextMenu.entry.path)" role="menuitem" @click="menuAction('preview')">{{ t("preview") }}</button>
+        <button v-if="contextMenu.entry.kind === 'file' && isArchivePath(contextMenu.entry.path)" role="menuitem" @click="menuAction('archiveContents')">{{ t("archiveContents") }}</button>
+        <button v-if="contextMenu.entry.kind === 'file'" role="menuitem" @click="menuAction('download')">{{ t("download") }}</button>
+        <button v-if="contextMenu.entry.kind === 'file' && isArchivePath(contextMenu.entry.path) && canWrite" role="menuitem" @click="menuAction('extract')">{{ t("extractTo") }}</button>
+        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('syncDir')">{{ t("transferKind.syncDir") }}…</button>
+        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('copyDir')">{{ t("transferKind.copyDir") }}…</button>
+        <button v-if="canWrite" role="menuitem" @click="menuAction('compress')">{{ t("compress") }}</button>
         <hr />
-        <button v-if="canWrite" @click="menuAction('copy')">{{ t("transferKind.copy") }}…</button>
-        <button v-if="canWrite" @click="menuAction('move')">{{ t("transferKind.move") }}…</button>
-        <button v-if="canWrite" @click="menuAction('rename')">{{ t("rename") }}</button>
-        <button class="is-danger" :disabled="!canWrite" @click="menuAction('delete')">{{ t("delete") }}</button>
+        <button v-if="canWrite" role="menuitem" @click="menuAction('copy')">{{ t("transferKind.copy") }}…</button>
+        <button v-if="canWrite" role="menuitem" @click="menuAction('move')">{{ t("transferKind.move") }}…</button>
+        <button v-if="canWrite" role="menuitem" @click="menuAction('rename')">{{ t("rename") }}</button>
+        <button role="menuitem" class="is-danger" :disabled="!canWrite" @click="menuAction('delete')">{{ t("delete") }}</button>
         <hr />
-        <button @click="menuAction('copyPath')">{{ t("copyPath") }}</button>
-        <button @click="menuAction('copyName')">{{ t("copyName") }}</button>
+        <button role="menuitem" @click="menuAction('copyPath')">{{ t("copyPath") }}</button>
+        <button role="menuitem" @click="menuAction('copyName')">{{ t("copyName") }}</button>
       </template>
     </div>
 
     <!-- 空白区右键菜单（P-FILES）：拦截浏览器默认菜单，给出新建/刷新动作 -->
-    <div v-if="blankMenu" ref="menuEl" class="wb-context-menu" :style="{ left: `${blankMenu.x}px`, top: `${blankMenu.y}px` }" @click.stop>
-      <button :disabled="!canWrite" @click="blankMenuAction('newFolder')">{{ t("newFolder") }}</button>
-      <button :disabled="!canWrite" @click="blankMenuAction('newFile')">{{ t("newFileTitle") }}</button>
+    <div v-if="blankMenu" ref="menuEl" class="wb-context-menu" role="menu" :style="{ left: `${blankMenu.x}px`, top: `${blankMenu.y}px` }" @click.stop>
+      <button :disabled="!canWrite" role="menuitem" @click="blankMenuAction('newFolder')">{{ t("newFolder") }}</button>
+      <button :disabled="!canWrite" role="menuitem" @click="blankMenuAction('newFile')">{{ t("newFileTitle") }}</button>
       <hr />
-      <button @click="blankMenuAction('refresh')">{{ t("refresh") }}</button>
+      <button role="menuitem" @click="blankMenuAction('refresh')">{{ t("refresh") }}</button>
     </div>
 
     <!-- 侧栏右键菜单（P-FILES）：目录树/快捷目录行 → 打开 / 在另一栏打开 / 复制 -->
-    <div v-if="sideMenu" ref="menuEl" class="wb-context-menu" :style="{ left: `${sideMenu.x}px`, top: `${sideMenu.y}px` }" @click.stop>
-      <button @click="sideMenuAction('open')">{{ t("openDirectory") }}</button>
-      <button v-if="dualPane" @click="sideMenuAction('openOther')">{{ sideMenu.side === "left" ? t("openInRight") : t("openInLeft") }}</button>
+    <div v-if="sideMenu" ref="menuEl" class="wb-context-menu" role="menu" :style="{ left: `${sideMenu.x}px`, top: `${sideMenu.y}px` }" @click.stop>
+      <button role="menuitem" @click="sideMenuAction('open')">{{ t("openDirectory") }}</button>
+      <button v-if="dualPane" role="menuitem" @click="sideMenuAction('openOther')">{{ sideMenu.side === "left" ? t("openInRight") : t("openInLeft") }}</button>
       <hr />
-      <button @click="sideMenuAction('copyPath')">{{ t("copyPath") }}</button>
-      <button @click="sideMenuAction('copyName')">{{ t("copyName") }}</button>
+      <button role="menuitem" @click="sideMenuAction('copyPath')">{{ t("copyPath") }}</button>
+      <button role="menuitem" @click="sideMenuAction('copyName')">{{ t("copyName") }}</button>
     </div>
 
     <ConfirmDialog
@@ -1818,6 +2005,7 @@ onBeforeUnmount(() => {
       :body="confirmBody"
       :danger="confirmDanger"
       :danger-list="confirmDangerList"
+      :warning="confirmNameIssue"
       :confirm-label="confirmLabel"
       :cancel-label="t('cancel')"
       :busy="confirmBusy"

@@ -29,6 +29,17 @@ describe("sorting", () => {
     expect(sortEntries(files, state("name", "desc")).map((item) => item.name)).toEqual(["c", "b", "a"]);
   });
 
+  it("sorts names in natural numeric order (R3-P2-3)", () => {
+    const files = [
+      entry({ name: "a10", path: "/a10" }),
+      entry({ name: "a2", path: "/a2" }),
+      entry({ name: "A3", path: "/A3" }),
+      entry({ name: "文件10", path: "/文件10" }),
+      entry({ name: "文件9", path: "/文件9" }),
+    ];
+    expect(sortEntries(files, state("name", "asc")).map((item) => item.name)).toEqual(["a2", "A3", "a10", "文件9", "文件10"]);
+  });
+
   it("compares by size with missing sizes treated as zero", () => {
     const files = [entry({ name: "a", size: 30 }), entry({ name: "b", size: 10 }), entry({ name: "c" })];
     expect(sortEntries(files, state("size", "asc")).map((item) => item.name)).toEqual(["c", "b", "a"]);

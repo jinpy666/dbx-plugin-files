@@ -710,3 +710,57 @@ sftp-native(russh 密码) 21。无 UI 文案改动，七语不涉及。
   截图与脚本为复验工具产物，收尾已删。
 - **遗留**：无新增遗留；P1-5「跟随焦点侧」语义待产品确认（既有）；多连接
   真宿主跨栏行为建议随下次真机验证例行覆盖。
+
+## UI 扫描第 3 轮深度修复：专家视角 12 项全闭环（2026-09-06 第 4 轮）
+
+对象：`UI_SCAN_FINDINGS.zh-CN.md` 五、第 3 轮（专家视角深度测试）P1×2（R3-P1-1/2）、
+P2×10（R3-P2-1～10），全部修复并通过浏览器复验（13/13 断言）；历史文字未改，
+仅在各条目追加「修复（2026-09-06，第 4 轮）」标注。
+
+- **R3-P1-1 导航竞态守卫**：新 lib `navGuard.ts`（`createNavGuard` 按栏请求序号）；
+  `loadDirectory`/`loadRightDirectory` 响应（含错误与 loading 收尾）验号，过期序号
+  丢弃。复验：/docs 注入 1500ms 延迟下先点慢再点快，最终停在 /10k。
+- **R3-P1-2 工具栏活动栏路由**：新 lib `toolbarTarget.ts`（`resolveToolbarTarget`
+  纯函数，参照 uploadTarget.ts 模式）+ App `activeSide`（选择/焦点/排序/右键/
+  路径跳转/树导航/连接切换记账）；has-selection 两栏并集（单栏只看左栏），
+  下载/删除/新建按活动栏路由；上传仍固定「传向远端」（P1-5 语义不变）。
+- **R3-P2-1 只读 copy 门禁**：桥按钮补 `!canWrite`、批量菜单 `dualPane && canWrite`、
+  `transferBetween` 入口统一门禁（copy 的写发生在目标栏，与 move 同闸）。
+- **R3-P2-2 mock delete/purge 路由**：按 `connectionId` 落树（treeFor/deleteEntry），
+  与 mkdir/write/rename/copy/move 收口对齐；`mockHost.spec.ts` 新增 3 例。
+- **R3-P2-3 自然排序**：`sorting.ts` 名称比较 `{ numeric: true }`（报告建议中的
+  `sensitivity: "collation"` 非 localeCompare 合法取值，未采用）；sorting.spec 补例。
+- **R3-P2-4 文件名校验**：新 lib `fileName.ts`（禁 `/`/`\`、禁 `.`/`..`、禁空值）；
+  newFolder/newFile/rename 统一 `checkConfirmName()`，ConfirmDialog 新 `warning`
+  prop（role=alert，`.wb-dialog-warning` 样式）行内提示、弹层保持打开。
+- **R3-P2-5 覆盖确认**：弹层 copy/move `pathExists` 预检命中→危险态+「覆盖」钮
+  （confirmForce/confirmForcePath，草稿改动重新预检）；跨栏 `transferBetween`
+  目标目录一次 list 取同名集合（findTargetConflicts）→整批挂起（pendingPaneTransfer）
+  →「覆盖确认」（ConfirmKind 增 `overwrite`）→`executePaneTransfer` 原样执行。
+- **R3-P2-6 过滤空态两态**：FileTable 新 `filtered` prop，`noMatchResults`/
+  `emptyDirectory` 区分；FileTable.spec 补 2 例。
+- **R3-P2-7 zh-TW move**：「移动」→「移動」（transferKind.move 单键）。
+- **R3-P2-8 列表 a11y**：表头 role=row/columnheader + aria-sort；滚动容器
+  role=listbox + aria-multiselectable + aria-label（fileListLabel）；行 role=option +
+  aria-selected；复选框 aria-label（selectEntry 含文件名）；三个右键菜单
+  role=menu/menuitem；App watch(locale) 同步 `document.documentElement.lang`。
+- **R3-P2-9 批量删除可取消**：新 lib `batchRunner.ts`（`runBatchTasks` 并发分批 +
+  isCanceled 检查点）；App `runBatch` 接入 + `batchCancelFlags`，`cancelTransfer`
+  对 local-batch-* 本地置取消（不再调 files/transfer/cancel 假成功路径），job 落
+  canceled 终态、不补「已删除」通知。复验：/10k 注入 5ms/条延迟下取消，剩余
+  9160/10000 未删。batchRunner.spec 4 例。
+- **R3-P2-10 图标收口**：错误横幅 ↻/✕ 换 lucide RefreshCw/X；TransferPanel 历史
+  重试 ↻ 换 lucide RotateCw。
+- **i18n**：七语各新增 `fileNameRequired`/`invalidFileName`/`overwrite`/
+  `overwriteAsk`/`overwriteBatch`/`noMatchResults`/`selectEntry`/`fileListLabel`
+  （en/es/it/ja/pt-BR/zh-CN/zh-TW 同步补齐）。
+- **验证**：`pnpm typecheck` 0 错；`pnpm test` 32 文件 183 用例全绿（上轮基线
+  155 + 新增 28：navGuard 4 / toolbarTarget 6 / fileName 5 / batchRunner 4 /
+  mockHost 3 / sorting +1 / FileTable +4 / ConfirmDialog +1）；playwright-core +
+  系统 Chrome（装于 /tmp/uiscan-files-r4，不入项目依赖）对 `mock.html` 复验
+  13/13 断言通过（R3-P2-10 拆横幅/传输两断言），含 `?ro=1`、`?locale=zh-TW`、
+  `?job=1` 三种夹具参数与 invoke monkey-patch（竞态延迟/删除延迟）；截图与
+  脚本为复验工具产物，收尾已删。
+- **遗留**：无新增遗留；覆盖确认的「同名」判定以目标目录名为准（目录级冲突
+  语义与 FileZilla 一致）；批量取消在真实远端（分钟级任务）的行为建议随下次
+  真机验证例行覆盖。

@@ -319,7 +319,9 @@ export function installMockHost(): void {
       case "files/delete": {
         const path = str("path");
         assertOk(path);
-        tree.delete(path.replace(/\/+$/, ""));
+        // R3-P2-2：按连接路由（此前写死远端树，双栏左栏删除「成功即无效」，
+        // 与 P1-5 修复前的上传假成功同构）。
+        treeFor(p.connectionId).delete(path.replace(/\/+$/, ""));
         recordAudit(method, path);
         return { success: true };
       }
@@ -327,7 +329,8 @@ export function installMockHost(): void {
         const path = str("path");
         assertOk(path);
         if (path.replace(/\/+$/, "") === "" || path.replace(/\/+$/, "") === "/") throw new Error("Purge of the connection root '/' is refused");
-        deleteEntry(path);
+        // R3-P2-2：按连接路由（同 delete）。
+        deleteEntry(path, treeFor(p.connectionId));
         recordAudit(method, path);
         return { success: true };
       }

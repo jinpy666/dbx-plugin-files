@@ -12,6 +12,8 @@ const props = defineProps<{
   body?: string;
   danger?: boolean;
   dangerList?: string[];
+  /** R3-P2-4：行内校验提示（如文件名非法），显示在 slot 表单下方。 */
+  warning?: string;
   confirmLabel: string;
   cancelLabel: string;
   busy?: boolean;
@@ -84,6 +86,8 @@ function onTabKeydown(event: KeyboardEvent) {
       <div class="wb-dialog-body">
         <p v-if="body" style="margin: 0 0 6px">{{ body }}</p>
         <slot />
+        <!-- R3-P2-4：文件名等行内校验提示（role=alert 及时播报）。 -->
+        <p v-if="warning" class="wb-dialog-warning" role="alert">{{ warning }}</p>
         <ul v-if="dangerList?.length" class="wb-dialog-danger-list">
           <li v-for="hit in dangerList" :key="hit">{{ hit }}</li>
         </ul>
