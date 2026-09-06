@@ -260,3 +260,110 @@
 - 新发现：P0 × 0、P1 × 2（R3-P1-1/2）、P2 × 10（R3-P2-1～10）；零删除前 2 轮任何条目。
 - 测试脚本与运行日志均在 `/tmp/uiscan-files-r3`（未入库），未拍摄留存截图；未改任何源码，未提交 git。
 - 夹具缺口（R3-P2-2）虽记在 mock 层，但其暴露面是「双栏左栏写操作在浏览器验证中不可自证」，建议随下一轮夹具收口一并处理。
+
+## 六、第 5 轮（复核扫描，2026-09-06）
+
+> 扫描角色：文件管理/存储工程师 + 软件测试专家（收敛判定轮）。
+> 双重任务：① 逐条复验第 4 轮 12 项修复；② 换此前未覆盖的角度找新问题
+> （跨栏长距离复制、多任务并发传输、大文本预览内存/焦点、排序连按、
+> i18n 运行时切换动态内容）。只读扫描，未改任何代码、未提交 git。
+
+### 一、本轮环境
+
+| 项 | 值 |
+| --- | --- |
+| Dev server | 5293 端口复用当日遗留 vite（PID 57597，实时读盘与新建等价；本轮结束已 kill） |
+| 自动化 | playwright-core + 系统 Chrome（`channel: "chrome"`），独立装于 `/tmp/uiscan-files-r5`（未进项目依赖） |
+| 脚本 | t1（P1 双项）/ t2+t2b（P2-1/2/3/10）/ t3（P2-4/5/6）/ t4（P2-7/8/9）/ t5（跨栏长距离+并发+拖拽）/ t6（大文本预览+上传取消+i18n 切换） |
+| 断言 | 复核 87 条 + 新角度 32 条（含 5 条「发现记录」型探针，FAIL 即实锤）；另有 3 条脚本自身缺陷（断言方向写反、macOS Ctrl+click 变右键、kind 文本带时间后缀解析）已修正后重验 |
+| 数据播种 | 经 `window.dbxPlugin.invoke` 真实写入 mock 树（含 1.5MB 大文本、300 项待删目录）；竞态/取消窗口用页面内 monkey-patch `window.dbxPlugin.invoke` 注入延迟（不改源码） |
+
+### 二、第 4 轮修复复核结论（12/12 ✅）
+
+| 条目 | 复验要点与实测证据 | 结论 |
+| --- | --- | --- |
+| R3-P1-1 导航竞态守卫 | `delay=200` + monkey-patch 对 `/docs` 的 `files/list` 注入 1500ms：右栏先双击 /docs、400ms 后双击 /10k，终态面包屑 `/10k`、列表全为 `file-*.txt`、无 readme.md，晚到响应不再覆盖 | ✅ |
+| R3-P1-2 工具栏按活动栏路由 | 右栏选中 1 项 → 下载/删除立即解禁；工具栏新建落活动栏右栏；**键盘导航记账正确**：右栏列表聚焦 + ArrowDown 后新建落右栏（方向键 emit selection/activePath → markActiveSide 链路闭合）；上传不受影响（P1-5 语义保持） | ✅ |
+| R3-P2-1 只读 copy 门禁 | `?ro=1`：四个桥按钮全 disabled；批量右键菜单（Shift 连选 2 项）无「复制到目标栏/移动到目标栏」项（整项 v-if 隐藏）、删除项 disabled | ✅ |
+| R3-P2-2 mock delete 路由 | 左栏（`__local__`）播种文件/目录 → UI 删除 → stat 确认本地树真实删除（NotFound）、远端树未受牵连；目录走 purge 同样路由 | ✅ |
+| R3-P2-3 自然序 | 播种 a2/a10/A3/B/b1/文件9/文件10 → 升序 `a2 < A3 < a10`、`文件9 < 文件10`（numeric collation 生效） | ✅ |
+| R3-P2-4 文件名校验 | `a/b`、`..`、纯空格 均行内拦截（role=alert）、弹层保持打开、草稿不丢；rename 分支同样拦截；合法名正常创建 | ✅ |
+| R3-P2-5 覆盖确认 | ① 弹层内 copy 到已存在名：预检命中 → 弹层转危险态、确认钮变「覆盖」、二次确认才执行、内容实测被覆盖；② 跨栏冲突：桥复制同名 → 整批挂起弹「目标位置已存在 1 个同名条目」，取消不覆盖、确认后目标变本地版本；③ **不阻断正常路径**：无冲突的弹层内复制与跨栏复制均一次确认直接执行（不弹覆盖） | ✅ |
+| R3-P2-6 过滤空态 | 过滤无匹配 → 「没有符合过滤条件的条目」（role=status）；清空恢复；真空目录 `/empty` 保持「此文件夹为空」；左右栏对称 | ✅ |
+| R3-P2-7 zh-TW 移動 | `?locale=zh-TW`：目录右键菜单显示「移動…」、无简体「移动」残留；lang 同步 `zh-TW` | ✅ |
+| R3-P2-8 a11y | 表头 role=row/columnheader、活动列 `aria-sort=ascending` 非活动列省略；listbox + aria-multiselectable + aria-label（「文件列表」）；行 role=option + aria-selected；复选框 aria-label 含文件名；菜单 role=menu（10 个 menuitem）；lang 随 locale 即时同步 | ✅ |
+| R3-P2-9 批量取消 | /10k 全选删除（8ms/条注入）→ 面板删除任务运行中 → 取消 → 任务置「已取消」、取消钮消失、无「已删除」通知、远端实测剩 9266 项（真实中断）；并发场景复核：300 项删除取消后 remain=141，上传/下载不受波及 | ✅（附带 2 项新发现，见 R5-P2-2/3） |
+| R3-P2-10 图标 | 错误横幅两按钮均渲染 lucide SVG（2/2）；`?job=1` 失败任务的历史重试按钮为 SVG | ✅ |
+
+复核中未发现任何「修复引入新问题」：覆盖确认不阻断无冲突复制（本条目③）、键盘导航下活动栏记账正确、批量取消后传输面板状态正确（已取消态进历史、不补已删除通知）均专项实测通过。
+
+### 三、新发现清单
+
+统计：**P0 × 0，P1 × 0，P2 × 8**。无阻断使用级问题；全部为打磨项、边缘场景或夹具缺口。
+
+**R5-P2-1 跨栏移动（左→右）后源栏列表不刷新：UI 残留已移走条目**
+- 位置：`App.vue` `executePaneTransfer`——刷新条件不对称：`if (to === "left") loadDirectory() else loadRightDirectory()` + `if (move && from === "right") loadRightDirectory()`。右→左移动时源栏（右）被第二个条件覆盖；**左→右移动时源栏（左）没有任何刷新路径**。
+- 复现（实测）：双栏，左栏 `/Users/demo/Documents` 选中 5 个新文件 → 桥「移动到目标栏」→ 后端确认源已删（stat NotFound）、目标 `/docs` 已落，但**左栏列表仍显示这 5 条**；点击残留条目再操作即 NotFound。
+- 影响：数据不一致级体验债（copy 方向源栏本就不该刷新、右→左移动正确，唯独左→右移动漏刷新）；用户易对残留条目重复操作。
+- 建议：`executePaneTransfer` 末尾对 `move` 无条件双刷两栏（或按 from/to 各刷一次源栏与目标栏）。
+
+**R5-P2-2 批量删除期间确认弹层保持 busy 打开，遮罩挡住传输面板取消钮**
+- 位置：`App.vue` `onConfirm` delete 分支 `await runBatch(...)` 完成后才 `closeConfirm()`；ConfirmDialog backdrop 为全屏遮罩。
+- 复现（实测）：万级/数百项批量删除（注入延迟）确认后，弹层 busy 态持续整个批次时长，面板取消钮被 backdrop 拦截（playwright click 被 `wb-dialog-backdrop` intercepts，鼠标不可达）；需先 Esc（或点遮罩）关掉 busy 弹层才能点面板取消——关闭后批量仍在跑、取消依然有效（语义正确），但该路径隐蔽。
+- 影响：R3-P2-9 的取消能力在长批次期间实际「藏」在弹层后面；用户感知为「只能干等」。
+- 建议：delete 分支提交后立即 `closeConfirm()`（进度已落传输面板，弹层无需等待）；或 busy 弹层显示「后台执行中，可去传输面板取消」提示。
+
+**R5-P2-3 批量删除传输任务的文件计数被渲染成字节形态**
+- 位置：`TransferPanel.vue` `progressMeta`——非 byte-based 分支兜底 `${formatBytes(job.transferred)} / ${formatBytes(job.size)}`；delete 伪 job 的 `transferred/size` 实为**文件个数**（runBatch 写入 filesDone/filesTotal 的同时写入了 transferred/size）。
+- 复现（实测）：批量删除任务进度显示「删除 **504 B / 9.8 KiB** · 5%」「删除 · **686 B / 9.8 KiB**」——把 10000 个文件格式化成 9.8 KiB。
+- 影响：进度语义误导（7% 与 686 B 并存）；`filesProgress` 键（N/M 项）只服务于 byte-based 分支，delete 用不上。
+- 建议：`progressMeta` 对含 `filesTotal` 的 job 优先走 filesProgress 文案（与 isByteBased 解耦），计数不走 formatBytes。
+
+**R5-P2-4 上传/下载任务取消假成功（R3-P2-9 同族漏网）**
+- 位置：`App.vue` `uploadSource`/`downloadEntry` 的传输泵无取消检查点；`cancelTransfer` 对 `mock-upload-*`/`mock-download-*` 调 `files/transfer/cancel`——mock（及可能的真实 sidecar）无该记录仍返回 success；TransferPanel 对所有 running 任务渲染取消钮。
+- 复现（实测，`upload/finish` 注入 3s 延迟）：上传运行中点取消 → 通知「传输已取消」→ 任务最终置「**已完成**」且文件真实落盘。下载泵同理（无中断机制）。
+- 影响：与 R3-P2-9 修复前同构的假成功反馈；用户以为已停止，实际继续消耗带宽/写盘。
+- 建议：upload/download 泵增加本地取消标志（对齐 batchRunner 的 isCanceled 检查点），取消时本地置 canceled 终态并终止泵循环。
+
+**R5-P2-5 拖拽跨栏不记账活动栏（R3-P1-2 漏网入口）**
+- 位置：`App.vue` `onDropTo`（drop 目标侧不 `markActiveSide`）；`FileTable.onDragStart`（拖拽源侧同样不记账）。
+- 复现（实测）：点击左栏行（activeSide=left）→ 从左栏拖文件放到右栏 → 立即点工具栏「新建文件夹」→ **落在左栏**（用户最后交互的是右栏拖放目标）。键盘导航/选择/排序/右键的记账均正确（T1 实测），拖拽是唯一漏网入口。
+- 影响：低频但真实的错侧写操作（新建落错栏、下载/删除解析错选择集）。
+- 建议：`onDropTo` 入口 `markActiveSide(side)`（drop 目标即用户当前关注侧）。
+
+**R5-P2-6 预览弹窗关闭后焦点落 BODY，不归还触发行**
+- 位置：`PreviewPane.vue`（P1-4 修复只做了打开时焦点入容器，未做关闭归还）；对照 ConfirmDialog 已有 `returnFocusTo` 机制。
+- 复现（实测）：键盘/鼠标打开大文本预览 → Esc 关闭 → `document.activeElement` 为 **BODY**，键盘用户丢失列表位置，需重新 Tab 导航。
+- 影响：键盘可达性断点（预览是高频动作）；与弹层类的焦点归还标准不一致。
+- 建议：PreviewPane 记录打开前 activeElement，close 时归还（照抄 ConfirmDialog 方案）。
+
+**R5-P2-7 确认弹层打开中途切换 locale：标题/正文不换语，与按钮形成混语言窗口**
+- 位置：`App.vue` `openConfirm`——`confirmTitle/confirmBody` 在打开时刻用 `t()` 固化为字符串；而 `confirmLabel`/`confirmDangerList` 是 computed（即时换语）。notice 提示条同理（4s 生命周期内不换语）。
+- 复现（实测，运行时切语通道）：en-US 下打开新建文件夹弹层 → 切 ja-JP → 标题停留「New folder」、取消钮已变「キャンセル」。弹层外一切（工具栏/传输面板状态与类型标签/html lang）均即时换语正确。
+- 影响：边缘场景（真实宿主 locale 切换多发生在弹层关闭时）；纯一致性打磨。
+- 建议：`confirmTitle/confirmBody` 改存 i18n key + 参数（渲染时求值），或接受现状并记录为已知限制。
+
+**R5-P2-8 mock `files/download/start` 不按 connectionId 路由（R3-P2-2 同族夹具缺口）**
+- 位置：`mockHost.ts` download/start 写死查远端 `tree`（delete/purge/copy/move/rename/mkdir/write/upload 均已按连接路由，唯独 download 漏）。
+- 复现（实测）：双栏左栏（`__local__`）本地面文件右键「下载」→ 横幅 `NotFound: /Users/demo/Documents/notes-local.txt`，本地面下载旅程在浏览器验证中不可用。
+- 影响：夹具缺口，阻碍「本地面 → 下载」旅程自证；与真实 sidecar 契约的形状差异需在下次夹具收口时一并对齐。
+- 建议：download/start 改 `treeFor(p.connectionId).get(...)`（与 files/read 同款一行收口）。
+
+### 四、零发现维度证据（本轮新覆盖角度中表现良好项）
+
+| 维度 | 测法与结论 |
+| --- | --- |
+| 跨栏长距离路径复制 | 双栏各自深处导航（左 `/Users/demo/Documents`、右 `/docs`）后 Ctrl+A 30 项桥复制：30/30 落地、通知计数准确（31=30 文件+1 目录文件同批）、源栏保留、两栏列表与后端一致——结果与进度语义正确（native 路径即时完成无逐项进度，符合设计） |
+| 多任务并发传输 | `?mock=1` 删除（80ms/条注入）+ 上传 + 下载同时跑：面板三类任务并存、进度/终态互不串扰；**取消精确命中删除任务**（已取消），上传/下载继续到已完成、文件真实落盘；删除真中断（remain=141 > 1）。传输面板并发隔离无问题（取消假成功问题单列 R5-P2-4） |
+| 大文本（1.5MB）预览 打开→编辑→取消→重开 | 每阶段 `.cm-editor` 恒为单实例（编辑/只读重建均正常销毁）；打开焦点在预览容器内、编辑态 CodeMirror 自聚焦（P1-4 复验通过）；取消后草稿不写回（重开无编辑标记）；heap 25→29→33→39 MiB（无强制 GC，未见泄漏迹象，CodeMirror destroy 链路正常）；「关闭后焦点落 BODY」单列为 R5-P2-6 |
+| 快速连按排序表头 5 次 | 40ms 间隔连按 name 表头：状态确定性翻转（asc→desc→…第 5 次落 desc）、行序与 `aria-sort` 一致、左栏排序实时持久化到 localStorage（`{"column":"name","direction":"desc"}`）、零 pageerror；右栏排序独立不联动（P2-12 无回归） |
+| i18n 运行时切换动态内容 | 注入 `onLocaleChange` 通道切 en-US/ja-JP：html lang 即时同步、工具栏/弹层按钮/传输面板状态与类型标签即时换语、传输标题语言无关（路径原样）；仅弹层标题/正文固化导致混语言（单列 R5-P2-7） |
+| 拖拽跨栏链路（回归） | DataTransfer 注入 left→right：落地成功、drop 遮罩正常；仅活动栏记账缺口（单列 R5-P2-5） |
+| 上传链路（回归） | 大文件（300KB）upload/start→分片→finish 全链路、落盘按右栏远端目录（P1-5 语义）、传输面板任务进度正常 |
+
+### 五、本轮统计与收敛判定
+
+- 修复复核：**12/12 ✅**（第 3 轮报告标注的全部条目闭环确认，未发现修复引入的新问题）。
+- 新发现：**P0 × 0、P1 × 0、P2 × 8**（R5-P2-1～8）；零删除历史条目。
+- 收敛判定：**结构性问题已清零**——连续两轮 P0/P1 为零，第 4 轮修复全部经端到端复验成立；本轮 8 条 P2 中 4 条为第 4 轮修复的「配套打磨」（R5-P2-1/2/3/4/5 均产生于 batch/copy-move/activeSide 修复的邻接面），2 条为键盘/a11y 一致性尾项（R5-P2-6/7），1 条为夹具缺口（R5-P2-8）。**扫描趋于收敛，可按 P2 清单择机收口后结束轮次**；若按「零新发现」口径严格要求，尚不宣告收敛。
+- 测试脚本与运行产物在 `/tmp/uiscan-files-r5`（未入库），截图本轮零留存；未改任何源码，未提交 git。
