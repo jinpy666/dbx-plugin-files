@@ -7,7 +7,7 @@ import { formatBytes } from "./api";
 
 export type TransferState = "queued" | "running" | "completed" | "failed" | "canceled";
 
-export type TransferKind = "upload" | "download" | "copyDir" | "syncDir" | "copy" | "move" | "rename" | "extract" | "compress";
+export type TransferKind = "upload" | "download" | "copyDir" | "syncDir" | "copy" | "move" | "rename" | "extract" | "compress" | "delete";
 
 export interface TransferJob {
   jobId: string;
@@ -115,12 +115,15 @@ export function applyList(jobs: Record<string, TransferJob>, payload: TransferLi
     if (!jobId) continue;
     const state = String(raw.state ?? raw.status ?? "queued") as TransferState;
     const kind = String(raw.kind ?? raw.direction ?? "upload") as TransferKind;
+    const existing = jobs[jobId];
     jobs[jobId] = {
       jobId,
       taskId: raw.taskId ? String(raw.taskId) : undefined,
       connectionId: String(raw.connectionId ?? connectionId),
       kind,
-      remotePath: raw.remotePath ? String(raw.remotePath) : raw.fileName ? String(raw.fileName) : undefined,
+      // P2-8：list 缺 remotePath 时保留本地现值（undefined 不覆盖）——提交时
+      // 登记的可读标题不被轮询兜底覆盖成裸 jobId（mock 曾缺该字段，暴露此问题）。
+      remotePath: raw.remotePath ? String(raw.remotePath) : raw.fileName ? String(raw.fileName) : existing?.remotePath,
       state,
       // sidecar 单文件 job 用 totalBytes/transferredBytes，目录 job 用
       // bytesTotal/bytesDone，ssh-sftp 兼容形状用 size/transferred。

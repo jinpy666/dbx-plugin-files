@@ -3,7 +3,7 @@
   "manifest_version": 1,
   "id": "io.dbx.files",
   "name": "DBX Files",
-  "version": "0.1.37",
+  "version": "0.1.38",
   "publisher": "xynanan",
   "description": "Multi-backend storage workbench plugin for DBX, powered by Apache OpenDAL.",
   "icon": "assets/plugin.svg",

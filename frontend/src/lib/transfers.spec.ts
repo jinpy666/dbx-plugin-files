@@ -222,3 +222,22 @@ describe("isRetryableKind", () => {
     expect(isRetryableKind("")).toBe(false);
   });
 });
+
+describe("applyList remotePath preservation (P2-8)", () => {
+  it("keeps the locally registered readable title when the list payload lacks remotePath", () => {
+    const jobs: Record<string, TransferJob> = {
+      j: job({ jobId: "j", kind: "copy", remotePath: "/docs/a.txt → /docs/a-copy.txt" }),
+    };
+    // 轮询兜底（mock/旧 sidecar）缺 remotePath：不得把标题覆盖成 undefined/jobId
+    applyList(jobs, { jobs: [{ jobId: "j", status: "running", kind: "copy" }] }, "conn");
+    expect(jobs.j.remotePath).toBe("/docs/a.txt → /docs/a-copy.txt");
+  });
+
+  it("prefers the payload remotePath when present (real sidecar contract)", () => {
+    const jobs: Record<string, TransferJob> = {
+      j: job({ jobId: "j", kind: "copy", remotePath: "stale" }),
+    };
+    applyList(jobs, { jobs: [{ jobId: "j", status: "running", kind: "copy", remotePath: "/fresh/path" }] }, "conn");
+    expect(jobs.j.remotePath).toBe("/fresh/path");
+  });
+});

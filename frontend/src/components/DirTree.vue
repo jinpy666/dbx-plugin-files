@@ -25,6 +25,7 @@ const emit = defineEmits<{
       :class="{ 'is-current': node.path === currentPath }"
       :style="{ paddingLeft: `${6 + depth * 12}px` }"
       :title="node.path"
+      tabindex="-1"
       @click="emit('open', node)"
       @contextmenu.prevent.stop="emit('context', { node, x: $event.clientX, y: $event.clientY })"
     >
