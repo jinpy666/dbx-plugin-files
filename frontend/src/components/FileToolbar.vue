@@ -11,6 +11,11 @@ const props = defineProps<{
   dockOpen: boolean;
   dockTab: "transfers" | "audit" | "connection";
   dualPane: boolean;
+  /** 顶栏 identity（对标 ssh 工具栏左侧）：连接名/色条/只读徽章 + 状态 pill。 */
+  connectionName: string;
+  connectionColor?: string;
+  readOnly: boolean;
+  connState: "connecting" | "connected" | "disconnected";
   t: (key: string, values?: Record<string, string | number>) => string;
 }>();
 
@@ -48,6 +53,12 @@ function onPicked(event: Event) {
 
 <template>
   <header class="wb-toolbar">
+    <div class="wb-identity">
+      <span v-if="connectionColor" class="wb-connection-color" :style="{ background: connectionColor }" />
+      <strong :title="connectionName">{{ connectionName }}</strong>
+      <span v-if="readOnly" class="wb-readonly-badge">{{ t("readOnly") }}</span>
+      <span class="wb-session-pill" :class="`session-${connState}`"><span class="wb-session-dot" aria-hidden="true" />{{ t(`sessionStatus.${connState}`) }}</span>
+    </div>
     <div class="wb-toolbar-actions">
       <button class="wb-toolbar-button" :title="t('newFolder')" :disabled="!canWrite || busy" @click="emit('new-folder')"><FolderPlus /> {{ t("newFolder") }}</button>
       <button class="wb-toolbar-button" :title="t('upload')" :disabled="!canWrite || busy" @click="pickFiles"><Upload /> {{ t("upload") }}</button>

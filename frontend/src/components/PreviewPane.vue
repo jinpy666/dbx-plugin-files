@@ -3,18 +3,20 @@
 // 文本可切换编辑（textarea）→ files/write（≤4MiB，超限引导走上传）；
 // 图片按扩展名 data URI；二进制类前 512B hex dump；truncated 提示 + 下载引导；
 // 压缩包列表需要后端 files/archiveList（见交接文档），先给占位说明。
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { Download, Pencil, X } from "@lucide/vue";
 import { baseName, call, errorMessage, formatBytes, isMethodMissing } from "../lib/api";
 import { isArchivePath } from "../lib/archive";
 import { canEditBytes, hexDump, imageMimeFor, READ_MAX_BYTES, WRITE_MAX_BYTES } from "../lib/preview";
-import { highlightCode } from "../lib/highlight";
+import TextPreview from "./TextPreview.vue";
 
 const props = defineProps<{
   path: string | null;
   canWrite: boolean;
   /** 预览所属栏的连接 id（双栏左栏可为本地 __local__）；缺省走默认注入。 */
   connectionId?: string;
+  /** 宿主外观（CodeMirror 主题色板，与 ssh sftp 编辑器同方案）。 */
+  appearance: DbxPluginAppearance;
   t: (key: string, values?: Record<string, string | number>) => string;
 }>();
 
@@ -41,14 +43,29 @@ const hex = ref("");
 
 const t = (key: string, values?: Record<string, string | number>) => props.t(key, values);
 
+// P1-4 焦点管理：预览弹窗打开后把焦点移入容器（键盘用户可直接 Tab 到头部
+// 控件，不再滞留背景列表）；进入编辑态后聚焦 CodeMirror（TextPreview 内部
+// 在编辑实例就绪时自聚焦，这里兜底调用其 focus）。
+const previewEl = ref<HTMLElement>();
+const textPreviewRef = ref<InstanceType<typeof TextPreview>>();
+
+onMounted(async () => {
+  await nextTick();
+  previewEl.value?.focus();
+});
+
+watch(editing, async (on) => {
+  if (!on) return;
+  await nextTick();
+  textPreviewRef.value?.focus();
+});
+
 /** 该栏显式连接：预览/编辑/压缩包列表都跟随预览条目所在的栏。 */
 function withConnection(params: Record<string, unknown>): Record<string, unknown> {
   return props.connectionId ? { ...params, connectionId: props.connectionId } : params;
 }
 
 const title = computed(() => (props.path ? baseName(props.path) : ""));
-/** 代码高亮（只读态）：按扩展名识别语言，未识别返回 null → 纯文本渲染。 */
-const highlighted = computed(() => (mode.value === "text" ? highlightCode(text.value, props.path ?? "") : null));
 /** truncated 时禁编辑：否则保存会把截断内容写回覆盖整个文件。 */
 const canEdit = computed(() => mode.value === "text" && props.canWrite && !truncated.value && !loading.value && !error.value && !editing.value);
 /** 编辑条：编辑态或可进入编辑态时显示。 */
@@ -199,7 +216,7 @@ watch(
 </script>
 
 <template>
-  <div v-if="path" class="wb-preview">
+  <div v-if="path" ref="previewEl" tabindex="-1" class="wb-preview">
     <div class="wb-preview-header">
       <strong :title="path">{{ title }}</strong>
       <span class="wb-muted">{{ mode === "image" || mode === "archive" ? "" : formatBytes(size) }}</span>
@@ -223,16 +240,18 @@ watch(
       </template>
       <div v-else-if="error" class="wb-preview-notice">{{ t("previewLoadError", { error }) }}</div>
       <img v-else-if="mode === 'image'" :src="dataUri" :alt="title" />
-      <textarea
-        v-else-if="mode === 'text' && editing"
-        v-model="draft"
-        class="wb-edit-area wb-mono"
-        spellcheck="false"
-        :disabled="saving"
+      <!-- 文本预览/编辑：CodeMirror（与 ssh sftp 面板同方案）；key 保证
+           进入/退出编辑都从 props.text 全新装载，取消编辑即回滚草稿。 -->
+      <TextPreview
+        v-else-if="mode === 'text'"
+        ref="textPreviewRef"
+        :key="editing ? 'edit' : 'read'"
+        :text="text"
+        :file-name="path ?? ''"
+        :appearance="appearance"
+        :editable="editing"
+        @change="draft = $event"
       />
-      <!-- 只读文本：识别到语言时走 highlight.js 输出（v-html 安全：hljs 已转义） -->
-      <pre v-else-if="mode === 'text' && highlighted" class="wb-mono wb-code"><code v-html="highlighted" /></pre>
-      <pre v-else-if="mode === 'text'">{{ text }}</pre>
       <pre v-else-if="mode === 'hex'" class="wb-mono wb-hex">{{ hex }}</pre>
       <div v-else-if="mode === 'archive'" class="wb-archive">
         <div v-if="archiveError" class="wb-preview-notice">{{ archiveError }}</div>

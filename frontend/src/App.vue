@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { ArrowLeft, ArrowRight, Copy, ArrowUp, RefreshCw, Search } from "@lucide/vue";
 import FileTable from "./components/FileTable.vue";
 import FileToolbar from "./components/FileToolbar.vue";
@@ -11,6 +11,7 @@ import CustomConfigEditor from "./components/CustomConfigEditor.vue";
 import PathField from "./components/PathField.vue";
 import SideNavPanel from "./components/SideNavPanel.vue";
 import { isDbxPluginTheme, onHostThemeChange, themeToAppearance } from "./lib/hostTheme";
+import { DBX_POPOVER, resolveAppearance, type DbxPluginAppearanceInput } from "./lib/appearance";
 import { bridgeBinaryBytes } from "../../../shared/frontend/binaryEvent";
 import {
   bindApi,
@@ -34,6 +35,9 @@ import { filterEntries } from "./lib/searchFilter";
 import { isLargeDirectory } from "./lib/largeDir";
 import { applyTreeChildren, createTreeRoot, markTreeStale, type DirTreeNode } from "./lib/dirTree";
 import { normalizeQuickPaths, type QuickPath } from "./lib/quickPaths";
+import { isNarrowViewport } from "./lib/responsive";
+import { resolveUploadTarget, type UploadTarget } from "./lib/uploadTarget";
+import { friendlyError, isNotFoundMessage, isTransportFailure } from "./lib/friendlyError";
 
 type ConfirmKind = "delete" | "purge" | "syncDir" | "copyDir" | "newFolder" | "newFile" | "rename" | "copy" | "move" | "extract" | "compress";
 type PaneSide = "left" | "right";
@@ -49,6 +53,7 @@ interface ConnectionSummary {
   username?: string;
   readOnly?: boolean;
   protocol?: string;
+  color?: string;
 }
 
 // UI 偏好（A-FILES ①/④c）：布局偏好存 localStorage（非敏感）。
@@ -79,7 +84,15 @@ const selection = ref<string[]>([]);
 const activePath = ref("");
 const sort = ref<SortState>(prefs.sort);
 const loading = ref(false);
+// 顶栏连接状态 pill（对标 ssh session-pill）：存储连接（非本地栏）最近一次
+// files/list 成败，在 fetchListing 统一挂钩。
+const connState = ref<"connecting" | "connected" | "disconnected">("connecting");
+
 const error = ref("");
+// P2-1：错误横幅悬停展示 sidecar 原文（friendlyError 映射后的文案为主显示）。
+const errorDetail = ref("");
+// P2-4：错误所属栏位（重试按出错栏位重放，而不是永远只刷左栏）。
+const errorSide = ref<PaneSide | "global">("global");
 const notice = ref("");
 const capabilities = ref<FileCapabilities | undefined>();
 const initialized = ref(false);
@@ -199,6 +212,18 @@ const contextMenu = ref<{ x: number; y: number; entry: FileEntry; side: PaneSide
 const blankMenu = ref<{ x: number; y: number; side: PaneSide }>();
 // 侧栏（目录树/快捷目录）行右键：打开 / 在另一栏打开 / 复制路径、文件名。
 const sideMenu = ref<{ x: number; y: number; side: PaneSide; path: string; name: string }>();
+// 三个右键菜单互斥，共用同一模板 ref；渲染后按视口钳位，
+// 避免右键屏幕边缘时菜单溢出被裁。
+const menuEl = ref<HTMLElement>();
+watch([contextMenu, blankMenu, sideMenu], async () => {
+  await nextTick();
+  const element = menuEl.value;
+  const current = contextMenu.value ?? blankMenu.value ?? sideMenu.value;
+  if (!element || !current) return;
+  const rect = element.getBoundingClientRect();
+  if (rect.right > window.innerWidth - 8) current.x = Math.max(8, window.innerWidth - rect.width - 8);
+  if (rect.bottom > window.innerHeight - 8) current.y = Math.max(8, window.innerHeight - rect.height - 8);
+});
 
 /** 该栏当前所在目录（新建文件夹/新建文件落点）。 */
 function paneDirPath(side: PaneSide): string {
@@ -207,6 +232,10 @@ function paneDirPath(side: PaneSide): string {
 
 const tracker = createTransferTracker();
 const transferJobs = computed(() => Object.values(tracker.jobs));
+// P2-5：审计面板写操作后自动刷新（面板开着才刷；另有面板内手动刷新钮）。
+function refreshAuditPanel() {
+  if (dockOpen.value && dockTab.value === "audit") auditRef.value?.refresh();
+}
 // P-FILES ①b：等待终态后刷新目录的 job 集（transport=job 的 copy/move/rename）。
 const awaitingRefresh = new Set<string>();
 
@@ -281,6 +310,24 @@ const confirmDraft = ref("");
 const confirmTarget = ref<{ path?: string; entry?: FileEntry; targets?: FileEntry[] }>({});
 const confirmSide = ref<PaneSide>("left");
 const confirmInput = computed(() => confirmKind.value === "newFolder" || confirmKind.value === "newFile" || confirmKind.value === "rename" || confirmKind.value === "syncDir" || confirmKind.value === "copyDir" || confirmKind.value === "copy" || confirmKind.value === "move" || confirmKind.value === "extract" || confirmKind.value === "compress");
+// P2-2：危险确认列表走 i18n 七语（lib 侧 label 为英文兜底，路径类条目原样展示）。
+const confirmDangerList = computed(() =>
+  confirmHits.value.map((hit) => {
+    switch (hit.id) {
+      case "purge-root":
+        return t("dangerPurgeRoot");
+      case "purge":
+        return t("dangerPurge", { path: hit.path ?? hit.label });
+      case "recursive-delete":
+        return t("dangerRecursiveDelete");
+      case "bulk-delete":
+        return t("dangerBulkDelete", { count: hit.count ?? 0 });
+      // system-path / sync-overwrite / copy-overwrite 的 label 本身就是路径
+      default:
+        return hit.label;
+    }
+  }),
+);
 const confirmLabel = computed(() => {
   if (confirmKind.value === "newFolder" || confirmKind.value === "newFile") return t("create");
   if (confirmKind.value === "rename") return t("save");
@@ -292,7 +339,9 @@ const sortedEntries = computed(() => sortEntries(entries.value, sort.value));
 // 当前目录文件名过滤（tiny-rdm 对标缺口#7）：仅影响展示，不影响选择/删除语义。
 const searchQuery = ref("");
 const filteredEntries = computed(() => filterEntries(sortedEntries.value, searchQuery.value));
-const rightSorted = computed(() => sortEntries(rightEntries.value, sort.value));
+// P2-12：右栏排序状态独立（双栏各自连接，排序互不联动；左栏排序仍持久化）。
+const rightSort = ref<SortState>(prefs.sort);
+const rightSorted = computed(() => sortEntries(rightEntries.value, rightSort.value));
 // 右栏同款过滤（双栏对称性修复）：与左栏共用 filterEntries 语义。
 const rightSearchQuery = ref("");
 const filteredRightEntries = computed(() => filterEntries(rightSorted.value, rightSearchQuery.value));
@@ -344,20 +393,35 @@ function showNotice(message: string) {
   noticeTimer = window.setTimeout(() => (notice.value = ""), 4000);
 }
 
-function showError(cause: unknown) {
+function showError(cause: unknown, side: PaneSide | "global" = "global") {
   const message = errorMessage(cause);
+  errorSide.value = side;
   if (isMethodMissing(cause)) {
     const method = cause instanceof Error && "method" in cause ? String((cause as { method?: string }).method) : "";
     error.value = t("featureMissing", { method });
+    errorDetail.value = message;
     return;
   }
-  error.value = t("operationFailed", { error: message });
+  // P2-1：已知错误类别映射七语文案；未知错误原文透传（横幅 title 保留原文）。
+  error.value = t("operationFailed", { error: friendlyError(message, t) });
+  errorDetail.value = message;
 }
 
-/** 错误横幅上的重试（④ UI 三态：错误可恢复）。 */
+/** 错误横幅上的重试（④ UI 三态：错误可恢复）。P2-4：按出错栏位重放——
+ * 左/右栏失败只重载该栏，全局错误（操作类）两栏都重载。 */
 async function retryAfterError() {
   error.value = "";
-  await loadDirectory().catch(() => undefined);
+  const side = errorSide.value;
+  try {
+    if (side === "right") await loadRightDirectory();
+    else if (side === "left") await loadDirectory();
+    else {
+      await loadDirectory();
+      if (dualPane.value) await loadRightDirectory();
+    }
+  } catch {
+    /* banner already shows the error */
+  }
 }
 
 // ---- host bridge ---------------------------------------------------------
@@ -369,12 +433,20 @@ async function waitForHostApi(timeoutMs = 8000) {
   return window.dbxPlugin;
 }
 
-function applyAppearance(root: HTMLElement, appearance: { colors?: Partial<Record<string, string>>; colorScheme?: string }) {
-  const colors = appearance.colors ?? {};
-  for (const [key, value] of Object.entries(colors)) {
-    if (typeof value === "string") root.style.setProperty(`--${key.replace(/([A-Z])/g, "-$1").toLowerCase()}`, value);
+// 响应式外观：宿主令牌/规范色板解析结果，供 CodeMirror 编辑器等
+// 组件消费（与 ssh sftp 编辑器同方案，ssh/lib/appearance 对齐）。
+const appearance = ref(resolveAppearance());
+
+function applyAppearance(root: HTMLElement, next: DbxPluginAppearanceInput | null) {
+  const resolved = resolveAppearance(next);
+  appearance.value = resolved;
+  for (const [key, value] of Object.entries(resolved.colors)) {
+    root.style.setProperty(`--${key.replace(/([A-Z])/g, "-$1").toLowerCase()}`, value);
   }
-  if (appearance.colorScheme) root.dataset.theme = appearance.colorScheme;
+  if (next?.colorScheme) root.dataset.theme = next.colorScheme;
+  // 弹层背景按 DBX --popover 规范值（与 ldap/kafka/ssh 一致），Host API 1.0
+  // 无 --color-popover 令牌时兜底；真实宿主由主题令牌桥直接下发。
+  root.style.setProperty("--popover", DBX_POPOVER[resolved.colorScheme]);
 }
 
 function handleEvent(event: { method: string; params: Record<string, unknown> }) {
@@ -385,6 +457,7 @@ function handleEvent(event: { method: string; params: Record<string, unknown> })
       awaitingRefresh.delete(job.jobId);
       void loadDirectory().catch(() => undefined);
       if (dualPane.value) void loadRightDirectory().catch(() => undefined);
+      refreshAuditPanel();
     }
   }
 }
@@ -466,8 +539,22 @@ function releaseFrames(channel: string) {
 async function fetchListing(target: string, explicitConnectionId?: string) {
   const params: Record<string, unknown> = { path: target };
   if (explicitConnectionId) params.connectionId = explicitConnectionId;
-  const result = await call<{ entries: FileEntry[] }>("files/list", params);
-  return normalizeEntries(result.entries ?? []);
+  // 连接状态 pill：任一非本地栏的 files/list 都反映存储连接健康度（本地
+  // __local__ 恒可用，不代表连接）；主连接 id 在部分宿主/mock 的 context
+  // 里缺失，无法按 id 精确归因，按"非本地"判定。
+  const hitsHost = explicitConnectionId !== LOCAL_CONNECTION_ID;
+  if (hitsHost) connState.value = "connecting";
+  try {
+    const result = await call<{ entries: FileEntry[] }>("files/list", params);
+    if (hitsHost) connState.value = "connected";
+    return normalizeEntries(result.entries ?? []);
+  } catch (cause) {
+    // P2-3：pill 与单次业务失败解耦——仅网络/传输层失败置「已断开」；业务错误
+    // （NotFound、权限、参数类）说明 sidecar 应答了连接，置「已连接」而非断开，
+    // 也避免失败期间停留在「连接中」抖动。
+    if (hitsHost) connState.value = isTransportFailure(errorMessage(cause)) ? "disconnected" : "connected";
+    throw cause;
+  }
 }
 
 async function loadDirectory(target?: string) {
@@ -484,7 +571,7 @@ async function loadDirectory(target?: string) {
     // 了不切 listPaged 的 bench 依据）。
     if (isLargeDirectory(entries.value.length)) showNotice(t("largeDirectory", { count: entries.value.length }));
   } catch (cause) {
-    showError(cause);
+    showError(cause, "left");
     throw cause;
   } finally {
     loading.value = false;
@@ -501,7 +588,7 @@ async function loadRightDirectory(target?: string) {
     rightActivePath.value = "";
     if (isLargeDirectory(rightEntries.value.length)) showNotice(t("largeDirectory", { count: rightEntries.value.length }));
   } catch (cause) {
-    showError(cause);
+    showError(cause, "right");
     throw cause;
   } finally {
     rightLoading.value = false;
@@ -547,8 +634,9 @@ async function openEntry(entry: FileEntry, side: PaneSide = "left") {
   openPreview(entry.path, side);
 }
 
-function toggleSort(column: SortColumn) {
-  sort.value = toggleSortState(sort.value, column);
+function toggleSort(side: PaneSide, column: SortColumn) {
+  if (side === "right") rightSort.value = toggleSortState(rightSort.value, column);
+  else sort.value = toggleSortState(sort.value, column);
 }
 
 async function loadCapabilities() {
@@ -584,6 +672,21 @@ async function onLeftConnectionChange() {
 }
 
 // ---- dialogs ---------------------------------------------------------------
+
+/** P2-10 重名预检：true=已存在；false=确认不存在；undefined=无法判定（放行给后端）。 */
+async function pathExists(side: PaneSide, target: string): Promise<boolean | undefined> {
+  try {
+    await callFor(side, "files/stat", { path: target });
+    return true;
+  } catch (cause) {
+    return isNotFoundMessage(errorMessage(cause)) ? false : undefined;
+  }
+}
+
+/** 重名预检失败：横幅提示 + 弹层保持打开（用户可直接改名重提）。 */
+function rejectDuplicate(name: string) {
+  error.value = t("nameExists", { name });
+}
 
 function openConfirm(kind: ConfirmKind, options: {
   title: string;
@@ -715,6 +818,52 @@ function startCompress(targets: FileEntry[], side: PaneSide) {
   });
 }
 
+// ---- 批量操作（P2-7）：并发分批 + 进度落传输面板 --------------------------------
+// 此前批量删除为串行逐条 RPC（1 万项 = 1 万次 await），弹层只有 busy 态、
+// 无整体进度。这里以固定并发执行，并把进度写入传输面板（本地伪 job：
+// filesDone/filesTotal 驱动计数与百分比，终态 completed/failed）。
+
+const BATCH_CONCURRENCY = 8;
+let batchSeq = 0;
+
+async function runBatch(kind: TransferKind, remotePath: string, count: number, task: (index: number) => Promise<void>): Promise<void> {
+  if (count <= 0) return;
+  const jobId = `local-batch-${++batchSeq}`;
+  registerJob({
+    jobId,
+    connectionId: connectionId.value,
+    kind,
+    remotePath,
+    state: "running",
+    size: count,
+    transferred: 0,
+    filesDone: 0,
+    filesTotal: count,
+    updatedAt: Date.now(),
+  });
+  let done = 0;
+  let cursor = 0;
+  let firstError: unknown;
+  const workers = Array.from({ length: Math.min(BATCH_CONCURRENCY, count) }, async () => {
+    while (cursor < count) {
+      const index = cursor++;
+      try {
+        await task(index);
+      } catch (cause) {
+        firstError ??= cause;
+      }
+      done += 1;
+      tracker.onProgress({ jobId, kind, state: "running", transferred: done, size: count, filesDone: done, filesTotal: count });
+    }
+  });
+  await Promise.all(workers);
+  if (firstError) {
+    tracker.onProgress({ jobId, kind, state: "failed", error: errorMessage(firstError), transferred: done, size: count, filesDone: done, filesTotal: count });
+    throw firstError;
+  }
+  tracker.onProgress({ jobId, kind, state: "completed", transferred: count, size: count, filesDone: count, filesTotal: count });
+}
+
 async function onConfirm() {
   if (!confirmKind.value) return;
   confirmBusy.value = true;
@@ -727,14 +876,19 @@ async function onConfirm() {
       case "newFolder": {
         const name = confirmDraft.value.trim();
         if (!name) return;
-        await callFor(side, "files/mkdir", { path: joinPath(paneDirPath(side), name) });
+        const fullPath = joinPath(paneDirPath(side), name);
+        // P2-10：提交前重名预检，命中即提示且弹层保持打开。
+        if ((await pathExists(side, fullPath)) === true) return rejectDuplicate(name);
+        await callFor(side, "files/mkdir", { path: fullPath });
         showNotice(t("folderCreated"));
         break;
       }
       case "newFile": {
         const name = confirmDraft.value.trim();
         if (!name) return;
-        await callFor(side, "files/write", { path: joinPath(paneDirPath(side), name), dataBase64: "" });
+        const fullPath = joinPath(paneDirPath(side), name);
+        if ((await pathExists(side, fullPath)) === true) return rejectDuplicate(name);
+        await callFor(side, "files/write", { path: fullPath, dataBase64: "" });
         showNotice(t("fileCreated"));
         break;
       }
@@ -742,16 +896,18 @@ async function onConfirm() {
         const entry = confirmTarget.value.entry;
         const name = confirmDraft.value.trim();
         if (!entry || !name || name === entry.name) return;
+        const newPath = joinPath(parentPath(entry.path), name);
+        if ((await pathExists(side, newPath)) === true) return rejectDuplicate(name);
         const result = await callFor<{ transport?: string; jobId?: string | null }>(side, "files/rename", {
           path: entry.path,
-          newPath: joinPath(parentPath(entry.path), name),
+          newPath,
         });
         if (result.transport === "job" && result.jobId) {
           // 目录 rename 降级（P-FILES ②）：等终态再刷新。
-          trackSidecarJob(result.jobId, "rename", `${entry.path} → ${joinPath(parentPath(entry.path), name)}`, {
+          trackSidecarJob(result.jobId, "rename", `${entry.path} → ${newPath}`, {
             method: "files/rename",
             side,
-            params: { path: entry.path, newPath: joinPath(parentPath(entry.path), name) },
+            params: { path: entry.path, newPath },
           });
           jobStarted = true;
         }
@@ -784,10 +940,12 @@ async function onConfirm() {
       }
       case "delete": {
         const targets = confirmTarget.value.targets ?? [];
-        for (const target of targets) {
+        // P2-7：批量删除并发分批执行，进度实时落传输面板（单项目为 1 批同语义）。
+        await runBatch("delete", paneDirPath(side), targets.length, async (index) => {
+          const target = targets[index];
           if (target.kind === "directory") await callFor(side, "files/purge", { path: target.path });
           else await callFor(side, "files/delete", { path: target.path });
-        }
+        });
         showNotice(t("deleted"));
         break;
       }
@@ -854,6 +1012,7 @@ async function onConfirm() {
       }
     }
     closeConfirm();
+    refreshAuditPanel();
     if (!jobStarted) {
       await loadDirectory().catch(() => undefined);
       if (side === "right" && dualPane.value) await loadRightDirectory().catch(() => undefined);
@@ -937,19 +1096,33 @@ function writeU64(bytes: Uint8Array, value: number) {
   new DataView(bytes.buffer).setBigUint64(0, BigInt(value), false);
 }
 
+/** 上传目标（P1-5）：上传=传向远端。双栏固定右栏（远端目标面），单栏为当前连接当前目录。 */
+function uploadTarget(): UploadTarget {
+  return resolveUploadTarget({
+    dualPane: dualPane.value,
+    leftPath: path.value,
+    rightPath: rightPath.value,
+    leftConnectionId: sideConnectionId("left"),
+    rightConnectionId: sideConnectionId("right"),
+  });
+}
+
 async function uploadSource(name: string, size: number, readChunk: (offset: number, length: number) => Promise<Uint8Array>) {
-  const remotePath = joinPath(path.value, name);
+  // P1-5 上传方向语义：上传=传向远端（对标 FileZilla/tiny-rdm）。双栏时固定
+  // 落到目标栏（右栏连接面恒为远端，不含本地 __local__）；单栏时落到当前
+  // 连接的当前目录（原行为）。不再固定写左栏——双栏默认左栏是本地面板，
+  // 把「上传」写进本地盘与直觉相反。
+  const target = uploadTarget();
+  const remotePath = joinPath(target.path, name);
   const startParams: Record<string, unknown> = { remotePath, size };
-  // 上传目标固定为左栏当前目录（双栏时左栏可为本地 __local__）。
-  const leftConnection = sideConnectionId("left");
-  if (leftConnection) startParams.connectionId = leftConnection;
+  if (target.connectionId) startParams.connectionId = target.connectionId;
   const start = await call<{ taskId: string; chunkSize?: number }>("files/upload/start", startParams);
   const taskId = start.taskId;
   const chunkSize = start.chunkSize && start.chunkSize > 0 ? start.chunkSize : CHUNK_SIZE;
   registerJob({
     jobId: taskId,
     taskId,
-    connectionId: connectionId.value,
+    connectionId: target.connectionId ?? connectionId.value,
     kind: "upload",
     remotePath,
     state: "running",
@@ -979,6 +1152,15 @@ async function uploadSource(name: string, size: number, readChunk: (offset: numb
   }
 }
 
+/** 上传后刷新目标栏并按目标路径提示（P1-5）：双栏刷新右栏，单栏刷新左栏。 */
+async function afterUpload(count: number) {
+  const target = uploadTarget();
+  if (dualPane.value) await loadRightDirectory().catch(() => undefined);
+  else await loadDirectory().catch(() => undefined);
+  refreshAuditPanel();
+  if (count) showNotice(t("uploaded", { count, path: target.path }));
+}
+
 async function uploadLocalFiles(files: readonly File[]) {
   for (const file of files) {
     try {
@@ -989,8 +1171,7 @@ async function uploadLocalFiles(files: readonly File[]) {
       showError(cause);
     }
   }
-  await loadDirectory().catch(() => undefined);
-  if (files.length) showNotice(t("uploaded", { count: files.length }));
+  await afterUpload(files.length);
 }
 
 async function uploadHostFiles(files: Array<{ handleId: string; name: string; size: number }>) {
@@ -1008,8 +1189,7 @@ async function uploadHostFiles(files: Array<{ handleId: string; name: string; si
       await fileTransfer.cancel(file.handleId).catch(() => undefined);
     }
   }
-  await loadDirectory().catch(() => undefined);
-  if (files.length) showNotice(t("uploaded", { count: files.length }));
+  await afterUpload(files.length);
 }
 
 async function onUpload(files: File[] | null) {
@@ -1096,6 +1276,11 @@ function saveBrowserDownload(chunks: Uint8Array[], fileName: string) {
 
 async function downloadSelection() {
   const files = sortedEntries.value.filter((entry) => selection.value.includes(entry.path) && entry.kind === "file");
+  // P2-6：过滤后为空（如只选了目录）不再静默，给出明确提示。
+  if (!files.length) {
+    showNotice(t("downloadNoneSelected"));
+    return;
+  }
   for (const entry of files) {
     await downloadEntry(entry);
   }
@@ -1187,8 +1372,12 @@ function menuAction(action: MenuAction) {
     case "downloadSelected":
       void (async () => {
         const files = pickSideEntries(side, menuSelection).filter((item) => item.kind === "file");
+        if (!files.length) {
+          showNotice(t("downloadNoneSelected"));
+          return;
+        }
         for (const item of files) await downloadEntry(item, side);
-        if (files.length) showNotice(t("downloaded", { name: files[0].name }));
+        showNotice(t("downloaded", { name: files[0].name }));
       })();
       break;
     case "copySelected":
@@ -1249,6 +1438,21 @@ function sideMenuAction(action: "open" | "openOther" | "copyPath" | "copyName") 
 }
 
 // ---- lifecycle -----------------------------------------------------------------
+
+// P1-2 窄视口（<900px）策略：进入窄视口时默认一次性收起 dock 与双栏——
+// 720px 下「双栏 + dock + 双侧栏」会把左栏主区挤到 ~134px（路径栏/搜索框
+// 不可用且被 overflow:hidden 静默裁切）。收起后单栏 + 侧栏仍有 ~570px 主区。
+// 只做默认收起：用户随后仍可手动重开（窄窗口下自行取舍），跨回宽视口不改
+// 持久化偏好。
+let viewportWasNarrow = false;
+function syncViewportLayout() {
+  const narrow = isNarrowViewport(window.innerWidth);
+  if (narrow === viewportWasNarrow) return;
+  viewportWasNarrow = narrow;
+  if (!narrow) return;
+  if (dockOpen.value) dockOpen.value = false;
+  if (dualPane.value) dualPane.value = false;
+}
 
 async function initialize() {
   const api = await waitForHostApi();
@@ -1323,6 +1527,8 @@ watch(dockTab, (tab) => {
 onMounted(() => {
   document.addEventListener("click", onContextClick);
   document.addEventListener("keydown", onDocumentKeydown);
+  window.addEventListener("resize", syncViewportLayout);
+  syncViewportLayout();
   void initialize().catch((cause) => {
     error.value = t("operationFailed", { error: errorMessage(cause) });
   });
@@ -1331,6 +1537,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener("click", onContextClick);
   document.removeEventListener("keydown", onDocumentKeydown);
+  window.removeEventListener("resize", syncViewportLayout);
   window.clearTimeout(noticeTimer);
   window.clearInterval(pollTimer);
   unsubscribeEvent?.();
@@ -1344,7 +1551,7 @@ onBeforeUnmount(() => {
 <template>
   <main class="wb-workbench">
     <div v-if="error" class="wb-error-banner">
-      <span>{{ error }}</span>
+      <span :title="errorDetail">{{ error }}</span>
       <button class="wb-icon-button wb-icon-neutral" :title="t('retry')" @click="retryAfterError">↻</button>
       <button class="wb-icon-button wb-icon-neutral" @click="error = ''">✕</button>
     </div>
@@ -1357,6 +1564,10 @@ onBeforeUnmount(() => {
       :dock-open="dockOpen"
       :dock-tab="dockTab"
       :dual-pane="dualPane"
+      :connection-name="connectionLabel"
+      :connection-color="connection.color"
+      :read-only="!canWrite"
+      :conn-state="connState"
       :t="t"
       @new-folder="startNewFolder"
       @upload="onUpload"
@@ -1425,7 +1636,7 @@ onBeforeUnmount(() => {
               @open="(entry) => openEntry(entry, 'left')"
               @contextmenu="(payload) => (contextMenu = { ...payload, side: 'left', selection: [...selection] })"
               @blank-context="openBlankMenu('left', $event)"
-              @sort="toggleSort"
+              @sort="(column) => toggleSort('left', column)"
             />
           </div>
         </div>
@@ -1450,8 +1661,9 @@ onBeforeUnmount(() => {
         @dragleave="dragOverSide = dragOverSide === 'right' ? null : dragOverSide"
         @drop.prevent="onDropTo('right', $event)"
       >
-        <div class="wb-pane-topbar">
-          <select v-if="targetConnections.length" v-model="targetConnectionId" class="wb-target-connection" :title="t('targetConnection')" @change="loadRightDirectory(rightPath)">
+        <!-- P2-11：无可切换连接时整个 topbar 不渲染（v-if 提到容器级），不再留 28px 空条 -->
+        <div v-if="targetConnections.length" class="wb-pane-topbar">
+          <select v-model="targetConnectionId" class="wb-target-connection" :title="t('targetConnection')" @change="loadRightDirectory(rightPath)">
             <option value="">{{ t("sameConnection") }}</option>
             <option v-for="item in targetConnections" :key="item.id" :value="item.id">{{ item.name }}</option>
           </select>
@@ -1497,7 +1709,7 @@ onBeforeUnmount(() => {
               :entries="filteredRightEntries"
               :selection="rightSelection"
               :active-path="rightActivePath"
-              :sort="sort"
+              :sort="rightSort"
               :loading="rightLoading"
               :t="t"
               @update:selection="rightSelection = $event"
@@ -1505,7 +1717,7 @@ onBeforeUnmount(() => {
               @open="(entry) => openEntry(entry, 'right')"
               @contextmenu="(payload) => (contextMenu = { ...payload, side: 'right', selection: [...rightSelection] })"
               @blank-context="openBlankMenu('right', $event)"
-              @sort="toggleSort"
+              @sort="(column) => toggleSort('right', column)"
             />
           </div>
         </div>
@@ -1541,6 +1753,7 @@ onBeforeUnmount(() => {
       <PreviewPane
         :path="previewPath"
         :can-write="canWrite"
+        :appearance="appearance"
         :connection-id="previewConnectionId"
         :t="t"
         @close="previewPath = null"
@@ -1550,7 +1763,7 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 统一右键菜单（A-FILES ④b）：源栏/目标栏共用；多选时切批量动作面 -->
-    <div v-if="contextMenu" class="wb-context-menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @click.stop>
+    <div v-if="contextMenu" ref="menuEl" class="wb-context-menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @click.stop>
       <template v-if="contextMenu.selection.length > 1">
         <button @click="menuAction('open')">{{ t("openDirectory") }}</button>
         <button @click="menuAction('downloadSelected')">{{ t("downloadSelected") }}</button>
@@ -1583,7 +1796,7 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 空白区右键菜单（P-FILES）：拦截浏览器默认菜单，给出新建/刷新动作 -->
-    <div v-if="blankMenu" class="wb-context-menu" :style="{ left: `${blankMenu.x}px`, top: `${blankMenu.y}px` }" @click.stop>
+    <div v-if="blankMenu" ref="menuEl" class="wb-context-menu" :style="{ left: `${blankMenu.x}px`, top: `${blankMenu.y}px` }" @click.stop>
       <button :disabled="!canWrite" @click="blankMenuAction('newFolder')">{{ t("newFolder") }}</button>
       <button :disabled="!canWrite" @click="blankMenuAction('newFile')">{{ t("newFileTitle") }}</button>
       <hr />
@@ -1591,7 +1804,7 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 侧栏右键菜单（P-FILES）：目录树/快捷目录行 → 打开 / 在另一栏打开 / 复制 -->
-    <div v-if="sideMenu" class="wb-context-menu" :style="{ left: `${sideMenu.x}px`, top: `${sideMenu.y}px` }" @click.stop>
+    <div v-if="sideMenu" ref="menuEl" class="wb-context-menu" :style="{ left: `${sideMenu.x}px`, top: `${sideMenu.y}px` }" @click.stop>
       <button @click="sideMenuAction('open')">{{ t("openDirectory") }}</button>
       <button v-if="dualPane" @click="sideMenuAction('openOther')">{{ sideMenu.side === "left" ? t("openInRight") : t("openInLeft") }}</button>
       <hr />
@@ -1604,7 +1817,7 @@ onBeforeUnmount(() => {
       :title="confirmTitle"
       :body="confirmBody"
       :danger="confirmDanger"
-      :danger-list="confirmHits.map((hit) => hit.label)"
+      :danger-list="confirmDangerList"
       :confirm-label="confirmLabel"
       :cancel-label="t('cancel')"
       :busy="confirmBusy"

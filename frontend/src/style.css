@@ -40,12 +40,19 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px
 .wb-notice { display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--primary) 10%, var(--background)); color: var(--muted-foreground); }
 
 /* ---- toolbar ----------------------------------------------------------- */
-.wb-toolbar { position: relative; z-index: 5; display: flex; height: 36px; min-height: 36px; align-items: center; justify-content: flex-end; gap: 8px; border-bottom: 1px solid var(--border); padding: 0 8px; background: color-mix(in srgb, var(--background) 92%, transparent); }
+.wb-toolbar { position: relative; z-index: 5; display: flex; height: 36px; min-height: 36px; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--border); padding: 0 8px; background: color-mix(in srgb, var(--background) 92%, transparent); }
 .wb-identity, .wb-toolbar-actions, .wb-toolbar-button { display: flex; align-items: center; }
 .wb-identity { min-width: 0; gap: 6px; }
 .wb-identity strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
 .wb-connection-color { width: 4px; height: 16px; flex: 0 0 4px; border-radius: 999px; }
 .wb-readonly-badge { border: 1px solid var(--border); border-radius: 999px; padding: 1px 6px; color: var(--muted-foreground); font-size: 10px; }
+/* 连接状态 pill（对标 ssh session-pill）：主连接最近一次目录列表成败。 */
+.wb-session-pill { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; color: var(--muted-foreground); font-size: 10px; font-weight: 500; white-space: nowrap; }
+.wb-session-dot { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--muted-foreground); }
+.wb-session-pill.session-connected .wb-session-dot { background: var(--success); }
+.wb-session-pill.session-connecting .wb-session-dot { background: var(--warning); }
+.wb-session-pill.session-disconnected { color: var(--destructive); border-color: color-mix(in srgb, var(--destructive) 45%, var(--border)); }
+.wb-session-pill.session-disconnected .wb-session-dot { background: var(--destructive); }
 .wb-toolbar-actions { min-width: 0; justify-content: flex-end; gap: 2px; }
 .wb-icon-button, .wb-toolbar-button, .wb-link-button, .wb-context-menu button, .wb-dialog button, .wb-path-toolbar button { border: 0; background: transparent; cursor: pointer; }
 .wb-icon-button, .wb-toolbar-button { height: 24px; border-radius: 4px; }
@@ -62,8 +69,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px
 .wb-icon-violet { color: #7c3aed; }
 .wb-icon-blue { color: #2563eb; }
 .wb-icon-danger { color: var(--destructive); }
-:root[data-theme="dark"] .wb-icon-emerald { color: #6ee7b7; }
-:root[data-theme="dark"] .wb-icon-amber { color: #fcd34d; }
+:root[data-theme="dark"] .wb-icon-emerald, :root[data-dbx-theme="dark"] .wb-icon-emerald { color: #6ee7b7; }
+:root[data-theme="dark"] .wb-icon-amber, :root[data-dbx-theme="dark"] .wb-icon-amber { color: #fcd34d; }
+:root[data-theme="dark"] .wb-icon-cyan, :root[data-dbx-theme="dark"] .wb-icon-cyan { color: #67e8f9; }
+:root[data-theme="dark"] .wb-icon-violet, :root[data-dbx-theme="dark"] .wb-icon-violet { color: #c4b5fd; }
+:root[data-theme="dark"] .wb-icon-blue, :root[data-dbx-theme="dark"] .wb-icon-blue { color: #93c5fd; }
 
 /* ---- path bar ----------------------------------------------------------- */
 .wb-path-toolbar { display: flex; flex: 1 1 auto; min-width: 0; align-items: center; gap: 4px; border: 1px solid var(--border); border-radius: var(--radius); padding: 1px 6px; background: color-mix(in srgb, var(--background) 60%, var(--muted)); }
@@ -101,6 +111,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px
 .wb-file-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wb-file-name svg { width: 14px; height: 14px; flex: 0 0 14px; stroke-width: 1.7; color: var(--muted-foreground); }
 .wb-file-name svg.wb-icon-dir { color: #0891b2; }
+:root[data-theme="dark"] .wb-file-name svg.wb-icon-dir, :root[data-dbx-theme="dark"] .wb-file-name svg.wb-icon-dir { color: #67e8f9; }
 .wb-file-check { display: inline-grid; place-items: center; width: 14px; height: 14px; }
 .wb-file-check input { width: 13px; height: 13px; margin: 0; accent-color: var(--primary); cursor: pointer; }
 .wb-file-empty { padding: 28px 0; text-align: center; color: var(--muted-foreground); }
@@ -126,11 +137,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px
 .wb-transfer-meta { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 3px; color: var(--muted-foreground); font-size: 11px; }
 .wb-progress { height: 4px; border-radius: 999px; background: var(--muted); overflow: hidden; margin-top: 5px; }
 .wb-progress-bar { height: 100%; border-radius: 999px; background: var(--primary); transition: width 160ms ease; }
-.wb-progress-bar.is-completed { background: #10b981; }
+.wb-progress-bar.is-completed { background: var(--success); }
 .wb-progress-bar.is-failed, .wb-progress-bar.is-canceled { background: var(--destructive); }
 .wb-transfer-state { border-radius: 999px; padding: 0 6px; font-size: 10px; border: 1px solid var(--border); }
 .wb-transfer-state.is-running { color: var(--primary); border-color: color-mix(in srgb, var(--primary) 55%, transparent); }
-.wb-transfer-state.is-completed { color: #10b981; border-color: color-mix(in srgb, #10b981 55%, transparent); }
+.wb-transfer-state.is-completed { color: var(--success); border-color: color-mix(in srgb, var(--success) 55%, transparent); }
 .wb-transfer-state.is-failed, .wb-transfer-state.is-canceled { color: var(--destructive); border-color: color-mix(in srgb, var(--destructive) 55%, transparent); }
 .wb-transfer-error { margin-top: 4px; color: var(--destructive); font-size: 11px; overflow-wrap: anywhere; }
 .wb-transfer-speed { color: var(--primary); font-variant-numeric: tabular-nums; }
@@ -154,41 +165,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px
 .wb-preview-body pre.wb-hex { white-space: pre; overflow-x: auto; line-height: 1.5; }
 .wb-preview-body img { max-width: 100%; max-height: 100%; object-fit: contain; }
 .wb-preview-body .wb-preview-notice { padding: 20px; text-align: center; color: var(--muted-foreground); }
-.wb-edit-area { display: block; width: 100%; height: 100%; min-height: 200px; border: 0; resize: none; background: color-mix(in srgb, var(--background) 70%, var(--muted)); color: var(--foreground); padding: 10px 12px; font-size: 12px; outline: none; }
+/* 文本预览/编辑器（CodeMirror，与 ssh sftp 面板同方案）：组件自带主题，
+   这里只管布局填充。 */
+.preview-editor { min-height: 0; flex: 1; overflow: hidden; }
 
-/* ---- 代码高亮（highlight.js，token 色跟随宿主明暗 data-theme） -------- */
-:root {
-  --hl-comment: #7f848e;
-  --hl-keyword: #c678dd;
-  --hl-string: #98c379;
-  --hl-number: #d19a66;
-  --hl-function: #61afef;
-  --hl-type: #e5c07b;
-  --hl-variable: #e06c75;
-}
-:root[data-theme="light"] {
-  --hl-comment: #a0a1a7;
-  --hl-keyword: #a626a4;
-  --hl-string: #50a14f;
-  --hl-number: #986801;
-  --hl-function: #4078f2;
-  --hl-type: #c18401;
-  --hl-variable: #e45649;
-}
-.wb-code { line-height: 1.55; }
-.wb-code .hljs-comment, .wb-code .hljs-quote { color: var(--hl-comment); font-style: italic; }
-.wb-code .hljs-keyword, .wb-code .hljs-selector-tag, .wb-code .hljs-literal, .wb-code .hljs-section, .wb-code .hljs-doctag, .wb-code .hljs-name, .wb-code .hljs-strong { color: var(--hl-keyword); }
-.wb-code .hljs-string, .wb-code .hljs-regexp, .wb-code .hljs-addition { color: var(--hl-string); }
-.wb-code .hljs-number, .wb-code .hljs-symbol, .wb-code .hljs-bullet, .wb-code .hljs-meta, .wb-code .hljs-link { color: var(--hl-number); }
-.wb-code .hljs-title.function_, .wb-code .hljs-attr, .wb-code .hljs-attribute, .wb-code .hljs-variable, .wb-code .hljs-template-variable, .wb-code .hljs-selector-attr, .wb-code .hljs-selector-class, .wb-code .hljs-selector-id { color: var(--hl-function); }
-.wb-code .hljs-title.class_, .wb-code .hljs-type, .wb-code .hljs-built_in, .wb-code .hljs-class .hljs-title { color: var(--hl-type); }
-.wb-code .hljs-deletion { color: var(--hl-variable); }
-.wb-code .hljs-emphasis { font-style: italic; }
 .wb-preview-skeleton { display: flex; flex-direction: column; gap: 10px; padding: 14px; }
 .wb-preview-skeleton .wb-skeleton { height: 12px; }
 
 /* ---- dialogs ----------------------------------------------------------------------- */
-.wb-dialog-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: color-mix(in srgb, var(--background) 70%, transparent); }
+.wb-dialog-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: var(--overlay); }
 .wb-dialog { width: min(460px, calc(100vw - 40px)); max-height: min(560px, calc(100vh - 40px)); display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 8px; background: var(--popover); box-shadow: 0 16px 40px rgb(0 0 0 / 45%); }
 .wb-dialog.is-danger { border-color: color-mix(in srgb, var(--destructive) 55%, transparent); }
 .wb-dialog header { display: flex; align-items: center; gap: 8px; padding: 10px 14px 4px; font-weight: 600; }
@@ -263,8 +248,20 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px
 .wb-breadcrumbs button.is-current { color: var(--foreground); font-weight: 600; }
 
 /* 文件概览弹窗：遮罩 + 居中面板（不再占用右栏 Tab）。 */
-.wb-preview-overlay { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 36px 44px; background: rgb(0 0 0 / 45%); }
+.wb-preview-overlay { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 36px 44px; background: var(--overlay); }
 .wb-preview-overlay .wb-preview { flex: 0 1 auto; display: flex; flex-direction: column; width: min(860px, 100%); max-height: 100%; border: 1px solid var(--border); border-radius: var(--radius); background: var(--background); box-shadow: 0 18px 48px rgb(0 0 0 / 45%); }
+/* P1-4：容器承载 tabindex=-1 的程序化聚焦，不画焦点框（焦点可见性由弹层本身保证）。 */
+.wb-preview:focus { outline: none; }
+
+/* ---- 窄视口（P1-2，<900px 半屏/分屏） ----------------------------------------
+   配合 App 在跨入窄视口时默认收起 dock 与双栏：这里进一步收缩侧栏与过滤框，
+   并放宽双栏目标栏/收纳 dock 的 min-width，保证核心控件不被静默裁切。 */
+@media (max-width: 900px) {
+  .wb-side-panel { flex-basis: 112px; }
+  .wb-search-box { width: 112px; }
+  .wb-pane-target { min-width: 200px; }
+  .wb-dock { flex-basis: 240px; min-width: 200px; }
+}
 
 /* ---- skeleton（A-FILES ④d） -------------------------------------------------------- */
 .wb-skeleton { display: inline-block; height: 12px; border-radius: 4px; background: linear-gradient(90deg, var(--muted) 25%, color-mix(in srgb, var(--muted-foreground) 20%, var(--muted)) 50%, var(--muted) 75%); background-size: 200% 100%; animation: wb-shimmer 1.2s linear infinite; }
@@ -277,7 +274,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px
 .wb-archive {
   display: flex;
   flex-direction: column;
-  gap: var(--wb-space-2, 8px);
+  gap: 8px;
   min-height: 0;
 }
 .wb-archive-total {
@@ -294,12 +291,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px
 .wb-archive-entry {
   display: flex;
   align-items: center;
-  gap: var(--wb-space-2, 8px);
+  gap: 8px;
   padding: 2px 4px;
-  border-radius: var(--wb-radius-sm, 4px);
+  border-radius: 4px;
 }
 .wb-archive-entry:hover {
-  background: var(--wb-hover-bg, rgba(128, 128, 128, 0.12));
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
 }
 .wb-archive-kind {
   flex: none;
@@ -313,5 +310,5 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px
 .wb-archive-more {
   display: flex;
   justify-content: center;
-  padding: var(--wb-space-2, 8px) 0;
+  padding: 8px 0;
 }

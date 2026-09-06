@@ -28,7 +28,9 @@ const items = computed(() => {
 <template>
   <nav class="wb-breadcrumbs">
     <template v-for="(item, index) in items" :key="'collapsed' in item ? 'ellipsis' : item.path">
-      <span v-if="index" class="wb-crumb-sep">/</span>
+      <!-- 首段恒为根 crumb（自身渲染 "/"），其后第一段不再补分隔符，
+           否则视觉成 `//Users/demo`（P1-1）；折叠态同理跳过根后的省略号。 -->
+      <span v-if="index > 1" class="wb-crumb-sep">/</span>
       <button
         v-if="'collapsed' in item"
         type="button"

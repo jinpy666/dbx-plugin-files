@@ -527,3 +527,186 @@ sftp-native(russh 密码) 21。无 UI 文案改动，七语不涉及。
   暗色规范值，行为不变。
 - 验证：`vue-tsc` 0 错；`vitest run` 17 文件 110 用例全绿（含新增
   `themeSync.spec.ts` 薄 spec）；v0.1.31 发版。
+
+## 白色主题配色标准化（2026-09-05 第二轮）
+
+四插件联合审查白色主题配色错误，语义令牌与明暗分支在
+`shared/frontend/themeSync.ts` 单点收敛（详见该文件与 shared/frontend/README）。
+
+- files 本轮替换：进度条/传输徽章完成态（#10b981 → `--success`）、对话框与
+  预览遮罩（45%/70% 背景混色不一 → 统一 `--overlay`）、hljs 明暗分支双属性化
+  （`data-theme` + `data-dbx-theme`，收窄亮色宿主首绘窗口期）、目录图标
+  `.wb-icon-dir` 补暗色变体、`wb-icon-*` 暗色变体补齐 cyan/violet/blue 三色
+  （原仅 emerald/amber，与 ssh/kafka 不齐）、`applyAppearance` 补 `--popover`
+  透传（对齐 ldap/kafka 的 DBX 规范值，1.0 宿主兜底）。
+- 验证：`vue-tsc` 0 错；`vitest run` 17 文件 111 用例全绿（themeSync 薄 spec
+  增补语义令牌/遮罩/light 回退断言）。无新增文案，七语不受影响。
+
+## UI 交互专业化（2026-09-05 第三轮）
+
+浏览器 mock（?mock=1 &theme=light）逐项验证的交互与主题细节轮。
+
+- **文件列表键盘导航**（对标 tiny-rdm/FileZilla）：新增
+  `lib/listNav.ts` 纯函数状态机（方向键/Home/End、Shift 锚点扩选、
+  滚动跟随换算）+ `listNav.spec.ts`；`FileTable.vue` 列表容器
+  `tabindex=0` 接 keydown——↑↓ 移动、Shift+↑↓ 连续扩选、Enter 打开、
+  Space 切换勾选、Cmd/Ctrl+A 全选；鼠标单击重置扩选锚点，目录变化
+  重置导航态。真机验证：Desktop→Documents→Shift 扩到 Downloads、
+  Space 取消勾选、Meta+A 全选（footer 计数正确）、Enter 进入目录。
+- **右键菜单视口钳制**：行/空白区/侧栏三菜单互斥共用模板 ref，
+  渲染后 `nextTick` 量测 `getBoundingClientRect` 越界回移（8px 边距），
+  右键屏幕边缘不再溢出；验证右下角触发 fitsX/fitsY 均成立，Escape
+  关闭不受影响。
+- **亮色主题 `color-scheme` 修复**（shared 单点）：themeBridgeCss 的
+  scheme 规则只匹配 `data-dbx-theme`，Host API 1.0/mock 下宿主 SDK
+  不写该属性、只有 applyAppearance 的 `data-theme`，亮色宿主
+  `color-scheme` 仍为 dark → UA 表单控件（复选框/滚动条）按暗色渲染
+  成黑方块。改为双属性匹配；四插件 `themeSync.spec.ts` 断言同步。
+  mock 亮色截图复验 colorScheme=light、复选框正常浅色外观。
+- **归档列表配色去散装**：`.wb-archive-*` 的 `--wb-space-2` /
+  `--wb-radius-sm` / `--wb-hover-bg` 未定义变量回退（rgba(128,128,128)
+  硬编码）改为直接字面量 + 既有 `--accent` mix hover，与文件行 hover
+  一致。
+- 验证：`vue-tsc` 0 错；`vitest run` 18 文件 121 用例全绿（新增
+  listNav 8 用例）；kafka/ldap/ssh themeSync 薄 spec 各 4 用例全绿。
+  无新增文案，七语不受影响。
+
+## 编辑器对齐 ssh sftp + 连接状态指示（2026-09-05 第四轮）
+
+用户两项要求：左上角缺连接状态（类似 ssh）；编辑操作对齐 ssh sftp 面板方案。
+
+- **CodeMirror 6 编辑器**（与 ssh `TextPreview.vue` 同方案）：files 新增
+  `components/TextPreview.vue`（basicSetup + language-data 按文件名懒加载 +
+  `EditorView.theme` 消费宿主 appearance 色板，theme/editable 变更重建实例、
+  doc 跨代保留）；`PreviewPane.vue` 文本预览/编辑统一走 CodeMirror——只读态
+  即带语法高亮，编辑态 `editable=true` 同一实例，取消/保存经 `key` 重载
+  （取消即回滚草稿）；保存仍走 `files/write`（≤4MiB 门禁不变）。
+  `lib/highlight.ts/.spec`（highlight.js）与 `highlight.js` 依赖移除。
+- **appearance 单点解析**：新增 `lib/appearance.ts/.spec`（对齐
+  ssh/lib/appearance，去 xterm ANSI 调色板），`resolveAppearance` 补齐宿主
+  部分下发的缺失字段；`applyAppearance` 重写为解析→CSS 变量→`DBX_POPOVER`
+  规范值，并维护响应式 `appearance` ref 供编辑器消费（主题切换即时换肤）。
+- **顶栏连接状态 pill**（对标 ssh session-pill，files 三态无重连）：
+  `FileToolbar` 左侧新增 identity 区（连接色条 + 名称 + 只读徽章 + 状态
+  pill），`connState` 由 `fetchListing` 统一挂钩——非本地（≠__local__）栏的
+  files/list 成功→connected、失败→disconnected、发起→connecting；主连接 id
+  在部分宿主/mock context 缺失，不按 id 归因。i18n 七语补
+  `sessionStatus.connecting/connected/disconnected`（en/es/it/ja/pt-BR/
+  zh-CN/zh-TW 译法取自 ssh 同名键）。
+- 验证：`vue-tsc` 0 错；`vitest run` 18 文件 120 用例全绿（appearance 新增
+  5 例、highlight 4 例随模块移除）；浏览器 mock 亮色下 pill
+  connecting→connected 翻转、CodeMirror 渲染带 gutter。暗色/编辑流截图见
+  当轮会话记录。
+
+## UI 扫描第 1 轮 P1 修复（2026-09-06）
+
+扫描报告见 `docs/UI_SCAN_FINDINGS.zh-CN.md`（2026-09-06 基线走查，P0×0 / P1×5 / P2×14）。
+本轮修复 P1 全部 5 项 + 顺手修 P2 四项半，只动 `files/frontend`。
+
+- **P1-1 面包屑根段双斜杠**：`Breadcrumbs.vue` 分隔符 `index` → `index > 1`
+  （根 crumb 自身渲染 `/`，其后第一段不再补 sep；折叠态同样跳过根后的省略号）。
+- **P1-2 720px 窄视口静默挤压**：新增 `lib/responsive.ts`（<900px 判定）；
+  App 在跨入窄视口时默认一次性收起 dock 与双栏（用户可手动重开，不改
+  localStorage 偏好）；`style.css` ≤900px media query 收缩侧栏/过滤框并放宽
+  `.wb-pane-target`/`.wb-dock` min-width。720×900 复验：左栏主区 597px、
+  路径栏/搜索框/工具栏核心控件全部可达、无水平溢出、双击预览可用。
+- **P1-3 确认弹层焦点管理**：`ConfirmDialog.vue` 打开即聚焦（表单输入直落
+  并全选；无表单聚焦安全项取消钮）、Tab/Shift+Tab 弹层内 focus trap（焦点
+  落 BODY 也拉回）、关闭（确认/取消/Esc 共路）后焦点归还触发元素；
+  watch 带 `immediate` 覆盖挂载即 open 的场景。
+- **P1-4 预览/编辑焦点**：`PreviewPane.vue` 根容器 `tabindex="-1"` 挂载后
+  聚焦；`TextPreview.vue` 编辑实例创建完成即 `view.focus()`（权威时机，覆盖
+  语言包异步装载）并 expose `focus()`，PreviewPane 进入编辑态兜底调用。
+- **P1-5 上传方向语义（决策：上传=传向远端）**：双栏时右栏恒为远端连接面
+  （连接选项不含 `__local__`），上传目标固定为右栏当前目录；单栏保持当前
+  连接当前目录（原行为不变）。收口在纯函数 `lib/uploadTarget.ts`，上传后
+  刷新目标栏，通知文案带目标路径（`uploaded` 键七语补 `{path}` 占位）。
+  选此语义的理由：与 FileZilla/tiny-rdm「上传=本地→远端」心智一致、改动面
+  最小（不引入焦点侧跟踪状态）；若产品后续定「跟随焦点侧」，仅需改
+  `resolveUploadTarget` 单点。同时修 mock 夹具：`upload/start` 记录
+  connectionId、`finish` 按其落对应树并写入 slot.bytes 内容（P2-13③ 同
+  源收口），双栏本地上传「成功即消失」不再复现。
+- **P2 顺手修**：P2-2 危险列表 i18n（hit 增结构化 `path`/`count`，App 按 id
+  映射 `dangerPurgeRoot/dangerPurge/dangerRecursiveDelete/dangerBulkDelete`
+  七语新键）；P2-5 半项（审计时间戳走 `formatTime`，刷新钮/自动刷新遗留）；
+  P2-13⑤（mock.html 空 data URI icon，消 404 噪音）；P2-14（TransferPanel
+  `✕`/`🗑` 换 lucide X/Trash2）。
+- **新增/扩展测试**：`Breadcrumbs.spec.ts`（4）、`ConfirmDialog.spec.ts`（5）、
+  `TextPreview.spec.ts`（3）、`PreviewPane.spec.ts`（2）、`responsive.spec.ts`（2）、
+  `uploadTarget.spec.ts`（4），组件 spec 均带 `// @vitest-environment happy-dom`。
+  说明：happy-dom 程序化 focus 不派发 focus 事件，CodeMirror `.cm-focused`
+  类不翻转，spec 以 activeElement 判定焦点，`cm-focused` 由浏览器复验兜底。
+- **验证**：`pnpm typecheck` 0 错；`pnpm test` 24 文件 140 用例全绿；
+  playwright-core + 系统 Chrome（`channel:"chrome"`，装于 /tmp 不入项目依赖）
+  对 `mock.html` 复验 26/26 断言通过——P1-1（dark/light、双栏、深层折叠态）、
+  P1-2（720px 布局矩阵 + 预览）、P1-3（聚焦/陷阱/归还，zh + en-US、danger
+  弹层）、P1-4（预览容器 + CodeMirror 聚焦、720px 同验）、P1-5（落点右栏、
+  通知带路径、本地栏无残留）、P2 修复项；截图仅复验自用，收尾已删。
+- **遗留/待决策**：P1-5 语义如产品要求「跟随焦点/选中侧」需再确认；
+  P2-1（friendlyError 映射层）、P2-5 刷新钮、P2-13①②④（?ro=1 / copy 跨连接
+  路由 / archiveList 夹具）等未在本轮范围。
+
+## UI 扫描第 2 轮清理：P2 全量修复（2026-09-06）
+
+接上轮：P1 已闭环、P2 顺手修 4 项半，本轮把报告内其余 P2 全部 12 项修完，
+并定位修复「遗留未定论」的 Space 首按问题。只动 `files/frontend`。
+
+- **P2-1 friendlyError 映射层**：新增 `lib/friendlyError.ts`（对标 ldap
+  `friendlyLdapError` 结构）：not found / permission / exists / network 四类
+  正则 → i18n 七语新键 `errNotFound/errPermission/errExists/errNetwork`，未知
+  错误原文透传；App `showError` 收口，横幅主显友好文案、原文挂 `title` 悬停
+  （`errorDetail`）。mock 夹具补 `notfound` 路径注入轴。
+- **P2-3 pill 与单次失败解耦**：`fetchListing` 失败分支按
+  `isTransportFailure` 判定——网络/超时类才置 disconnected；业务错误（sidecar
+  有应答）置 connected，消除「已断开/连接中」抖动。
+- **P2-4 按栏重试**：App 新增 `errorSide`（left/right/global），
+  `retryAfterError` 按出错栏位重放；全局操作错误两栏都重载。
+- **P2-5 审计刷新**：`AuditPanel` 头部手动刷新钮（RefreshCw，loading 禁用 +
+  旋转）；App `onConfirm` 成功 / job 终态（handleEvent）/ `afterUpload` 三处
+  `refreshAuditPanel()`（dock 开在 audit 才触发）。
+- **P2-6 下载零反馈**：`downloadSelection` 与批量 `downloadSelected` 过滤后
+  为空提示 `downloadNoneSelected`（七语）。
+- **P2-7 批量删除进度**：新增 `runBatch`（并发 8 分批 + 本地伪 job
+  `TransferKind.delete`），进度经 `tracker.onProgress` 落传输面板
+  （filesDone/filesTotal 计数 + 百分比，终态 completed/failed）；未新增后端
+  批量方法（避免动协议），性能由并发兜底。`transferKind.delete` 七语新增。
+- **P2-8 任务标题防退化**：mock `runJob` job 记录补 `remotePath`（对齐
+  transfers.rs camelCase 契约）；`applyList` 缺失字段保留本地现值
+  （undefined 不覆盖）。transfers.spec 补 2 例。
+- **P2-9 目录树键盘可达**：`SideNavPanel` tree 容器 `tabindex="0"` +
+  `role="tree"`，↑↓ roving focus（已挂载行）、Enter/Space 打开目录、←/→
+  caret 展开/收起；`DirTree` 行 `tabindex="-1"`。
+- **P2-10 重名预检**：newFolder/newFile/rename 提交前 `files/stat` 预检
+  （存在→拦截；NotFound→放行；其他 stat 错误→放行给后端兜底），命中提示
+  `nameExists`（七语），弹层保持打开、草稿不丢。
+- **P2-11 右栏空 topbar**：`v-if` 提到容器级，无连接枚举时不渲染。
+- **P2-12 按栏独立排序**：新增 `rightSort`（初值沿用持久化偏好），
+  `toggleSort(side, column)` 按栏路由；左栏 sort 仍持久化，prefs 结构不变。
+- **P2-13①②④ 夹具**：① `?ro=1` 只读注入（connection.readOnly 含 ready
+  完整 context + capabilities.readOnly 双闸）；② copy/move/syncDir/copyDir
+  按 source/targetConnectionId 路由树与内容仓（`copyEntryBetween`，rename
+  同步收口）；④ `files/archiveList`（archiveSources 表 + 当前树展开，契约
+  对齐 archive.rs::ArchiveEntry，page/pageSize clamp）。
+- **Space 首按问题（报告遗留项）定位**：根因 = `FileTable.onListKeydown`
+  Enter/Space 分支以 `activeIndex()`（按 props.activePath 查找）判行号，
+  方向键后同一渲染 tick 内 props 未回写 → -1 → 首按被 return 丢弃（且在
+  preventDefault 之前）。修复：preventDefault 提前、行号以同步 `nav.index`
+  兜底。已在 mock 环境复现并闭环；真实宿主事件时序建议下次真机例行复核。
+- **i18n**：七语各新增 `errNotFound/errPermission/errExists/errNetwork/
+  downloadNoneSelected/nameExists/transferKind.delete`（en/es/it/ja/pt-BR/
+  zh-CN/zh-TW 同步补齐，i18n.spec 键集/占位符对齐断言通过）。
+- **新增/扩展测试**：`friendlyError.spec.ts`（6）、`FileTable.spec.ts`（3，
+  含 stale-props 时序回归）、`SideNavPanel.spec.ts`（5，happy-dom 需
+  `attachTo` 后 focus 才生效）、`transfers.spec.ts` +2。
+- **验证**：`pnpm typecheck` 0 错；`pnpm test` 27 文件 155 用例全绿（上轮
+  基线 140 + 新增 15）；playwright-core + 系统 Chrome（装于
+  /tmp/uiscan-files-r2，不入项目依赖）对 `mock.html` 复验 26/26 断言通过，
+  覆盖 P2-1（notfound 注入友好映射 + title 原文）、P2-3（业务失败 pill
+  保持已连接）、P2-4（delay=1200 下重试仅右栏 skeleton）、P2-5（手动钮 +
+  写后自动刷新）、P2-6、P2-7（批量删除任务进面板并推进）、P2-8（7s 轮询后
+  标题不退化）、P2-9（树键盘 roving/Enter）、P2-10（重名拦截弹层不关）、
+  P2-11、P2-12、P2-13①（ro=1 徽章/禁用/菜单禁用）②（跨连接落树）④
+  （archiveList API + 预览 UI「压缩包内 7 个条目」）、Space 首按两连击；
+  截图与脚本为复验工具产物，收尾已删。
+- **遗留**：无新增遗留；P1-5「跟随焦点侧」语义待产品确认（既有）；多连接
+  真宿主跨栏行为建议随下次真机验证例行覆盖。

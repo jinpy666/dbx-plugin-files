@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { File, Folder } from "@lucide/vue";
 import { formatBytes, formatTime, type FileEntry } from "../lib/api";
+import { listNav, scrollRowIntoView, selectionRange, type ListNavState } from "../lib/listNav";
 
 const props = defineProps<{
   entries: FileEntry[];
@@ -46,9 +47,54 @@ watch(
   () => props.entries,
   () => {
     scrollTop.value = 0;
+    nav.value = { index: -1, anchor: -1 };
     if (viewport.value) viewport.value.scrollTop = 0;
   },
 );
+
+// 键盘导航（对标 tiny-rdm/FileZilla）：↑↓/Home/End 移动，Shift 连续扩选，
+// Enter 打开、Space 切换勾选、Cmd/Ctrl+A 全选；焦点在列表上即生效。
+const nav = ref<ListNavState>({ index: -1, anchor: -1 });
+
+function activeIndex() {
+  return props.entries.findIndex((entry) => entry.path === props.activePath);
+}
+
+function onListKeydown(event: KeyboardEvent) {
+  if (!props.entries.length) return;
+  if ((event.metaKey || event.ctrlKey) && (event.key === "a" || event.key === "A")) {
+    event.preventDefault();
+    nav.value = { index: props.entries.length - 1, anchor: 0 };
+    emit("update:selection", props.entries.map((entry) => entry.path));
+    return;
+  }
+  const navKeys: Record<string, "up" | "down" | "home" | "end"> = { ArrowUp: "up", ArrowDown: "down", Home: "home", End: "end" };
+  const direction = navKeys[event.key];
+  if (direction) {
+    event.preventDefault();
+    const next = listNav({ index: activeIndex(), anchor: nav.value.anchor }, direction, props.entries.length, event.shiftKey);
+    nav.value = next;
+    const [start, end] = selectionRange(next);
+    emit("update:selection", props.entries.slice(start, end + 1).map((entry) => entry.path));
+    emit("update:activePath", props.entries[next.index].path);
+    if (viewport.value) viewport.value.scrollTop = scrollRowIntoView(viewport.value, next.index, ROW_HEIGHT);
+    return;
+  }
+  if (event.key === "Enter" || event.key === " ") {
+    // Space/Enter 首按偶发无效的根因（第 2 轮扫描定位）：activePath 由父组件
+    // 经 props 回写，方向键按下后的同一渲染 tick 内 props 仍是旧值 →
+    // activeIndex() 为 -1，首按 Space 被丢弃（第二次才“勾选”）。改用本组件
+    // 同步维护的 nav.index 作权威判定；preventDefault 提前到 index 判定前，
+    // 避免 Space 在列表滚动容器上触发默认滚动。
+    event.preventDefault();
+    let index = activeIndex();
+    if (index < 0) index = nav.value.index;
+    if (index < 0 || index >= props.entries.length) return;
+    const entry = props.entries[index];
+    if (event.key === "Enter") emit("open", entry);
+    else toggleSelection(entry, { meta: true });
+  }
+}
 
 const selectedSet = computed(() => new Set(props.selection));
 
@@ -77,6 +123,9 @@ function toggleSelection(entry: FileEntry, modifiers: { meta?: boolean; ctrl?: b
   }
   emit("update:selection", [entry.path]);
   emit("update:activePath", entry.path);
+  // 鼠标单击重置键盘扩选锚点，保证随后 Shift+方向键从该行起算。
+  const index = props.entries.indexOf(entry);
+  nav.value = { index, anchor: index };
 }
 
 function onClickRow(entry: FileEntry, event: MouseEvent) {
@@ -116,7 +165,7 @@ function onDragStart(entry: FileEntry, event: DragEvent) {
       <button type="button" @click="emit('sort', 'modified')">{{ t("colModified") }}{{ sort.column === "modified" ? (sort.direction === "asc" ? " ↑" : " ↓") : "" }}</button>
     </span>
   </div>
-  <div ref="viewport" class="wb-file-scroll" @scroll="onScroll" @contextmenu.prevent.stop="emit('blank-context', { x: $event.clientX, y: $event.clientY })">
+  <div ref="viewport" class="wb-file-scroll" tabindex="0" @scroll="onScroll" @keydown="onListKeydown" @contextmenu.prevent.stop="emit('blank-context', { x: $event.clientX, y: $event.clientY })">
     <div class="wb-file-spacer" :style="{ height: `${totalHeight}px` }">
       <div
         v-for="(entry, localIndex) in visibleEntries"

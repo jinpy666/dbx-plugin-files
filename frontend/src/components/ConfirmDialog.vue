@@ -1,5 +1,12 @@
 <script setup lang="ts">
-defineProps<{
+// 确认弹层（P1-3 焦点管理）：
+// ① 打开即聚焦首控件——有表单输入直落输入框（全选便于改名），否则聚焦
+//    安全项（取消钮），危险操作防 Enter 误确认；
+// ② Tab/Shift+Tab 在弹层内循环（focus trap），焦点不再跑出弹层触发背景按钮；
+// ③ 关闭（确认/取消/Esc）后焦点归还打开前的触发元素。
+import { nextTick, ref, watch } from "vue";
+
+const props = defineProps<{
   open: boolean;
   title: string;
   body?: string;
@@ -16,11 +23,63 @@ const emit = defineEmits<{
   (event: "confirm"): void;
   (event: "cancel"): void;
 }>();
+
+const dialogEl = ref<HTMLElement>();
+/** 打开前的 document.activeElement，关闭时归还焦点。 */
+let returnFocusTo: HTMLElement | null = null;
+
+const FOCUSABLE_SELECTOR = 'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])';
+
+watch(
+  () => props.open,
+  async (open) => {
+    if (open) {
+      returnFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      await nextTick();
+      if (!props.open) return; // 同帧内又被关闭（如连续 Esc）：不抢焦点
+      const root = dialogEl.value;
+      if (!root) return;
+      const input = root.querySelector<HTMLInputElement>("input, textarea");
+      (input ?? root.querySelector<HTMLElement>(".wb-dialog-cancel"))?.focus();
+      input?.select();
+      return;
+    }
+    returnFocusTo?.focus();
+    returnFocusTo = null;
+  },
+  // 挂载时即 open（如测试或热重载场景）也要完成聚焦链路
+  { immediate: true },
+);
+
+/** Tab 焦点陷阱：焦点已末位时 Tab 回绕到首位，Shift+Tab 反向；焦点意外
+ * 落在弹层外（BODY）时也拉回弹层内。 */
+function onTabKeydown(event: KeyboardEvent) {
+  if (event.key !== "Tab") return;
+  const root = dialogEl.value;
+  if (!root) return;
+  const focusables = [...root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)];
+  if (!focusables.length) return;
+  const first = focusables[0]!;
+  const last = focusables[focusables.length - 1]!;
+  const current = document.activeElement;
+  const inside = current instanceof HTMLElement && root.contains(current);
+  if (event.shiftKey) {
+    if (!inside || current === first) {
+      event.preventDefault();
+      last.focus();
+    }
+    return;
+  }
+  if (!inside || current === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
 </script>
 
 <template>
   <div v-if="open" class="wb-dialog-backdrop" @click.self="emit('cancel')">
-    <div class="wb-dialog" :class="{ 'is-danger': danger }" role="dialog" aria-modal="true">
+    <div ref="dialogEl" class="wb-dialog" :class="{ 'is-danger': danger }" role="dialog" aria-modal="true" @keydown="onTabKeydown">
       <header>{{ title }}</header>
       <div class="wb-dialog-body">
         <p v-if="body" style="margin: 0 0 6px">{{ body }}</p>

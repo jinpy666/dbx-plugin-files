@@ -2,6 +2,8 @@
 // audit.jsonl 只读视图：审计条目由 sidecar store（F-A）经 files/audit/list 透出；
 // 方法未就绪时展示不可用态而非报错。
 import { onMounted, ref } from "vue";
+import { RefreshCw } from "@lucide/vue";
+import { formatTime } from "../lib/api";
 
 export interface AuditEntry {
   at: string;
@@ -36,7 +38,8 @@ async function refresh() {
 }
 
 function head(entry: AuditEntry): string {
-  const at = typeof entry.at === "string" ? entry.at : "";
+  // P2-5：ISO 原文 → 本地化 "YYYY-MM-DD HH:mm"；非时间串原样展示。
+  const at = formatTime(typeof entry.at === "string" ? entry.at : undefined) || (typeof entry.at === "string" ? entry.at : "");
   const action = entry.action ?? entry.method ?? "";
   return `${at} ${action}`.trim();
 }
@@ -52,6 +55,13 @@ props;
 
 <template>
   <div class="wb-audit-list">
+    <!-- P2-5：手动刷新钮——面板打开期间错过的写入不再要求切 tab 触发 watch -->
+    <div class="wb-transfer-history-head" style="margin: 2px 0 6px">
+      <span class="wb-muted">{{ t("auditPanel") }}</span>
+      <button class="wb-icon-button" :title="t('refresh')" :disabled="loading" @click="refresh">
+        <RefreshCw :class="{ 'wb-spin': loading }" />
+      </button>
+    </div>
     <template v-if="available === false">
       <div class="wb-file-empty">{{ t("auditUnavailable") }}</div>
       <div class="wb-muted" style="padding: 0 8px; font-size: 11px">{{ t("auditHint") }}</div>

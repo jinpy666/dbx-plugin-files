@@ -5,7 +5,12 @@ export type DangerousLevel = "none" | "warn" | "danger";
 
 export interface DangerousHit {
   id: "purge-root" | "purge" | "recursive-delete" | "sync-overwrite" | "copy-overwrite" | "bulk-delete" | "system-path";
+  /** 英文兜底文案（或路径本身）；UI 层按 id 映射 i18n（P2-2），label 仅作回退。 */
   label: string;
+  /** 结构化参数：purge/system-path/sync-overwrite/copy-overwrite 携带目标路径。 */
+  path?: string;
+  /** 结构化参数：bulk-delete 携带条数。 */
+  count?: number;
 }
 
 export interface DangerousInspection {
@@ -29,8 +34,8 @@ export function inspectPurge(path: string, root: string): DangerousInspection {
     hits.push({ id: "purge-root", label: "purge root" });
     return { level: "danger", hits };
   }
-  if (SYSTEM_PATH_RE.test(target)) hits.push({ id: "system-path", label: target });
-  hits.push({ id: "purge", label: `purge ${target}` });
+  if (SYSTEM_PATH_RE.test(target)) hits.push({ id: "system-path", label: target, path: target });
+  hits.push({ id: "purge", label: `purge ${target}`, path: target });
   return { level: "danger", hits };
 }
 
@@ -42,7 +47,7 @@ export function inspectDelete(targets: Array<{ path: string; kind: "file" | "dir
     hits.push({ id: "recursive-delete", label: "recursive delete" });
     level = "danger";
   } else if (targets.length > BULK_DELETE_THRESHOLD) {
-    hits.push({ id: "bulk-delete", label: `${targets.length} items` });
+    hits.push({ id: "bulk-delete", label: `${targets.length} items`, count: targets.length });
     level = "warn";
   }
   return { level, hits };
@@ -50,12 +55,12 @@ export function inspectDelete(targets: Array<{ path: string; kind: "file" | "dir
 
 /** syncDir：目标总是可能被覆盖/删除（rclone sync 语义），必须确认。 */
 export function inspectSyncDir(targetPath: string): DangerousInspection {
-  return { level: "danger", hits: [{ id: "sync-overwrite", label: normalize(targetPath) }] };
+  return { level: "danger", hits: [{ id: "sync-overwrite", label: normalize(targetPath), path: normalize(targetPath) }] };
 }
 
 /** copyDir：仅同名覆盖，warn。 */
 export function inspectCopyDir(targetPath: string): DangerousInspection {
-  return { level: "warn", hits: [{ id: "copy-overwrite", label: normalize(targetPath) }] };
+  return { level: "warn", hits: [{ id: "copy-overwrite", label: normalize(targetPath), path: normalize(targetPath) }] };
 }
 
 /** 统一入口：kind 决定规则集。 */

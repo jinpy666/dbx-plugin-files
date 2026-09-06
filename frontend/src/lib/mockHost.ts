@@ -7,6 +7,8 @@
 //   &theme=light     宿主 1.1 theme 通道方案（默认 dark，与真实宿主一致）
 //   &delay=300       files/list 人为延迟 ms（便于观察加载态）
 //   &job=1           copy/move 一律走降级 job（默认仅目录/`mockDir`）
+//   &ro=1            只读态注入（connection.readOnly + capabilities.readOnly，
+//                    P2-13①：供只读徽章/写按钮禁用/右键菜单禁用的 UI 走查）
 // 任何包含 "error" 的路径都会返回业务错误（便于验证错误横幅与重试）。
 // __local__ 连接（双栏左栏本地面）：list/listPaged/stat/quickPaths/read 路由到
 // 独立本地树（$HOME 家族 quickPaths）；写路径（mkdir/delete/copy/move 等）仍落
@@ -48,6 +50,8 @@ export function installMockHost(): void {
   const params = new URLSearchParams(window.location.search);
   const delayMs = Number(params.get("delay") ?? "250");
   const forceJob = params.get("job") === "1";
+  // P2-13①：?ro=1 只读态注入（与 canWrite = !connection.readOnly && !capabilities.readOnly 双闸对齐）。
+  const readOnly = params.get("ro") === "1";
 
   // ---- 虚拟文件树 ---------------------------------------------------------
   const tree = new Map<string, MockEntry>();
@@ -135,12 +139,20 @@ export function installMockHost(): void {
       .map(([path, entry]) => ({ name: path.slice(prefix.length), path, kind: entry.kind, size: entry.size, modifiedAt: entry.modifiedAt }))
       .sort((a, b) => String(a.name).localeCompare(String(b.name)));
   };
-  const isDir = (path: string, source: Map<string, MockEntry> = tree) => source.get(path.replace(/\/+$/, ""))?.kind === "dir";
-  const exists = (path: string, source: Map<string, MockEntry> = tree) => source.has(path.replace(/\/+$/, ""));
-
+  // （copy/move/rename 的目录/存在判断已随 P2-13② 收口进各 case 内部，见下。）
   const assertOk = (path: string) => {
     if (path.includes("error")) throw new Error(`mock backend failure for ${path}`);
+    // P2-1 夹具：notfound 路径注入「不存在」类业务错误（友好映射层走查用）
+    if (path.includes("notfound")) throw new Error(`NotFound: ${path}`);
   };
+
+  // P2-13④：压缩包条目来源表（B-ARCHIVE 夹具层缺位收口）。
+  // mock 不存真实 tar 结构：compress 时记录源路径集合，archiveList 按当前树
+  // 展开为归档内相对路径条目；三个预置样例归档同样预登记。
+  const archiveSources = new Map<string, string[]>();
+  archiveSources.set("/backup.zip", ["/docs/readme.md", "/docs/notes.txt", "/docs/logo.png"]);
+  archiveSources.set("/docs/site.tar.gz", ["/docs"]);
+  archiveSources.set("/docs/dump.tar", ["/docs/data.bin", "/docs/report.pdf"]);
 
   // ---- 异步 job 表（降级 copy/move/rename）--------------------------------
   let jobSeq = 0;
@@ -152,7 +164,9 @@ export function installMockHost(): void {
   }
 
   function runJob(jobId: string, kind: string, source: string, target: string, apply: () => void, cancel: { flag: boolean }) {
-    jobs.set(jobId, { jobId, kind, status: "queued", sourcePath: source, targetPath: target, filesDone: 0, filesTotal: 2, bytesDone: 0, bytesTotal: 4096 });
+    // P2-8：remotePath 与真实 sidecar（transfers.rs，camelCase）契约对齐，
+    // 轮询兜底不再把可读任务标题冲掉成裸 jobId。
+    jobs.set(jobId, { jobId, kind, status: "queued", sourcePath: source, targetPath: target, remotePath: `${source} → ${target}`, filesDone: 0, filesTotal: 2, bytesDone: 0, bytesTotal: 4096 });
     emit("files/transfer/progress", { jobId, kind, state: "queued", remotePath: `${source} → ${target}` });
     const schedule = (ms: number, fn: () => void) => {
       const timer = window.setTimeout(() => {
@@ -185,26 +199,43 @@ export function installMockHost(): void {
     });
   }
 
-  function copyEntry(source: string, target: string) {
-    const src = tree.get(source.replace(/\/+$/, ""));
+  function copyEntryBetween(
+    sourceTree: Map<string, MockEntry>,
+    sourceContents: Map<string, Uint8Array>,
+    targetTree: Map<string, MockEntry>,
+    targetContents: Map<string, Uint8Array>,
+    source: string,
+    target: string,
+  ) {
+    // P2-13②：跨连接复制/移动按 sourceConnectionId/targetConnectionId 路由
+    // 源/目标树与内容仓；同连接时两个参数对相同，行为与旧 copyEntry 一致。
+    const src = sourceTree.get(source.replace(/\/+$/, ""));
     if (!src) return;
+    const cleanTarget = target.replace(/\/+$/, "") || "/";
     if (src.kind === "dir") {
       const prefix = `${source.replace(/\/+$/, "")}/`;
-      for (const [path, entry] of [...tree.entries()]) {
-        if (path.startsWith(prefix)) tree.set(`${target.replace(/\/+$/, "")}/${path.slice(prefix.length)}`, entry);
+      for (const [path, entry] of [...sourceTree.entries()]) {
+        if (!path.startsWith(prefix)) continue;
+        targetTree.set(`${cleanTarget}/${path.slice(prefix.length)}`, entry);
+        const bytes = sourceContents.get(path);
+        if (bytes) targetContents.set(`${cleanTarget}/${path.slice(prefix.length)}`, bytes);
       }
     }
-    put(target, src.kind, src.size);
+    const bytes = sourceContents.get(source.replace(/\/+$/, ""));
+    if (bytes) targetContents.set(cleanTarget, bytes);
+    targetTree.set(cleanTarget, { kind: src.kind, size: src.size, modifiedAt: new Date().toISOString() });
   }
 
-  function deleteEntry(path: string) {
+  function deleteEntry(path: string, source: Map<string, MockEntry> = tree) {
     const base = path.replace(/\/+$/, "");
-    tree.delete(base);
-    for (const key of [...tree.keys()]) if (key.startsWith(`${base}/`)) tree.delete(key);
+    source.delete(base);
+    for (const key of [...source.keys()]) if (key.startsWith(`${base}/`)) source.delete(key);
   }
 
   // ---- 上传槽 ---------------------------------------------------------------
-  const uploads = new Map<string, { path: string; size: number; received: number; bytes: Uint8Array }>();
+  // P1-5 夹具契约修复：记录 start 时的 connectionId，finish 按 connectionId
+  // 落对应树/内容（__local__ → 本地树），与真实 sidecar 的按连接落盘一致。
+  const uploads = new Map<string, { path: string; size: number; received: number; bytes: Uint8Array; connectionId: unknown }>();
 
   // ---- 监听器 ---------------------------------------------------------------
   const eventListeners: Array<(event: { method: string; params: Record<string, unknown> }) => void> = [];
@@ -246,7 +277,7 @@ export function installMockHost(): void {
         return { entries: all.slice((page - 1) * size, page * size), total: all.length };
       }
       case "files/capabilities":
-        return { scheme: "mock", list: true, write: true, read: true, stat: true, delete: true, createDir: true, copy: true, rename: true, presign: false };
+        return { scheme: "mock", list: true, write: true, read: true, stat: true, delete: true, createDir: true, copy: true, rename: true, presign: false, ...(readOnly ? { readOnly: true } : {}) };
       case "files/quickPaths": {
         // mock 无真实 $HOME：远端树返回根目录 + 实际存在的样例目录 chips；
         // __local__ 连接返回本地 home 家族（对齐真实 sidecar 的 fs 行为）。
@@ -304,20 +335,23 @@ export function installMockHost(): void {
         const source = str("path");
         const target = str("newPath");
         assertOk(source);
-        if (isDir(source) || forceJob) {
+        // 按连接路由（与 copy/move 的 P2-13② 收口一致）：__local__ 栏重命名落本地树。
+        const renameTree = treeFor(p.connectionId);
+        const renameContents = contentsFor(p.connectionId);
+        if (renameTree.get(source.replace(/\/+$/, ""))?.kind === "dir" || forceJob) {
           const jobId = `mock-job-${++jobSeq}`;
           const cancel = { flag: false };
           jobs.set(`__cancel_${jobId}`, cancel as unknown as Record<string, unknown>);
           runJob(jobId, "rename", source, target, () => {
-            copyEntry(source, target);
-            deleteEntry(source);
+            copyEntryBetween(renameTree, renameContents, renameTree, renameContents, source, target);
+            deleteEntry(source, renameTree);
           }, cancel);
           return { success: true, transport: "job", jobId };
         }
-        const entry = tree.get(source.replace(/\/+$/, ""));
+        const entry = renameTree.get(source.replace(/\/+$/, ""));
         if (!entry) throw new Error(`NotFound: ${source}`);
-        tree.delete(source.replace(/\/+$/, ""));
-        put(target, entry.kind, entry.size);
+        copyEntryBetween(renameTree, renameContents, renameTree, renameContents, source, target);
+        deleteEntry(source, renameTree);
         recordAudit(method, source);
         return { success: true, transport: "native", jobId: null };
       }
@@ -328,23 +362,30 @@ export function installMockHost(): void {
         const source = str("sourcePath");
         const target = str("targetPath");
         assertOk(source);
+        // P2-13②：按契约路由 sourceConnectionId/targetConnectionId（缺省回落
+        // connectionId / 远端树），跨连接双栏复制本地 → 远端可自洽走查。
+        const sourceTree = treeFor(p.sourceConnectionId ?? p.connectionId);
+        const sourceContents = contentsFor(p.sourceConnectionId ?? p.connectionId);
+        const targetTree = treeFor(p.targetConnectionId ?? p.connectionId);
+        const targetContents = contentsFor(p.targetConnectionId ?? p.connectionId);
         if (target.replace(/\/+$/, "") === source.replace(/\/+$/, "")) throw new Error("Destination must differ from the source");
-        if (isDir(source) || forceJob) {
+        const sourceIsDir = sourceTree.get(source.replace(/\/+$/, ""))?.kind === "dir";
+        if (sourceIsDir || forceJob) {
           const jobId = `mock-job-${++jobSeq}`;
           const cancel = { flag: false };
           jobs.set(`__cancel_${jobId}`, cancel as unknown as Record<string, unknown>);
           const move = method === "files/move";
           const sync = method === "files/syncDir";
           runJob(jobId, sync ? "syncDir" : method === "files/copyDir" ? "copyDir" : move ? "move" : "copy", source, target, () => {
-            copyEntry(source, target);
-            if (move) deleteEntry(source);
+            copyEntryBetween(sourceTree, sourceContents, targetTree, targetContents, source, target);
+            if (move) deleteEntry(source, sourceTree);
           }, cancel);
           return { success: true, transport: "job", jobId };
         }
-        const entry = tree.get(source.replace(/\/+$/, ""));
+        const entry = sourceTree.get(source.replace(/\/+$/, ""));
         if (!entry) throw new Error(`NotFound: ${source}`);
-        copyEntry(source, target);
-        if (method === "files/move") tree.delete(source.replace(/\/+$/, ""));
+        copyEntryBetween(sourceTree, sourceContents, targetTree, targetContents, source, target);
+        if (method === "files/move") deleteEntry(source, sourceTree);
         recordAudit(method, source);
         return { success: true, transport: "native", jobId: null };
       }
@@ -381,8 +422,38 @@ export function installMockHost(): void {
       }
       case "files/upload/start": {
         const taskId = `mock-upload-${++jobSeq}`;
-        uploads.set(taskId, { path: str("remotePath"), size: Number(p.size ?? 0), received: 0, bytes: new Uint8Array(Number(p.size ?? 0)) });
+        uploads.set(taskId, { path: str("remotePath"), size: Number(p.size ?? 0), received: 0, bytes: new Uint8Array(Number(p.size ?? 0)), connectionId: p.connectionId });
         return { taskId };
+      }
+      case "files/archiveList": {
+        // P2-13④：压缩包内容列表（B-ARCHIVE 夹具收口）。条目契约对齐后端
+        // archive.rs::ArchiveEntry：{name, path(归档内相对路径), kind, size}；
+        // page/pageSize 可选（缺省 1/200，clamp 1..1000），返回 {entries, total}。
+        const path = str("path");
+        assertOk(path);
+        const archiveTree = treeFor(p.connectionId);
+        const targets = archiveSources.get(path.replace(/\/+$/, ""));
+        if (!targets) throw new Error(`NotFound: ${path}`);
+        const entries: Array<Record<string, unknown>> = [];
+        for (const rawSource of targets) {
+          const clean = rawSource.replace(/\/+$/, "");
+          const root = archiveTree.get(clean);
+          if (!root) continue;
+          if (root.kind === "file") {
+            entries.push({ name: clean.split("/").pop() ?? clean, path: clean.replace(/^\//, ""), kind: "file", size: root.size });
+            continue;
+          }
+          const prefix = `${clean}/`;
+          for (const [key, value] of archiveTree) {
+            if (!key.startsWith(prefix) || value.kind !== "file") continue;
+            entries.push({ name: key.split("/").pop() ?? key, path: key.replace(/^\//, ""), kind: "file", size: value.size });
+          }
+        }
+        entries.sort((a, b) => String(a.path).localeCompare(String(b.path)));
+        const total = entries.length;
+        const page = Math.max(1, Number(p.page ?? 1));
+        const pageSize = Math.min(1000, Math.max(1, Number(p.pageSize ?? 200)));
+        return { entries: entries.slice((page - 1) * pageSize, page * pageSize), total };
       }
       case "files/read": {
         // A-FILES ②：预览读取（≤2MiB base64 + truncated）；按连接路由树。
@@ -441,6 +512,7 @@ export function installMockHost(): void {
           const routed = treeFor(p.connectionId);
           contentsFor(p.connectionId).set(target.replace(/\/+$/, ""), bytes);
           routed.set(target.replace(/\/+$/, ""), { kind: "file", size: bytes.byteLength, modifiedAt: new Date().toISOString() });
+          archiveSources.set(target.replace(/\/+$/, ""), paths.map((item) => item.replace(/\/+$/, "")));
           recordAudit(method, target);
         };
         if (collected.length <= 10 && bytes.byteLength <= 8 * 1024 * 1024) {
@@ -458,7 +530,12 @@ export function installMockHost(): void {
         if (!slot) throw new Error("Upload task was not found");
         if (slot.received !== slot.size) throw new Error(`Upload is incomplete: ${slot.received}/${slot.size}`);
         assertOk(slot.path);
-        tree.set(slot.path.replace(/\/+$/, ""), { kind: "file", size: slot.size, modifiedAt: new Date().toISOString() });
+        // 按 start 记录的 connectionId 落树 + 写内容（此前写死远端树，
+        // 双栏本地上传「成功即消失」；P2-13③ 同款收口）。
+        const landed = slot.path.replace(/\/+$/, "") || "/";
+        contentsFor(slot.connectionId).set(landed, slot.bytes);
+        treeFor(slot.connectionId).set(landed, { kind: "file", size: slot.size, modifiedAt: new Date().toISOString() });
+        recordAudit("files/upload", slot.path);
         uploads.delete(str("taskId"));
         return { success: true };
       }
@@ -501,10 +578,15 @@ export function installMockHost(): void {
       : { "--color-background": "rgb(19 20 22)", "--color-foreground": "rgb(215 215 219)", "--color-muted": "rgb(42 42 45)", "--color-muted-foreground": "rgb(151 152 157)", "--color-accent": "rgb(46 47 51)", "--color-accent-foreground": "rgb(221 221 226)", "--color-border": "rgb(110 110 114 / 0.28)", "--color-destructive": "rgb(243 98 95)" },
   };
   window.dbxPlugin = {
-    ready: Promise.resolve({ connectionId: "mock-conn" }),
+    // ready 返回完整 context（真实宿主同形）：?ro=1 的 readOnly 经 connection
+   // 透传给 App 的 canWrite 判定（此前 ready 只带 connectionId，ro 注入不生效）。
+    ready: Promise.resolve({
+      connectionId: "mock-conn",
+      connection: { name: "Mock Storage", host: "mock.local", readOnly, protocol: "fs" },
+    }),
     context: {
       connectionId: "mock-conn",
-      connection: { name: "Mock Storage", host: "mock.local", readOnly: false, protocol: "fs" },
+      connection: { name: "Mock Storage", host: "mock.local", readOnly, protocol: "fs" },
     },
     theme,
     locale: params.get("locale") ?? "zh-CN",
