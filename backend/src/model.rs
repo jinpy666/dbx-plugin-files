@@ -79,7 +79,7 @@ pub struct StoredConnection {
     /// Secret (`connection_secrets.password`).
     pub password: String,
     // --- sftp ---
-    /// Private key content or path (`external_config.key`).
+    /// Private key content or path (`connection_secrets.key`; legacy config fallback).
     pub key: String,
     pub known_hosts_strategy: String,
     // --- smb ---
@@ -90,10 +90,6 @@ pub struct StoredConnection {
     // --- gating / network ---
     pub read_only: bool,
     pub allow_delete: bool,
-    /// `direct` or `via-dbx-ssh` (sftp/ftp only).
-    pub connection_mode: String,
-    /// Host SSH connection id used when `connection_mode == "via-dbx-ssh"`.
-    pub dbx_ssh_connection: String,
     /// Per-operation timeout in seconds (default 30).
     pub timeout_secs: u64,
     /// DBX transport dial endpoint (`runtime`), for `direct` dial semantics.
@@ -133,7 +129,12 @@ impl StoredConnection {
 
         // opendal-custom accepts either a JSON object or a JSON string in the
         // textarea field; anything else must parse to an object.
-        let custom_config = match external_config.and_then(|config| config.get("config")) {
+        let custom_value = if protocol == "opendal-custom" {
+            external_config.and_then(|config| config.get("config"))
+        } else {
+            None // An inactive custom-service draft must not break another protocol.
+        };
+        let custom_config = match custom_value {
             None | Some(Value::Null) => Value::Object(serde_json::Map::new()),
             Some(Value::Object(map)) => Value::Object(map.clone()),
             Some(Value::String(text)) => {
@@ -146,19 +147,6 @@ impl StoredConnection {
             }
             Some(_) => return Err("Service config must be a JSON object".to_string()),
         };
-
-        let connection_mode = {
-            let mode = optional_string(external_config, "connection_mode");
-            match mode.as_str() {
-                "" => "direct".to_string(),
-                "direct" | "via-dbx-ssh" => mode,
-                other => return Err(format!("Unsupported connection_mode '{other}'")),
-            }
-        };
-        let dbx_ssh_connection = optional_string(external_config, "dbx_ssh_connection");
-        if connection_mode == "via-dbx-ssh" && dbx_ssh_connection.is_empty() {
-            return Err("connection_mode 'via-dbx-ssh' requires dbx_ssh_connection".to_string());
-        }
 
         let runtime = params.get("runtime").and_then(Value::as_object);
         let runtime_host = optional_string(runtime, "host");
@@ -181,12 +169,16 @@ impl StoredConnection {
             endpoint: optional_string(external_config, "endpoint"),
             region: optional_string(external_config, "region"),
             access_key_id: optional_string(external_config, "access_key_id"),
-            secret_access_key: optional_string(connection_secrets, "secret_access_key"),
+            secret_access_key: secret_string(connection_secrets, "secret_access_key"),
             enable_virtual_host_style: bool_field(external_config, "enable_virtual_host_style", false),
             username: optional_string(external_config, "username"),
             user: optional_string(external_config, "user"),
-            password: optional_string(connection_secrets, "password"),
-            key: optional_string(external_config, "key"),
+            password: secret_string(connection_secrets, "password"),
+            key: if connection_secrets.is_some_and(|secrets| secrets.contains_key("key")) {
+                secret_string(connection_secrets, "key")
+            } else {
+                optional_string(external_config, "key")
+            },
             known_hosts_strategy: optional_string(external_config, "known_hosts_strategy"),
             share: optional_string(external_config, "share"),
             domain: optional_string(external_config, "domain"),
@@ -195,8 +187,6 @@ impl StoredConnection {
             read_only: bool_field(external_config, "read_only", false)
                 || bool_field(Some(connection), "read_only", false),
             allow_delete: bool_field(external_config, "allow_delete", true),
-            connection_mode,
-            dbx_ssh_connection,
             timeout_secs: external_config
                 .and_then(|config| config.get("timeout_secs"))
                 .and_then(Value::as_u64)
@@ -470,6 +460,15 @@ fn optional_string(
         .to_string()
 }
 
+/// Passwords and key material are opaque: whitespace may be intentional.
+fn secret_string(object: Option<&serde_json::Map<String, Value>>, key: &str) -> String {
+    object
+        .and_then(|object| object.get(key))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
 fn bool_field(
     object: Option<&serde_json::Map<String, Value>>,
     key: &str,
@@ -557,7 +556,6 @@ mod tests {
         assert_eq!(connection.protocol, "webdav");
         assert_eq!(connection.password, "wonderland");
         assert_eq!(connection.timeout_secs, 30, "default timeout");
-        assert_eq!(connection.connection_mode, "direct");
         assert!(!connection.read_only);
         assert!(connection.allow_delete);
         assert_eq!(connection.runtime_port, 0, "runtime absent");
@@ -661,32 +659,41 @@ mod tests {
     }
 
     #[test]
-    fn via_dbx_ssh_requires_tunnel_connection() {
-        let ok = StoredConnection::from_lifecycle_params(&json!({
+    fn ignores_inactive_custom_config_and_unimplemented_legacy_tunnel_fields() {
+        let connection = StoredConnection::from_lifecycle_params(&json!({
             "connection": {
                 "id": "c",
                 "external_config": {
-                    "protocol": "sftp",
-                    "endpoint": "ops@10.0.0.5",
+                    "protocol": "fs",
+                    "config": "unfinished JSON {",
                     "connection_mode": "via-dbx-ssh",
-                    "dbx_ssh_connection": "ssh-7"
+                    "dbx_ssh_connection": ""
                 }
             }
         }))
         .unwrap();
-        assert_eq!(ok.dbx_ssh_connection, "ssh-7");
+        assert_eq!(connection.custom_config, json!({}));
+    }
 
-        let err = StoredConnection::from_lifecycle_params(&json!({
+    #[test]
+    fn secret_key_migrates_without_losing_legacy_keys_or_password_whitespace() {
+        let mut params = json!({
             "connection": {
                 "id": "c",
                 "external_config": {
-                    "protocol": "ftp",
-                    "connection_mode": "via-dbx-ssh"
-                }
+                    "protocol": "sftp-native",
+                    "key": "/legacy/key"
+                },
+                "connection_secrets": { "password": "  meaningful spaces  " }
             }
-        }))
-        .unwrap_err();
-        assert!(err.contains("dbx_ssh_connection"), "{err}");
+        });
+        let legacy = StoredConnection::from_lifecycle_params(&params).unwrap();
+        assert_eq!(legacy.key, "/legacy/key");
+        assert_eq!(legacy.password, "  meaningful spaces  ");
+        params["connection"]["connection_secrets"]["key"] = json!("PEM\nkey\n");
+        assert_eq!(StoredConnection::from_lifecycle_params(&params).unwrap().key, "PEM\nkey\n");
+        params["connection"]["connection_secrets"]["key"] = json!("");
+        assert_eq!(StoredConnection::from_lifecycle_params(&params).unwrap().key, "");
     }
 
     #[test]
@@ -837,9 +844,9 @@ mod tests {
                 item["key"]
             );
             if binding == "secret" {
-                assert_eq!(
-                    item["type"], "password",
-                    "secret-bound field {} must be a password input",
+                assert!(
+                    matches!(item["type"].as_str(), Some("password" | "textarea")),
+                    "secret-bound field {} must support secret input",
                     item["key"]
                 );
             }
@@ -910,7 +917,7 @@ mod tests {
             ("enable_virtual_host_style", &["s3"]),
             ("endpoint", &["s3", "oss", "webdav", "ftp", "sftp", "smb", "sftp-native"]),
             ("username", &["webdav", "smb"]),
-            ("user", &["ftp"]),
+            ("user", &["ftp", "sftp", "sftp-native"]),
             ("share", &["smb"]),
             ("domain", &["smb"]),
             // password deliberately excludes `sftp`: the OpenDAL sftp service
@@ -921,7 +928,6 @@ mod tests {
             ("known_hosts_strategy", &["sftp", "sftp-native"]),
             ("service", &["opendal-custom"]),
             ("config", &["opendal-custom"]),
-            ("connection_mode", &["sftp", "ftp"]),
         ];
         for (name, protocols) in expects {
             let one_of: Vec<&str> = field(name)["visible_when"]["one_of"]
@@ -938,7 +944,6 @@ mod tests {
             "root",
             "lock_to_root",
             "read_only",
-            "allow_delete",
             "timeout_secs",
         ] {
             assert!(
@@ -947,17 +952,10 @@ mod tests {
             );
         }
 
-        // dbx_ssh_connection is gated on the tunnel mode, which itself only
-        // appears for ftp/sftp (backend model.rs rejects via-dbx-ssh without
-        // dbx_ssh_connection, so the pairing must stay tight).
-        assert_eq!(
-            field("dbx_ssh_connection")["visible_when"]["field"],
-            "connection_mode"
-        );
-        assert_eq!(
-            field("dbx_ssh_connection")["visible_when"]["one_of"],
-            json!(["via-dbx-ssh"])
-        );
+        assert_eq!(field("allow_delete")["visible_when"], json!({"field":"read_only", "one_of":["false"]}));
+        assert_eq!(field("key")["binding"], "secret");
+        assert!(!keys.contains(&"connection_mode"));
+        assert!(!keys.contains(&"dbx_ssh_connection"));
     }
 
     #[test]
@@ -1001,7 +999,6 @@ mod tests {
             "secret_access_key",
             "share",
             "service",
-            "dbx_ssh_connection",
         ];
         for key in conditionally_required {
             let item = field_of(key);

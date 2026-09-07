@@ -3,7 +3,7 @@
   "manifest_version": 1,
   "id": "io.dbx.files",
   "name": "DBX Files",
-  "version": "0.1.40",
+  "version": "0.1.41",
   "publisher": "xynanan",
   "description": "Multi-backend storage workbench plugin for DBX, powered by Apache OpenDAL.",
   "icon": "assets/plugin.svg",
@@ -91,21 +91,35 @@
           ]
         },
         {
-          "key": "root",
-          "label": "Root path",
+          "key": "endpoint",
+          "label": "Endpoint",
           "type": "text",
           "binding": "config",
           "default": "",
-          "placeholder": "/srv/share or ~/data",
-          "description": "All operations are confined under this root when set."
-        },
-        {
-          "key": "lock_to_root",
-          "label": "Lock navigation to root",
-          "type": "boolean",
-          "binding": "config",
-          "default": false,
-          "description": "Reject any path outside the configured root."
+          "placeholder": "https://storage.example.com",
+          "description": "S3/OSS/WebDAV: https://host (TLS) or http://host. FTP: ftp://host:21 or ftps://host:21 (explicit TLS; implicit TLS on 990 is unsupported). SFTP: ssh://user@host:22. SMB: host:445. Set the root separately.",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "s3",
+              "oss",
+              "webdav",
+              "ftp",
+              "sftp",
+              "smb",
+              "sftp-native"
+            ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
+              "webdav",
+              "ftp",
+              "sftp",
+              "smb",
+              "sftp-native"
+            ]
+          }
         },
         {
           "key": "service",
@@ -167,58 +181,6 @@
           }
         },
         {
-          "key": "endpoint",
-          "label": "Endpoint",
-          "type": "text",
-          "binding": "config",
-          "default": "",
-          "placeholder": "http://127.0.0.1:9000",
-          "description": "Full address of the storage server, scheme sets transport security: WebDAV http(s)://host/dav (https = TLS). S3/OSS http(s)://host:9000 (https = TLS; optional for AWS). FTP ftp://host:21 plain or ftps://host:990 explicit TLS. SFTP ssh://user@host:22 (native also takes host:port with the user field). SMB host[:445] or smb://host[:445].",
-          "visible_when": {
-            "field": "protocol",
-            "one_of": [
-              "s3",
-              "oss",
-              "webdav",
-              "ftp",
-              "sftp",
-              "smb",
-              "sftp-native"
-            ]
-          },
-          "required_when": {
-            "field": "protocol",
-            "one_of": [
-              "webdav",
-              "ftp",
-              "sftp",
-              "smb",
-              "sftp-native"
-            ]
-          }
-        },
-        {
-          "key": "share",
-          "label": "Share",
-          "type": "text",
-          "binding": "config",
-          "default": "",
-          "placeholder": "media",
-          "description": "SMB share name used as the tree connect target; share/sub/path tree connects to share and serves /sub/path as the root.",
-          "visible_when": {
-            "field": "protocol",
-            "one_of": [
-              "smb"
-            ]
-          },
-          "required_when": {
-            "field": "protocol",
-            "one_of": [
-              "smb"
-            ]
-          }
-        },
-        {
           "key": "region",
           "label": "Region",
           "type": "text",
@@ -232,6 +194,20 @@
               "s3"
             ]
           }
+        },
+        {
+          "key": "enable_virtual_host_style",
+          "label": "Virtual-host style",
+          "type": "boolean",
+          "binding": "config",
+          "default": false,
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "s3"
+            ]
+          },
+          "description": "Address the bucket as a virtual hostname (bucket.s3.region.amazonaws.com) instead of a path-style URL; enable when the provider requires it."
         },
         {
           "key": "access_key_id",
@@ -279,6 +255,27 @@
           }
         },
         {
+          "key": "share",
+          "label": "Share",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "placeholder": "media",
+          "description": "SMB share name used as the tree connect target; share/sub/path tree connects to share and serves /sub/path as the root.",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "smb"
+            ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
+              "smb"
+            ]
+          }
+        },
+        {
           "key": "username",
           "label": "Username",
           "type": "text",
@@ -295,6 +292,23 @@
           }
         },
         {
+          "key": "user",
+          "label": "User",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "placeholder": "anonymous",
+          "description": "FTP: empty means anonymous. SFTP: enter the SSH login user or include user@ in the endpoint. This field takes precedence.",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "ftp",
+              "sftp",
+              "sftp-native"
+            ]
+          }
+        },
+        {
           "key": "domain",
           "label": "Domain",
           "type": "text",
@@ -306,21 +320,6 @@
             "field": "protocol",
             "one_of": [
               "smb"
-            ]
-          }
-        },
-        {
-          "key": "user",
-          "label": "User",
-          "type": "text",
-          "binding": "config",
-          "default": "",
-          "placeholder": "anonymous",
-          "description": "Leave empty for anonymous login.",
-          "visible_when": {
-            "field": "protocol",
-            "one_of": [
-              "ftp"
             ]
           }
         },
@@ -344,11 +343,11 @@
         {
           "key": "key",
           "label": "Private key or path",
-          "type": "text",
-          "binding": "config",
+          "type": "textarea",
+          "binding": "secret",
           "default": "",
           "placeholder": "~/.ssh/id_ed25519",
-          "description": "Private key content or a path to the key file. Direct SFTP requires a key (key-only auth); SFTP (native) uses it when the password is empty; not needed through a DBX SSH tunnel.",
+          "description": "OpenDAL SFTP: key file path on the DBX machine. Native SFTP also accepts PEM content, used when Password is empty. Encrypted keys are unsupported. Saved with connection secrets.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
@@ -384,7 +383,32 @@
               "sftp-native"
             ]
           },
-          "description": "SSH host-key verification policy: Strict verifies against known hosts (recommended); Tolerate accepts and remembers new host keys; Trust accepts any host key — man-in-the-middle risk, testing only."
+          "description": "Strict requires known host keys. Tolerate accepts unknown hosts but rejects changed known keys; native SFTP does not remember new keys. Trust skips verification."
+        },
+        {
+          "key": "root",
+          "label": "Root path",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "placeholder": "/srv/share or ~/data",
+          "description": "All operations are confined under this root when set."
+        },
+        {
+          "key": "lock_to_root",
+          "label": "Lock navigation to root",
+          "type": "boolean",
+          "binding": "config",
+          "default": false,
+          "description": "Reject any path outside the configured root."
+        },
+        {
+          "key": "timeout_secs",
+          "label": "Operation timeout (seconds)",
+          "type": "number",
+          "binding": "config",
+          "default": 30,
+          "description": "Per-operation timeout in seconds; leave empty for the 30s default (minimum 1)."
         },
         {
           "key": "read_only",
@@ -400,74 +424,13 @@
           "type": "boolean",
           "binding": "config",
           "default": true,
-          "description": "When off, delete/purge operations are rejected."
-        },
-        {
-          "key": "connection_mode",
-          "label": "Connection mode",
-          "type": "select",
-          "binding": "config",
-          "default": "direct",
-          "options": [
-            {
-              "label": "Direct",
-              "value": "direct"
-            },
-            {
-              "label": "Through DBX SSH tunnel",
-              "value": "via-dbx-ssh"
-            }
-          ],
+          "description": "When off, delete/purge operations are rejected.",
           "visible_when": {
-            "field": "protocol",
+            "field": "read_only",
             "one_of": [
-              "sftp",
-              "ftp"
+              "false"
             ]
           }
-        },
-        {
-          "key": "dbx_ssh_connection",
-          "label": "DBX SSH connection",
-          "type": "text",
-          "binding": "config",
-          "default": "",
-          "placeholder": "host-ssh-connection-id",
-          "description": "Host SSH connection id used to forward the tunnel.",
-          "visible_when": {
-            "field": "connection_mode",
-            "one_of": [
-              "via-dbx-ssh"
-            ]
-          },
-          "required_when": {
-            "field": "connection_mode",
-            "one_of": [
-              "via-dbx-ssh"
-            ]
-          }
-        },
-        {
-          "key": "timeout_secs",
-          "label": "Operation timeout (seconds)",
-          "type": "number",
-          "binding": "config",
-          "default": 30,
-          "description": "Per-operation timeout in seconds; leave empty for the 30s default (minimum 1)."
-        },
-        {
-          "key": "enable_virtual_host_style",
-          "label": "Virtual-host style",
-          "type": "boolean",
-          "binding": "config",
-          "default": false,
-          "visible_when": {
-            "field": "protocol",
-            "one_of": [
-              "s3"
-            ]
-          },
-          "description": "Address the bucket as a virtual hostname (bucket.s3.region.amazonaws.com) instead of a path-style URL; enable when the provider requires it."
         }
       ],
       "workbench": "io.dbx.files.workbench",
@@ -538,7 +501,7 @@
             "endpoint": {
               "label": "端点",
               "placeholder": "http://127.0.0.1:9000",
-              "description": "存储服务器完整地址，scheme 决定传输安全：WebDAV http(s)://host/dav（https 即 TLS）。S3/OSS http(s)://host:9000（https 即 TLS；AWS 可留空）。FTP ftp://host:21 明文或 ftps://host:990 显式 TLS。SFTP ssh://user@host:22（原生适配也支持 host:port，配合用户名字段）。SMB host[:445] 或 smb://host[:445]。"
+              "description": "S3/OSS/WebDAV：http(s)://host，HTTPS 启用 TLS。FTP：ftp://host:21 或 ftps://host:21（显式 TLS，不支持 990 隐式 TLS）。SFTP：ssh://user@host:22。SMB：host:445。根目录另行填写。"
             },
             "share": {
               "label": "共享名",
@@ -572,7 +535,7 @@
             "user": {
               "label": "用户",
               "placeholder": "anonymous",
-              "description": "匿名登录时留空。"
+              "description": "FTP 留空为匿名登录。SFTP 请填写 SSH 登录用户，或在地址中使用 user@；此字段优先。"
             },
             "password": {
               "label": "密码",
@@ -581,11 +544,11 @@
             "key": {
               "label": "私钥或私钥路径",
               "placeholder": "~/.ssh/id_ed25519",
-              "description": "私钥内容或私钥文件路径。直连 SFTP 必填（仅支持密钥认证）；SFTP（原生）在密码为空时使用；经 DBX SSH 隧道时无需填写。"
+              "description": "OpenDAL SFTP 填写 DBX 所在机器上的私钥路径；原生 SFTP 也可粘贴 PEM 内容，仅在密码为空时使用。不支持加密私钥。此项作为连接凭据安全保存。"
             },
             "known_hosts_strategy": {
               "label": "Known Hosts 策略",
-              "description": "SSH 主机密钥校验策略：Strict 对照 known hosts 校验（推荐）；Tolerate 接受并记住新主机密钥；Trust 接受任意主机密钥——存在中间人风险，仅限测试。",
+              "description": "Strict 仅接受已知主机密钥；Tolerate 接受未知主机，但拒绝已知密钥变化，原生 SFTP 不记住新密钥；Trust 跳过验证。",
               "options": {
                 "Tolerate": "宽容（记住新主机）",
                 "Strict": "严格（校验已知主机）",
@@ -599,18 +562,6 @@
             "allow_delete": {
               "label": "允许删除",
               "description": "关闭后，删除/清空操作会被拒绝。"
-            },
-            "connection_mode": {
-              "label": "连接模式",
-              "options": {
-                "direct": "直连",
-                "via-dbx-ssh": "经 DBX SSH 隧道"
-              }
-            },
-            "dbx_ssh_connection": {
-              "label": "DBX SSH 连接",
-              "placeholder": "host-ssh-connection-id",
-              "description": "用于转发隧道的宿主 SSH 连接 id。"
             },
             "timeout_secs": {
               "label": "操作超时（秒）",
@@ -680,7 +631,7 @@
             "endpoint": {
               "label": "端點",
               "placeholder": "http://127.0.0.1:9000",
-              "description": "儲存伺服器完整位址，scheme 決定傳輸安全：WebDAV http(s)://host/dav（https 即 TLS）。S3/OSS http(s)://host:9000（https 即 TLS；AWS 可留空）。FTP ftp://host:21 明文或 ftps://host:990 明確 TLS。SFTP ssh://user@host:22（原生配接也支援 host:port，配合使用者欄位）。SMB host[:445] 或 smb://host[:445]。"
+              "description": "S3/OSS/WebDAV：http(s)://host，HTTPS 啟用 TLS。FTP：ftp://host:21 或 ftps://host:21（顯式 TLS，不支援 990 隱式 TLS）。SFTP：ssh://user@host:22。SMB：host:445。根目錄另行填寫。"
             },
             "share": {
               "label": "共用名稱",
@@ -714,7 +665,7 @@
             "user": {
               "label": "使用者",
               "placeholder": "anonymous",
-              "description": "匿名登入時留空。"
+              "description": "FTP 留空為匿名登入。SFTP 請填寫 SSH 登入使用者，或在位址中使用 user@；此欄位優先。"
             },
             "password": {
               "label": "密碼",
@@ -723,11 +674,11 @@
             "key": {
               "label": "私鑰或私鑰路徑",
               "placeholder": "~/.ssh/id_ed25519",
-              "description": "私鑰內容或私鑰檔案路徑。直連 SFTP 必填（僅支援金鑰認證）；SFTP（原生）在密碼為空時使用；經 DBX SSH 隧道時無需填寫。"
+              "description": "OpenDAL SFTP 填寫 DBX 所在機器上的私鑰路徑；原生 SFTP 也可貼上 PEM 內容，僅在密碼為空時使用。不支援加密私鑰。此項作為連線憑證安全儲存。"
             },
             "known_hosts_strategy": {
               "label": "Known Hosts 策略",
-              "description": "SSH 主機金鑰驗證策略：Strict 對照 known hosts 驗證（建議）；Tolerate 接受並記住新主機金鑰；Trust 接受任意主機金鑰——存在中間人風險，僅限測試。",
+              "description": "Strict 僅接受已知主機金鑰；Tolerate 接受未知主機，但拒絕已知金鑰變更，原生 SFTP 不記住新金鑰；Trust 略過驗證。",
               "options": {
                 "Tolerate": "寬容（記住新主機）",
                 "Strict": "嚴格（驗證已知主機）",
@@ -741,18 +692,6 @@
             "allow_delete": {
               "label": "允許刪除",
               "description": "關閉後，刪除/清空操作會被拒絕。"
-            },
-            "connection_mode": {
-              "label": "連線模式",
-              "options": {
-                "direct": "直連",
-                "via-dbx-ssh": "經 DBX SSH 通道"
-              }
-            },
-            "dbx_ssh_connection": {
-              "label": "DBX SSH 連線",
-              "placeholder": "host-ssh-connection-id",
-              "description": "用於轉發隧道的宿主 SSH 連線 id。"
             },
             "timeout_secs": {
               "label": "操作逾時（秒）",
@@ -822,7 +761,7 @@
             "endpoint": {
               "label": "Endpoint",
               "placeholder": "http://127.0.0.1:9000",
-              "description": "Full address of the storage server, scheme sets transport security: WebDAV http(s)://host/dav (https = TLS). S3/OSS http(s)://host:9000 (https = TLS; optional for AWS). FTP ftp://host:21 plain or ftps://host:990 explicit TLS. SFTP ssh://user@host:22 (native also takes host:port with the user field). SMB host[:445] or smb://host[:445]."
+              "description": "S3/OSS/WebDAV: https://host (TLS) or http://host. FTP: ftp://host:21 or ftps://host:21 (explicit TLS; implicit TLS on 990 is unsupported). SFTP: ssh://user@host:22. SMB: host:445. Set the root separately."
             },
             "share": {
               "label": "Share",
@@ -856,7 +795,7 @@
             "user": {
               "label": "User",
               "placeholder": "anonymous",
-              "description": "Leave empty for anonymous login."
+              "description": "FTP: empty means anonymous. SFTP: enter the SSH login user or include user@ in the endpoint. This field takes precedence."
             },
             "password": {
               "label": "Password",
@@ -865,11 +804,11 @@
             "key": {
               "label": "Private key or path",
               "placeholder": "~/.ssh/id_ed25519",
-              "description": "Private key content or a path to the key file. Direct SFTP requires a key (key-only auth); SFTP (native) uses it when the password is empty; not needed through a DBX SSH tunnel."
+              "description": "OpenDAL SFTP: key file path on the DBX machine. Native SFTP also accepts PEM content, used when Password is empty. Encrypted keys are unsupported. Saved with connection secrets."
             },
             "known_hosts_strategy": {
               "label": "Known hosts strategy",
-              "description": "SSH host-key verification policy: Strict verifies against known hosts (recommended); Tolerate accepts and remembers new host keys; Trust accepts any host key — man-in-the-middle risk, testing only.",
+              "description": "Strict requires known host keys. Tolerate accepts unknown hosts but rejects changed known keys; native SFTP does not remember new keys. Trust skips verification.",
               "options": {
                 "Tolerate": "Tolerate (remember new hosts)",
                 "Strict": "Strict (verify known hosts)",
@@ -883,18 +822,6 @@
             "allow_delete": {
               "label": "Allow delete",
               "description": "When off, delete/purge operations are rejected."
-            },
-            "connection_mode": {
-              "label": "Connection mode",
-              "options": {
-                "direct": "Direct connection",
-                "via-dbx-ssh": "Through DBX SSH tunnel"
-              }
-            },
-            "dbx_ssh_connection": {
-              "label": "DBX SSH connection",
-              "placeholder": "host-ssh-connection-id",
-              "description": "Host SSH connection id used to forward the tunnel."
             },
             "timeout_secs": {
               "label": "Operation timeout (seconds)",
@@ -964,7 +891,7 @@
             "endpoint": {
               "label": "Endpoint",
               "placeholder": "http://127.0.0.1:9000",
-              "description": "Dirección completa del servidor; el esquema define la seguridad de transporte: WebDAV http(s)://host/dav (https = TLS). S3/OSS http(s)://host:9000 (https = TLS; opcional para AWS). FTP ftp://host:21 en claro o ftps://host:990 TLS explícito. SFTP ssh://user@host:22 (el nativo también acepta host:port junto al campo de usuario). SMB host[:445] o smb://host[:445]."
+              "description": "S3/OSS/WebDAV: https://host (TLS) o http://host. FTP: ftp://host:21 o ftps://host:21 (TLS explícito; sin TLS implícito en 990). SFTP: ssh://user@host:22. SMB: host:445. Indique la raíz aparte."
             },
             "share": {
               "label": "Recurso compartido",
@@ -998,7 +925,7 @@
             "user": {
               "label": "Usuario",
               "placeholder": "anonymous",
-              "description": "Déjelo vacío para inicio de sesión anónimo."
+              "description": "FTP: vacío permite acceso anónimo. SFTP: indique el usuario SSH o user@ en el endpoint. Este campo tiene prioridad."
             },
             "password": {
               "label": "Contraseña",
@@ -1007,11 +934,11 @@
             "key": {
               "label": "Clave privada o ruta",
               "placeholder": "~/.ssh/id_ed25519",
-              "description": "Contenido de la clave privada o ruta del archivo. El SFTP directo la requiere (solo clave); SFTP (nativo) la usa si la contraseña está vacía; no hace falta por el túnel SSH de DBX."
+              "description": "OpenDAL SFTP: ruta de la clave en la máquina DBX. SFTP nativo también acepta PEM si Contraseña está vacío. No admite claves cifradas. Se guarda con los secretos de conexión."
             },
             "known_hosts_strategy": {
               "label": "Estrategia de known hosts",
-              "description": "Política de verificación de la clave de host SSH: Strict verifica contra known hosts (recomendado); Tolerate acepta y recuerda hosts nuevos; Trust acepta cualquier clave — riesgo de man-in-the-middle, solo pruebas.",
+              "description": "Strict exige claves conocidas. Tolerate acepta hosts nuevos y rechaza claves conocidas modificadas; SFTP nativo no recuerda claves nuevas. Trust omite la verificación.",
               "options": {
                 "Tolerate": "Tolerante (recordar hosts nuevos)",
                 "Strict": "Estricto (verificar known hosts)",
@@ -1025,18 +952,6 @@
             "allow_delete": {
               "label": "Permitir eliminar",
               "description": "Si se desactiva, se rechazan las operaciones de borrado/purga."
-            },
-            "connection_mode": {
-              "label": "Modo de conexión",
-              "options": {
-                "direct": "Conexión directa",
-                "via-dbx-ssh": "A través del túnel SSH de DBX"
-              }
-            },
-            "dbx_ssh_connection": {
-              "label": "Conexión SSH de DBX",
-              "placeholder": "id-conexion-ssh-host",
-              "description": "ID de la conexión SSH del host usada para reenviar el túnel."
             },
             "timeout_secs": {
               "label": "Tiempo de espera de operación (segundos)",
@@ -1106,7 +1021,7 @@
             "endpoint": {
               "label": "Endpoint",
               "placeholder": "http://127.0.0.1:9000",
-              "description": "Indirizzo completo del server; lo schema definisce la sicurezza del trasporto: WebDAV http(s)://host/dav (https = TLS). S3/OSS http(s)://host:9000 (https = TLS; opzionale per AWS). FTP ftp://host:21 in chiaro oppure ftps://host:990 TLS esplicito. SFTP ssh://user@host:22 (il nativo accetta anche host:port con il campo utente). SMB host[:445] o smb://host[:445]."
+              "description": "S3/OSS/WebDAV: https://host (TLS) o http://host. FTP: ftp://host:21 o ftps://host:21 (TLS esplicito; non supportato TLS implicito su 990). SFTP: ssh://user@host:22. SMB: host:445. Imposta la radice separatamente."
             },
             "share": {
               "label": "Condivisione",
@@ -1140,7 +1055,7 @@
             "user": {
               "label": "Utente",
               "placeholder": "anonymous",
-              "description": "Lasciare vuoto per l'accesso anonimo."
+              "description": "FTP: vuoto indica accesso anonimo. SFTP: inserisci l’utente SSH o user@ nell’endpoint. Questo campo ha priorità."
             },
             "password": {
               "label": "Password",
@@ -1149,11 +1064,11 @@
             "key": {
               "label": "Chiave privata o percorso",
               "placeholder": "~/.ssh/id_ed25519",
-              "description": "Contenuto della chiave privata o percorso del file. L'SFTP diretto la richiede (solo chiave); SFTP (nativo) la usa se la password è vuota; non serve tramite il tunnel SSH di DBX."
+              "description": "OpenDAL SFTP: percorso della chiave sulla macchina DBX. SFTP nativo accetta anche PEM se Password è vuota. Chiavi cifrate non supportate. Salvato tra i segreti della connessione."
             },
             "known_hosts_strategy": {
               "label": "Strategia known hosts",
-              "description": "Politica di verifica della host key SSH: Strict verifica contro i known hosts (consigliato); Tolerate accetta e ricorda le nuove host key; Trust accetta qualsiasi chiave — rischio man-in-the-middle, solo test.",
+              "description": "Strict richiede chiavi note. Tolerate accetta host nuovi e rifiuta chiavi note modificate; SFTP nativo non memorizza chiavi nuove. Trust salta la verifica.",
               "options": {
                 "Tolerate": "Tollerante (ricorda i nuovi host)",
                 "Strict": "Rigoroso (verifica i known hosts)",
@@ -1167,18 +1082,6 @@
             "allow_delete": {
               "label": "Consenti eliminazione",
               "description": "Se disattivato, le operazioni di eliminazione/pulizia vengono rifiutate."
-            },
-            "connection_mode": {
-              "label": "Modalità di connessione",
-              "options": {
-                "direct": "Connessione diretta",
-                "via-dbx-ssh": "Attraverso il tunnel SSH di DBX"
-              }
-            },
-            "dbx_ssh_connection": {
-              "label": "Connessione SSH DBX",
-              "placeholder": "id-connessione-ssh-host",
-              "description": "ID della connessione SSH dell'host usata per inoltrare il tunnel."
             },
             "timeout_secs": {
               "label": "Timeout operazione (secondi)",
@@ -1248,7 +1151,7 @@
             "endpoint": {
               "label": "エンドポイント",
               "placeholder": "http://127.0.0.1:9000",
-              "description": "ストレージサーバーの完全なアドレス。スキームが通信の安全方式を決めます：WebDAV http(s)://host/dav（https で TLS）。S3/OSS http(s)://host:9000（https で TLS、AWS では省略可）。FTP は ftp://host:21 が平文、ftps://host:990 が明示的 TLS。SFTP ssh://user@host:22（ネイティブはユーザー欄と組み合わせて host:port も可）。SMB host[:445] または smb://host[:445]。"
+              "description": "S3/OSS/WebDAV: https://host（TLS）または http://host。FTP: ftp://host:21 または ftps://host:21（明示的 TLS。990 の暗黙的 TLS は非対応）。SFTP: ssh://user@host:22。SMB: host:445。ルートは別欄です。"
             },
             "share": {
               "label": "共有名",
@@ -1282,7 +1185,7 @@
             "user": {
               "label": "ユーザー",
               "placeholder": "anonymous",
-              "description": "匿名ログインの場合は空にします。"
+              "description": "FTP は空欄で匿名ログインです。SFTP は SSH ユーザーを入力するか、接続先に user@ を含めてください。この欄を優先します。"
             },
             "password": {
               "label": "パスワード",
@@ -1291,11 +1194,11 @@
             "key": {
               "label": "秘密鍵またはパス",
               "placeholder": "~/.ssh/id_ed25519",
-              "description": "秘密鍵の内容または鍵ファイルのパス。直接接続の SFTP では必須（鍵認証のみ）；SFTP（ネイティブ）はパスワード未設定時に使用；DBX SSH トンネル経由では不要です。"
+              "description": "OpenDAL SFTP は DBX マシン上の秘密鍵パスを指定します。ネイティブ SFTP は PEM も可能で、パスワードが空の場合に使います。暗号化秘密鍵は非対応です。接続のシークレットに保存します。"
             },
             "known_hosts_strategy": {
               "label": "Known Hosts 戦略",
-              "description": "SSH ホスト鍵の検証ポリシー：Strict は known hosts と照合（推奨）；Tolerate は新しいホスト鍵を承認して記憶；Trust は任意のホスト鍵を承認 — 中間者攻撃のリスクがあるためテスト専用。",
+              "description": "Strict は既知の鍵のみ許可します。Tolerate は未知のホストを許可し、既知の鍵の変更を拒否します。ネイティブ SFTP は新しい鍵を記録しません。Trust は検証を省略します。",
               "options": {
                 "Tolerate": "許容（新しいホストを記憶）",
                 "Strict": "厳格（known hosts を検証）",
@@ -1309,18 +1212,6 @@
             "allow_delete": {
               "label": "削除を許可",
               "description": "オフにすると、削除/パージ操作を拒否します。"
-            },
-            "connection_mode": {
-              "label": "接続モード",
-              "options": {
-                "direct": "直接接続",
-                "via-dbx-ssh": "DBX SSH トンネル経由"
-              }
-            },
-            "dbx_ssh_connection": {
-              "label": "DBX SSH 接続",
-              "placeholder": "host-ssh-connection-id",
-              "description": "トンネル転送に使うホスト SSH 接続の id。"
             },
             "timeout_secs": {
               "label": "操作タイムアウト（秒）",
@@ -1390,7 +1281,7 @@
             "endpoint": {
               "label": "Endpoint",
               "placeholder": "http://127.0.0.1:9000",
-              "description": "Endereço completo do servidor; o esquema define a segurança do transporte: WebDAV http(s)://host/dav (https = TLS). S3/OSS http(s)://host:9000 (https = TLS; opcional na AWS). FTP ftp://host:21 em texto puro ou ftps://host:990 TLS explícito. SFTP ssh://user@host:22 (o nativo também aceita host:port com o campo de usuário). SMB host[:445] ou smb://host[:445]."
+              "description": "S3/OSS/WebDAV: https://host (TLS) ou http://host. FTP: ftp://host:21 ou ftps://host:21 (TLS explícito; sem TLS implícito em 990). SFTP: ssh://user@host:22. SMB: host:445. Informe a raiz separadamente."
             },
             "share": {
               "label": "Compartilhamento",
@@ -1424,7 +1315,7 @@
             "user": {
               "label": "Usuário",
               "placeholder": "anonymous",
-              "description": "Deixe vazio para login anônimo."
+              "description": "FTP: vazio usa acesso anônimo. SFTP: informe o usuário SSH ou user@ no endpoint. Este campo tem prioridade."
             },
             "password": {
               "label": "Senha",
@@ -1433,11 +1324,11 @@
             "key": {
               "label": "Chave privada ou caminho",
               "placeholder": "~/.ssh/id_ed25519",
-              "description": "Conteúdo da chave privada ou caminho do arquivo. O SFTP direto exige chave (somente chave); o SFTP (nativo) usa quando a senha está vazia; desnecessário pelo túnel SSH do DBX."
+              "description": "OpenDAL SFTP: caminho da chave na máquina DBX. SFTP nativo aceita PEM com Senha vazia. Chaves criptografadas não são suportadas. Salvo com os segredos da conexão."
             },
             "known_hosts_strategy": {
               "label": "Estratégia de known hosts",
-              "description": "Política de verificação da host key SSH: Strict verifica contra known hosts (recomendado); Tolerate aceita e lembra novas host keys; Trust aceita qualquer host key — risco de man-in-the-middle, apenas para testes.",
+              "description": "Strict exige chaves conhecidas. Tolerate aceita hosts novos e rejeita alterações em chaves conhecidas; SFTP nativo não memoriza chaves novas. Trust ignora a verificação.",
               "options": {
                 "Tolerate": "Tolerar (lembrar novos hosts)",
                 "Strict": "Estrito (verificar known hosts)",
@@ -1451,18 +1342,6 @@
             "allow_delete": {
               "label": "Permitir exclusão",
               "description": "Quando desativado, as operações de exclusão/purge são rejeitadas."
-            },
-            "connection_mode": {
-              "label": "Modo de conexão",
-              "options": {
-                "direct": "Conexão direta",
-                "via-dbx-ssh": "Via túnel SSH do DBX"
-              }
-            },
-            "dbx_ssh_connection": {
-              "label": "Conexão SSH do DBX",
-              "placeholder": "id-conexao-ssh-host",
-              "description": "ID da conexão SSH do host usada para encaminhar o túnel."
             },
             "timeout_secs": {
               "label": "Tempo limite da operação (segundos)",
