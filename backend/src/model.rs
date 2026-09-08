@@ -83,7 +83,9 @@ pub struct StoredConnection {
     pub key: String,
     pub known_hosts_strategy: String,
     // --- smb ---
-    /// Share name (tree connect target) (`external_config.share`).
+    /// Optional share name (`external_config.share`). Empty enables SMB
+    /// server-level share discovery; a path's first component then selects
+    /// the tree connect target.
     pub share: String,
     /// NTLM domain / workgroup; optional (`external_config.domain`).
     pub domain: String,
@@ -170,7 +172,11 @@ impl StoredConnection {
             region: optional_string(external_config, "region"),
             access_key_id: optional_string(external_config, "access_key_id"),
             secret_access_key: secret_string(connection_secrets, "secret_access_key"),
-            enable_virtual_host_style: bool_field(external_config, "enable_virtual_host_style", false),
+            enable_virtual_host_style: bool_field(
+                external_config,
+                "enable_virtual_host_style",
+                false,
+            ),
             username: optional_string(external_config, "username"),
             user: optional_string(external_config, "user"),
             password: secret_string(connection_secrets, "password"),
@@ -448,10 +454,7 @@ fn string_field(object: &serde_json::Map<String, Value>, key: &str) -> Result<St
         .ok_or_else(|| format!("Missing connection {key}"))
 }
 
-fn optional_string(
-    object: Option<&serde_json::Map<String, Value>>,
-    key: &str,
-) -> String {
+fn optional_string(object: Option<&serde_json::Map<String, Value>>, key: &str) -> String {
     object
         .and_then(|object| object.get(key))
         .and_then(Value::as_str)
@@ -469,11 +472,7 @@ fn secret_string(object: Option<&serde_json::Map<String, Value>>, key: &str) -> 
         .to_string()
 }
 
-fn bool_field(
-    object: Option<&serde_json::Map<String, Value>>,
-    key: &str,
-    default: bool,
-) -> bool {
+fn bool_field(object: Option<&serde_json::Map<String, Value>>, key: &str, default: bool) -> bool {
     object
         .and_then(|object| object.get(key))
         .and_then(Value::as_bool)
@@ -520,7 +519,10 @@ mod tests {
         assert_eq!(connection.timeout_secs, 45);
         assert_eq!(connection.runtime_host, "127.0.0.1");
         assert_eq!(connection.runtime_port, 9000);
-        assert!(!connection.enable_virtual_host_style, "virtual-host style defaults to off");
+        assert!(
+            !connection.enable_virtual_host_style,
+            "virtual-host style defaults to off"
+        );
     }
 
     #[test]
@@ -572,7 +574,10 @@ mod tests {
             }
         }))
         .unwrap();
-        assert!(host_read_only.read_only, "host read_only must force the gate");
+        assert!(
+            host_read_only.read_only,
+            "host read_only must force the gate"
+        );
 
         // 连接表单 read_only（插件特定配置项）同样生效。
         let form_read_only = StoredConnection::from_lifecycle_params(&json!({
@@ -582,7 +587,10 @@ mod tests {
             }
         }))
         .unwrap();
-        assert!(form_read_only.read_only, "form read_only must force the gate");
+        assert!(
+            form_read_only.read_only,
+            "form read_only must force the gate"
+        );
 
         // 表单可写 + 宿主可写 → 门禁不误伤。
         let writable = StoredConnection::from_lifecycle_params(&json!({
@@ -691,9 +699,19 @@ mod tests {
         assert_eq!(legacy.key, "/legacy/key");
         assert_eq!(legacy.password, "  meaningful spaces  ");
         params["connection"]["connection_secrets"]["key"] = json!("PEM\nkey\n");
-        assert_eq!(StoredConnection::from_lifecycle_params(&params).unwrap().key, "PEM\nkey\n");
+        assert_eq!(
+            StoredConnection::from_lifecycle_params(&params)
+                .unwrap()
+                .key,
+            "PEM\nkey\n"
+        );
         params["connection"]["connection_secrets"]["key"] = json!("");
-        assert_eq!(StoredConnection::from_lifecycle_params(&params).unwrap().key, "");
+        assert_eq!(
+            StoredConnection::from_lifecycle_params(&params)
+                .unwrap()
+                .key,
+            ""
+        );
     }
 
     #[test]
@@ -915,7 +933,10 @@ mod tests {
             ("access_key_id", &["s3", "oss"]),
             ("secret_access_key", &["s3", "oss"]),
             ("enable_virtual_host_style", &["s3"]),
-            ("endpoint", &["s3", "oss", "webdav", "ftp", "sftp", "smb", "sftp-native"]),
+            (
+                "endpoint",
+                &["s3", "oss", "webdav", "ftp", "sftp", "smb", "sftp-native"],
+            ),
             ("username", &["webdav", "smb"]),
             ("user", &["ftp", "sftp", "sftp-native"]),
             ("share", &["smb"]),
@@ -952,7 +973,10 @@ mod tests {
             );
         }
 
-        assert_eq!(field("allow_delete")["visible_when"], json!({"field":"read_only", "one_of":["false"]}));
+        assert_eq!(
+            field("allow_delete")["visible_when"],
+            json!({"field":"read_only", "one_of":["false"]})
+        );
         assert_eq!(field("key")["binding"], "secret");
         assert!(!keys.contains(&"connection_mode"));
         assert!(!keys.contains(&"dbx_ssh_connection"));
@@ -981,40 +1005,46 @@ mod tests {
         // static `required` on an s3/smb-only field would reject every
         // fs/webdav/ftp/sftp connection with "Plugin connection field '…' is
         // required". `required_when` keeps the form-level enforcement on the
-        // matching protocol; the engine builders (OpenDAL, smb adapter) remain
-        // the runtime enforcement point with their own clear errors.
+        // matching protocol; the engine builders remain the runtime
+        // enforcement point with their own clear errors. SMB share is
+        // intentionally optional because an empty share opens server-level
+        // discovery.
         let field_of = |name: &str| {
             fields
                 .iter()
                 .find(|item| item["key"] == name)
                 .unwrap_or_else(|| panic!("manifest field '{name}' missing"))
         };
-        let required = |name: &str| field_of(name).get("required").and_then(Value::as_bool).unwrap_or(false);
+        let required = |name: &str| {
+            field_of(name)
+                .get("required")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        };
         assert!(required("display_name"));
         assert!(required("protocol"));
 
-        let conditionally_required = [
-            "bucket",
-            "access_key_id",
-            "secret_access_key",
-            "share",
-            "service",
-        ];
+        let conditionally_required = ["bucket", "access_key_id", "secret_access_key", "service"];
         for key in conditionally_required {
             let item = field_of(key);
             assert!(
                 !required(key),
                 "field '{key}' must not be statically required: the host cannot scope static required to visible_when and would block every other protocol"
             );
-            let visible_when = item.get("visible_when").unwrap_or_else(|| panic!("field '{key}' lacks visible_when"));
-            let required_when = item
-                .get("required_when")
-                .unwrap_or_else(|| panic!("field '{key}' must pair visible_when with required_when"));
+            let visible_when = item
+                .get("visible_when")
+                .unwrap_or_else(|| panic!("field '{key}' lacks visible_when"));
+            let required_when = item.get("required_when").unwrap_or_else(|| {
+                panic!("field '{key}' must pair visible_when with required_when")
+            });
             assert_eq!(
                 visible_when, required_when,
                 "field '{key}' required_when must match its visible_when"
             );
         }
+        let share = field_of("share");
+        assert!(!required("share"));
+        assert!(share.get("required_when").is_none());
 
         // endpoint is conditionally required on a SUBSET of its visible
         // protocols: webdav/ftp/sftp/smb/sftp-native need it, s3/oss stay
@@ -1023,7 +1053,10 @@ mod tests {
         // subset must never leave the required scope hidden — asserted here
         // by keeping it inside the endpoint visible list.
         let endpoint = field_of("endpoint");
-        assert!(required("endpoint") == false, "endpoint must not be statically required");
+        assert!(
+            required("endpoint") == false,
+            "endpoint must not be statically required"
+        );
         let endpoint_visible: Vec<&str> = endpoint["visible_when"]["one_of"]
             .as_array()
             .expect("endpoint visible_when")
@@ -1040,7 +1073,9 @@ mod tests {
             .map(|value| value.as_str().expect("one_of value"))
             .collect();
         assert!(
-            endpoint_required.iter().all(|value| endpoint_visible.contains(value)),
+            endpoint_required
+                .iter()
+                .all(|value| endpoint_visible.contains(value)),
             "endpoint required_when must stay inside its visible_when"
         );
         for required_protocol in ["webdav", "ftp", "sftp", "smb", "sftp-native"] {

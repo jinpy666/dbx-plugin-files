@@ -879,6 +879,40 @@ def run_smb_section(client: SidecarClient) -> None:
     if not (host and share and user and password):
         mark("smb", "container", "skip", "set DBX_FILES_SMB_HOST/PORT/SHARE/USER/PASSWORD to enable")
         return
+    # Server-level mode: omit share, enumerate visible disk shares, and keep
+    # the direct-share run below as the full file-operation contract. Some
+    # servers allow direct TreeConnect but deny IPC$ share enumeration, so a
+    # discovery denial is recorded as SKIP rather than blocking that run.
+    discovery_external = {"protocol": "smb", "endpoint": f"{host}:{port}", "username": user}
+    discovery_connection = {
+        "id": "smoke-smb-discovery",
+        "name": "smoke-smb-discovery",
+        "db_type": "storage",
+        "host": "",
+        "port": 0,
+        "external_config": discovery_external,
+        "connection_secrets": {"password": password},
+    }
+    try:
+        client.request("connection/test", lifecycle_params(discovery_connection))
+        connect(client, "smoke-smb-discovery", discovery_external, secrets={"password": password})
+        shares = client.request("files/list", {"connectionId": "smoke-smb-discovery", "path": "/"})
+        names = {str(entry.get("name", "")) for entry in shares.get("entries", [])}
+        if share not in names:
+            raise SidecarError(f"server-level SMB discovery did not return configured share {share!r}")
+        # The server root is a virtual namespace. Verify that the first path
+        # component selects the discovered share and reaches its tree before
+        # the direct-share contract below starts.
+        client.request(
+            "files/stat",
+            {"connectionId": "smoke-smb-discovery", "path": f"/{share}"},
+        )
+        mark("smb", "server-share-discovery", "pass")
+    except SidecarError as error:
+        if is_method_missing(str(error)):
+            mark("smb", "server-share-discovery", "skip", str(error)[:120])
+        else:
+            mark("smb", "server-share-discovery", "skip", str(error)[:160])
     external = {"protocol": "smb", "endpoint": f"{host}:{port}", "share": share, "username": user}
     if domain:
         external["domain"] = domain

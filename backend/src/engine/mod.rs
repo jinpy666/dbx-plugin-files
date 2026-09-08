@@ -327,7 +327,11 @@ pub fn protocol_kv(
             push(&mut kv, "endpoint", &connection.endpoint);
             push(&mut kv, "user", &connection.user);
             push(&mut kv, "key", &connection.key);
-            push(&mut kv, "known_hosts_strategy", &connection.known_hosts_strategy);
+            push(
+                &mut kv,
+                "known_hosts_strategy",
+                &connection.known_hosts_strategy,
+            );
             // Note: OpenDAL's sftp service is key-based; `password` has no
             // matching option in 0.57 and is deliberately not forwarded.
             "sftp".to_string()
@@ -355,7 +359,11 @@ pub fn protocol_kv(
             push(&mut kv, "username", &connection.username);
             push(&mut kv, "password", &connection.password);
             push(&mut kv, "key", &connection.key);
-            push(&mut kv, "known_hosts_strategy", &connection.known_hosts_strategy);
+            push(
+                &mut kv,
+                "known_hosts_strategy",
+                &connection.known_hosts_strategy,
+            );
             "sftp-native".to_string()
         }
         "opendal-custom" => {
@@ -578,10 +586,7 @@ mod tests {
             custom.service = "memory".to_string();
             custom.custom_config = json!({});
             let operator = build_operator(&custom).unwrap();
-            operator
-                .check()
-                .await
-                .expect("memory operator must check");
+            operator.check().await.expect("memory operator must check");
 
             operator.write("hello.txt", "world").await.unwrap();
             let data = operator.read("hello.txt").await.unwrap();
@@ -686,14 +691,21 @@ mod tests {
         assert_eq!(scheme, "oss");
         let map: HashMap<String, String> = kv.into_iter().collect();
         assert_eq!(map["root"], "/sub");
-        assert_eq!(map.len(), 1, "only root survives when everything else is empty");
+        assert_eq!(
+            map.len(),
+            1,
+            "only root survives when everything else is empty"
+        );
     }
 
     #[test]
     fn oss_endpoints_reject_non_http_schemes() {
         let mut oss = connection("oss");
         oss.endpoint = "file:///etc/passwd".into();
-        assert!(protocol_kv(&oss).is_err(), "file:// must be rejected for oss");
+        assert!(
+            protocol_kv(&oss).is_err(),
+            "file:// must be rejected for oss"
+        );
 
         oss.endpoint = "https://oss-cn-hangzhou.aliyuncs.com".into();
         assert!(protocol_kv(&oss).is_ok());
@@ -758,7 +770,10 @@ mod tests {
             "access_key_id": "ak",
             "secret_access_key": "sk",
         });
-        assert!(protocol_kv(&custom).is_err(), "ftp scheme must be rejected for obs");
+        assert!(
+            protocol_kv(&custom).is_err(),
+            "ftp scheme must be rejected for obs"
+        );
 
         custom.custom_config = json!({
             "bucket": "demo",
@@ -773,13 +788,22 @@ mod tests {
             "endpoint": "ssh://user@host:22",
             "key": "k",
         });
-        assert!(protocol_kv(&custom).is_ok(), "ssh scheme stays allowed for sftp");
+        assert!(
+            protocol_kv(&custom).is_ok(),
+            "ssh scheme stays allowed for sftp"
+        );
 
         custom.service = "totally-new-service".to_string();
         custom.custom_config = json!({ "endpoint": "file:///x" });
-        assert!(protocol_kv(&custom).is_err(), "file:// rejected for unknown services");
+        assert!(
+            protocol_kv(&custom).is_err(),
+            "file:// rejected for unknown services"
+        );
         custom.custom_config = json!({ "endpoint": "weird://x" });
-        assert!(protocol_kv(&custom).is_ok(), "unknown schemes tolerated for unknown services");
+        assert!(
+            protocol_kv(&custom).is_ok(),
+            "unknown schemes tolerated for unknown services"
+        );
     }
 
     #[test]
@@ -888,10 +912,13 @@ mod tests {
     }
 
     #[test]
-    fn smb_operator_rejects_missing_share_and_bad_endpoints() {
+    fn smb_operator_allows_missing_share_and_rejects_bad_endpoints() {
         let mut smb = smb_connection();
         smb.share = "".into();
-        assert!(build_operator(&smb).is_err(), "share is required");
+        assert!(
+            build_operator(&smb).is_ok(),
+            "share is optional for discovery"
+        );
 
         let mut smb = smb_connection();
         smb.endpoint = "http://nas.local".into();
@@ -932,7 +959,14 @@ mod tests {
         // A host connection attempting to shadow the reserved id is refused.
         assert!(engine.connect(local.clone()).is_err());
         // The reserved entry still resolves to the built-in fs operator.
-        assert_eq!(engine.operator(LOCAL_CONNECTION_ID).unwrap().info().scheme(), "fs");
+        assert_eq!(
+            engine
+                .operator(LOCAL_CONNECTION_ID)
+                .unwrap()
+                .info()
+                .scheme(),
+            "fs"
+        );
 
         local.id = "host-fs".into();
         engine.connect(local).unwrap();

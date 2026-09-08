@@ -33,7 +33,9 @@ use tokio::sync::Mutex;
 pub(super) struct SmbConnectParams {
     pub host: String,
     pub port: u16,
-    pub share: String,
+    /// Optional default share. Empty means server-level browsing: the first
+    /// path component selects a share and the root lists available shares.
+    pub share: Option<String>,
     pub username: String,
     pub password: String,
     pub domain: String,
@@ -53,7 +55,10 @@ impl fmt::Debug for SmbConnectParams {
 /// One connected client: the SMB session plus its tree connect to the share.
 struct SmbState {
     client: smb2::SmbClient,
-    tree: smb2::Tree,
+    /// Trees are opened lazily and cached by share name. This lets one
+    /// server-level Operator browse several Samba exports without storing a
+    /// second credential-bearing connection.
+    trees: HashMap<String, smb2::Tree>,
 }
 
 /// Lazily-dialed single-client pool behind the adapter.
@@ -74,16 +79,40 @@ impl fmt::Debug for SmbPool {
 /// enum (instead of closures) so the connected-client borrow stays inside
 /// `call` and no HRTB boxing is needed.
 pub(super) enum SmbOp<'a> {
-    Stat { path: &'a str },
-    List { path: &'a str },
-    CreateDir { path: &'a str },
-    DeleteFile { path: &'a str },
-    DeleteDirectory { path: &'a str },
-    Rename { from: &'a str, to: &'a str },
+    ListShares,
+    ConnectShare {
+        share: &'a str,
+    },
+    Stat {
+        share: &'a str,
+        path: &'a str,
+    },
+    List {
+        share: &'a str,
+        path: &'a str,
+    },
+    CreateDir {
+        share: &'a str,
+        path: &'a str,
+    },
+    DeleteFile {
+        share: &'a str,
+        path: &'a str,
+    },
+    DeleteDirectory {
+        share: &'a str,
+        path: &'a str,
+    },
+    Rename {
+        share: &'a str,
+        from: &'a str,
+        to: &'a str,
+    },
 }
 
 /// Result of a dispatched [`SmbOp`] (only the ops that produce data carry it).
 pub(super) enum SmbOpResult {
+    Shares(Vec<smb2::ShareInfo>),
     Stat(smb2::FileInfo),
     List(Vec<smb2::DirectoryEntry>),
     Unit,
@@ -103,29 +132,52 @@ impl SmbPool {
         if state.is_none() {
             *state = Some(dial(&self.params).await?);
         }
-        let SmbState { client, tree } = state.as_mut().expect("connected above");
+        let SmbState { client, trees } = state.as_mut().expect("connected above");
         let outcome = match op {
-            SmbOp::Stat { path } => client.stat(tree, path).await.map(SmbOpResult::Stat),
-            SmbOp::List { path } => client
-                .list_directory(tree, path)
-                .await
-                .map(SmbOpResult::List),
-            SmbOp::CreateDir { path } => client
-                .create_directory(tree, path)
+            SmbOp::ListShares => client.list_shares().await.map(SmbOpResult::Shares),
+            SmbOp::ConnectShare { share } => ensure_tree(client, trees, share)
                 .await
                 .map(|_| SmbOpResult::Unit),
-            SmbOp::DeleteFile { path } => client
-                .delete_file(tree, path)
-                .await
-                .map(|_| SmbOpResult::Unit),
-            SmbOp::DeleteDirectory { path } => client
-                .delete_directory(tree, path)
-                .await
-                .map(|_| SmbOpResult::Unit),
-            SmbOp::Rename { from, to } => client
-                .rename(tree, from, to)
-                .await
-                .map(|_| SmbOpResult::Unit),
+            SmbOp::Stat { share, path } => match ensure_tree(client, trees, share).await {
+                Ok(tree) => client.stat(tree, path).await.map(SmbOpResult::Stat),
+                Err(error) => Err(error),
+            },
+            SmbOp::List { share, path } => match ensure_tree(client, trees, share).await {
+                Ok(tree) => client
+                    .list_directory(tree, path)
+                    .await
+                    .map(SmbOpResult::List),
+                Err(error) => Err(error),
+            },
+            SmbOp::CreateDir { share, path } => match ensure_tree(client, trees, share).await {
+                Ok(tree) => client
+                    .create_directory(tree, path)
+                    .await
+                    .map(|_| SmbOpResult::Unit),
+                Err(error) => Err(error),
+            },
+            SmbOp::DeleteFile { share, path } => match ensure_tree(client, trees, share).await {
+                Ok(tree) => client
+                    .delete_file(tree, path)
+                    .await
+                    .map(|_| SmbOpResult::Unit),
+                Err(error) => Err(error),
+            },
+            SmbOp::DeleteDirectory { share, path } => match ensure_tree(client, trees, share).await
+            {
+                Ok(tree) => client
+                    .delete_directory(tree, path)
+                    .await
+                    .map(|_| SmbOpResult::Unit),
+                Err(error) => Err(error),
+            },
+            SmbOp::Rename { share, from, to } => match ensure_tree(client, trees, share).await {
+                Ok(tree) => client
+                    .rename(tree, from, to)
+                    .await
+                    .map(|_| SmbOpResult::Unit),
+                Err(error) => Err(error),
+            },
         };
         // A client the crate's reviver could not keep alive is discarded;
         // the next call re-dials from scratch.
@@ -143,11 +195,22 @@ impl SmbPool {
     /// Opens a positioned streaming reader. The returned handle owns its own
     /// `Connection` clone and never touches the pool mutex afterwards.
     pub(super) async fn open_reader(&self, path: &str) -> opendal::Result<smb2::FileReader> {
+        self.open_reader_on_share(self.default_share()?, path).await
+    }
+
+    pub(super) async fn open_reader_on_share(
+        &self,
+        share: &str,
+        path: &str,
+    ) -> opendal::Result<smb2::FileReader> {
         let mut state = self.state.lock().await;
         if state.is_none() {
             *state = Some(dial(&self.params).await?);
         }
-        let SmbState { client, tree } = state.as_mut().expect("connected above");
+        let SmbState { client, trees } = state.as_mut().expect("connected above");
+        let tree = ensure_tree(client, trees, share)
+            .await
+            .map_err(map_smb_error)?;
         client
             .open_file_reader(tree, path)
             .await
@@ -156,19 +219,55 @@ impl SmbPool {
 
     /// Opens a pipelined streaming writer (overwrites by truncation).
     pub(super) async fn open_writer(&self, path: &str) -> opendal::Result<smb2::FileWriter> {
+        self.open_writer_on_share(self.default_share()?, path).await
+    }
+
+    pub(super) async fn open_writer_on_share(
+        &self,
+        share: &str,
+        path: &str,
+    ) -> opendal::Result<smb2::FileWriter> {
         let mut state = self.state.lock().await;
         if state.is_none() {
             *state = Some(dial(&self.params).await?);
         }
-        let SmbState { client, tree } = state.as_mut().expect("connected above");
+        let SmbState { client, trees } = state.as_mut().expect("connected above");
+        let tree = ensure_tree(client, trees, share)
+            .await
+            .map_err(map_smb_error)?;
         client
             .create_file_writer(tree, path)
             .await
             .map_err(map_smb_error)
     }
+
+    fn default_share(&self) -> opendal::Result<&str> {
+        self.params.share.as_deref().ok_or_else(|| {
+            Error::new(
+                ErrorKind::ConfigInvalid,
+                "smb share must be selected before file access",
+            )
+        })
+    }
 }
 
-/// Runs the full handshake: TCP dial, negotiate, session setup, tree connect.
+/// Returns a cached tree, opening it lazily when a server-level connection
+/// first touches a share.
+async fn ensure_tree<'a>(
+    client: &mut smb2::SmbClient,
+    trees: &'a mut HashMap<String, smb2::Tree>,
+    share: &str,
+) -> std::result::Result<&'a mut smb2::Tree, smb2::Error> {
+    if !trees.contains_key(share) {
+        let tree = client.connect_share(share).await?;
+        trees.insert(share.to_string(), tree);
+    }
+    Ok(trees.get_mut(share).expect("tree inserted or cached"))
+}
+
+/// Runs the session handshake: TCP dial, negotiate, and session setup.
+/// Tree connects are deliberately lazy because a server-level operator may
+/// browse and use several exported shares with the same authenticated client.
 async fn dial(params: &SmbConnectParams) -> opendal::Result<SmbState> {
     let config = smb2::ClientConfig {
         addr: format!("{}:{}", params.host, params.port),
@@ -184,14 +283,13 @@ async fn dial(params: &SmbConnectParams) -> opendal::Result<SmbState> {
         dfs_enabled: true,
         dfs_target_overrides: HashMap::new(),
     };
-    let mut client = smb2::SmbClient::connect(config)
+    let client = smb2::SmbClient::connect(config)
         .await
         .map_err(map_smb_error)?;
-    let tree = client
-        .connect_share(&params.share)
-        .await
-        .map_err(map_smb_error)?;
-    Ok(SmbState { client, tree })
+    Ok(SmbState {
+        client,
+        trees: HashMap::new(),
+    })
 }
 
 /// Maps an `smb2` error onto the OpenDAL error taxonomy. The crate's `Display`

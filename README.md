@@ -3,8 +3,8 @@
 DBX 的多协议文件管理插件：统一 **Apache OpenDAL** 引擎访问
 fs/s3(MinIO)/webdav/ftp/sftp + 全部已编译服务（`opendal-custom` 透传）；
 浏览/读写/复制/移动/删除、二进制通道大文件传输（异步 job + 进度 + 取消）、
-目录同步、公开链接（presign）。能力对标 tiny-rdm 文件控制台（Fs 22 方法，
-能力缺口显式声明）。
+目录同步、公开链接（presign）。能力覆盖 Fs 22 方法，
+能力缺口显式声明。
 
 ## 状态
 
@@ -29,7 +29,6 @@ M0（公共基线）→ M2（核心）→ M3（sftp + 云盘模板）→ M4（MC
   异步 job 设计、能力缺口表 §5.5、任务表 F2/F3/F4
 - 公共基线：`../shared/IMPL_PLAN_M0_COMMON.zh-CN.md`（注意：其 Go SDK
   部分仅适用 LDAP；本插件走 Rust 栈，验证并入 F2-1）
-- 总提案与决策：`../shared/PLUGIN_PROPOSAL_LDAP_RCLONE.zh-CN.md`
 
 ## 脚手架入口
 

@@ -84,7 +84,7 @@ export const SERVICE_TEMPLATES: Record<string, ServiceTemplate> = {
     kind: "quick",
     fields: [
       { key: "endpoint", type: "text", required: true, placeholder: "nas.local:445 or smb://nas.local" },
-      { key: "share", type: "text", required: true, placeholder: "share or share/sub/path" },
+      { key: "share", type: "text", placeholder: "share or share/sub/path (optional; blank lists shares)" },
       { key: "username", type: "text" },
       { key: "password", type: "password", secret: true },
       { key: "domain", type: "text", placeholder: "NTLM domain or workgroup" },

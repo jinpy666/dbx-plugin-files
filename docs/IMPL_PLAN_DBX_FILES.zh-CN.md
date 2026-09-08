@@ -1,7 +1,6 @@
 # dbx-files-plugin 可实施文档
 
-> 上游：`PLUGIN_PROPOSAL_LDAP_RCLONE.zh-CN.md`；公共基线：
-> `IMPL_PLAN_M0_COMMON.zh-CN.md`（M0 文档）。
+> 公共基线：`IMPL_PLAN_M0_COMMON.zh-CN.md`（M0 文档）。
 > 插件：`io.dbx.files`，仓库 `~/btroot/dbx-plugins/files`，sidecar
 > `dbx-plugin-files`。
 >
@@ -13,7 +12,7 @@
 >   BE offset 前缀，无需 base64）；
 > - 凭据 obscure/config-create 红线整体消失——OpenDAL Operator 全内存构建，
 >   凭据不落盘、不进环境变量、无 rclone.conf；
-> - 能力面对齐目标重定义：tiny-rdm 的 rclone 全后端 → OpenDAL 服务矩阵
+> - 能力面对齐目标重定义：早期为 rclone 全后端 → 现为 OpenDAL 服务矩阵
 >   （63 个 services feature，编译期白名单启用），能力缺口显式列表见 §5.5。
 
 ## 0. 为什么换 OpenDAL + Rust（调研依据）
@@ -83,13 +82,13 @@ dbx-files-plugin/
   （或走 CLI sdk-root）；CLI 打包时自动携带 SDK。
 - 法务：Apache-2.0 + 依赖清单随对标清单归档（M2-T0）。
 
-## 3. 代码迁移映射（tiny-rdm → 本插件）
+## 3. 初版代码迁移映射（外部参照 → 本插件，历史）
 
-tiny-rdm 的 `fs/manager.go`（rclone rc 封装）、`fs/local.go`、`fs/transfer.go`、
+外部参照实现的 `fs/manager.go`（rclone rc 封装）、`fs/local.go`、`fs/transfer.go`、
 `buildRemoteConfig` **全部不移植**——它们是 rclone 集成件，被 OpenDAL 替代。
 仍具迁移价值的：
 
-| tiny-rdm 源 | 去处 | 改造 |
+| 参照基线（已退役） | 去处 | 改造 |
 |---|---|---|
 | `fs_service.go`（会话/门禁/审计/传输记录/方法语义） | `main.rs` + `policy.rs` + `transfers.rs` | 方法语义（22 个 Fs 方法的参数/行为）逐一对齐；门禁/审计语义照 M0 基线 |
 | `types/fs_types.go`（条目结构） | `model.rs` | `{name,path,kind,size,modifiedAt}` camelCase 对齐 |
@@ -143,7 +142,7 @@ connection-provider `io.dbx.files.connection`，`database_type: "storage"`，
 
 **必填规则（v0.1.4 起）**：静态 `required: true` 仅限 `display_name` 与
 `protocol` 两个无条件字段。协议特定必填项（s3/oss 的
-bucket/access_key_id/secret_access_key、smb 的 share、opendal-custom 的
+bucket/access_key_id/secret_access_key、opendal-custom 的
 service、via-dbx-ssh 的 dbx_ssh_connection）一律 `required_when` 与
 `visible_when` 成对声明——宿主校验静态 `required` 时不评估 `visible_when`，
 静态必填会把其它协议全部拦死（"Plugin connection field 'Bucket' is
@@ -198,9 +197,9 @@ required"）。`required_when` 由连接表单按条件拦截；运行时兜底�
   不落 rclone.conf 类物、不进环境变量；连接表只存 Operator，不存明文配置。
 - 日志/审计/事件一律不含凭据字段（redact 宏统一处理）。
 
-### 5.5 能力缺口表（对 tiny-rdm，显式声明）
+### 5.5 能力缺口表（对照外部基线，已收口）
 
-| tiny-rdm 能力 | v3 状态 | 说明 |
+| 参照基线（已退役） | v3 状态 | 说明 |
 |---|---|---|
 | `About`（容量查询） | **不适用** | OpenDAL 无容量 API；返回字段缺省（前端隐藏面板） |
 | `PublicLink` | 部分对齐 | `presign_read` 覆盖签名型后端（s3/gcs/azblob/oss）；其余报「后端不支持」 |
@@ -261,7 +260,7 @@ connectionId `__local__`——按需合成的 root=`/` fs 连接（可写、可�
 不锁 root，与用户自建「本地文件系统」连接同策略），不占连接表、
 `connection/connect` 拒绝该 id 防遮蔽。所有 `files/*` 方法对该 id
 直接可用（浏览/读写/传输/quickPaths/capabilities），工作台双栏左栏
-默认指向它（左=本地、右=远端，tiny-rdm/FileZilla 对标）；无新增协议方法。
+默认指向它（左=本地、右=远端，对齐主流双栏文件管理器心智）；无新增协议方法。
 
 ### 8.1 浏览与元数据
 
@@ -273,7 +272,7 @@ connectionId `__local__`——按需合成的 root=`/` fs 连接（可写、可�
 | `files/capabilities` | — | `{copy:bool,rename:bool,presign:bool,write:bool,…}`（`info().capability()` 透出，前端按能力显隐） |
 | `files/size` | `path` | `{count,bytes}`（lister 聚合） |
 | `files/publicLink` | `path`、`expireSecs?` | `{url}`；后端不支持时 -32000 |
-| `files/quickPaths` | — | `{paths:[{key,path}]}`；工作台路径栏快速目录下拉（原 chips 行已并入下拉，tiny-rdm 对标）。仅 fs 协议（root 为 `/` 即整盘、且未锁 root；OpenDAL fs 的 root 必填，无法「未配置」）透出 `home/desktop/downloads/documents/pictures`（逐个 stat 校验，缺失目录不出现）；其余协议与受限连接只返回 `{key:"root",path:"/"}` |
+| `files/quickPaths` | — | `{paths:[{key,path}]}`；工作台路径栏快速目录下拉（原 chips 行已并入下拉）。仅 fs 协议（root 为 `/` 即整盘、且未锁 root；OpenDAL fs 的 root 必填，无法「未配置」）透出 `home/desktop/downloads/documents/pictures`（逐个 stat 校验，缺失目录不出现）；其余协议与受限连接只返回 `{key:"root",path:"/"}` |
 
 （`About` 删除——OpenDAL 无容量 API，前端隐藏入口。）
 
@@ -332,7 +331,7 @@ web 模式兜底：宿主无 `host.binary` 能力时，降级提供 JSON+base64 
 targetPath 均过 policy 白名单；条目路径拒绝 `..`/绝对/盘符/反斜杠与链接条目
 （zip-slip）；防呆上限——条目 50k、gzip 解压/载荷 1 GiB、源文件 1 GiB；zip 输入
 返回明确 -32000（Phase 2）。实现见 `backend/src/archive.rs`（tar header 与
-inflate 均为手写，无新依赖），交付细节见 `docs/PROGRESS-B-ARCHIVE.zh-CN.md`。
+inflate 均为手写，无新依赖），交付细节见 git 历史。
 
 ### 8.6 前端实施要点
 
@@ -389,7 +388,7 @@ job 状态机、redact、出网校验（scheme/host/私有地址分流用例）�
 | `smoke_custom_test.py` | `opendal-custom`（service=memory） | 透传构造路径 |
 | `smoke_sftp_test.py`（M3） | openssh 容器 | sftp 全量 + via-dbx-ssh（视宿主隧道 API） |
 
-**对标清单**：tiny-rdm Fs 22 方法 × 状态（对齐/降级/不适用+原因，含 §5.5
+**能力清单**：Fs 22 方法 × 状态（对齐/降级/不适用+原因，含 §5.5
 缺口表）+ OpenDAL 服务覆盖矩阵（快捷协议 vs custom 透传 vs 编译白名单）。
 
 ## 11. 里程碑任务分解
@@ -417,11 +416,13 @@ job 状态机、redact、出网校验（scheme/host/私有地址分流用例）�
 | F3-3 | ftp 后端 + 云服务快捷模板（gcs/azblob/oss——纯前端模板，必要时扩 feature） | 每模板 custom 透传冒烟 |
 | F3-4 | 传输历史持久化 + 重启展示 | transfers.json 环形覆盖正确 |
 
-### F5（SMB 后端，Rust 原生 client；方案与任务表见 `docs/IMPL_PLAN_SMB.zh-CN.md`）——**已落地（2026-08-29）**
+### F5（SMB 后端，Rust 原生 client；方案与任务表已随专项文档退役删除，见 git 历史）——**已落地（2026-08-29）**
 
 `smb2` crate + OpenDAL 自定义 Access 适配层，新增第 6 个快捷协议 `smb`；
 方法面零新增，配置面/前端模板/七语/Samba 容器 smoke 为主要增量。
-交付报告与真机修复记录：`docs/PROGRESS-F5-SMB.zh-CN.md`。
+交付报告与真机修复记录随批次文档退役删除（见 git 历史）。SMB 的 `share`
+现为可选：留空时连接服务器根并枚举可见共享，路径首段选择共享；填写后
+保持指定共享直连。服务器级连接不能设置 share-relative 的 `root`。
 
 ### M4（MCP 工具）
 

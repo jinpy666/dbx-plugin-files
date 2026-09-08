@@ -44,7 +44,9 @@ pub struct SmbConfig {
     pub root: Option<String>,
     /// `host[:port]` or `smb://host[:port]`; port defaults to 445.
     pub endpoint: Option<String>,
-    /// Share name (tree connect target).
+    /// Optional share name (tree connect target). When absent, the operator
+    /// lists server shares at `/` and uses the first path component as the
+    /// selected share.
     pub share: Option<String>,
     /// NTLM username; empty = guest.
     pub username: Option<String>,
@@ -89,7 +91,8 @@ impl SmbBuilder {
         self
     }
 
-    /// Share name (tree connect target); required.
+    /// Optional share name (tree connect target); empty enables server-level
+    /// browsing and path-based share selection.
     pub fn share(mut self, value: &str) -> Self {
         self.config.share = Some(value.to_string());
         self
@@ -121,13 +124,15 @@ impl Builder for SmbBuilder {
         let config = self.config;
         let endpoint = config.endpoint.clone().unwrap_or_default();
         let (host, port) = parse_smb_endpoint(&endpoint)?;
-        let (share, root) = split_share_and_root(&config.share.unwrap_or_default(), config.root.as_deref());
-        if share.is_empty() {
+        let (share, root) =
+            split_share_and_root(&config.share.unwrap_or_default(), config.root.as_deref());
+        if share.is_empty() && root != "/" {
             return Err(Error::new(
                 ErrorKind::ConfigInvalid,
-                "smb share is required (the tree connect target)",
+                "smb root requires a selected share; leave root empty when browsing server shares",
             ));
         }
+        let share = (!share.is_empty()).then_some(share);
         let params = pool::SmbConnectParams {
             host,
             port,
@@ -139,7 +144,7 @@ impl Builder for SmbBuilder {
         Ok(access::SmbAccess::new(
             pool::SmbPool::new(params),
             root,
-            &share,
+            share.as_deref(),
         ))
     }
 }
@@ -163,7 +168,11 @@ fn split_share_and_root(share: &str, user_root: Option<&str>) -> (String, String
     let root = if nested.is_empty() {
         normalize_root(user_root.unwrap_or("/"))
     } else {
-        normalize_root(&format!("/{}/{}", nested.join("/"), user_root.unwrap_or("/").trim_matches('/')))
+        normalize_root(&format!(
+            "/{}/{}",
+            nested.join("/"),
+            user_root.unwrap_or("/").trim_matches('/')
+        ))
     };
     (share, root)
 }
@@ -323,11 +332,21 @@ mod tests {
     }
 
     #[test]
-    fn smb_builder_requires_share() {
+    fn smb_builder_allows_server_level_browsing_without_share() {
+        let operator = Operator::new(SmbBuilder::new().endpoint("nas.local"))
+            .unwrap()
+            .finish();
+        assert_eq!(operator.info().scheme(), SMB_SCHEME);
+        assert_eq!(operator.info().root(), "/");
+    }
+
+    #[test]
+    fn smb_builder_rejects_root_without_selected_share() {
         let error = SmbBuilder::new()
             .endpoint("nas.local")
+            .root("/data")
             .build()
-            .expect_err("missing share must fail");
+            .expect_err("server-level browsing cannot have a share-relative root");
         assert_eq!(error.kind(), ErrorKind::ConfigInvalid);
     }
 
@@ -353,13 +372,21 @@ mod tests {
         // Plain shares keep the configured root unchanged.
         let cases: Vec<(&str, Option<&str>, (String, String))> = vec![
             ("media", None, ("media".into(), "/".into())),
-            ("media", Some("/archive"), ("media".into(), "/archive/".into())),
+            (
+                "media",
+                Some("/archive"),
+                ("media".into(), "/archive/".into()),
+            ),
             ("  media  ", None, ("media".into(), "/".into())),
             // Trailing/leading separators and backslash notation all collapse
             // onto the plain share.
             ("media/", None, ("media".into(), "/".into())),
             ("/media", None, ("media".into(), "/".into())),
-            (r"Projects\UIPath", None, ("Projects".into(), "/UIPath/".into())),
+            (
+                r"Projects\UIPath",
+                None,
+                ("Projects".into(), "/UIPath/".into()),
+            ),
             // Nested shares: first segment tree connects, the rest becomes
             // the root prefix (jobnote real-machine shape).
             (
@@ -372,7 +399,11 @@ mod tests {
                 Some("/sub"),
                 ("Projects".into(), "/UIPath/JobNotes/InputFile/sub/".into()),
             ),
-            ("Projects//UIPath", None, ("Projects".into(), "/UIPath/".into())),
+            (
+                "Projects//UIPath",
+                None,
+                ("Projects".into(), "/UIPath/".into()),
+            ),
             ("Projects/", Some("x"), ("Projects".into(), "/x/".into())),
         ];
         for (share, root, expected) in cases {

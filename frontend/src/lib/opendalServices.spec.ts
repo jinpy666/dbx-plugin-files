@@ -91,7 +91,7 @@ describe("opendalServices", () => {
     });
     const template = templateFor("smb")!;
     expect(template.kind).toBe("quick");
-    expect(template.fields.filter((field) => field.required).map((field) => field.key)).toEqual(["endpoint", "share"]);
+    expect(template.fields.filter((field) => field.required).map((field) => field.key)).toEqual(["endpoint"]);
     expect(template.fields.find((field) => field.key === "password")?.secret).toBe(true);
   });
 });

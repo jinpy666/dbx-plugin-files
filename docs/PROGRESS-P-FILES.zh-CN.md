@@ -82,7 +82,7 @@ DBX_FILES_SFTP_KEY=<一次性私钥> python3 scripts/smoke_test.py`（SKIP→PAS
    此路径（对话框保存即可复现）。
 2. **宿主 Rust 校验不看 `visible_when`**（`dbx-core/src/plugins/host.rs`
    只评估静态 `required`）——manifest 把 s3 的
-   bucket/access_key_id/secret_access_key、smb 的 share 声明为
+   bucket/access_key_id/secret_access_key 声明为
    `required: true` + `visible_when` → 即使 protocol 修复，fs/webdav/
    ftp/sftp 也会在 "Bucket is required" 处被无条件拦死。
 3. **宿主前端 `pluginFieldIsRequired` bug**（1a7d7609e 引入）：字段无
@@ -93,7 +93,7 @@ DBX_FILES_SFTP_KEY=<一次性私钥> python3 scripts/smoke_test.py`（SKIP→PAS
 **修复**：
 - 插件侧 v0.1.4：静态 `required` 收敛为 display_name/protocol；协议特定
   必填项改 `required_when` 与 `visible_when` 成对声明（bucket/
-  access_key_id/secret_access_key→s3，share→smb，service→opendal-custom，
+  access_key_id/secret_access_key→s3，service→opendal-custom，
   dbx_ssh_connection→via-dbx-ssh）。旧宿主不识别该键时静默降级。
   契约测试 `manifest_required_fields_have_validation_worthy_shape` 改写为
   新不变量。sidecar 保持宽容解析，运行时强制在引擎构建层。
@@ -120,9 +120,9 @@ required 校验与 default 回填，避免再次出现 external_config 为空的
 Storage 连接记录，需在 UI 删除或重新编辑保存（新版表单会按 default
 回填 protocol 后正常写入）。
 
-## 8. 路径栏快速目录下拉（tiny-rdm 对标体验迭代，2026-08-30）
+## 8. 路径栏快速目录下拉（体验迭代，2026-08-30）
 
-**需求**：对标 tiny-rdm 双栏传输窗的路径栏下拉——本地/目标栏路径行内直接
+**需求**：双栏传输窗的路径栏下拉——本地/目标栏路径行内直接
 快速选择「根目录/主目录/桌面/下载/文档/图片」等场景目录。此前 §8.1 的
 `files/quickPaths` 以一整行 chips 展示（占纵向空间，与参考体验不一致）。
 
@@ -150,7 +150,7 @@ Storage 连接记录，需在 UI 删除或重新编辑保存（新版表单会�
 ② 预览/编辑面板文本无代码高亮。
 
 **改动**（纯前端，协议契约不变）：
-- 新增 `frontend/src/components/PathField.vue`：单一路径控件（tiny-rdm 对标）
+- 新增 `frontend/src/components/PathField.vue`：单一路径控件（面包屑⇄编辑态合一）
   ——默认展示可点击面包屑（A-FILES ④a 能力保留），点左侧文件夹图标进入
   编辑态（input 全选），Enter 跳转、Esc 还原、失焦有改动则提交；外部跳转
   自动退出编辑态。App.vue 移除双控件与 pathDraft/rightPathDraft 管线。
@@ -546,7 +546,7 @@ sftp-native(russh 密码) 21。无 UI 文案改动，七语不涉及。
 
 浏览器 mock（?mock=1 &theme=light）逐项验证的交互与主题细节轮。
 
-- **文件列表键盘导航**（对标 tiny-rdm/FileZilla）：新增
+- **文件列表键盘导航**（对齐主流双栏文件管理器）：新增
   `lib/listNav.ts` 纯函数状态机（方向键/Home/End、Shift 锚点扩选、
   滚动跟随换算）+ `listNav.spec.ts`；`FileTable.vue` 列表容器
   `tabindex=0` 接 keydown——↑↓ 移动、Shift+↑↓ 连续扩选、Enter 打开、
@@ -621,7 +621,7 @@ sftp-native(russh 密码) 21。无 UI 文案改动，七语不涉及。
   （连接选项不含 `__local__`），上传目标固定为右栏当前目录；单栏保持当前
   连接当前目录（原行为不变）。收口在纯函数 `lib/uploadTarget.ts`，上传后
   刷新目标栏，通知文案带目标路径（`uploaded` 键七语补 `{path}` 占位）。
-  选此语义的理由：与 FileZilla/tiny-rdm「上传=本地→远端」心智一致、改动面
+  选此语义的理由：与 FileZilla「上传=本地→远端」心智一致、改动面
   最小（不引入焦点侧跟踪状态）；若产品后续定「跟随焦点侧」，仅需改
   `resolveUploadTarget` 单点。同时修 mock 夹具：`upload/start` 记录
   connectionId、`finish` 按其落对应树并写入 slot.bytes 内容（P2-13③ 同
@@ -764,3 +764,13 @@ P2×10（R3-P2-1～10），全部修复并通过浏览器复验（13/13 断言�
 - **遗留**：无新增遗留；覆盖确认的「同名」判定以目标目录名为准（目录级冲突
   语义与 FileZilla 一致）；批量取消在真实远端（分钟级任务）的行为建议随下次
   真机验证例行覆盖。
+
+## SMB 服务器级连接与共享发现（2026-09-08）
+
+- `share` 改为可选。留空时 SMB 只建立 TCP/协商/会话，根路径列出可见共享，
+  后续以 `/共享名/...` 选择目标 TreeConnect；填写 `share` 时保持原有直连行为。
+- 共享级连接使用按 share 缓存的 Tree，避免把服务器级浏览错误地 TreeConnect 到
+  空名称，从而消除 `STATUS_BAD_NETWORK_NAME during TreeConnect`。
+- 前端模板、manifest 七语说明、connection contract、后端单测和 smoke 已同步；
+  Samba 容器实测 `PASS 80 / SKIP 5 / FAIL 0`。通用 container smoke 仍受环境中
+  WebDAV readiness 失败影响，与 SMB 改动无关。

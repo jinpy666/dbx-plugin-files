@@ -3,7 +3,7 @@
   "manifest_version": 1,
   "id": "io.dbx.files",
   "name": "DBX Files",
-  "version": "0.1.42",
+  "version": "0.1.43",
   "publisher": "xynanan",
   "description": "Multi-backend storage workbench plugin for DBX, powered by Apache OpenDAL.",
   "icon": "assets/plugin.svg",
@@ -261,14 +261,8 @@
           "binding": "config",
           "default": "",
           "placeholder": "media",
-          "description": "SMB share name used as the tree connect target; share/sub/path tree connects to share and serves /sub/path as the root.",
+          "description": "Optional SMB share name. Leave empty to list server shares; share/sub/path connects to the share and uses the sub-path as the root.",
           "visible_when": {
-            "field": "protocol",
-            "one_of": [
-              "smb"
-            ]
-          },
-          "required_when": {
             "field": "protocol",
             "one_of": [
               "smb"
@@ -506,7 +500,7 @@
             "share": {
               "label": "共享名",
               "placeholder": "media",
-              "description": "SMB 树连接目标使用的共享名；支持 共享名/子路径 形式，树连接共享名、子路径作为根目录。"
+              "description": "SMB 共享名可选。留空可列出服务器共享；共享名/子路径形式会连接共享并将子路径作为根目录。"
             },
             "region": {
               "label": "区域",
@@ -636,7 +630,7 @@
             "share": {
               "label": "共用名稱",
               "placeholder": "media",
-              "description": "SMB 樹狀連線目標使用的共用名稱；支援 共用名稱/子路徑 形式，樹狀連線共用名稱、子路徑作為根目錄。"
+              "description": "SMB 共用名稱可選。留空可列出伺服器共用；共用名稱/子路徑形式會連線共用並將子路徑作為根目錄。"
             },
             "region": {
               "label": "區域",
@@ -766,7 +760,7 @@
             "share": {
               "label": "Share",
               "placeholder": "media",
-              "description": "SMB share name used as the tree connect target; share/sub/path tree connects to share and serves /sub/path as the root."
+              "description": "Optional SMB share name. Leave empty to list server shares; share/sub/path connects to the share and uses the sub-path as the root."
             },
             "region": {
               "label": "Region",
@@ -896,7 +890,7 @@
             "share": {
               "label": "Recurso compartido",
               "placeholder": "media",
-              "description": "Nombre del recurso compartido SMB usado como destino de tree connect."
+              "description": "Nombre opcional del recurso compartido SMB. Déjelo vacío para enumerar los recursos del servidor; recurso/subruta conecta al recurso y usa la subruta como raíz."
             },
             "region": {
               "label": "Región",
@@ -1026,7 +1020,7 @@
             "share": {
               "label": "Condivisione",
               "placeholder": "media",
-              "description": "Nome della condivisione SMB usata come destinazione del tree connect."
+              "description": "Nome facoltativo della condivisione SMB. Lascia vuoto per elencare le condivisioni del server; condivisione/sottopercorso usa il sottopercorso come radice."
             },
             "region": {
               "label": "Regione",
@@ -1156,7 +1150,7 @@
             "share": {
               "label": "共有名",
               "placeholder": "media",
-              "description": "ツリー接続先として使う SMB 共有名。共有名/サブパス 形式に対応：共有名にツリー接続し、サブパスをルートとして扱います。"
+              "description": "SMB 共有名は任意です。空欄ならサーバーの共有一覧を表示します。共有名/サブパス形式では共有に接続し、サブパスをルートとして扱います。"
             },
             "region": {
               "label": "リージョン",
@@ -1286,7 +1280,7 @@
             "share": {
               "label": "Compartilhamento",
               "placeholder": "media",
-              "description": "Nome do compartilhamento SMB usado como destino do tree connect."
+              "description": "Nome opcional do compartilhamento SMB. Deixe vazio para listar os compartilhamentos do servidor; compartilhamento/subcaminho usa o subcaminho como raiz."
             },
             "region": {
               "label": "Região",
