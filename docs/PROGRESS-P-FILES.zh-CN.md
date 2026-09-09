@@ -774,3 +774,31 @@ P2×10（R3-P2-1～10），全部修复并通过浏览器复验（13/13 断言�
 - 前端模板、manifest 七语说明、connection contract、后端单测和 smoke 已同步；
   Samba 容器实测 `PASS 80 / SKIP 5 / FAIL 0`。通用 container smoke 仍受环境中
   WebDAV readiness 失败影响，与 SMB 改动无关。
+
+## 工作台滚动条隐藏：条体不再常驻显示（2026-09-09）
+
+`style.css` 全局滚动条由"6px thin 常驻"改为全部隐藏（`scrollbar-width: none` +
+`::-webkit-scrollbar { display: none }`），滚动仍由滚轮/触控板/键盘驱动。原先对
+webkit 伪元素定制宽高会把滚动条从悬浮态固化为占位常驻态，与宿主观感不符。
+改动仅 `files/frontend/src/style.css`；验证：`pnpm typecheck` 0 错、`pnpm test`
+32 文件 183 用例全绿。
+
+## 本地数据目录 fallback 改为持久化路径（2026-09-09）
+
+- **根因**：宿主拉起 sidecar 时从未注入 `DBX_PLUGIN_DATA_DIR`，插件一直走
+  `std::env::temp_dir()/dbx-plugin-data/io.dbx.files` 兜底；macOS `$TMPDIR`
+  在重启时被清空，prefs.json / transfers.json / audit.jsonl 全部丢失
+  （机器重启后实际发生；ssh 插件先发现，files 同构）。
+- **修复**：`files/backend/src/store.rs` 把数据目录解析拆为纯函数
+  `resolve_data_dir(lookup)`，`Store::default_dir()` 传 `std::env::var_os`。
+  按序取第一个可用项（变量存在且 trim 后非空）：① `DBX_PLUGIN_DATA_DIR`
+  原样；② `<DBX_DATA_DIR>/plugin-data/io.dbx.files`（便携/web 宿主根，
+  不落 `plugins/` 安装注册树）；③ 平台用户数据目录
+  `dbx-plugin-data/io.dbx.files`（macOS `~/Library/Application Support`、
+  unix `${XDG_DATA_HOME:-~/.local/share}`、Windows `%APPDATA%`）；
+  ④ 原 temp 路径仅作永不失败的最后兜底。平台分支用 `cfg!` 运行时布尔，
+  单一二进制内全编译、本机分支可单测。
+- **验证**：TDD 先红（E0425）后绿；`cargo test store::` 11 passed / 0 failed
+  （新增 5 例：①优先级 ②空白视为未设 ③DBX_DATA_DIR 映射 ④macOS HOME
+  路径 ⑤全缺回落 temp；unix/windows 分支测试按 cfg 编译）；
+  `cargo test` 全量 154 passed / 0 failed / 3 ignored；`cargo build` 通过。

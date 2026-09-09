@@ -1,6 +1,14 @@
 //! Local data + audit persistence (M0 common doc §4).
 //!
-//! Layout under `DBX_PLUGIN_DATA_DIR` (fallback `$TMPDIR/dbx-plugin-data/io.dbx.files`):
+//! Data dir resolution (first available wins; a variable counts only when
+//! present and non-blank after trim — see `resolve_data_dir`):
+//! 1. `DBX_PLUGIN_DATA_DIR` (host-injected, as-is);
+//! 2. `<DBX_DATA_DIR>/plugin-data/io.dbx.files` (portable/web host root);
+//! 3. platform user data dir + `dbx-plugin-data/io.dbx.files`
+//!    (macOS `~/Library/Application Support`,
+//!    unix `${XDG_DATA_HOME:-~/.local/share}`, Windows `%APPDATA%`);
+//! 4. `$TMPDIR/dbx-plugin-data/io.dbx.files` — never-failing last resort only
+//!    (temp dirs are wiped on reboot and once lost this store's data).
 //! - `prefs.json`      — UI preferences, non-sensitive, whole-object rewrite;
 //! - `transfers.json`  — finished transfer history, ring-capped at
 //!   `model::TRANSFER_HISTORY_LIMIT` (200);
@@ -12,6 +20,7 @@
 
 #![allow(dead_code)]
 
+use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -19,6 +28,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::model::TRANSFER_HISTORY_LIMIT;
+
+/// Plugin id used at every level of the data-dir layout below.
+const PLUGIN_ID: &str = "io.dbx.files";
 
 /// A persisted finished-transfer record. Deliberately slim: runtime handles
 /// (`JobHandle`) never reach the disk.
@@ -68,16 +80,13 @@ impl Store {
         Self { data_dir }
     }
 
-    /// Default directory from `DBX_PLUGIN_DATA_DIR` (ssh-sftp main.rs:744
-    /// semantics), falling back to the OS temp dir.
+    /// Default data directory, resolved by `resolve_data_dir` against the
+    /// real environment: `DBX_PLUGIN_DATA_DIR`, else
+    /// `<DBX_DATA_DIR>/plugin-data/io.dbx.files`, else the platform user
+    /// data dir under `dbx-plugin-data/io.dbx.files`, else the OS temp dir
+    /// as a never-failing last resort.
     pub fn default_dir() -> PathBuf {
-        std::env::var_os("DBX_PLUGIN_DATA_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                std::env::temp_dir()
-                    .join("dbx-plugin-data")
-                    .join("io.dbx.files")
-            })
+        resolve_data_dir(|key| std::env::var_os(key))
     }
 
     pub fn data_dir(&self) -> &Path {
@@ -181,6 +190,56 @@ impl Store {
     }
 }
 
+/// Resolves the plugin data dir purely from `lookup`, in priority order
+/// (first available wins; "available" = present and non-blank after trim):
+/// 1. `DBX_PLUGIN_DATA_DIR` — host-injected per-plugin dir, used as-is;
+/// 2. `DBX_DATA_DIR` — host data root (portable/web mode, inherited by child
+///    processes), under `plugin-data/` (deliberately not `plugins/`, which is
+///    the installer registration tree);
+/// 3. platform-standard user data dir + `dbx-plugin-data/io.dbx.files`
+///    (macOS `~/Library/Application Support`,
+///    unix `${XDG_DATA_HOME:-~/.local/share}`, Windows `%APPDATA%`);
+/// 4. `std::env::temp_dir()/dbx-plugin-data/io.dbx.files` — last resort;
+///    this function never fails. Kept only as a stopgap: `$TMPDIR` is wiped
+///    on reboot and prefs/transfers/audit data with it.
+fn resolve_data_dir(lookup: impl Fn(&str) -> Option<OsString>) -> PathBuf {
+    let non_blank = |value: Option<OsString>| {
+        value.filter(|value| !value.to_string_lossy().trim().is_empty())
+    };
+    if let Some(dir) = non_blank(lookup("DBX_PLUGIN_DATA_DIR")) {
+        return PathBuf::from(dir);
+    }
+    if let Some(root) = non_blank(lookup("DBX_DATA_DIR")) {
+        return PathBuf::from(root).join("plugin-data").join(PLUGIN_ID);
+    }
+    if let Some(base) = platform_user_data_dir(&lookup) {
+        return base.join("dbx-plugin-data").join(PLUGIN_ID);
+    }
+    std::env::temp_dir().join("dbx-plugin-data").join(PLUGIN_ID)
+}
+
+/// Platform-standard user data base dir (step 3 of `resolve_data_dir`).
+/// `cfg!` run-time booleans keep every branch compiled in a single binary so
+/// the active branch stays unit-testable on the build host.
+fn platform_user_data_dir(lookup: &impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        lookup("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join("Library/Application Support"))
+    } else if cfg!(windows) {
+        lookup("APPDATA").map(PathBuf::from)
+    } else {
+        lookup("XDG_DATA_HOME")
+            .filter(|value| !value.to_string_lossy().trim().is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                lookup("HOME")
+                    .map(PathBuf::from)
+                    .map(|home| home.join(".local/share"))
+            })
+    }
+}
+
 /// Formats a unix-epoch-milliseconds timestamp as RFC3339 UTC
 /// (`1970-01-01T00:00:00Z` style), no external time crate. Inverse-free by
 /// design; audit consumers only parse standard RFC3339.
@@ -224,6 +283,101 @@ pub fn unix_millis_now() -> u64 {
 mod tests {
     use super::*;
     use crate::store::AuditRecord;
+    use std::ffi::OsString;
+
+    // -- data dir resolution (pure, env-free) -------------------------------
+
+    /// Drives `resolve_data_dir` with a fixed lookup table — no `set_var`,
+    /// no parallel-test races.
+    fn resolve_with(table: &[(&str, &str)]) -> PathBuf {
+        resolve_data_dir(|name| {
+            table
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| OsString::from(*value))
+        })
+    }
+
+    /// ① `DBX_PLUGIN_DATA_DIR` wins even when `DBX_DATA_DIR`/`HOME` exist.
+    #[test]
+    fn plugin_data_dir_wins_over_everything() {
+        assert_eq!(
+            resolve_with(&[
+                ("DBX_PLUGIN_DATA_DIR", "/custom/plugin"),
+                ("DBX_DATA_DIR", "/host/data"),
+                ("HOME", "/Users/x"),
+            ]),
+            PathBuf::from("/custom/plugin")
+        );
+    }
+
+    /// ② Blank/whitespace-only values count as unset.
+    #[test]
+    fn empty_values_are_treated_as_unset() {
+        assert_eq!(
+            resolve_with(&[
+                ("DBX_PLUGIN_DATA_DIR", "  "),
+                ("DBX_DATA_DIR", "/host/data"),
+            ]),
+            PathBuf::from("/host/data/plugin-data/io.dbx.files")
+        );
+    }
+
+    /// ③ `DBX_DATA_DIR` maps to `<root>/plugin-data/io.dbx.files` (never
+    /// `plugins/` — that is the installer registration tree).
+    #[test]
+    fn dbx_data_dir_maps_under_plugin_data() {
+        assert_eq!(
+            resolve_with(&[("DBX_DATA_DIR", "/host/data"), ("HOME", "/Users/x")]),
+            PathBuf::from("/host/data/plugin-data/io.dbx.files")
+        );
+    }
+
+    /// ④ Platform user-data branch, compiled/tested per platform.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn platform_user_data_dir_macos_home() {
+        assert_eq!(
+            resolve_with(&[("HOME", "/Users/x")]),
+            PathBuf::from("/Users/x/Library/Application Support/dbx-plugin-data/io.dbx.files")
+        );
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn platform_user_data_dir_unix_xdg_then_home() {
+        assert_eq!(
+            resolve_with(&[("XDG_DATA_HOME", "/xdg"), ("HOME", "/home/x")]),
+            PathBuf::from("/xdg/dbx-plugin-data/io.dbx.files"),
+            "XDG_DATA_HOME wins"
+        );
+        assert_eq!(
+            resolve_with(&[("HOME", "/home/x")]),
+            PathBuf::from("/home/x/.local/share/dbx-plugin-data/io.dbx.files")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn platform_user_data_dir_windows_appdata() {
+        assert_eq!(
+            resolve_with(&[("APPDATA", r"C:\Users\x\AppData\Roaming")]),
+            PathBuf::from(r"C:\Users\x\AppData\Roaming")
+                .join("dbx-plugin-data")
+                .join("io.dbx.files")
+        );
+    }
+
+    /// ⑤ Nothing set anywhere → temp-dir last resort (function never fails).
+    #[test]
+    fn nothing_set_falls_back_to_temp_dir() {
+        assert_eq!(
+            resolve_with(&[]),
+            std::env::temp_dir()
+                .join("dbx-plugin-data")
+                .join("io.dbx.files")
+        );
+    }
 
     fn store() -> (Store, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
