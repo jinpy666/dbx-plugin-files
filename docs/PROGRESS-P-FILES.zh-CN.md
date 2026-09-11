@@ -802,3 +802,104 @@ webkit 伪元素定制宽高会把滚动条从悬浮态固化为占位常驻态�
   （新增 5 例：①优先级 ②空白视为未设 ③DBX_DATA_DIR 映射 ④macOS HOME
   路径 ⑤全缺回落 temp；unix/windows 分支测试按 cfg 编译）；
   `cargo test` 全量 154 passed / 0 failed / 3 ignored；`cargo build` 通过。
+
+## 工作台默认布局：默认仅远程单栏（2026-09-10）
+
+用户诉求：打开文件面板默认只开远程（当前连接）面板——本地面板（双栏左栏）与
+右侧 dock（传输/审计/连接 tab）默认关闭。
+
+- 改动：`lib/prefs.ts` 从 `UiPrefs` 彻底移除 `dualPane` 持久化（sanitize 把历史
+  存的 dualPane 当未知字段忽略，load 恒不含该字段）；`App.vue` `dualPane = ref(false)`
+  （降级为会话内开关，工具栏双栏切换仍可用）、`dockOpen = ref(true→false)`（dock
+  本就是内存态）；布局偏好 watch 只存 sort/sideTab/sideCollapsed。双栏开启后的
+  本地栏/quick paths/窄视口收起逻辑全部未动。
+- 效果：老用户带旧 localStorage（dualPane:true）打开即远程单栏，新用户同。
+- 验证：`pnpm typecheck` 0 错；`pnpm test` 32 文件 185 用例全绿（prefs.spec 新增
+  「历史 dualPane 被忽略」用例）；`pnpm build` 通过。dock/双栏真实开关留真机复验。
+
+## Review 第 1 轮：UI 扫描第 5 轮遗留 P2 收口 4 组（2026-09-11）
+
+review/optimize 轮次（自包含 agent），在默认单栏布局批次（0.1.46）之上叠加；
+报告全文见 `.goal-state/report-files-round1.md`。UI_SCAN 第 5 轮遗留 8 条 P2，
+本轮实施其中 4 组（R5-P2-1/2/3/4/5/8），全部为前端最小 diff，无新增依赖、
+无新增 i18n 键（复用 `filesProgress`/`jobCanceled` 等既有七语键）：
+
+- **R5-P2-1 跨栏移动源栏刷新**：`executePaneTransfer` move 收尾无条件双刷
+  两栏——此前「左→右移动」后源栏（左）无刷新路径，已移走条目残留。
+- **R5-P2-2 批量删除立即关弹层**：delete 分支确认后即 `closeConfirm()`，
+  busy 弹层遮罩不再挡传输面板取消钮（长批次「取消」直接可达）；批次结束后
+  仍统一刷新目录与审计。
+- **R5-P2-3 计数型进度渲染**：TransferPanel `progressMeta` 对非字节型且带
+  `filesTotal` 的 job（批量删除伪 job 的 transferred/size 实为文件个数）改走
+  `filesProgress`（N/M 项），不再显示「504 B / 9.8 KiB」式误格式化。
+- **R5-P2-4 上传/下载泵取消真实中断**：新增 `pumpCancelFlags` +
+  `TransferCanceled` 哨兵；uploadSource/downloadEntry 分片级取消检查点，取消
+  置 canceled 终态（不落 error、不弹横幅）；cancelTransfer 对泵 job 本地置位 +
+  sidecar `files/transfer/cancel` 释放资源 + `releaseFrames` 打断帧等待；批量
+  上传取消后不再继续后续文件。顺带收口：下载泵失败路径 finally 统一
+  releaseFrames（此前错误路径残留帧队列）。
+- **R5-P2-5 拖拽记账活动栏**：`onDropTo` 入口 `markActiveSide(side)`（拖拽是
+  activeSide 唯一漏网入口，拖放后工具栏动作不再落错栏）。
+- **R5-P2-8 mock download/start 路由**：改按 `connectionId` 落 `treeFor`，
+  双栏本地面（__local__）下载在夹具层可用（与 delete/purge/copy/move 对齐）。
+- **测试**：新增 `TransferPanel.spec.ts`（2 例：计数型 N/M 渲染 + 字节型回归）；
+  `mockHost.spec.ts` +2（download/start 双路由）。
+- **验证**：`pnpm typecheck` 0 错；`pnpm test` 33 文件 189 用例全绿（上轮
+  基线 185 + 新增 4）；`cargo test` 基线确认 154 passed / 0 failed / 3 ignored
+  （本轮未改 Rust，`engine/mod.rs`/`main.rs handle_binary` review 无需改动）。
+  smoke/浏览器级复核 SKIP（未动协议与 sidecar；5 个人工复核点记报告）。
+- **遗留**：R5-P2-6（预览关闭焦点归还）、R5-P2-7（弹层中途切 locale 混语言）
+  留下一轮；多连接真宿主跨栏例行覆盖（既有）。
+
+## Review 第 2 轮：上一轮遗留 P2 收口 2 条（2026-09-11）
+
+review/optimize 轮次（自包含 agent），报告全文见 `.goal-state/report-files-round2.md`。
+实施第 1 轮遗留的 R5-P2-6/7 两条 P2，全部为前端最小 diff，无新增依赖、
+无新增 i18n key（纯复用既有键 + 新增纯函数）：
+
+- **R5-P2-6 预览弹窗关闭焦点归还**：PreviewPane 打开时记录
+  `document.activeElement`（`returnFocusTo`，照 ConfirmDialog 同方案），
+  卸载时触发元素仍 `isConnected` 则归还——关闭预览焦点回触发行，不再落 BODY。
+- **R5-P2-7 弹层中途切 locale 混语言**：`lib/i18n.ts` 新增 `I18nText` +
+  `i18nTextOf`（数组形态覆盖既有双段正文拼接，免新增组合 key）；App.vue
+  `confirmTitle/confirmBody` 改存 key + 参数、渲染时经 `i18nTextOf(·, locale)`
+  求值，openConfirm 10 处调用点与覆盖确认中途改写 1 处同步，弹层打开中途切
+  locale 标题正文即时跟随。notice/错误横幅为字符串直存（连带 CustomConfigEditor
+  emit 契约），本轮不改、记可选后续。
+- **可选项评估（不改）**：smb share 留空说明 manifest 七语与前端 placeholder
+  均已闭环；oss `root` 通用七语描述无误导，对象存储特化说明列可选打磨。
+- **测试**：PreviewPane.spec +1（关闭焦点归还，host 外层 v-if 镜像真实挂载）；
+  i18n.spec +4（i18nTextOf 按 locale 求值/参数填充/多段拼接/空 key）。
+- **验证**：`pnpm typecheck` 0 错；`pnpm test` 33 文件 194 用例全绿（上轮
+  基线 189 + 新增 5）。未改 Rust（cargo 基线 154 passed 沿用第 1 轮）；smoke
+  SKIP（未动 sidecar 与协议）。浏览器级复核 8 项（上轮 5 + 本轮 3）记报告留人工。
+- **遗留**：notice/错误横幅惰性求值（可选）、oss root 特化说明（可选打磨）、
+  真机复核 8 项、多连接真宿主跨栏例行覆盖（既有）。
+
+## Review 第 3 轮（收敛评估轮）：notice/错误横幅 i18n 惰性求值收口（2026-09-11）
+
+review/optimize 轮次（自包含 agent），报告全文见 `.goal-state/report-files-round3.md`。
+落地 round2 遗留 1（R5-P2-7 同类收尾），前端最小 diff，无新增依赖、无新增
+i18n key（纯复用既有键），未改 Rust/协议：
+
+- **notice/错误横幅惰性求值**：`lib/i18n.ts` 的 `i18nTextOf` 入参放宽为
+  `I18nInput`（已翻译字符串透传兼容，既有调用点零改写）；新增
+  `ErrorBannerState` + `errorBannerOf(·, locale)`（failure 形态渲染时求
+  operationFailed 外壳，内层 friendlyRaw 重跑 friendlyError / inner 嵌套求值）。
+  App.vue `notice`/`error` 改存惰性状态 + computed 渲染时求值，`showNotice`
+  收 `string | I18nText`（27 处既有调用点兼容），`showError` 识别组件 emit 的
+  key 形态；`errorDetail` 改为状态派生 computed（顺带消除 4 处直接赋值点不写
+  detail 的 stale tooltip）。
+- **CustomConfigEditor emit 契约同步**：notice/error 改发 `string | I18nText`，
+  4 处 emit 改 key + 参数形态（表单校验/JSON 解析失败/连接测试成败）。
+- **快速复核**：第 1、2 轮改动面（App.vue 传输/确认/预览、PreviewPane、
+  TransferPanel）针对性走查，新发现 P0-P2 × 0。
+- **测试**：i18n.spec +8（字符串透传 2 + errorBannerOf 6，含同一份存储状态
+  双 locale 求值互异的「横幅存活期间切 locale 跟随」行为证明）。
+- **验证**：`pnpm typecheck` 0 错；`pnpm test` 33 文件 202 用例全绿（round2
+  基线 194 + 8）。未改 Rust（cargo 基线沿用）；smoke SKIP（未动 sidecar 与协议）。
+- **收敛判定**：**无剩余可执行项（仅剩人工/真机复核项）**——真机复核 9 项
+  （round2 8 项 + 本轮 notice/error 横幅 locale 跟随 1 项）、多连接真宿主跨栏
+  例行覆盖、下载泵 releaseFrames 真机回归，均随下一次真机/e2e 会话合并执行；
+  oss root 特化说明维持不做（非缺陷，需 es/it/pt-BR 母语级校对）。插件 review
+  进入收敛状态。

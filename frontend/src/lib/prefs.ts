@@ -1,6 +1,7 @@
-// UI 偏好持久化（A-FILES ①/④c）：localStorage 保存布局偏好（排序/双栏）。
+// UI 偏好持久化（A-FILES ①/④c）：localStorage 保存布局偏好（排序/侧栏）。
 // 只存非敏感 UI 状态；沙箱环境 localStorage 可能不可用，全部 try/catch 兜底。
-// 历史版本存过 rightTab（预览已改弹窗），sanitize 直接忽略未知字段。
+// 历史版本存过 rightTab（预览已改弹窗）、dualPane（已改为会话内开关），
+// sanitize 直接忽略这些未知字段。
 
 import type { SortState } from "./sorting";
 import { DEFAULT_SORT } from "./sorting";
@@ -10,7 +11,6 @@ export type SideTab = "tree" | "quick";
 
 export interface UiPrefs {
   sort: SortState;
-  dualPane: boolean;
   sideTab: SideTab;
   sideCollapsed: boolean;
 }
@@ -21,7 +21,6 @@ function sanitize(raw: unknown): Partial<UiPrefs> {
   if (!raw || typeof raw !== "object") return {};
   const value = raw as Record<string, unknown>;
   const prefs: Partial<UiPrefs> = {};
-  if (typeof value.dualPane === "boolean") prefs.dualPane = value.dualPane;
   if (value.sideTab === "tree" || value.sideTab === "quick") prefs.sideTab = value.sideTab;
   if (typeof value.sideCollapsed === "boolean") prefs.sideCollapsed = value.sideCollapsed;
   if (value.sort && typeof value.sort === "object") {
@@ -43,11 +42,10 @@ export function loadUiPrefs(storage?: Storage): UiPrefs {
   } catch {
     raw = null;
   }
-  if (!raw) return { sort: { ...DEFAULT_SORT }, dualPane: true, sideTab: "tree", sideCollapsed: false };
+  if (!raw) return { sort: { ...DEFAULT_SORT }, sideTab: "tree", sideCollapsed: false };
   const prefs = sanitize(safeParse(raw));
   return {
     sort: prefs.sort ?? { ...DEFAULT_SORT },
-    dualPane: prefs.dualPane ?? true,
     sideTab: prefs.sideTab ?? "tree",
     sideCollapsed: prefs.sideCollapsed ?? false,
   };

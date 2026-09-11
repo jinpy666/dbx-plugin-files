@@ -16,14 +16,18 @@ import {
   type FieldError,
 } from "../lib/opendalServices";
 import { callLifecycle, errorMessage } from "../lib/api";
+import type { I18nText } from "../lib/i18n";
 
 const props = defineProps<{
   t: (key: string, values?: Record<string, string | number>) => string;
 }>();
 
+// R5-P2-7 同类收尾：notice/error 改发 key + 参数形态（I18nText），由 App 侧
+// 横幅渲染时经 locale 求值——提示/横幅存活期间切 locale 即时跟随，不再
+// 固化 emit 瞬间的译文。字符串形态仍兼容（App showError/showNotice 双收）。
 const emit = defineEmits<{
-  (event: "notice", message: string): void;
-  (event: "error", message: string): void;
+  (event: "notice", message: string | I18nText): void;
+  (event: "error", cause: string | I18nText): void;
 }>();
 
 const service = ref("fs");
@@ -127,14 +131,14 @@ async function test() {
   if (mode.value === "form") {
     const errorKeys = Object.keys(formErrors.value);
     if (errorKeys.length) {
-      emit("error", errorText(errorKeys[0]));
+      emit("error", { key: FIELD_ERROR_KEY[formErrors.value[errorKeys[0]]] });
       return;
     }
     config = formConfig.value;
   } else {
     const parsed = parseDraft();
     if (!parsed.ok) {
-      emit("error", props.t("customConfigInvalid", { error: parsed.error }));
+      emit("error", { key: "customConfigInvalid", values: { error: parsed.error } });
       return;
     }
     config = parsed.config;
@@ -154,10 +158,10 @@ async function test() {
       runtime: {},
     });
     lastResult.value = "ok";
-    emit("notice", props.t("customConfigTestOk"));
+    emit("notice", { key: "customConfigTestOk" });
   } catch (cause) {
     lastResult.value = "failed";
-    emit("error", props.t("customConfigTestFailed", { error: errorMessage(cause) }));
+    emit("error", { key: "customConfigTestFailed", values: { error: errorMessage(cause) } });
   } finally {
     testing.value = false;
   }

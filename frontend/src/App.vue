@@ -27,7 +27,7 @@ import {
 } from "./lib/api";
 import { createTransferTracker, isActive, isRetryableKind, type TransferJob, type TransferKind } from "./lib/transfers";
 import { inspect, type DangerousHit } from "./lib/dangerousPaths";
-import { workbenchMessage } from "./lib/i18n";
+import { errorBannerOf, i18nTextOf, workbenchMessage, type ErrorBannerState, type I18nInput, type I18nText } from "./lib/i18n";
 import { isArchivePath } from "./lib/archive";
 import { loadUiPrefs, saveUiPrefs } from "./lib/prefs";
 import { sortEntries, toggleSortState, type SortColumn, type SortState } from "./lib/sorting";
@@ -37,7 +37,7 @@ import { applyTreeChildren, createTreeRoot, markTreeStale, type DirTreeNode } fr
 import { normalizeQuickPaths, type QuickPath } from "./lib/quickPaths";
 import { isNarrowViewport } from "./lib/responsive";
 import { resolveUploadTarget, type UploadTarget } from "./lib/uploadTarget";
-import { friendlyError, isNotFoundMessage, isTransportFailure } from "./lib/friendlyError";
+import { isNotFoundMessage, isTransportFailure } from "./lib/friendlyError";
 import { createNavGuard } from "./lib/navGuard";
 import { resolveToolbarTarget } from "./lib/toolbarTarget";
 import { validateFileName } from "./lib/fileName";
@@ -96,17 +96,22 @@ const loading = ref(false);
 // files/list 成败，在 fetchListing 统一挂钩。
 const connState = ref<"connecting" | "connected" | "disconnected">("connecting");
 
-const error = ref("");
-// P2-1：错误横幅悬停展示 sidecar 原文（friendlyError 映射后的文案为主显示）。
-const errorDetail = ref("");
+const error = ref<ErrorBannerState>("");
+// R5-P2-7 同类收尾：错误横幅/顶部提示不存已翻译字符串，渲染时经 locale 求值
+// ——横幅存活期间切 locale 文案即时跟随。errorDetail 为悬停展示的 sidecar 原文
+// （P2-1：friendlyError 映射后的文案为主显示）。
+const errorText = computed(() => errorBannerOf(error.value, locale.value));
+const errorDetail = computed(() => (error.value ? error.value.detail : ""));
 // P2-4：错误所属栏位（重试按出错栏位重放，而不是永远只刷左栏）。
 const errorSide = ref<PaneSide | "global">("global");
-const notice = ref("");
+const notice = ref<I18nInput>("");
+const noticeText = computed(() => i18nTextOf(notice.value, locale.value));
 const capabilities = ref<FileCapabilities | undefined>();
 const initialized = ref(false);
 
 // ---- 目标栏（右栏，A-FILES ①）---------------------------------------------
-const dualPane = ref(prefs.dualPane);
+// 双栏为会话内开关（工具栏可切），不再持久化：每次打开默认只开远程单栏。
+const dualPane = ref(false);
 // 侧栏形态偏好：tree/quick tab（默认 tree）与收起状态，随布局偏好持久化。
 const sideTab = ref<"tree" | "quick">(prefs.sideTab);
 const sideCollapsed = ref(prefs.sideCollapsed);
@@ -214,7 +219,8 @@ function navigateQuickPath(side: PaneSide, targetPath: string) {
   else void loadRightDirectory(targetPath).catch(() => undefined);
 }
 
-const dockOpen = ref(true);
+// 右侧 dock（transfers/audit/connection）不持久化，默认收起。
+const dockOpen = ref(false);
 const dockTab = ref<"transfers" | "audit" | "connection">("transfers");
 const auditRef = ref<InstanceType<typeof AuditPanel>>();
 
@@ -291,7 +297,7 @@ async function retryTransfer(jobId: string) {
     const result = await callFor<{ jobId?: string | null; transport?: string }>(retry.side, retry.method, retry.params);
     const newJobId = result.jobId;
     if (!newJobId) {
-      error.value = t("operationFailed", { error: t("featureMissing") });
+      error.value = { kind: "failure", detail: "", inner: { key: "featureMissing" } };
       return;
     }
     const job = tracker.jobs[jobId];
@@ -316,8 +322,11 @@ const retryableTransferIds = computed(() => {
 
 const confirmOpen = ref(false);
 const confirmKind = ref<ConfirmKind>();
-const confirmTitle = ref("");
-const confirmBody = ref("");
+// R5-P2-7：弹层标题/正文改存 i18n key + 参数（i18nTextOf 渲染时经 t 求值）——
+// 弹层打开中途切 locale（宿主/ mock 顶栏切换），标题正文即时跟随新语言，
+// 不再固化打开瞬间的译文形成混语言窗口。数组形态用于既有双段拼接正文。
+const confirmTitle = ref<I18nText>({ key: "" });
+const confirmBody = ref<I18nText | I18nText[]>({ key: "" });
 const confirmDanger = ref(false);
 const confirmHits = ref<DangerousHit[]>([]);
 const confirmBusy = ref(false);
@@ -351,6 +360,10 @@ const confirmDangerList = computed(() =>
     }
   }),
 );
+/** R5-P2-7：弹层标题/正文渲染时求值，随 locale 响应式刷新。 */
+const confirmTitleText = computed(() => i18nTextOf(confirmTitle.value, locale.value));
+const confirmBodyText = computed(() => i18nTextOf(confirmBody.value, locale.value));
+
 const confirmLabel = computed(() => {
   if (confirmKind.value === "overwrite" || confirmForce.value) return t("overwrite");
   if (confirmKind.value === "newFolder" || confirmKind.value === "newFile") return t("create");
@@ -414,8 +427,9 @@ function toolbarSelectionEntries(side: PaneSide): FileEntry[] {
   return pool.filter((entry) => sel.includes(entry.path));
 }
 
-watch([sort, dualPane, sideTab, sideCollapsed], () => {
-  saveUiPrefs({ sort: sort.value, dualPane: dualPane.value, sideTab: sideTab.value, sideCollapsed: sideCollapsed.value });
+// 双栏不持久化（会话内开关），布局偏好只存 sort/sideTab/sideCollapsed。
+watch([sort, sideTab, sideCollapsed], () => {
+  saveUiPrefs({ sort: sort.value, sideTab: sideTab.value, sideCollapsed: sideCollapsed.value });
 }, { deep: true });
 
 // 切到 tree tab 时懒加载根目录子项（首次进入/从 quick 切回均适用）。
@@ -458,24 +472,28 @@ let unsubscribeLocale: (() => void) | undefined;
 let unsubscribeContext: (() => void) | undefined;
 let unsubscribeTheme: (() => void) | undefined;
 
-function showNotice(message: string) {
+function showNotice(message: I18nInput) {
   notice.value = message;
   window.clearTimeout(noticeTimer);
   noticeTimer = window.setTimeout(() => (notice.value = ""), 4000);
 }
 
 function showError(cause: unknown, side: PaneSide | "global" = "global") {
-  const message = errorMessage(cause);
   errorSide.value = side;
+  // 组件 emit 的 key + 参数错误（CustomConfigEditor）：整条横幅存 I18nText 惰性求值。
+  if (cause && typeof cause === "object" && "key" in (cause as Record<string, unknown>)) {
+    error.value = { kind: "i18n", text: cause as I18nText };
+    return;
+  }
+  const message = errorMessage(cause);
   if (isMethodMissing(cause)) {
     const method = cause instanceof Error && "method" in cause ? String((cause as { method?: string }).method) : "";
-    error.value = t("featureMissing", { method });
-    errorDetail.value = message;
+    error.value = { kind: "i18n", text: { key: "featureMissing", values: { method } }, detail: message };
     return;
   }
   // P2-1：已知错误类别映射七语文案；未知错误原文透传（横幅 title 保留原文）。
-  error.value = t("operationFailed", { error: friendlyError(message, t) });
-  errorDetail.value = message;
+  // friendlyRaw 在渲染时重跑 friendlyError，横幅存活期间切 locale 内层同步跟随。
+  error.value = { kind: "failure", detail: message, friendlyRaw: message };
 }
 
 /** 错误横幅上的重试（④ UI 三态：错误可恢复）。P2-4：按出错栏位重放——
@@ -768,12 +786,12 @@ async function pathExists(side: PaneSide, target: string): Promise<boolean | und
 
 /** 重名预检失败：横幅提示 + 弹层保持打开（用户可直接改名重提）。 */
 function rejectDuplicate(name: string) {
-  error.value = t("nameExists", { name });
+  error.value = { kind: "i18n", text: { key: "nameExists", values: { name } } };
 }
 
 function openConfirm(kind: ConfirmKind, options: {
-  title: string;
-  body?: string;
+  title: I18nText;
+  body?: I18nText | I18nText[];
   danger?: boolean;
   hits?: DangerousHit[];
   target?: { path?: string; entry?: FileEntry; targets?: FileEntry[] };
@@ -782,7 +800,7 @@ function openConfirm(kind: ConfirmKind, options: {
 }) {
   confirmKind.value = kind;
   confirmTitle.value = options.title;
-  confirmBody.value = options.body ?? "";
+  confirmBody.value = options.body ?? { key: "" };
   confirmDanger.value = Boolean(options.danger);
   confirmHits.value = options.hits ?? [];
   confirmTarget.value = options.target ?? {};
@@ -815,17 +833,17 @@ function checkConfirmName(): boolean {
 }
 
 function startNewFolder(side: PaneSide = "left") {
-  openConfirm("newFolder", { title: t("newFolderTitle"), draft: "", side });
+  openConfirm("newFolder", { title: { key: "newFolderTitle" }, draft: "", side });
 }
 
 /** 新建文件（P-FILES）：复用 files/write 写空内容（≤MAX_INLINE_WRITE_BYTES）。 */
 function startNewFile(side: PaneSide = "left") {
-  openConfirm("newFile", { title: t("newFileTitle"), draft: "", side });
+  openConfirm("newFile", { title: { key: "newFileTitle" }, draft: "", side });
 }
 
 function startRename(entry: FileEntry, side: PaneSide) {
   confirmDraft.value = entry.name;
-  openConfirm("rename", { title: t("renameTitle"), target: { entry }, draft: entry.name, side });
+  openConfirm("rename", { title: { key: "renameTitle" }, target: { entry }, draft: entry.name, side });
 }
 
 function startDelete(targets: FileEntry[], side: PaneSide = "left") {
@@ -842,8 +860,8 @@ function startDelete(targets: FileEntry[], side: PaneSide = "left") {
       { level: "none", hits: [] },
     );
     openConfirm("delete", {
-      title: t("deleteTitle", { count: targets.length }),
-      body: `${t("deleteBody")} ${t("deleteRecursiveWarn")}`,
+      title: { key: "deleteTitle", values: { count: targets.length } },
+      body: [{ key: "deleteBody" }, { key: "deleteRecursiveWarn" }],
       danger: worst.level === "danger",
       hits: worst.hits,
       target: { targets },
@@ -852,8 +870,8 @@ function startDelete(targets: FileEntry[], side: PaneSide = "left") {
     return;
   }
   openConfirm("delete", {
-    title: t("deleteTitle", { count: targets.length }),
-    body: inspection.level === "none" ? t("deleteBody") : `${t("deleteBody")} ${t("deleteRecursiveWarn")}`,
+    title: { key: "deleteTitle", values: { count: targets.length } },
+    body: inspection.level === "none" ? { key: "deleteBody" } : [{ key: "deleteBody" }, { key: "deleteRecursiveWarn" }],
     danger: inspection.level === "danger",
     hits: inspection.hits,
     target: { targets },
@@ -864,8 +882,11 @@ function startDelete(targets: FileEntry[], side: PaneSide = "left") {
 function startDirJob(kind: "syncDir" | "copyDir", entry: FileEntry, side: PaneSide) {
   const defaultTarget = joinPath("/", `${baseName(entry.path) || "copy"}`);
   openConfirm(kind, {
-    title: kind === "syncDir" ? t("syncDirTitle", { path: defaultTarget }) : t("copyDirTitle", { path: defaultTarget }),
-    body: kind === "syncDir" ? t("syncDirBody") : t("copyDirBody"),
+    title:
+      kind === "syncDir"
+        ? { key: "syncDirTitle", values: { path: defaultTarget } }
+        : { key: "copyDirTitle", values: { path: defaultTarget } },
+    body: kind === "syncDir" ? { key: "syncDirBody" } : { key: "copyDirBody" },
     danger: true,
     target: { entry },
     draft: defaultTarget,
@@ -880,8 +901,8 @@ function startCopyMove(kind: "copy" | "move", entry: FileEntry, side: PaneSide) 
     ? joinPath(parent, `${entry.name}-copy`)
     : joinPath("/", entry.name);
   openConfirm(kind, {
-    title: kind === "copy" ? t("copyTitle") : t("moveTitle"),
-    body: kind === "copy" ? t("copyBody") : t("moveBody"),
+    title: { key: kind === "copy" ? "copyTitle" : "moveTitle" },
+    body: { key: kind === "copy" ? "copyBody" : "moveBody" },
     target: { entry },
     draft,
     side,
@@ -891,8 +912,8 @@ function startCopyMove(kind: "copy" | "move", entry: FileEntry, side: PaneSide) 
 /** A-FILES ③：压缩包解压骨架——等后端 files/extract（交接），方法未注册时给出 featureMissing 提示。 */
 function startExtract(entry: FileEntry, side: PaneSide) {
   openConfirm("extract", {
-    title: t("extractTitle", { name: entry.name }),
-    body: t("extractBody"),
+    title: { key: "extractTitle", values: { name: entry.name } },
+    body: { key: "extractBody" },
     target: { entry },
     draft: parentPath(entry.path) || "/",
     side,
@@ -911,8 +932,8 @@ function startCompress(targets: FileEntry[], side: PaneSide) {
   if (!targets.length) return;
   const base = targets.length === 1 ? baseName(targets[0].path) || "archive" : "archive";
   openConfirm("compress", {
-    title: t("compressTitle"),
-    body: t("compressBody"),
+    title: { key: "compressTitle" },
+    body: { key: "compressBody" },
     target: { targets },
     draft: joinPath(parentPath(targets[0].path), `${base}.tar.gz`),
     side,
@@ -930,6 +951,20 @@ let batchSeq = 0;
 // （worker 跳过剩余分批），job 置已取消态——此前对 local-batch-* 调
 // files/transfer/cancel，mock/真实 sidecar 无此记录仍返回 success（假成功）。
 const batchCancelFlags = new Map<string, { canceled: boolean }>();
+
+// R5-P2-4：上传/下载泵的本地取消标志（taskId → flag）。此前取消只调
+// files/transfer/cancel，前端泵无检查点——「取消」后任务继续跑完并最终置
+// 已完成（假成功，文件照常落盘/流量照耗）。取消时翻转标志，泵循环在下一个
+// 分片检查点终止并置 canceled 终态；等待下载帧时由 cancelTransfer 调
+// releaseFrames 立即打断等待。
+const pumpCancelFlags = new Map<string, { canceled: boolean }>();
+/** 泵取消哨兵：upload/download 泵检查到取消标志时抛出，与真实错误区分
+ * （canceled 终态不落 error 文案、不弹错误横幅、批量上传不再继续后续文件）。 */
+class TransferCanceled extends Error {
+  constructor() {
+    super("transfer canceled");
+  }
+}
 
 async function runBatch(kind: TransferKind, remotePath: string, count: number, task: (index: number) => Promise<void>): Promise<{ canceled: boolean }> {
   if (count <= 0) return { canceled: false };
@@ -1029,7 +1064,7 @@ async function onConfirm() {
         const targetPath = confirmDraft.value.trim();
         if (!entry || !targetPath) return;
         if (targetPath.replace(/\/+$/, "") === entry.path.replace(/\/+$/, "")) {
-          error.value = t("operationFailed", { error: t("destMustDiffer") });
+          error.value = { kind: "failure", detail: "", inner: { key: "destMustDiffer" } };
           return;
         }
         // R3-P2-5：目标冲突预检——同名即静默覆盖（数据丢失风险），命中后转入
@@ -1040,7 +1075,7 @@ async function onConfirm() {
             confirmForce.value = true;
             confirmForcePath.value = targetPath;
             confirmDanger.value = true;
-            confirmBody.value = t("overwriteAsk", { path: targetPath });
+            confirmBody.value = { key: "overwriteAsk", values: { path: targetPath } };
             return;
           }
         }
@@ -1069,6 +1104,10 @@ async function onConfirm() {
       }
       case "delete": {
         const targets = confirmTarget.value.targets ?? [];
+        // R5-P2-2：确认后立即关弹层——进度已实时落传输面板，busy 弹层的全屏
+        // 遮罩此前会挡住面板取消钮，长批次期间用户只能干等（取消藏在弹层后）。
+        // 弹层关闭后本函数继续执行批次；目录刷新等批次结束后由 switch 外统一收尾。
+        closeConfirm();
         // P2-7：批量删除并发分批执行，进度实时落传输面板（单项目为 1 批同语义）。
         // R3-P2-9：取消真实中断剩余分批；已取消时不再补「已删除」通知。
         const batch = await runBatch("delete", paneDirPath(side), targets.length, async (index) => {
@@ -1181,8 +1220,8 @@ async function transferBetween(from: PaneSide, move: boolean, dragged?: FileEntr
   if (conflicts.length) {
     pendingPaneTransfer.value = { from, move, list, destPath };
     openConfirm("overwrite", {
-      title: move ? t("moveTitle") : t("copyTitle"),
-      body: t("overwriteBatch", { count: conflicts.length }),
+      title: move ? { key: "moveTitle" } : { key: "copyTitle" },
+      body: { key: "overwriteBatch", values: { count: conflicts.length } },
       danger: true,
       side: from,
     });
@@ -1224,7 +1263,12 @@ async function executePaneTransfer(from: PaneSide, move: boolean, list: FileEntr
     showNotice(t("paneTransferred", { count: list.length }));
     if (to === "left") await loadDirectory().catch(() => undefined);
     else await loadRightDirectory().catch(() => undefined);
-    if (move && from === "right") await loadRightDirectory().catch(() => undefined);
+    // R5-P2-1：move 的源栏也必须刷新——此前只有「右→左移动」被覆盖，左→右
+    // 移动后源栏（左）没有任何刷新路径，已移走条目残留、可重复误操作。
+    if (move) {
+      if (from === "left") await loadDirectory().catch(() => undefined);
+      else await loadRightDirectory().catch(() => undefined);
+    }
   } catch (cause) {
     showError(cause);
   }
@@ -1234,6 +1278,9 @@ async function executePaneTransfer(from: PaneSide, move: boolean, list: FileEntr
 
 function onDropTo(side: PaneSide, event: DragEvent) {
   dragOverSide.value = null;
+  // R5-P2-5：拖放目标即用户当前关注侧，记账活动栏（此前拖拽是 activeSide
+  // 唯一漏网入口——拖放后点工具栏「新建文件夹」会落错栏）。
+  markActiveSide(side);
   const raw = event.dataTransfer?.getData("application/x-dbx-files");
   if (!raw) return;
   let payload: { paneId?: string; paths?: string[] };
@@ -1282,6 +1329,8 @@ async function uploadSource(name: string, size: number, readChunk: (offset: numb
   const start = await call<{ taskId: string; chunkSize?: number }>("files/upload/start", startParams);
   const taskId = start.taskId;
   const chunkSize = start.chunkSize && start.chunkSize > 0 ? start.chunkSize : CHUNK_SIZE;
+  const cancelFlag = { canceled: false };
+  pumpCancelFlags.set(taskId, cancelFlag);
   registerJob({
     jobId: taskId,
     taskId,
@@ -1296,6 +1345,11 @@ async function uploadSource(name: string, size: number, readChunk: (offset: numb
   try {
     let offset = 0;
     while (offset < size) {
+      // R5-P2-4：泵级取消检查点——置 canceled 终态并终止循环，不再读/发后续分片。
+      if (cancelFlag.canceled) {
+        tracker.onProgress({ jobId: taskId, taskId, state: "canceled", transferred: offset });
+        throw new TransferCanceled();
+      }
       const chunk = await readChunk(offset, chunkSize);
       if (!chunk.byteLength) throw new Error("local file ended before its declared size");
       const payload = new Uint8Array(8 + chunk.byteLength);
@@ -1309,9 +1363,13 @@ async function uploadSource(name: string, size: number, readChunk: (offset: numb
     await window.dbxPlugin.invoke("files/upload/finish", { taskId }, { timeoutMs: 30 * 60 * 1000 });
     tracker.onProgress({ jobId: taskId, taskId, state: "completed", transferred: size });
   } catch (cause) {
+    // 已取消：终态已置，不再重复报错/请 sidecar 取消（cancelTransfer 已处理）。
+    if (cause instanceof TransferCanceled) return;
     tracker.onProgress({ jobId: taskId, taskId, state: "failed", error: errorMessage(cause) });
     await window.dbxPlugin.invoke("files/transfer/cancel", { taskId }).catch(() => undefined);
     throw cause;
+  } finally {
+    pumpCancelFlags.delete(taskId);
   }
 }
 
@@ -1331,6 +1389,8 @@ async function uploadLocalFiles(files: readonly File[]) {
         new Uint8Array(await file.slice(offset, offset + length).arrayBuffer()),
       );
     } catch (cause) {
+      // R5-P2-4：用户取消当前文件后不再继续上传剩余文件（也不补「已上传 N 个」）。
+      if (cause instanceof TransferCanceled) return;
       showError(cause);
     }
   }
@@ -1347,6 +1407,9 @@ async function uploadHostFiles(files: Array<{ handleId: string; name: string; si
         return window.dbxPlugin.decodeBase64(result.dataBase64);
       });
     } catch (cause) {
+      // R5-P2-4：同 uploadLocalFiles——取消即终止整个批量上传（handle 释放由
+      // finally 统一处理）。
+      if (cause instanceof TransferCanceled) return;
       showError(cause);
     } finally {
       await fileTransfer.cancel(file.handleId).catch(() => undefined);
@@ -1374,14 +1437,18 @@ async function onUpload(files: File[] | null) {
 async function downloadEntry(entry: FileEntry, side: PaneSide = "left") {
   const fileTransfer = window.dbxPlugin.fileTransfer;
   let taskId: string | undefined;
+  // R5-P2-4：泵级取消标志（cancelTransfer 置位 + releaseFrames 打断帧等待）。
+  const cancelFlag = { canceled: false };
+  let channel: string | undefined;
   try {
     const startParams: Record<string, unknown> = { remotePath: entry.path };
     const explicit = sideConnectionId(side);
     if (explicit) startParams.connectionId = explicit;
     const info = await call<{ taskId: string; size: number; fileName?: string; chunkSize?: number }>("files/download/start", startParams);
     taskId = info.taskId;
+    pumpCancelFlags.set(taskId, cancelFlag);
+    channel = `files/download/${taskId}`;
     const size = info.size;
-    const channel = `files/download/${taskId}`;
     releaseFrames(channel);
     registerJob({
       jobId: taskId,
@@ -1400,6 +1467,9 @@ async function downloadEntry(entry: FileEntry, side: PaneSide = "left") {
     const chunks = target ? undefined : ([] as Uint8Array[]);
     let offset = 0;
     while (offset < size) {
+      // R5-P2-4：泵级取消检查点——等待中的帧由 cancelTransfer 的 releaseFrames
+      // 拒绝（TransferCanceled 语义走 canceled 终态），不再写后续分块。
+      if (cancelFlag.canceled) throw new TransferCanceled();
       const chunk = await waitForFrame(channel, offset);
       if (!chunk.data.byteLength) throw new Error("download frame carried no data");
       if (chunks) {
@@ -1421,9 +1491,16 @@ async function downloadEntry(entry: FileEntry, side: PaneSide = "left") {
     tracker.onProgress({ jobId: taskId, taskId, state: "completed", transferred: size });
     showNotice(t("downloaded", { name: info.fileName ?? entry.name }));
   } catch (cause) {
-    // 下载泵失败同样落终态（此前漏标，job 会永远停在 running）。
-    if (taskId) tracker.onProgress({ jobId: taskId, taskId, state: "failed", error: errorMessage(cause) });
-    showError(cause);
+    // 下载泵失败同样落终态（此前漏标，job 会永远停在 running）；取消走
+    // canceled 终态（无 error 文案、不弹横幅），失败仍落 failed。
+    if (taskId) {
+      const canceled = cause instanceof TransferCanceled || cancelFlag.canceled;
+      tracker.onProgress({ jobId: taskId, taskId, state: canceled ? "canceled" : "failed", error: canceled ? undefined : errorMessage(cause) });
+    }
+    if (!(cause instanceof TransferCanceled || cancelFlag.canceled)) showError(cause);
+  } finally {
+    if (channel) releaseFrames(channel);
+    if (taskId) pumpCancelFlags.delete(taskId);
   }
 }
 
@@ -1468,17 +1545,30 @@ function onPreviewSaved() {
 async function cancelTransfer(jobId: string) {
   // R3-P2-9：本地伪 job 取消走本地标志（真实中断 runBatch），不再调
   // files/transfer/cancel——sidecar 无该 job 记录仍返回 success（假成功）。
-  const flag = batchCancelFlags.get(jobId);
-  if (flag) {
-    flag.canceled = true;
-    showNotice(t("jobCanceled"));
-    return;
+  const batchFlag = batchCancelFlags.get(jobId);
+  // R5-P2-4：上传/下载泵取消同样本地置位（泵循环在下一个分片检查点终止并
+  // 落 canceled 终态）；下载泵的等待中帧由 releaseFrames 立即打断。这类 job
+  // 在 sidecar 有真实记录（start 已建），额外调 cancel 释放 sidecar 侧资源。
+  const pumpFlag = pumpCancelFlags.get(jobId);
+  if (batchFlag) batchFlag.canceled = true;
+  if (pumpFlag) {
+    pumpFlag.canceled = true;
+    // 真实 sidecar 上 start 已建 job，取消以释放 sidecar 侧资源（mock 无记录
+    // 返回 success，同样无害）；下载泵的等待中帧由 releaseFrames 立即打断。
+    await call("files/transfer/cancel", { taskId: jobId }).catch(() => undefined);
+    if (frameQueue.has(`files/download/${jobId}`) || frameWaiters.has(`files/download/${jobId}`)) {
+      releaseFrames(`files/download/${jobId}`);
+    }
   }
-  try {
-    await call("files/transfer/cancel", { taskId: jobId });
+  if (!batchFlag && !pumpFlag) {
+    try {
+      await call("files/transfer/cancel", { taskId: jobId });
+      showNotice(t("jobCanceled"));
+    } catch (cause) {
+      showError(cause);
+    }
+  } else {
     showNotice(t("jobCanceled"));
-  } catch (cause) {
-    showError(cause);
   }
   void tracker.refresh(invokeAdapter);
 }
@@ -1711,7 +1801,7 @@ onMounted(() => {
   window.addEventListener("resize", syncViewportLayout);
   syncViewportLayout();
   void initialize().catch((cause) => {
-    error.value = t("operationFailed", { error: errorMessage(cause) });
+    error.value = { kind: "failure", detail: errorMessage(cause), inner: errorMessage(cause) };
   });
 });
 
@@ -1732,12 +1822,12 @@ onBeforeUnmount(() => {
 <template>
   <main class="wb-workbench">
     <div v-if="error" class="wb-error-banner">
-      <span :title="errorDetail">{{ error }}</span>
+      <span :title="errorDetail">{{ errorText }}</span>
       <!-- R3-P2-10：文本字符 ↻/✕ 换 lucide 图标（对齐 P2-14 先例）。 -->
       <button class="wb-icon-button wb-icon-neutral" :title="t('retry')" @click="retryAfterError"><RefreshCw /></button>
       <button class="wb-icon-button wb-icon-neutral" :title="t('close')" @click="error = ''"><X /></button>
     </div>
-    <div v-if="notice" class="wb-notice">{{ notice }}</div>
+    <div v-if="notice" class="wb-notice">{{ noticeText }}</div>
 
     <FileToolbar
       :can-write="canWrite"
@@ -2001,8 +2091,8 @@ onBeforeUnmount(() => {
 
     <ConfirmDialog
       :open="confirmOpen"
-      :title="confirmTitle"
-      :body="confirmBody"
+      :title="confirmTitleText"
+      :body="confirmBodyText"
       :danger="confirmDanger"
       :danger-list="confirmDangerList"
       :warning="confirmNameIssue"

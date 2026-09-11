@@ -41,6 +41,10 @@ function progressMeta(job: TransferJob): string {
     const bytes = job.bytesTotal ? `${formatBytes(job.bytesDone ?? 0)} / ${formatBytes(job.bytesTotal)}` : "";
     return [files, bytes].filter(Boolean).join(" · ") || `${formatBytes(job.transferred)} / ${formatBytes(job.size)}`;
   }
+  // R5-P2-3：非字节型但带 filesTotal 的计数型 job（批量删除伪 job 的
+  // transferred/size 实为文件个数）按「N/M 项」渲染，不得误格式化成字节
+  // （此前显示「删除 504 B / 9.8 KiB」这类计数+字节混排版）。
+  if (job.filesTotal) return props.t("filesProgress", { done: job.filesDone ?? 0, total: job.filesTotal });
   return `${formatBytes(job.transferred)} / ${formatBytes(job.size)}`;
 }
 

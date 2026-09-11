@@ -545,7 +545,9 @@ export function installMockHost(): void {
       case "files/download/start": {
         const path = str("remotePath");
         assertOk(path);
-        const entry = tree.get(path.replace(/\/+$/, ""));
+        // R5-P2-8：按 connectionId 路由（此前写死远端 tree，双栏本地面下载
+        // 报 NotFound——delete/purge/copy/move 等同族方法已收口，唯此漏网）。
+        const entry = treeFor(p.connectionId).get(path.replace(/\/+$/, ""));
         if (!entry || entry.kind !== "file") throw new Error(`NotFound: ${path}`);
         const taskId = `mock-download-${++jobSeq}`;
         const size = entry.size;

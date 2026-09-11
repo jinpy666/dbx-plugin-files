@@ -1,6 +1,8 @@
 // 七语全量文案：en / es / it / ja / pt-BR / zh-CN / zh-TW。
 // 约定：新增 key 必须七语同时补齐；`{name}` 类占位由 workbenchMessage 填充。
 
+import { friendlyError } from "./friendlyError";
+
 export type WorkbenchLocale = "en" | "es" | "it" | "ja" | "pt-BR" | "zh-CN" | "zh-TW";
 
 export const messages = {
@@ -1517,4 +1519,46 @@ export function workbenchMessage(locale: string, key: string, values: Record<str
     text = text.replaceAll(`{${name}}`, String(value));
   }
   return text;
+}
+
+/** i18n 文本的存储形态（R5-P2-7）：弹层标题/正文等长驻 UI 存 key + 参数，
+ * 渲染时经 i18nTextOf(·, locale) 求值——打开中途切 locale 即时跟随，
+ * 不再固化打开瞬间的译文。数组形态用于多段拼接（段间以空格连接），
+ * 免为此新增组合 key。 */
+export interface I18nText {
+  key: string;
+  values?: Record<string, string | number>;
+}
+
+/** i18n 求值的兼容形态（R5-P2-7 收尾）：已翻译字符串直接透传（外部传入
+ * /既有字符串调用点无需改写），I18nText 及其数组渲染时求值。 */
+export type I18nInput = string | I18nText | Array<string | I18nText>;
+
+export function i18nTextOf(text: I18nInput, locale: string): string {
+  const parts = Array.isArray(text) ? text : [text];
+  return parts
+    .map((part) => (typeof part === "string" ? part : workbenchMessage(locale, part.key, part.values)))
+    .join(" ");
+}
+
+/** 错误横幅的存储形态（R5-P2-7 同类收尾）：不存已翻译字符串，渲染时经
+ * errorBannerOf(·, locale) 求值——横幅存活期间切 locale 文案即时跟随。
+ * - kind "i18n"：整条横幅是一个 key + 参数（nameExists、表单校验类）；
+ * - kind "failure"：operationFailed 外壳包内层错误文本。内层二选一：
+ *   inner（原文透传字符串或 I18nText）、friendlyRaw（友好映射层输入的
+ *   原始错误串，渲染时重跑 friendlyError 使已知类别文案跟随 locale）。
+ * detail 为横幅悬停展示的 sidecar 原文（P2-1）。 */
+export type ErrorBannerState =
+  | ""
+  | { kind: "i18n"; text: I18nInput; detail?: string }
+  | { kind: "failure"; detail: string; inner?: I18nInput; friendlyRaw?: string };
+
+export function errorBannerOf(state: ErrorBannerState, locale: string): string {
+  if (!state) return "";
+  if (state.kind === "i18n") return i18nTextOf(state.text, locale);
+  const inner =
+    state.friendlyRaw !== undefined
+      ? friendlyError(state.friendlyRaw, (key) => workbenchMessage(locale, key))
+      : i18nTextOf(state.inner ?? "", locale);
+  return workbenchMessage(locale, "operationFailed", { error: inner });
 }

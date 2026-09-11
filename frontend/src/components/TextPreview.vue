@@ -3,10 +3,13 @@
 // 按文件名懒加载，主题色取自宿主 appearance 规范值；editable 切换重建实例。
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { basicSetup } from "codemirror";
-import { EditorState } from "@codemirror/state";
+import { EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { LanguageDescription } from "@codemirror/language";
+import { HighlightStyle, LanguageDescription, syntaxHighlighting } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
+import { tags } from "@lezer/highlight";
+// 语法高亮调色板来自 shared 公共层（唯一实现点），暗色为提亮后的 GitHub Dark 系。
+import { dbxSyntaxHighlight } from "../../../../shared/frontend/editorTheme";
 
 const props = defineProps<{
   text: string;
@@ -43,6 +46,10 @@ async function extensions() {
   const support = language ? await language.load().catch(() => undefined) : undefined;
   return [
     basicSetup,
+    // basicSetup 内置 defaultHighlightStyle 是浅底配色，暗色下发暗；此处按宿主
+    // 明暗注入 shared 调色板高亮（后声明者优先，内置样式退为 fallback），
+    // appearance 变化重建编辑器时随 colorScheme 自然跟随。
+    dbxSyntaxHighlight(props.appearance.colorScheme, { HighlightStyle, syntaxHighlighting, tags }) as Extension,
     EditorState.readOnly.of(!props.editable),
     EditorView.editable.of(props.editable === true),
     EditorView.lineWrapping,

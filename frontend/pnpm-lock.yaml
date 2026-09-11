@@ -20,6 +20,9 @@ importers:
       '@codemirror/view':
         specifier: ^6.43.11
         version: 6.43.11
+      '@lezer/highlight':
+        specifier: ^1.2.3
+        version: 1.2.3
       '@lucide/vue':
         specifier: 1.17.0
         version: 1.17.0(vue@3.5.42(typescript@6.0.3))

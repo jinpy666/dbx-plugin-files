@@ -3,7 +3,7 @@
 // 文本可切换编辑（textarea）→ files/write（≤4MiB，超限引导走上传）；
 // 图片按扩展名 data URI；二进制类前 512B hex dump；truncated 提示 + 下载引导；
 // 压缩包列表需要后端 files/archiveList（见交接文档），先给占位说明。
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { Download, Pencil, X } from "@lucide/vue";
 import { baseName, call, errorMessage, formatBytes, isMethodMissing } from "../lib/api";
 import { isArchivePath } from "../lib/archive";
@@ -46,12 +46,25 @@ const t = (key: string, values?: Record<string, string | number>) => props.t(key
 // P1-4 焦点管理：预览弹窗打开后把焦点移入容器（键盘用户可直接 Tab 到头部
 // 控件，不再滞留背景列表）；进入编辑态后聚焦 CodeMirror（TextPreview 内部
 // 在编辑实例就绪时自聚焦，这里兜底调用其 focus）。
+// R5-P2-6 焦点归还：打开时记录 document.activeElement（触发行/按钮），组件
+// 卸载（弹层关闭）时归还——否则焦点落在 BODY，键盘用户须从页面顶部重新
+// Tab（与 ConfirmDialog 的 returnFocusTo 同方案）。
 const previewEl = ref<HTMLElement>();
 const textPreviewRef = ref<InstanceType<typeof TextPreview>>();
+/** 打开前的 document.activeElement，卸载时归还焦点。 */
+let returnFocusTo: HTMLElement | null = null;
 
 onMounted(async () => {
+  // 此刻预览容器尚未取焦，activeElement 仍是触发元素
+  returnFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   await nextTick();
   previewEl.value?.focus();
+});
+
+onUnmounted(() => {
+  // 触发元素可能已随列表刷新移出文档（isConnected=false）：聚焦游离节点无效且无意义
+  if (returnFocusTo?.isConnected) returnFocusTo.focus();
+  returnFocusTo = null;
 });
 
 watch(editing, async (on) => {

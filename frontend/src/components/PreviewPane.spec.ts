@@ -63,4 +63,39 @@ describe("PreviewPane (P1-4 预览焦点)", () => {
     });
     expect(wrapper.find(".wb-preview").exists()).toBe(false);
   });
+
+  // R5-P2-6：关闭（卸载）后焦点归还打开前的触发元素，不再落在 BODY
+  it("returns focus to the triggering element after close", async () => {
+    bindApi(async <T,>() => ({ dataBase64: PNG_B64, truncated: false, size: 70 }) as unknown as T, null);
+    window.dbxPlugin = {
+      decodeBase64: b64decode,
+      encodeBase64: (value) => btoa(String.fromCharCode(...(value instanceof Uint8Array ? value : new Uint8Array(value)))),
+    } as DbxPluginApi;
+    wrapper = mount(
+      {
+        components: { PreviewPane },
+        data: () => ({ path: null as string | null, appearance, t: (key: string) => key }),
+        template: `
+          <div>
+            <button data-test="trigger">触发</button>
+            <!-- 镜像 App.vue 真实挂载：外层 v-if 控制组件整体挂载/卸载 -->
+            <PreviewPane v-if="path" :path="path" :can-write="false" :appearance="appearance" :t="t" />
+          </div>
+        `,
+      },
+      { attachTo: document.body },
+    );
+    const trigger = wrapper.find("[data-test=trigger]").element as HTMLElement;
+    trigger.focus();
+    expect(document.activeElement).toBe(trigger);
+    await wrapper.setData({ path: "/docs/logo.png" });
+    await flush();
+    const preview = wrapper.find(".wb-preview");
+    expect(preview.exists()).toBe(true);
+    expect(document.activeElement).toBe(preview.element);
+    await wrapper.setData({ path: null });
+    await flush();
+    expect(wrapper.find(".wb-preview").exists()).toBe(false);
+    expect(document.activeElement).toBe(trigger);
+  });
 });

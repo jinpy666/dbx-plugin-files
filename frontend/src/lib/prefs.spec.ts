@@ -15,25 +15,24 @@ function memoryStorage(initial: Record<string, string> = {}): Storage {
   } as Storage;
 }
 
-const prefs: UiPrefs = { sort: { column: "size", direction: "desc" }, dualPane: false, sideTab: "quick", sideCollapsed: true };
+const prefs: UiPrefs = { sort: { column: "size", direction: "desc" }, sideTab: "quick", sideCollapsed: true };
 
 describe("ui prefs", () => {
   it("round-trips prefs through storage", () => {
     const storage = memoryStorage();
     saveUiPrefs(prefs, storage);
     expect(storage.getItem(UI_PREFS_KEY)).toContain('"column":"size"');
+    expect(storage.getItem(UI_PREFS_KEY)).not.toContain("dualPane");
     expect(loadUiPrefs(storage)).toEqual(prefs);
   });
 
   it("falls back to defaults for missing or corrupt data", () => {
     expect(loadUiPrefs(memoryStorage())).toEqual({
       sort: { column: "name", direction: "asc" },
-      dualPane: true,
       sideTab: "tree",
       sideCollapsed: false,
     });
     expect(loadUiPrefs(memoryStorage({ [UI_PREFS_KEY]: "{broken" })).sort.column).toBe("name");
-    expect(loadUiPrefs(memoryStorage({ [UI_PREFS_KEY]: '{"dualPane":"yes"}' })).dualPane).toBe(true);
   });
 
   it("sanitizes unknown sort columns and legacy fields", () => {
@@ -44,5 +43,12 @@ describe("ui prefs", () => {
     expect(loaded.sort.column).toBe("name");
     expect(loaded.sideTab).toBe("tree");
     expect("rightTab" in loaded).toBe(false);
+  });
+
+  it("ignores legacy dualPane in stored prefs (session-only toggle now)", () => {
+    // 历史版本持久化过 dualPane；新版本不读不写，加载结果恒不含该字段。
+    const storage = memoryStorage({ [UI_PREFS_KEY]: '{"dualPane":true,"sort":{"column":"name","direction":"asc"}}' });
+    const loaded = loadUiPrefs(storage);
+    expect("dualPane" in loaded).toBe(false);
   });
 });
