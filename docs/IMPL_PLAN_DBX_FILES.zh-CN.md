@@ -424,11 +424,23 @@ job 状态机、redact、出网校验（scheme/host/私有地址分流用例）�
 现为可选：留空时连接服务器根并枚举可见共享，路径首段选择共享；填写后
 保持指定共享直连。服务器级连接不能设置 share-relative 的 `root`。
 
-### M4（MCP 工具）
+### M4（MCP 工具）——**sidecar 侧已落地（2026-09-12），前端接线待下一轮**
 
-`internal/mcp/`：`mcp/tools`（files 浏览/读写/传输查询族工具定义）、
-`mcp/call`（lifecycle payload 转发 + connectionId 池化）、`mcp/settings/get|set`
-（写门禁策略）——照 ssh-sftp `mcp.rs` 模式；`smoke_mcp.py` 同款验收。
+`backend/src/mcp.rs`：`mcp/tools`（注册 + JSON Schema；12 工具：UI 驱动 4 +
+本地读 2 + 元发现 1 + 写 5）、`mcp/call`（lifecycle payload 转发 + 分派 +
+16 KiB 响应上限）、`mcp/settings/get|set`（可调参数，`mcp-settings.json`
+持久化）、事件 `files/ui/intent` + intent 状态表（TTL 60s/LRU 20）+
+`files/ui/state/report`、`files_scan_digest`/`files_cursor_next` 本地读、
+写族两阶段确认（`delete`/`purge` 强制 preview→confirmToken；purge 拒根
+红线）+ 审计 `source:"mcp"`。形状对齐 ldap Go 版参考实现（同族参数一致），
+设计来源 `shared/IMPL_PLAN_PLUGIN_MCP.zh-CN.md`（v2）§2/§3/§4/§6.2；
+完整协议章节见 `files/docs/MCP.zh-CN.md`。验收：`cargo test`（mcp 模块
+纯逻辑单测：digest 聚合/cursor LRU+TTL/confirmToken hash+过期+一次性/
+intent 状态表/16KiB 截断/只读不注册写工具）+ `scripts/smoke_mcp.py`
+（M1–M10，与 ldap 同表）。**待下一轮**：前端接线——`App.vue` 挂
+`shared/frontend/useUiIntent`（已由 ldap agent 落地）订阅 `files/ui/intent`、
+PathField/FileTable handler、ui/state/report 快照上报，以及 mockHost/env.d.ts
+镜像同步与真机复验。
 
 ## 12. 风险与备注
 

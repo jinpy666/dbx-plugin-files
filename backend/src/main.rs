@@ -10,6 +10,7 @@
 
 mod archive;
 mod engine;
+mod mcp;
 mod model;
 mod store;
 mod transfers;
@@ -41,6 +42,7 @@ struct Plugin {
     engine: Arc<Engine>,
     transfers: Arc<JobTable>,
     store: Arc<Store>,
+    mcp: Arc<mcp::Mcp>,
 }
 
 impl Plugin {
@@ -55,6 +57,7 @@ impl Plugin {
         let runtime =
             Runtime::new().map_err(|error| format!("Failed to create async runtime: {error}"))?;
         let transfers = Arc::new(JobTable::new());
+        let mcp = Arc::new(mcp::Mcp::new(data_dir.clone()));
         let store = Arc::new(Store::new(data_dir));
         // P-FILES ①c (X-A handover ④): hydrate the persisted transfer history
         // at startup (M3-F3-4 hook). Behavior is unchanged — `list` reads the
@@ -66,6 +69,7 @@ impl Plugin {
             engine: Arc::new(Engine::new()),
             transfers,
             store,
+            mcp,
         })
     }
 
@@ -648,6 +652,23 @@ impl Plugin {
                 Ok(json!({ "success": true }))
             }
             "files/audit/list" => audit_list_response(&self.store, &params),
+
+            // ------------------------------------------------------------------
+            // MCP tool surface (shared/IMPL_PLAN_PLUGIN_MCP §2; ssh mcp.rs
+            // skeleton parity): discovery / execution / settings, plus the
+            // frontend-side intent report channel (design §1).
+            // ------------------------------------------------------------------
+            "mcp/tools" => Ok(self.mcp.tool_definitions(&self.engine, &params)),
+            "mcp/call" => Ok(self.runtime.block_on(self.mcp.call(
+                &self.engine,
+                &self.transfers,
+                &self.store,
+                emitter,
+                &params,
+            ))?),
+            "mcp/settings/get" => Ok(self.mcp.settings_get()),
+            "mcp/settings/set" => self.mcp.settings_set(&params),
+            "files/ui/state/report" => self.mcp.report(&params),
             _ => Err(format!("Method not found: {method}")),
         }
     }
@@ -667,6 +688,9 @@ impl Plugin {
             action: action.to_string(),
             target: target.to_string(),
             result: result.to_string(),
+            // Workbench-originated writes carry no source marker; MCP writes
+            // are tagged `source:"mcp"` in the mcp module (design §4).
+            source: None,
         }) {
             eprintln!("[io.dbx.files] audit write failed: {error}");
         }
@@ -704,13 +728,19 @@ fn audit_list_response(store: &Store, params: &Value) -> Result<Value, String> {
     let entries = records
         .into_iter()
         .map(|record| {
-            json!({
+            let mut entry = json!({
                 "at": record.time,
                 "action": record.action,
                 "connectionId": record.connection_id,
                 "path": record.target,
                 "result": record.result,
-            })
+            });
+            // MCP-originated writes carry `source:"mcp"` (MCP design §4);
+            // legacy lines and workbench writes omit the field.
+            if let Some(source) = record.source {
+                entry["source"] = json!(source);
+            }
+            entry
         })
         .collect::<Vec<_>>();
     Ok(json!({ "entries": entries }))
@@ -975,6 +1005,7 @@ mod tests {
                     action: (*action).into(),
                     target: (*target).into(),
                     result: "ok".into(),
+                    source: None,
                 })
                 .unwrap();
         }

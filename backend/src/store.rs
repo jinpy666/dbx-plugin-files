@@ -13,7 +13,7 @@
 //! - `transfers.json`  — finished transfer history, ring-capped at
 //!   `model::TRANSFER_HISTORY_LIMIT` (200);
 //! - `audit.jsonl`     — append-only write-op audit log, one JSON object per
-//!   line: `{"time":"RFC3339","connectionId","action","target","result"}`.
+//!   line: `{"time":"RFC3339","connectionId","action","target","result"[,"source"]}`.
 //!
 //! Credentials red line: nothing in this module ever stores secret values;
 //! `target` carries paths/URIs only.
@@ -66,6 +66,10 @@ pub struct AuditRecord {
     pub target: String,
     /// `ok | denied | error`.
     pub result: String,
+    /// Origin of the write: `"mcp"` for the MCP tool surface, absent/legacy
+    /// for workbench-initiated operations (MCP design §4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// File-backed store. All methods are blocking + best-effort: a failed write
@@ -466,6 +470,7 @@ mod tests {
                 action: "files/purge".into(),
                 target: "/data/old".into(),
                 result: "ok".into(),
+                source: None,
             })
             .unwrap();
         store
@@ -475,6 +480,7 @@ mod tests {
                 action: "files/write".into(),
                 target: "/data/new.txt".into(),
                 result: "denied".into(),
+                source: None,
             })
             .unwrap();
         let trail = store.read_audit();
@@ -502,6 +508,7 @@ mod tests {
             action: "files/write".into(),
             target: "/data/file.bin".into(),
             result: "ok".into(),
+            source: None,
         };
         store.append_audit(record.clone()).unwrap();
         let raw = std::fs::read_to_string(store.data_dir().join("audit.jsonl")).unwrap();

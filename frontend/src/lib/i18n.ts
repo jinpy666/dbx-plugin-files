@@ -7,6 +7,13 @@ export type WorkbenchLocale = "en" | "es" | "it" | "ja" | "pt-BR" | "zh-CN" | "z
 
 export const messages = {
   "en": {
+    // MCP UI intent（shared/frontend/uiIntent）：七语与 ldap 样板同形。
+    intent: {
+      applied: "MCP intent applied to the workbench",
+      rejected: "MCP intent rejected: {reason}",
+      selectMissing: "Path not found in the current listing",
+      unknownPanel: "Unknown panel",
+    },
     hostApiUnavailable: "DBX host API is unavailable",
     notConnected: "No active storage connection",
     readOnly: "Read-only",
@@ -232,6 +239,12 @@ export const messages = {
     quickPathsTitle: "Quick paths",
   },
   "es": {
+    intent: {
+      applied: "Intención de MCP aplicada al espacio de trabajo",
+      rejected: "Intención de MCP rechazada: {reason}",
+      selectMissing: "No se encontró la ruta en el listado actual",
+      unknownPanel: "Panel desconocido",
+    },
     hostApiUnavailable: "La API del host DBX no está disponible",
     notConnected: "No hay una conexión de almacenamiento activa",
     readOnly: "Solo lectura",
@@ -442,6 +455,12 @@ export const messages = {
     quickPathsTitle: "Carpetas frecuentes",
   },
   "it": {
+    intent: {
+      applied: "Intent MCP applicato all'area di lavoro",
+      rejected: "Intent MCP rifiutato: {reason}",
+      selectMissing: "Percorso non trovato nell'elenco corrente",
+      unknownPanel: "Pannello sconosciuto",
+    },
     hostApiUnavailable: "API host DBX non disponibile",
     notConnected: "Nessuna connessione di archiviazione attiva",
     readOnly: "Sola lettura",
@@ -652,6 +671,12 @@ export const messages = {
     quickPathsTitle: "Cartelle rapide",
   },
   "ja": {
+    intent: {
+      applied: "MCP インテントをワークベンチに適用しました",
+      rejected: "MCP インテントを拒否しました：{reason}",
+      selectMissing: "現在のリストにそのパスが見つかりません",
+      unknownPanel: "不明なパネル",
+    },
     hostApiUnavailable: "DBX ホスト API を利用できません",
     notConnected: "有効なストレージ接続がありません",
     readOnly: "読み取り専用",
@@ -862,6 +887,12 @@ export const messages = {
     quickPathsTitle: "クイックフォルダ",
   },
   "pt-BR": {
+    intent: {
+      applied: "Intenção do MCP aplicada ao espaço de trabalho",
+      rejected: "Intenção do MCP rejeitada: {reason}",
+      selectMissing: "Caminho não encontrado na listagem atual",
+      unknownPanel: "Painel desconhecido",
+    },
     hostApiUnavailable: "A API do host DBX está indisponível",
     notConnected: "Nenhuma conexão de armazenamento ativa",
     readOnly: "Somente leitura",
@@ -1072,6 +1103,12 @@ export const messages = {
     quickPathsTitle: "Pastas rápidas",
   },
   "zh-CN": {
+    intent: {
+      applied: "MCP 意图已应用到工作台",
+      rejected: "MCP 意图被拒绝：{reason}",
+      selectMissing: "当前目录列表中未找到该路径",
+      unknownPanel: "未知面板",
+    },
     hostApiUnavailable: "DBX 宿主 API 不可用",
     notConnected: "当前没有活动存储连接",
     readOnly: "只读",
@@ -1282,6 +1319,12 @@ export const messages = {
     quickPathsTitle: "快速目录",
   },
   "zh-TW": {
+    intent: {
+      applied: "MCP 意圖已套用到工作台",
+      rejected: "MCP 意圖被拒絕：{reason}",
+      selectMissing: "目前目錄列表中找不到該路徑",
+      unknownPanel: "未知面板",
+    },
     hostApiUnavailable: "DBX 主機 API 無法使用",
     notConnected: "目前沒有作用中的儲存連線",
     readOnly: "唯讀",

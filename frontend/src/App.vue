@@ -13,6 +13,7 @@ import SideNavPanel from "./components/SideNavPanel.vue";
 import { isDbxPluginTheme, onHostThemeChange, themeToAppearance } from "./lib/hostTheme";
 import { DBX_POPOVER, resolveAppearance, type DbxPluginAppearanceInput } from "./lib/appearance";
 import { bridgeBinaryBytes } from "../../../shared/frontend/binaryEvent";
+import { useUiIntent, type UiIntentOutcome, type UiIntentSummary } from "../../../shared/frontend/uiIntent";
 import {
   bindApi,
   baseName,
@@ -424,11 +425,12 @@ const toolbarTarget = computed(() =>
 function markActiveSide(side: PaneSide) {
   activeSide.value = side;
 }
-/** FileTable 选择回写（同时把该栏标记为活动栏）。 */
+/** FileTable 选择回写（同时把该栏标记为活动栏）；选中行变化后发快照型 report。 */
 function setPaneSelection(side: PaneSide, paths: string[]) {
   markActiveSide(side);
   if (side === "left") selection.value = paths;
   else rightSelection.value = paths;
+  reportPaneSnapshot(side);
 }
 function setPaneActivePath(side: PaneSide, value: string) {
   markActiveSide(side);
@@ -585,6 +587,100 @@ function handleEvent(event: DbxPluginEvent) {
   }
 }
 
+// -- MCP UI intent 通道（M2，shared/frontend/uiIntent 公共层） -----------------
+// sidecar 的 files_ui_focus / files_ui_search / files_ui_select 生成 intentId
+// 后经 `files/ui/intent` 事件下发（files/backend/src/mcp.rs 为行为权威）；
+// 本节落 UI（面板切换 / 填 path 触发既有导航 / 按 path 定位高亮）并回报
+// `files/ui/state/report`；关键动作后另发无 intentId 的快照型 report。
+
+const INTENT_CELL_WIDTH = 120;
+
+/** 当前工作台面板（快照/摘要用）：主区恒为 browse；dock 打开时为对应页签。 */
+function currentIntentPanel(): string {
+  return dockOpen.value ? dockTab.value : "browse";
+}
+
+/** 每 cell 截 120 字符（与 sidecar digest 的 cellWidth 默认一致）；非字符串原样。 */
+function truncateIntentCell(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  return [...value].length > INTENT_CELL_WIDTH ? `${[...value].slice(0, INTENT_CELL_WIDTH).join("")}…` : value;
+}
+
+/** summary 行（前 5 行）：path 是定位字段不截断，其余 cell 截 120。 */
+function intentRowOf(entry: FileEntry) {
+  return { path: entry.path, name: truncateIntentCell(entry.name), kind: entry.kind, size: entry.size, modifiedAt: truncateIntentCell(entry.modifiedAt) };
+}
+
+/** intent 摘要：count + 前 5 行（形状对齐 files/docs/MCP.zh-CN.md report 段）。 */
+function summarizeListing(): UiIntentSummary {
+  const rows = sortedEntries.value.slice(0, 5).map(intentRowOf);
+  return { panel: currentIntentPanel(), count: entries.value.length, rows, ...(rows[0] ? { anchor: rows[0].path } : {}) };
+}
+
+/** 快照型 report：当前面板、path、结果计数、选中项 path（设计 §1「UI 快照」，
+ * `files_ui_state` 不带 intentId 时返回）。回报失败由公共层静默收敛。 */
+function reportPaneSnapshot(side: PaneSide) {
+  const left = side === "left";
+  const sel = left ? selection.value : rightSelection.value;
+  uiIntent.reportSnapshot({
+    panel: currentIntentPanel(),
+    path: left ? path.value : rightPath.value,
+    count: (left ? entries.value : rightEntries.value).length,
+    ...(sel.length ? { anchor: sel[0] } : {}),
+  });
+}
+
+const uiIntentHandlers = {
+  focus: async (params: Record<string, unknown>): Promise<UiIntentOutcome> => {
+    const panel = String(params.panel ?? "");
+    if (panel === "browse") {
+      // 主区常驻：收起 dock 并关掉遮挡弹层，让浏览面可见（ldap 同语义）。
+      dockOpen.value = false;
+      previewPath.value = null;
+      uiIntent.reportSnapshot({ panel: "browse", path: path.value, count: entries.value.length });
+      return { status: "applied", summary: { panel } };
+    }
+    if (panel === "transfers" || panel === "audit") {
+      dockOpen.value = true;
+      dockTab.value = panel;
+      if (panel === "audit") auditRef.value?.refresh();
+      uiIntent.reportSnapshot({ panel });
+      return { status: "applied", summary: { panel } };
+    }
+    return { status: "rejected", reason: t("intent.unknownPanel") };
+  },
+  search: async (params: Record<string, unknown>): Promise<UiIntentOutcome> => {
+    const target = String(params.path ?? "").trim();
+    if (!target) return { status: "rejected", reason: "path is required" };
+    if (loading.value) return { status: "rejected", reason: "directory listing is busy" };
+    // 复用既有导航管线（loadDirectory → files/list）：PathField 随 path 变化
+    // 同步展示，结果留在 UI，用户可继续操作/返回——条件可视可撤销。
+    markActiveSide("left");
+    try {
+      await loadDirectory(target);
+    } catch (cause) {
+      return { status: "rejected", reason: errorMessage(cause) };
+    }
+    showNotice(t("intent.applied"));
+    return { status: "applied", summary: summarizeListing() };
+  },
+  select: async (params: Record<string, unknown>): Promise<UiIntentOutcome> => {
+    const target = String(params.path ?? "").trim();
+    if (!target) return { status: "rejected", reason: "path is required" };
+    const leftRow = sortedEntries.value.find((entry) => entry.path === target);
+    const rightRow = dualPane.value ? rightSorted.value.find((entry) => entry.path === target) : undefined;
+    const row = leftRow ?? rightRow;
+    if (!row) return { status: "rejected", reason: t("intent.selectMissing") };
+    // FileTable 按 selection/activePath 高亮命中行；快照上报由 setPaneSelection 承接。
+    const side: PaneSide = leftRow ? "left" : "right";
+    setPaneSelection(side, [target]);
+    setPaneActivePath(side, target);
+    return { status: "applied", summary: { count: 1, anchor: target, rows: [intentRowOf(row)] } };
+  },
+};
+
+const uiIntent = useUiIntent("files", uiIntentHandlers);
+
 interface DownloadChunk {
   offset: number;
   data: Uint8Array;
@@ -699,6 +795,8 @@ async function loadDirectory(target?: string) {
     // 不回归），仅当条目数达阈值时提示用户列表已虚拟滚动（largeDir.ts 记录
     // 了不切 listPaged 的 bench 依据）。
     if (isLargeDirectory(entries.value.length)) showNotice(t("largeDirectory", { count: entries.value.length }));
+    // 导航完成后的快照型 report（含 intent search 触发的导航）。
+    reportPaneSnapshot("left");
   } catch (cause) {
     // 过期请求的失败同样不打扰新目录（横幅不闪旧导航的错误）。
     if (!leftNav.isCurrent(token)) return;
@@ -726,6 +824,7 @@ async function loadRightDirectory(target?: string) {
     rightSelection.value = [];
     rightActivePath.value = "";
     if (isLargeDirectory(rightEntries.value.length)) showNotice(t("largeDirectory", { count: rightEntries.value.length }));
+    reportPaneSnapshot("right");
   } catch (cause) {
     if (!rightNav.isCurrent(token)) return;
     rightListingFailed.value = true;
@@ -1919,6 +2018,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("resize", syncViewportLayout);
   window.clearTimeout(noticeTimer);
   window.clearInterval(pollTimer);
+  uiIntent.stop();
   unsubscribeEvent?.();
   unsubscribeBinary?.();
   unsubscribeContext?.();

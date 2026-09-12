@@ -958,3 +958,36 @@ i18n key（纯复用既有键），未改 Rust/协议：
 - **七语与收敛**：新增反馈复用既有七语键并惰性求值。三组遗留无剩余可执行
   代码项；oss root 母语校对、真机 9 项、多连接与 releaseFrames 复核保持原样，
   本轮通知/重试的真机验证随下次会话补充，自动化结果不替代这些人工项目。
+
+
+## MCP 工具面 M2（sidecar 侧，2026-09-12）
+
+设计来源 `shared/IMPL_PLAN_PLUGIN_MCP.zh-CN.md`（v2）§2/§3/§4/§6.2，形状
+对齐 ldap Go 版参考实现（同族参数一致）；协议章节新增
+`files/docs/MCP.zh-CN.md`。本轮只动 `files/backend/`、`files/scripts/`、
+`files/docs/`，未触碰 host/、ldap/、kafka/、ssh/、shared/ 与
+files/frontend/。
+
+- **骨架**：`backend/src/mcp.rs` + main.rs 方法表接线（`mcp/tools`、
+  `mcp/call`、`mcp/settings/get|set`、`files/ui/state/report`）。
+- **UI intent**：事件 `files/ui/intent` + intent 状态表（TTL 60s、LRU 20）
+  + `files_ui_focus/search/select/state`；无前端时 5s 超时返回
+  `{intentId, state:"pending", hint}`（降级矩阵，不假死）。
+- **本地读**：`files_scan_digest`（递归 depth 8/10 万 clamp + glob/size/
+  mtime 谓词 + 扩展名分组 ≤20/topN ≤10/总大小 + 样本 ≤5 + cursor 物化
+  ≤1 万行）与 `files_cursor_next`（TTL 10 分钟、LRU ≤8、n≤20）；扫描
+  过程数据与二进制不出 sidecar。
+- **写族**：`files_write`（≤4MiB 硬上限、MCP 建议 ≤1MiB 超出给 hint）、
+  `files_mkdir`、`files_rename`（目录 rename 降级 job）单阶段；
+  `files_delete`/`files_purge` 两阶段（一次性 confirmToken 60s、参数
+  hash 绑定；purge 拒根红线）；写审计 `source:"mcp"`；只读连接不注册
+  写工具（`omittedWriteTools` 附原因）。
+- **修复**：glob 前导斜杠 bug（`split('/')` 注入空首段导致所有
+  `/a/*.txt` 形态 pattern 永不匹配），补 `**` 跨段用例回归。
+- **验证**：`cargo test` 174 passed/3 ignored；`scripts/smoke_mcp.py`
+  M1–M10 全 PASS（10/10，无 SKIP；M10 fs 临时目录场景含 digest+cursor+
+  两阶段删除+purge 红线+审计 source:"mcp"）。
+- **未尽**：前端接线待下一轮（App.vue 挂 shared/frontend/useUiIntent、
+  PathField/FileTable handler、ui/state/report 快照上报、mockHost/env.d.ts
+  镜像同步、host-e2e 真机复验）；七语文案中 intent/hint 面向 MCP 调用方
+  （sidecar 英文常量），前端可见文案随接线轮补。

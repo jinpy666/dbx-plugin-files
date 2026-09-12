@@ -46,6 +46,9 @@ function concatBytes(chunks: Uint8Array[]): Uint8Array {
   return out;
 }
 
+// 最近一次安装实例的 emit 挂钩（installMockHost 内赋值；emitUiIntent 使用）。
+let emitEventRef: ((method: string, payload: Record<string, unknown>) => void) | null = null;
+
 export function installMockHost() {
   if (window.dbxPlugin) return;
   const params = new URLSearchParams(window.location.search);
@@ -198,6 +201,9 @@ export function installMockHost() {
   function emit(method: string, payload: Record<string, unknown>) {
     for (const listener of eventListeners) listener({ method, params: payload });
   }
+  // 测试驱动器挂钩：记录最近一次安装实例的 emit（emitUiIntent 走此通道，
+  // 与 sidecar emitter.Event 同面）。未安装时为 null。
+  emitEventRef = emit;
 
   function runJob(jobId: string, kind: string, source: string, target: string, apply: () => void, cancel: { flag: boolean }, sourceConnectionId: string, targetConnectionId = sourceConnectionId) {
     // P2-8：remotePath 与真实 sidecar（transfers.rs，camelCase）契约对齐，
@@ -683,6 +689,16 @@ export function installMockHost() {
         }
         return { success: true };
       }
+      case "files/ui/state/report": {
+        // MCP UI intent 回报（M2，AGENTS.md 硬性规则 7：mock 镜像真实桥形状）。
+        // 镜像 sidecar mcp.rs::report 校验——带 intentId 时 status 必须是
+        // applied|rejected；无 intentId 为快照型（恒 success，sidecar 覆盖
+        // 最新快照）。fixture 不缓存快照（单测经 report 调用形状断言即可）。
+        const status = String(p.status ?? "");
+        const intentId = typeof p.intentId === "string" ? p.intentId.trim() : "";
+        if (intentId && status !== "applied" && status !== "rejected") throw new Error("status must be applied or rejected");
+        return { success: true };
+      }
       default:
         throw new Error(`Method not found: ${method}`);
     }
@@ -775,4 +791,16 @@ export function installMockHost() {
       document.dispatchEvent(new CustomEvent("dbx-plugin-env", { detail: event }));
     },
   };
+}
+
+/** 测试/走查注入：按 sidecar `files/ui/intent` 事件形状发一条 intent
+ * （mock 与真实 emitter.Event 同面；useUiIntent 消费后回报
+ * files/ui/state/report）。mock 未安装时显式报错，不静默吞掉。 */
+export function emitUiIntent(message: { intentId: string; action: string; params?: Record<string, unknown> }) {
+  if (!emitEventRef) throw new Error("mock host is not installed");
+  emitEventRef("files/ui/intent", {
+    intentId: message.intentId,
+    action: message.action,
+    params: message.params ?? {},
+  });
 }
