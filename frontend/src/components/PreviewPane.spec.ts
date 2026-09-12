@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mount, type VueWrapper } from "@vue/test-utils";
 import { bindApi } from "../lib/api";
 import PreviewPane from "./PreviewPane.vue";
+import { READ_MAX_BYTES } from "../lib/preview";
 
 const appearance: DbxPluginAppearance = {
   colorScheme: "dark",
@@ -98,4 +99,32 @@ describe("PreviewPane (P1-4 预览焦点)", () => {
     expect(wrapper.find(".wb-preview").exists()).toBe(false);
     expect(document.activeElement).toBe(trigger);
   });
+});
+
+it("announces bounded preview loading without stale size or truncation feedback", async () => {
+  let resolveRead!: (value: { dataBase64: string; truncated: boolean; size: number }) => void;
+  const reads: Record<string, unknown>[] = [];
+  bindApi(async <T,>(_method: string, params: unknown) => {
+    reads.push(params as Record<string, unknown>);
+    return new Promise<T>((resolve) => { resolveRead = (value) => resolve(value as T); });
+  }, null);
+  window.dbxPlugin = { decodeBase64: b64decode } as DbxPluginApi;
+  wrapper = mount(PreviewPane, {
+    props: { path: "/large.txt", canWrite: true, appearance, t: (key: string) => key },
+    global: { stubs: { TextPreview: true } },
+  });
+  expect(wrapper.get('[role=status]').text()).toBe('loading');
+  expect(wrapper.get('.wb-preview-body').attributes('aria-busy')).toBe('true');
+  expect(wrapper.get('.wb-preview-header').text()).not.toContain('0 B');
+  expect(reads[0]).toMatchObject({ path: '/large.txt', maxBytes: READ_MAX_BYTES });
+  resolveRead({ dataBase64: 'aGk=', truncated: true, size: READ_MAX_BYTES + 100 });
+  await flush();
+  expect(wrapper.find('.wb-notice').exists()).toBe(true);
+  await wrapper.setProps({ path: '/next.txt' });
+  expect(wrapper.get('[role=status]').text()).toBe('loading');
+  expect(wrapper.find('.wb-notice').exists()).toBe(false);
+  expect(wrapper.get('.wb-preview-header').text()).not.toContain('MiB');
+  resolveRead({ dataBase64: 'aGk=', truncated: false, size: 2 });
+  await flush();
+  expect(wrapper.get('.wb-preview-body').attributes('aria-busy')).toBe('false');
 });

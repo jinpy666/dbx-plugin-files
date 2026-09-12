@@ -903,3 +903,58 @@ i18n key（纯复用既有键），未改 Rust/协议：
   例行覆盖、下载泵 releaseFrames 真机回归，均随下一次真机/e2e 会话合并执行；
   oss root 特化说明维持不做（非缺陷，需 es/it/pt-BR 母语级校对）。插件 review
   进入收敛状态。
+
+
+## Review 第 4 轮（fresh review）：五面换视角审查与四组小修（2026-09-12）
+
+报告全文见 `.goal-state/report-files-round4.md`。本轮按指定未扫面检查传输面板、
+错误可操作性、空态/加载态、键盘导航、mock/真实桥契约；不重复 round1–3 已修项。
+按主题归并 P0×0、P1×0、P2×7 组，实施其中四组：
+
+- **R4-P2-1 加载/失败态**：开启双栏即独立加载右栏；各栏失败标志、清选择、
+  失败文案与本栏重试；刷新回到可见骨架，列表/预览补加载文字与 aria-busy，
+  预览换文件清旧 size/truncated。
+- **R4-P2-2 错误建议**：四类 err* 七语补处理步骤；新增 directoryLoadFailed
+  七语。沿用 round3 惰性求值与原文 tooltip。
+- **R4-P2-3 键盘**：列表焦点下 Delete 进入确认、F2 单选重命名，按栏路由；
+  可写/加载/失败/修饰键/连发/IME 门禁，保留子复选框原生行为。
+- **R4-P2-4 mock 取消**：taskId 校验、释放上传槽/下载定时器、canceled 事件、
+  未知任务报错、取消上传后 finish 幂等不落文件；去掉未注册 upload/cancel 别名。
+- **无发现子面**：覆盖确认 I18nText 键形态正确；120/300 任务各 40 次进度更新
+  P95 2.3/3.6 ms，滚动锚点和 scrollTop 不变（浏览器开发构建，非真机吞吐基准）。
+- **验证**：typecheck 通过，34 文件/229 用例全绿（+27）；完整 `scripts/test.sh`
+  all green：cargo 154 passed/3 ignored、表单 18 组合、smoke 57 PASS/6 容器段
+  SKIP/0 FAIL，构建打包通过。中途两处新测试 TS 错误及一处 mock 测试假设错误
+  已修；构建弃用/大 bundle 警告保留，详见报告。浏览器复核了双栏首载、F2/
+  Delete 确认、失败空态与重试恢复；临时页面和服务已清理。
+- **收敛判定**：未达成“无剩余可执行项”。R4-P2-5 重试登记/native 成功分支、
+  R4-P2-6 mock 审计/查询/连接镜像、R4-P2-7 当前桥 context/env 接入留后续。
+  后一项需按公共适配单点方案另开允许 shared 改动的范围；本轮禁改 shared/host。
+- **边界与维持项**：未改 Rust/协议/依赖，原有 Cargo 文件和 manifest 与开始时
+  内容一致；没有 git 写操作。oss root 母语校对、真机 9 项、多连接例行覆盖、
+  releaseFrames 真机回归原样保留，mock 结果不勾销人工项。
+
+
+## Review 第 5 轮：round4 三组遗留收口（2026-09-12）
+
+用户要求继续，报告见 `.goal-state/report-files-round5.md`。沿用 R4-P2-5/6/7
+三组分级，全部收口；只改 files/ 与本轮状态文件，未改 Rust/依赖/manifest，
+原有 Cargo/manifest 内容及宿主版本经收尾校验未变。
+
+- **重试**：跨栏 copy/move 补请求登记；五种可重试操作固化原连接与参数，
+  native 同步成功按完成处理，异步成功登记新 job；修复 copyDir/syncDir 首次
+  提交也缺两端连接 ID 的契约问题。进行中批量动作保持原连接，未重改取消泵。
+- **mock 契约**：审计按实际连接归属、limit 严格类型；单文件/目录任务查询与
+  清理按所属连接/任一端过滤；无筛选刷新省略 connectionId；补 host.getContext、
+  未知请求拒绝和 connection 生命周期（内存成功/失败夹具，不代表真实连通）。
+- **SDK 通知**：env.d.ts 与 mock 镜像 onContext/onInit/onEvent(env)，App 消费
+  通知并重绑默认连接、刷新相关缓存，保留独立本地栏并丢弃旧响应。当前 SDK
+  已提供所需通知，直接更新 Files 应用状态即可；修订 round4 必须另开 shared
+  范围的判断，本轮无需修改公共层，也未复制公共适配代码。
+- **验证**：typecheck 通过，34 文件/265 用例（+36）全绿；完整 test.sh all green：
+  Rust 154 passed/3 ignored、表单 18 组合、smoke 57 PASS/6 容器段 SKIP/0 FAIL，
+  构建打包成功。当前真实 SDK 源码在 happy-dom 的 6 项通知探针通过；未启动
+  DBX.app。第一次新增测试类型错误已修，后续检查及完整脚本全绿，详情见报告。
+- **七语与收敛**：新增反馈复用既有七语键并惰性求值。三组遗留无剩余可执行
+  代码项；oss root 母语校对、真机 9 项、多连接与 releaseFrames 复核保持原样，
+  本轮通知/重试的真机验证随下次会话补充，自动化结果不替代这些人工项目。

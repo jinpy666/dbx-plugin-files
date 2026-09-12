@@ -9,11 +9,12 @@
 //   &job=1           copy/move 一律走降级 job（默认仅目录/`mockDir`）
 //   &ro=1            只读态注入（connection.readOnly + capabilities.readOnly，
 //                    P2-13①：供只读徽章/写按钮禁用/右键菜单禁用的 UI 走查）
+//   &connectionTest=fail  connection/test 的不可达夹具（不发真实网络请求）
 // 任何包含 "error" 的路径都会返回业务错误（便于验证错误横幅与重试）。
 // __local__ 连接（双栏左栏本地面）：list/listPaged/stat/quickPaths/read 路由到
-// 独立本地树（$HOME 家族 quickPaths）；写路径（mkdir/delete/copy/move 等）仍落
-// 远端 mock 树——浏览器验证以「左=本地、右=远端」浏览/预览为主，写面由 sidecar
-// 真实实现（cargo 单测 + smoke）覆盖。
+// 独立本地树（$HOME 家族 quickPaths）；读写按连接落各自内存树。
+
+import { CUSTOM_SERVICES } from "./opendalServices";
 
 type MockEntry = { kind: "file" | "dir"; size: number; modifiedAt: string };
 
@@ -45,7 +46,7 @@ function concatBytes(chunks: Uint8Array[]): Uint8Array {
   return out;
 }
 
-export function installMockHost(): void {
+export function installMockHost() {
   if (window.dbxPlugin) return;
   const params = new URLSearchParams(window.location.search);
   const delayMs = Number(params.get("delay") ?? "250");
@@ -127,9 +128,44 @@ export function installMockHost(): void {
   }
   putLocal(`${LOCAL_HOME}/Downloads/installer.dmg`, "file", 32 * 1024 * 1024);
 
-  /** __local__ 连接 → 本地树；其余（含未带 connectionId 的当前连接）→ 远端 mock 树。 */
-  const treeFor = (connectionId: unknown) => (connectionId === "__local__" ? localTree : tree);
-  const contentsFor = (connectionId: unknown) => (connectionId === "__local__" ? localContents : contents);
+  const connections = new Map([
+    ["mock-conn", { tree, contents, readOnly }],
+    ["__local__", { tree: localTree, contents: localContents, readOnly: false }],
+  ]);
+  const connectionIdOf = (value: unknown) => String(value ?? "mock-conn");
+  const storageFor = (value: unknown) => {
+    const id = connectionIdOf(value);
+    const storage = connections.get(id);
+    if (!storage) throw new Error(`Unknown connectionId '${id}'; connect first`);
+    return storage;
+  };
+  const treeFor = (id: unknown) => storageFor(id).tree;
+  const contentsFor = (id: unknown) => storageFor(id).contents;
+
+  // 对齐 lifecycle 的必填字段与 custom JSON 形状；只保留 id/策略，不存凭据。
+  function parseConnection(payload: Record<string, unknown>) {
+    const connection = payload.connection as Record<string, unknown> | undefined;
+    if (!connection || typeof connection !== "object" || Array.isArray(connection)) throw new Error("Missing connection payload");
+    if (typeof connection.id !== "string" || !connection.id.trim()) throw new Error("Missing connection id");
+    const config = connection.external_config as Record<string, unknown> | undefined;
+    const protocol = typeof config?.protocol === "string" ? config.protocol.trim() : "";
+    if (!protocol) throw new Error("Missing protocol in external_config");
+    const protocols = ["fs", "s3", "oss", "webdav", "ftp", "sftp", "smb", "sftp-native", "opendal-custom"];
+    if (!protocols.includes(protocol)) throw new Error(`Unsupported protocol '${protocol}'; expected one of ${protocols.join(", ")}`);
+    if (protocol === "opendal-custom") {
+      let custom = config?.config ?? {};
+      if (typeof custom === "string") {
+        try { custom = JSON.parse(custom); } catch { throw new Error("Invalid service config JSON"); }
+        if (!custom || typeof custom !== "object" || Array.isArray(custom)) throw new Error("Service config JSON must be an object");
+      }
+      if (!custom || typeof custom !== "object" || Array.isArray(custom)) throw new Error("Service config must be a JSON object");
+      const service = typeof config?.service === "string" ? config.service.trim() : "";
+      if (!service) throw new Error("opendal-custom requires 'service'");
+      if (!/^[a-zA-Z0-9_-]+$/.test(service)) throw new Error(`Invalid opendal-custom service '${service}'`);
+      if (!CUSTOM_SERVICES.has(service) && service !== "memory") throw new Error(`Mock fixture does not support OpenDAL service '${service}'`);
+    }
+    return { id: connection.id.trim(), readOnly: connection.read_only === true || config?.read_only === true };
+  }
 
   const children = (source: Map<string, MockEntry>, dir: string): Array<Record<string, unknown>> => {
     const base = dir.replace(/\/+$/, "");
@@ -163,10 +199,10 @@ export function installMockHost(): void {
     for (const listener of eventListeners) listener({ method, params: payload });
   }
 
-  function runJob(jobId: string, kind: string, source: string, target: string, apply: () => void, cancel: { flag: boolean }) {
+  function runJob(jobId: string, kind: string, source: string, target: string, apply: () => void, cancel: { flag: boolean }, sourceConnectionId: string, targetConnectionId = sourceConnectionId) {
     // P2-8：remotePath 与真实 sidecar（transfers.rs，camelCase）契约对齐，
     // 轮询兜底不再把可读任务标题冲掉成裸 jobId。
-    jobs.set(jobId, { jobId, kind, status: "queued", sourcePath: source, targetPath: target, remotePath: `${source} → ${target}`, filesDone: 0, filesTotal: 2, bytesDone: 0, bytesTotal: 4096 });
+    jobs.set(jobId, { jobId, kind, status: "queued", sourceConnectionId, targetConnectionId, sourcePath: source, targetPath: target, remotePath: `${source} → ${target}`, filesDone: 0, filesTotal: 2, bytesDone: 0, bytesTotal: 4096 });
     emit("files/transfer/progress", { jobId, kind, state: "queued", remotePath: `${source} → ${target}` });
     const schedule = (ms: number, fn: () => void) => {
       const timer = window.setTimeout(() => {
@@ -236,9 +272,10 @@ export function installMockHost(): void {
   // P1-5 夹具契约修复：记录 start 时的 connectionId，finish 按 connectionId
   // 落对应树/内容（__local__ → 本地树），与真实 sidecar 的按连接落盘一致。
   const uploads = new Map<string, { path: string; size: number; received: number; bytes: Uint8Array; connectionId: unknown }>();
+  const downloads = new Map<string, { path: string; size: number; received: number; connectionId: unknown; timer: number; canceled: boolean }>();
 
   // ---- 监听器 ---------------------------------------------------------------
-  const eventListeners: Array<(event: { method: string; params: Record<string, unknown> }) => void> = [];
+  const eventListeners: Array<(event: DbxPluginEvent) => void> = [];
   // mock 镜像当前宿主桥的二进制事件形状（零拷贝 data 字段），与真实宿主一致。
   const binaryListeners: Array<(event: { channel: string; data?: Uint8Array }) => void> = [];
 
@@ -246,20 +283,49 @@ export function installMockHost(): void {
   // 与 backend/src/main.rs::audit_list_response 同形：{entries:[{at,action,
   // connectionId,path,result}]}，最新在前；limit clamp 1..=1000（缺省 100）。
   const auditLog: Array<{ at: string; action: string; connectionId: string; path: string; result: string }> = [];
-  function recordAudit(action: string, path: string, result = "ok") {
-    auditLog.push({ at: new Date().toISOString(), action, connectionId: "mock-conn", path, result });
+  function recordAudit(action: string, path: string, connectionId: unknown, result = "ok") {
+    auditLog.push({ at: new Date().toISOString(), action, connectionId: connectionIdOf(connectionId), path, result });
   }
+
+  const matchesConnection = (job: Record<string, unknown>, id: string | null | undefined) =>
+    id == null || job.connectionId === id || job.sourceConnectionId === id || job.targetConnectionId === id;
 
   async function invoke(method: string, payload: Record<string, unknown>): Promise<unknown> {
     const p = payload as Record<string, string | number | undefined>;
     const str = (key: string) => String(p[key] ?? "");
     switch (method) {
+      case "connection/test":
+      case "connection/connect": {
+        const connection = parseConnection(payload);
+        if (method === "connection/test") {
+          if (params.get("connectionTest") === "fail") throw new Error("Storage check failed: mock endpoint is unreachable");
+          return { success: true, message: "Storage backend reachable" };
+        }
+        if (connection.id === "__local__") throw new Error("connectionId '__local__' is reserved for the built-in local filesystem");
+        const storage = connections.get(connection.id) ?? {
+          tree: new Map<string, MockEntry>([["/", { kind: "dir", size: 0, modifiedAt: stamp(0) }]]),
+          contents: new Map<string, Uint8Array>(),
+        };
+        connections.set(connection.id, { ...storage, readOnly: connection.readOnly });
+        return { success: true };
+      }
+      case "connection/disconnect": {
+        const id = (payload.connection as Record<string, unknown> | undefined)?.id;
+        if (typeof id !== "string" || !id) throw new Error("Missing connection id");
+        for (const [taskId, job] of jobs) {
+          if (!taskId.startsWith("__") && matchesConnection(job, id) && (job.status === "queued" || job.status === "running")) {
+            await invoke("files/transfer/cancel", { taskId });
+          }
+        }
+        if (id !== "__local__") connections.delete(id);
+        return { success: true };
+      }
       case "files/audit/list": {
         const limitRaw = p.limit;
         const limit = limitRaw === undefined || limitRaw === null
           ? 100
-          : Number(limitRaw);
-        if (!Number.isInteger(limit) || limit < 0) throw new Error("Invalid request parameters: limit must be a non-negative integer");
+          : limitRaw;
+        if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 0 || limit >= 2 ** 64) throw new Error("Invalid request parameters: limit must be a non-negative integer");
         const connection = typeof p.connectionId === "string" && p.connectionId ? p.connectionId : undefined;
         const filtered = auditLog.filter((entry) => !connection || entry.connectionId === connection);
         return { entries: filtered.slice().reverse().slice(0, Math.min(Math.max(limit, 1), 1000)) };
@@ -277,8 +343,9 @@ export function installMockHost(): void {
         return { entries: all.slice((page - 1) * size, page * size), total: all.length };
       }
       case "files/capabilities":
-        return { scheme: "mock", list: true, write: true, read: true, stat: true, delete: true, createDir: true, copy: true, rename: true, presign: false, ...(readOnly ? { readOnly: true } : {}) };
+        return { scheme: "mock", list: true, write: true, read: true, stat: true, delete: true, createDir: true, copy: true, rename: true, presign: false, readOnly: storageFor(p.connectionId).readOnly };
       case "files/quickPaths": {
+        const source = treeFor(p.connectionId);
         // mock 无真实 $HOME：远端树返回根目录 + 实际存在的样例目录 chips；
         // __local__ 连接返回本地 home 家族（对齐真实 sidecar 的 fs 行为）。
         if (p.connectionId === "__local__") {
@@ -296,7 +363,7 @@ export function installMockHost(): void {
           paths: [
             { key: "root", path: "/" },
             ...["desktop", "downloads", "documents", "pictures"]
-              .filter((key) => tree.has(`/${key}`))
+              .filter((key) => source.has(`/${key}`))
               .map((key) => ({ key, path: `/${key}` })),
           ],
         };
@@ -313,7 +380,7 @@ export function installMockHost(): void {
         assertOk(path);
         // 按连接路由（P-FILES）：双栏左栏 __local__ 的新建文件夹落本地树。
         treeFor(p.connectionId).set(path.replace(/\/+$/, "") || "/", { kind: "dir", size: 0, modifiedAt: new Date().toISOString() });
-        recordAudit(method, path);
+        recordAudit(method, path, p.connectionId);
         return { success: true };
       }
       case "files/delete": {
@@ -322,7 +389,7 @@ export function installMockHost(): void {
         // R3-P2-2：按连接路由（此前写死远端树，双栏左栏删除「成功即无效」，
         // 与 P1-5 修复前的上传假成功同构）。
         treeFor(p.connectionId).delete(path.replace(/\/+$/, ""));
-        recordAudit(method, path);
+        recordAudit(method, path, p.connectionId);
         return { success: true };
       }
       case "files/purge": {
@@ -331,7 +398,7 @@ export function installMockHost(): void {
         if (path.replace(/\/+$/, "") === "" || path.replace(/\/+$/, "") === "/") throw new Error("Purge of the connection root '/' is refused");
         // R3-P2-2：按连接路由（同 delete）。
         deleteEntry(path, treeFor(p.connectionId));
-        recordAudit(method, path);
+        recordAudit(method, path, p.connectionId);
         return { success: true };
       }
       case "files/rename": {
@@ -348,14 +415,14 @@ export function installMockHost(): void {
           runJob(jobId, "rename", source, target, () => {
             copyEntryBetween(renameTree, renameContents, renameTree, renameContents, source, target);
             deleteEntry(source, renameTree);
-          }, cancel);
+          }, cancel, connectionIdOf(p.connectionId));
           return { success: true, transport: "job", jobId };
         }
         const entry = renameTree.get(source.replace(/\/+$/, ""));
         if (!entry) throw new Error(`NotFound: ${source}`);
         copyEntryBetween(renameTree, renameContents, renameTree, renameContents, source, target);
         deleteEntry(source, renameTree);
-        recordAudit(method, source);
+        recordAudit(method, source, p.connectionId);
         return { success: true, transport: "native", jobId: null };
       }
       case "files/copy":
@@ -365,15 +432,21 @@ export function installMockHost(): void {
         const source = str("sourcePath");
         const target = str("targetPath");
         assertOk(source);
+        const directoryJob = method === "files/syncDir" || method === "files/copyDir";
+        if (directoryJob && (typeof p.sourceConnectionId !== "string" || typeof p.targetConnectionId !== "string")) {
+          throw new Error("Invalid request parameters: sourceConnectionId and targetConnectionId are required");
+        }
         // P2-13②：按契约路由 sourceConnectionId/targetConnectionId（缺省回落
         // connectionId / 远端树），跨连接双栏复制本地 → 远端可自洽走查。
         const sourceTree = treeFor(p.sourceConnectionId ?? p.connectionId);
         const sourceContents = contentsFor(p.sourceConnectionId ?? p.connectionId);
         const targetTree = treeFor(p.targetConnectionId ?? p.connectionId);
         const targetContents = contentsFor(p.targetConnectionId ?? p.connectionId);
-        if (target.replace(/\/+$/, "") === source.replace(/\/+$/, "")) throw new Error("Destination must differ from the source");
+        const sourceId = connectionIdOf(p.sourceConnectionId ?? p.connectionId);
+        const targetId = connectionIdOf(p.targetConnectionId ?? p.connectionId);
+        if (sourceId === targetId && target.replace(/\/+$/, "") === source.replace(/\/+$/, "")) throw new Error("Destination must differ from the source");
         const sourceIsDir = sourceTree.get(source.replace(/\/+$/, ""))?.kind === "dir";
-        if (sourceIsDir || forceJob) {
+        if (directoryJob || sourceIsDir || forceJob || sourceId !== targetId) {
           const jobId = `mock-job-${++jobSeq}`;
           const cancel = { flag: false };
           jobs.set(`__cancel_${jobId}`, cancel as unknown as Record<string, unknown>);
@@ -382,26 +455,32 @@ export function installMockHost(): void {
           runJob(jobId, sync ? "syncDir" : method === "files/copyDir" ? "copyDir" : move ? "move" : "copy", source, target, () => {
             copyEntryBetween(sourceTree, sourceContents, targetTree, targetContents, source, target);
             if (move) deleteEntry(source, sourceTree);
-          }, cancel);
-          return { success: true, transport: "job", jobId };
+          }, cancel, sourceId, targetId);
+          return directoryJob ? { jobId } : { success: true, transport: "job", jobId };
         }
         const entry = sourceTree.get(source.replace(/\/+$/, ""));
         if (!entry) throw new Error(`NotFound: ${source}`);
         copyEntryBetween(sourceTree, sourceContents, targetTree, targetContents, source, target);
         if (method === "files/move") deleteEntry(source, sourceTree);
-        recordAudit(method, source);
+        recordAudit(method, source, sourceId);
         return { success: true, transport: "native", jobId: null };
       }
       case "files/transfers/list":
-        return { jobs: [...jobs.entries()].filter(([key]) => !key.startsWith("__")).map(([, job]) => job) };
       case "files/transfers/clear": {
+        const connection = payload.connectionId;
+        if (connection != null && typeof connection !== "string") throw new Error("Invalid request parameters: connectionId must be a string");
+        if (method === "files/transfers/list") {
+          return { jobs: [...jobs.entries()].filter(([key, job]) => !key.startsWith("__") && matchesConnection(job, connection)).map(([, job]) => job) };
+        }
         // 与 sidecar 语义一致：仅清完成态，queued/running 不动。
         let cleared = 0;
         for (const [key, job] of [...jobs.entries()]) {
-          if (key.startsWith("__")) continue;
+          if (key.startsWith("__") || !matchesConnection(job, connection)) continue;
           const status = String((job as Record<string, unknown>).status ?? "");
           if (status === "completed" || status === "failed" || status === "canceled") {
             jobs.delete(key);
+            jobs.delete(`__cancel_${key}`);
+            timers.delete(key);
             cleared += 1;
           }
         }
@@ -410,22 +489,43 @@ export function installMockHost(): void {
       case "files/transfer/status": {
         const job = jobs.get(str("jobId"));
         if (!job) throw new Error(`Unknown jobId '${str("jobId")}'`);
-        return { job, kind: "dirJob" };
+        return { job, kind: job.taskId ? "transfer" : "dirJob" };
       }
       case "files/transfer/cancel": {
+        if (typeof p.taskId !== "string") throw new Error("Invalid request parameters: taskId must be a string");
         const jobId = str("taskId");
+        const upload = uploads.get(jobId);
+        const download = downloads.get(jobId);
+        const slot = upload ?? download;
+        if (slot) {
+          // 镜像 sidecar：取消释放上传槽/停止下载泵，并发出终态事件。
+          uploads.delete(jobId);
+          if (download) {
+            download.canceled = true;
+            window.clearTimeout(download.timer);
+            downloads.delete(jobId);
+          }
+          const kind = upload ? "upload" : "download";
+          const connectionId = String(slot.connectionId ?? "mock-conn");
+          jobs.set(jobId, { ...jobs.get(jobId), taskId: jobId, kind, connectionId, remotePath: slot.path, status: "canceled", totalBytes: slot.size, transferredBytes: slot.received });
+          emit("files/transfer/progress", { taskId: jobId, kind, connectionId, remotePath: slot.path, state: "canceled", size: slot.size, transferred: slot.received, total: slot.size });
+          return { success: true };
+        }
         const cancel = jobs.get(`__cancel_${jobId}`) as unknown as { flag: boolean } | undefined;
         if (cancel) {
           cancel.flag = true;
           for (const timer of timers.get(jobId) ?? []) window.clearTimeout(timer);
           jobs.set(jobId, { ...jobs.get(jobId)!, status: "canceled" });
           emit("files/transfer/progress", { jobId, state: "canceled" });
+          return { success: true };
         }
-        return { success: true };
+        throw new Error("Transfer task was not found");
       }
       case "files/upload/start": {
+        storageFor(p.connectionId);
         const taskId = `mock-upload-${++jobSeq}`;
         uploads.set(taskId, { path: str("remotePath"), size: Number(p.size ?? 0), received: 0, bytes: new Uint8Array(Number(p.size ?? 0)), connectionId: p.connectionId });
+        jobs.set(taskId, { taskId, kind: "upload", connectionId: connectionIdOf(p.connectionId), remotePath: str("remotePath"), status: "running", totalBytes: Number(p.size ?? 0), transferredBytes: 0 });
         return { taskId };
       }
       case "files/archiveList": {
@@ -479,7 +579,7 @@ export function installMockHost(): void {
         // 按连接路由（P-FILES）：新建文件走本方法，需与 list 的树一致。
         contentsFor(p.connectionId).set(path.replace(/\/+$/, ""), bytes);
         treeFor(p.connectionId).set(path.replace(/\/+$/, ""), { kind: "file", size: bytes.byteLength, modifiedAt: new Date().toISOString() });
-        recordAudit(method, path);
+        recordAudit(method, path, p.connectionId);
         return { success: true };
       }
       case "files/compress": {
@@ -516,7 +616,7 @@ export function installMockHost(): void {
           contentsFor(p.connectionId).set(target.replace(/\/+$/, ""), bytes);
           routed.set(target.replace(/\/+$/, ""), { kind: "file", size: bytes.byteLength, modifiedAt: new Date().toISOString() });
           archiveSources.set(target.replace(/\/+$/, ""), paths.map((item) => item.replace(/\/+$/, "")));
-          recordAudit(method, target);
+          recordAudit(method, target, p.connectionId);
         };
         if (collected.length <= 10 && bytes.byteLength <= 8 * 1024 * 1024) {
           apply();
@@ -525,11 +625,14 @@ export function installMockHost(): void {
         const jobId = `mock-job-${++jobSeq}`;
         const cancel = { flag: false };
         jobs.set(`__cancel_${jobId}`, cancel as unknown as Record<string, unknown>);
-        runJob(jobId, "compress", paths[0], target, apply, cancel);
+        runJob(jobId, "compress", paths[0], target, apply, cancel, connectionIdOf(p.connectionId));
         return { success: true, transport: "job", jobId };
       }
       case "files/upload/finish": {
         const slot = uploads.get(str("taskId"));
+        const job = jobs.get(str("taskId"));
+        // sidecar 对已终结的上传 finish 幂等；取消后绝不重新落文件。
+        if (!slot && job?.kind === "upload" && ["completed", "failed", "canceled"].includes(String(job.status))) return { success: true };
         if (!slot) throw new Error("Upload task was not found");
         if (slot.received !== slot.size) throw new Error(`Upload is incomplete: ${slot.received}/${slot.size}`);
         assertOk(slot.path);
@@ -538,7 +641,8 @@ export function installMockHost(): void {
         const landed = slot.path.replace(/\/+$/, "") || "/";
         contentsFor(slot.connectionId).set(landed, slot.bytes);
         treeFor(slot.connectionId).set(landed, { kind: "file", size: slot.size, modifiedAt: new Date().toISOString() });
-        recordAudit("files/upload", slot.path);
+        recordAudit("files/upload", slot.path, slot.connectionId);
+        jobs.set(str("taskId"), { ...job, status: "completed", transferredBytes: slot.received });
         uploads.delete(str("taskId"));
         return { success: true };
       }
@@ -551,22 +655,34 @@ export function installMockHost(): void {
         if (!entry || entry.kind !== "file") throw new Error(`NotFound: ${path}`);
         const taskId = `mock-download-${++jobSeq}`;
         const size = entry.size;
+        const slot = { path, size, received: 0, connectionId: p.connectionId, timer: 0, canceled: false };
+        downloads.set(taskId, slot);
+        jobs.set(taskId, { taskId, kind: "download", connectionId: connectionIdOf(p.connectionId), remotePath: path, status: "running", totalBytes: size, transferredBytes: 0 });
         // 模拟 sidecar 下载泵：start 返回后异步按 offset 推帧。
         const push = (offset: number) => {
-          if (offset >= size) return;
+          if (slot.canceled || offset >= size) return;
           const length = Math.min(CHUNK, size - offset);
           const frame = new Uint8Array(8 + length);
           new DataView(frame.buffer).setBigUint64(0, BigInt(offset), false);
           frame.fill((offset / 7) % 251, 8);
+          slot.received = offset + length;
+          jobs.set(taskId, { ...jobs.get(taskId), transferredBytes: slot.received });
           for (const listener of binaryListeners) listener({ channel: `files/download/${taskId}`, data: frame });
-          window.setTimeout(() => push(offset + length), 1);
+          if (!slot.canceled) slot.timer = window.setTimeout(() => push(offset + length), 1);
         };
-        window.setTimeout(() => push(0), 10);
+        slot.timer = window.setTimeout(() => push(0), 10);
         return { taskId, size };
       }
-      case "files/download/finish":
-      case "files/upload/cancel":
+      case "files/download/finish": {
+        const slot = downloads.get(str("taskId"));
+        if (slot) {
+          slot.canceled = true;
+          window.clearTimeout(slot.timer);
+          downloads.delete(str("taskId"));
+          jobs.set(str("taskId"), { ...jobs.get(str("taskId")), status: "completed", transferredBytes: slot.received });
+        }
         return { success: true };
+      }
       default:
         throw new Error(`Method not found: ${method}`);
     }
@@ -582,20 +698,25 @@ export function installMockHost(): void {
       ? { "--color-background": "rgb(255 255 255)", "--color-foreground": "rgb(10 10 10)", "--color-muted": "rgb(245 245 245)", "--color-muted-foreground": "rgb(115 115 115)", "--color-accent": "rgb(245 245 245)", "--color-accent-foreground": "rgb(23 23 23)", "--color-border": "rgb(229 229 229)", "--color-destructive": "rgb(231 0 11)" }
       : { "--color-background": "rgb(19 20 22)", "--color-foreground": "rgb(215 215 219)", "--color-muted": "rgb(42 42 45)", "--color-muted-foreground": "rgb(151 152 157)", "--color-accent": "rgb(46 47 51)", "--color-accent-foreground": "rgb(221 221 226)", "--color-border": "rgb(110 110 114 / 0.28)", "--color-destructive": "rgb(243 98 95)" },
   };
+  let context: Record<string, unknown> = {
+    connectionId: "mock-conn",
+    connection: { name: "Mock Storage", host: "mock.local", readOnly, protocol: "fs" },
+  };
+  let currentLocale = params.get("locale") ?? "zh-CN";
+  let currentTheme = theme;
+  const contextListeners = new Set<(context: Record<string, unknown>) => void>();
+  const initListeners = new Set<(context: Record<string, unknown>) => void>();
   window.dbxPlugin = {
     // ready 返回完整 context（真实宿主同形）：?ro=1 的 readOnly 经 connection
    // 透传给 App 的 canWrite 判定（此前 ready 只带 connectionId，ro 注入不生效）。
-    ready: Promise.resolve({
-      connectionId: "mock-conn",
-      connection: { name: "Mock Storage", host: "mock.local", readOnly, protocol: "fs" },
-    }),
-    context: {
-      connectionId: "mock-conn",
-      connection: { name: "Mock Storage", host: "mock.local", readOnly, protocol: "fs" },
+    ready: Promise.resolve(context),
+    get context() { return context; },
+    get theme() { return currentTheme; },
+    get locale() { return currentLocale; },
+    request: async <T>(method: string) => {
+      if (method === "host.getContext") return structuredClone(context) as T;
+      throw new Error(`Unsupported plugin host method '${method}'`);
     },
-    theme,
-    locale: params.get("locale") ?? "zh-CN",
-    request: async <T>() => ({}) as T,
     invoke: async <T>(method: string, payload?: Record<string, unknown>) => invoke(method, payload ?? {}) as Promise<T>,
     notify: async () => undefined,
     sendBinary: async (channel: string, data: Uint8Array | ArrayBuffer | string) => {
@@ -609,6 +730,7 @@ export function installMockHost(): void {
       const chunk = bytes.subarray(8);
       slot.bytes.set(chunk, offset);
       slot.received = Math.max(slot.received, offset + chunk.length);
+      jobs.set(match[1], { ...jobs.get(match[1]), transferredBytes: slot.received });
     },
     onEvent: (listener) => {
       eventListeners.push(listener);
@@ -624,8 +746,33 @@ export function installMockHost(): void {
         if (index >= 0) binaryListeners.splice(index, 1);
       };
     },
+    onContext: (listener) => {
+      contextListeners.add(listener);
+      return () => { contextListeners.delete(listener); };
+    },
+    onInit: (listener) => {
+      initListeners.add(listener);
+      listener(context);
+      return () => { initListeners.delete(listener); };
+    },
     decodeBase64: b64decode,
     encodeBase64: b64encode,
     clipboard: { readText: async () => "", writeText: async () => undefined },
+  };
+
+  // 测试驱动器只作为安装结果返回，不向真实 dbxPlugin API 添加方法。
+  return {
+    setContext(next: Record<string, unknown>) {
+      context = structuredClone(next);
+      contextListeners.forEach((listener) => listener(context));
+      document.dispatchEvent(new CustomEvent("dbx-plugin-context", { detail: context }));
+    },
+    setEnvironment(next: { locale?: string; theme?: DbxPluginTheme }) {
+      if (typeof next.locale === "string") currentLocale = next.locale;
+      if (next.theme) currentTheme = next.theme;
+      const event: DbxPluginEnvironmentEvent = { type: "env", ...next };
+      eventListeners.forEach((listener) => listener(event));
+      document.dispatchEvent(new CustomEvent("dbx-plugin-env", { detail: event }));
+    },
   };
 }

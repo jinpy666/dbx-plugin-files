@@ -64,6 +64,7 @@ interface ConnectionSummary {
 const prefs = loadUiPrefs();
 
 const hostContext = ref<Record<string, unknown>>({});
+let hostContextVersion = 0;
 const locale = ref("zh-CN");
 const connectionId = computed(() => String(hostContext.value.connectionId || ""));
 const connection = computed<ConnectionSummary>(() => {
@@ -77,7 +78,7 @@ const connectionLabel = computed(() => {
 });
 // 写权限 = 宿主 context 未标记只读 且 后端策略层未开启只读门禁
 // （files/capabilities.readOnly：表单 read_only ∥ 宿主标准 read_only）。
-const canWrite = computed(() => !connection.value.readOnly && !capabilities.value?.readOnly);
+const canWrite = computed(() => !capabilitiesLoading.value && !connection.value.readOnly && !capabilities.value?.readOnly);
 
 const t = (key: string, values: Record<string, string | number> = {}) => workbenchMessage(locale.value, key, values);
 
@@ -91,7 +92,8 @@ const entries = ref<FileEntry[]>([]);
 const selection = ref<string[]>([]);
 const activePath = ref("");
 const sort = ref<SortState>(prefs.sort);
-const loading = ref(false);
+const loading = ref(true);
+const listingFailed = ref(false);
 // 顶栏连接状态 pill（对标 ssh session-pill）：存储连接（非本地栏）最近一次
 // files/list 成败，在 fetchListing 统一挂钩。
 const connState = ref<"connecting" | "connected" | "disconnected">("connecting");
@@ -107,6 +109,7 @@ const errorSide = ref<PaneSide | "global">("global");
 const notice = ref<I18nInput>("");
 const noticeText = computed(() => i18nTextOf(notice.value, locale.value));
 const capabilities = ref<FileCapabilities | undefined>();
+const capabilitiesLoading = ref(false);
 const initialized = ref(false);
 
 // ---- 目标栏（右栏，A-FILES ①）---------------------------------------------
@@ -120,6 +123,7 @@ const rightEntries = ref<FileEntry[]>([]);
 const rightSelection = ref<string[]>([]);
 const rightActivePath = ref("");
 const rightLoading = ref(false);
+const rightListingFailed = ref(false);
 /** "" = 与左栏同连接；宿主提供连接枚举时可切换其它连接（cross-connection 走 targetConnectionId）。 */
 const targetConnectionId = ref("");
 const targetConnections = ref<Array<{ id: string; name: string }>>([]);
@@ -156,12 +160,13 @@ async function expandTreeNode(side: PaneSide, node: DirTreeNode) {
   }
   if (!node.loaded) {
     node.loading = true;
+    const tree = side === "left" ? leftTree.value : rightTree.value;
     try {
       const list = await fetchListing(node.path, sideConnectionId(side));
-      const tree = side === "left" ? leftTree.value : rightTree.value;
+      if (tree !== (side === "left" ? leftTree.value : rightTree.value)) return;
       applyTreeChildren(tree, node.path, list);
     } catch (cause) {
-      showError(cause); // 树展开失败要有反馈，不能静默（P-FILES 用户反馈）
+      if (tree === (side === "left" ? leftTree.value : rightTree.value)) showError(cause);
     } finally {
       node.loading = false;
     }
@@ -194,11 +199,12 @@ function sideConnectionId(side: PaneSide): string | undefined {
 
 /** files/quickPaths（§8.1）：方法缺失或探针失败时下拉隐藏（旧 sidecar 降级）。 */
 async function loadQuickPaths(side: PaneSide) {
+  const id = sideConnectionId(side) ?? connectionId.value;
+  const usesHostConnection = sideConnectionId(side) === undefined;
+  const version = hostContextVersion;
   try {
-    const params: Record<string, unknown> = {};
-    const explicit = sideConnectionId(side);
-    if (explicit) params.connectionId = explicit;
-    const result = await call<{ paths: QuickPath[] }>("files/quickPaths", params);
+    const result = await call<{ paths: QuickPath[] }>("files/quickPaths", { connectionId: id });
+    if ((usesHostConnection && version !== hostContextVersion) || id !== (sideConnectionId(side) ?? connectionId.value)) return;
     const list = normalizeQuickPaths(result.paths);
     if (side === "left") leftQuickPaths.value = list;
     else rightQuickPaths.value = list;
@@ -260,21 +266,32 @@ function refreshAuditPanel() {
 // P-FILES ①b：等待终态后刷新目录的 job 集（transport=job 的 copy/move/rename）。
 const awaitingRefresh = new Set<string>();
 
-// P-FILES ⑦：失败任务重试——提交时登记原始请求（方法 + 栏位 + 参数），
+// P-FILES ⑦：失败任务重试——提交时登记原始请求（方法 + 连接快照 + 参数），
 // 失败后 TransferPanel 的 ↻ 按原样重发。会话级 Map（store 里的历史记录
 // 无参数形态，跨会话的历史任务不显示重试按钮）。
 interface TransferRetryParams {
   method: string;
-  side: PaneSide;
   params: Record<string, unknown>;
 }
-const transferRetryParams = new Map<string, TransferRetryParams>();
+const transferRetryParams = reactive(new Map<string, TransferRetryParams>());
+
+function transferRequest(id: string, method: string, params: Record<string, unknown>): TransferRetryParams {
+  return {
+    method,
+    params: {
+      ...params,
+      connectionId: id,
+      // DirJobRequest 不接受 connectionId 作为源/目标连接的默认值。
+      ...(method === "files/copyDir" || method === "files/syncDir" ? { sourceConnectionId: id, targetConnectionId: id } : {}),
+    },
+  };
+}
 
 /** 登记 sidecar 侧异步 job（提交后 jobId 已返回，首个进度事件未到达前的占位）。 */
 function trackSidecarJob(jobId: string, kind: TransferKind, remotePath: string, retry?: TransferRetryParams) {
   registerJob({
     jobId,
-    connectionId: connectionId.value,
+    connectionId: String(retry?.params.sourceConnectionId ?? retry?.params.connectionId ?? connectionId.value),
     kind,
     remotePath,
     state: "queued",
@@ -291,19 +308,29 @@ function trackSidecarJob(jobId: string, kind: TransferKind, remotePath: string, 
 const retryTransferBusy = new Set<string>();
 async function retryTransfer(jobId: string) {
   const retry = transferRetryParams.get(jobId);
-  if (!retry || retryTransferBusy.has(jobId)) return;
+  const job = tracker.jobs[jobId];
+  if (!retry || job?.state !== "failed" || !isRetryableKind(job.kind) || retryTransferBusy.has(jobId)) return;
   retryTransferBusy.add(jobId);
   try {
-    const result = await callFor<{ jobId?: string | null; transport?: string }>(retry.side, retry.method, retry.params);
+    const result = await call<{ success?: boolean; jobId?: string | null; transport?: string }>(retry.method, retry.params);
     const newJobId = result.jobId;
     if (!newJobId) {
-      error.value = { kind: "failure", detail: "", inner: { key: "featureMissing" } };
+      if (result.success !== true || result.transport === "job") {
+        showError({ key: "featureMissing", values: { method: retry.method } });
+        return;
+      }
+      transferRetryParams.delete(jobId);
+      await Promise.all([
+        loadDirectory().catch(() => undefined),
+        dualPane.value ? loadRightDirectory().catch(() => undefined) : Promise.resolve(),
+      ]);
+      refreshAuditPanel();
+      showNotice({ key: "transferStatus.completed" });
       return;
     }
-    const job = tracker.jobs[jobId];
-    trackSidecarJob(String(newJobId), job?.kind ?? "copy", job?.remotePath ?? "", retry);
-    awaitingRefresh.add(String(newJobId));
-    showNotice(t("jobStarted", { name: baseName(String(retry.params.targetPath ?? retry.params.newPath ?? "")) }));
+    trackSidecarJob(String(newJobId), job.kind, job.remotePath ?? "", retry);
+    transferRetryParams.delete(jobId);
+    showNotice({ key: "jobStarted", values: { name: baseName(String(retry.params.targetPath ?? retry.params.newPath ?? "")) } });
   } catch (cause) {
     showError(cause);
   } finally {
@@ -447,6 +474,8 @@ async function enterLocalPaneIfAtRoot() {
 
 watch(dualPane, async (on) => {
   if (on) {
+    // 两栏独立首载，远端不等待本地 quick paths 探测。
+    void loadRightDirectory().catch(() => undefined);
     await loadDirectory("/").catch(() => undefined);
     await loadQuickPaths("left");
     await enterLocalPaneIfAtRoot();
@@ -468,8 +497,8 @@ let pollTimer = 0;
 let pollingDisabled = false;
 let unsubscribeEvent: (() => void) | undefined;
 let unsubscribeBinary: (() => void) | undefined;
-let unsubscribeLocale: (() => void) | undefined;
 let unsubscribeContext: (() => void) | undefined;
+let unsubscribeInit: (() => void) | undefined;
 let unsubscribeTheme: (() => void) | undefined;
 
 function showNotice(message: I18nInput) {
@@ -538,7 +567,12 @@ function applyAppearance(root: HTMLElement, next: DbxPluginAppearanceInput | nul
   root.style.setProperty("--popover", DBX_POPOVER[resolved.colorScheme]);
 }
 
-function handleEvent(event: { method: string; params: Record<string, unknown> }) {
+function handleEvent(event: DbxPluginEvent) {
+  // 当前 SDK 先更新 api.locale，再经 onEvent 投递 env；这里只更新 Files 的状态。
+  if (event.type === "env") {
+    locale.value = window.dbxPlugin.locale || "zh-CN";
+    return;
+  }
   if (event.method === "files/transfer/progress") {
     const job = tracker.onProgress(event.params as Parameters<typeof tracker.onProgress>[0]);
     // P-FILES ①b：transport=job 的 copy/move/rename 在终态后自动刷新目录。
@@ -626,6 +660,7 @@ function releaseFrames(channel: string) {
 // ---- directory -----------------------------------------------------------
 
 async function fetchListing(target: string, explicitConnectionId?: string) {
+  const version = hostContextVersion;
   const params: Record<string, unknown> = { path: target };
   if (explicitConnectionId) params.connectionId = explicitConnectionId;
   // 连接状态 pill：任一非本地栏的 files/list 都反映存储连接健康度（本地
@@ -635,13 +670,13 @@ async function fetchListing(target: string, explicitConnectionId?: string) {
   if (hitsHost) connState.value = "connecting";
   try {
     const result = await call<{ entries: FileEntry[] }>("files/list", params);
-    if (hitsHost) connState.value = "connected";
+    if (hitsHost && version === hostContextVersion) connState.value = "connected";
     return normalizeEntries(result.entries ?? []);
   } catch (cause) {
     // P2-3：pill 与单次业务失败解耦——仅网络/传输层失败置「已断开」；业务错误
     // （NotFound、权限、参数类）说明 sidecar 应答了连接，置「已连接」而非断开，
     // 也避免失败期间停留在「连接中」抖动。
-    if (hitsHost) connState.value = isTransportFailure(errorMessage(cause)) ? "disconnected" : "connected";
+    if (hitsHost && version === hostContextVersion) connState.value = isTransportFailure(errorMessage(cause)) ? "disconnected" : "connected";
     throw cause;
   }
 }
@@ -650,6 +685,7 @@ async function loadDirectory(target?: string) {
   const next = target ?? path.value;
   const token = leftNav.next();
   loading.value = true;
+  listingFailed.value = false;
   try {
     const list = await fetchListing(next, sideConnectionId("left"));
     // 晚到的过期响应：直接丢弃，面包屑/列表/选中态保持最新导航的结果。
@@ -666,6 +702,9 @@ async function loadDirectory(target?: string) {
   } catch (cause) {
     // 过期请求的失败同样不打扰新目录（横幅不闪旧导航的错误）。
     if (!leftNav.isCurrent(token)) return;
+    listingFailed.value = true;
+    selection.value = [];
+    activePath.value = "";
     showError(cause, "left");
     throw cause;
   } finally {
@@ -678,6 +717,7 @@ async function loadRightDirectory(target?: string) {
   const next = target ?? rightPath.value;
   const token = rightNav.next();
   rightLoading.value = true;
+  rightListingFailed.value = false;
   try {
     const list = await fetchListing(next, targetConnectionId.value || undefined);
     if (!rightNav.isCurrent(token)) return;
@@ -688,6 +728,9 @@ async function loadRightDirectory(target?: string) {
     if (isLargeDirectory(rightEntries.value.length)) showNotice(t("largeDirectory", { count: rightEntries.value.length }));
   } catch (cause) {
     if (!rightNav.isCurrent(token)) return;
+    rightListingFailed.value = true;
+    rightSelection.value = [];
+    rightActivePath.value = "";
     showError(cause, "right");
     throw cause;
   } finally {
@@ -718,7 +761,7 @@ function openPreview(target: string, side: PaneSide = "left") {
   // 文件概览弹窗：固化为来源栏连接快照；不再切右栏 Tab/强制开双栏，
   // 弹窗期间两侧栏保持各自连接面可继续导航。
   previewPath.value = target;
-  previewConnectionId.value = sideConnectionId(side);
+  previewConnectionId.value = sideConnectionId(side) ?? connectionId.value;
 }
 
 async function openEntry(entry: FileEntry, side: PaneSide = "left") {
@@ -740,10 +783,15 @@ function toggleSort(side: PaneSide, column: SortColumn) {
 }
 
 async function loadCapabilities() {
+  const version = hostContextVersion;
+  capabilitiesLoading.value = true;
   try {
-    capabilities.value = await call<FileCapabilities>("files/capabilities");
+    const result = await call<FileCapabilities>("files/capabilities");
+    if (version === hostContextVersion) capabilities.value = result;
   } catch (cause) {
-    if (!isMethodMissing(cause)) showError(cause);
+    if (version === hostContextVersion && !isMethodMissing(cause)) showError(cause);
+  } finally {
+    if (version === hostContextVersion) capabilitiesLoading.value = false;
   }
 }
 
@@ -752,15 +800,17 @@ async function loadCapabilities() {
  * 宿主未提供时目标栏仅支持「同连接另一路径」；跨连接能力见交接文档。
  */
 async function probeConnections() {
+  const version = hostContextVersion;
   try {
     const list = await window.dbxPlugin.request<Array<Record<string, unknown>>>("host.listConnections");
+    if (version !== hostContextVersion) return;
     if (Array.isArray(list)) {
       targetConnections.value = list
         .map((item) => ({ id: String(item.id ?? item.connectionId ?? ""), name: String(item.name ?? item.id ?? item.connectionId ?? "") }))
         .filter((item) => item.id && item.id !== connectionId.value);
     }
   } catch {
-    targetConnections.value = [];
+    if (version === hostContextVersion) targetConnections.value = [];
   }
 }
 
@@ -775,9 +825,9 @@ async function onLeftConnectionChange() {
 // ---- dialogs ---------------------------------------------------------------
 
 /** P2-10 重名预检：true=已存在；false=确认不存在；undefined=无法判定（放行给后端）。 */
-async function pathExists(side: PaneSide, target: string): Promise<boolean | undefined> {
+async function pathExists(id: string, target: string): Promise<boolean | undefined> {
   try {
-    await callFor(side, "files/stat", { path: target });
+    await call("files/stat", { connectionId: id, path: target });
     return true;
   } catch (cause) {
     return isNotFoundMessage(errorMessage(cause)) ? false : undefined;
@@ -842,12 +892,14 @@ function startNewFile(side: PaneSide = "left") {
 }
 
 function startRename(entry: FileEntry, side: PaneSide) {
+  markActiveSide(side);
   confirmDraft.value = entry.name;
   openConfirm("rename", { title: { key: "renameTitle" }, target: { entry }, draft: entry.name, side });
 }
 
 function startDelete(targets: FileEntry[], side: PaneSide = "left") {
   if (!targets.length) return;
+  markActiveSide(side);
   const inspection = inspect("delete", { targets: targets.map((entry) => ({ path: entry.path, kind: entry.kind })) });
   const dirs = targets.filter((entry) => entry.kind === "directory");
   if (dirs.length) {
@@ -918,13 +970,6 @@ function startExtract(entry: FileEntry, side: PaneSide) {
     draft: parentPath(entry.path) || "/",
     side,
   });
-}
-
-/** 指定栏的调用：该栏选择了其它连接（含左栏本地 __local__）时显式带 connectionId（当前连接走默认注入）。 */
-function callFor<T = Record<string, unknown>>(side: PaneSide, method: string, params: Record<string, unknown> = {}): Promise<T> {
-  const explicit = sideConnectionId(side);
-  if (explicit) params.connectionId = explicit;
-  return call<T>(method, params);
 }
 
 /** 压缩（P-FILES）：单选/多选共用；目标默认源目录下 <名称>.tar.gz。 */
@@ -1007,21 +1052,26 @@ async function runBatch(kind: TransferKind, remotePath: string, count: number, t
 
 async function onConfirm() {
   if (!confirmKind.value) return;
+  const kind = confirmKind.value;
   confirmBusy.value = true;
   const side = confirmSide.value;
+  const id = sideConnectionId(side) ?? connectionId.value;
+  // 确认后的异步预检/批量请求共用该快照；宿主随后换连接也不改变已提交动作。
+  const invokeConfirmed = <T = Record<string, unknown>>(method: string, params: Record<string, unknown>) =>
+    call<T>(method, { ...params, connectionId: id });
   // transport=job 的 copy/move/rename/syncDir/copyDir：job 已登记、终态后
   // 由事件驱动刷新（handleEvent），跳过立即刷新。
   let jobStarted = false;
   try {
-    switch (confirmKind.value) {
+    switch (kind) {
       case "newFolder": {
         const name = confirmDraft.value.trim();
         // R3-P2-4：文件名校验（禁 /、禁 . / ..、禁空值），行内提示不关弹层。
         if (!checkConfirmName()) return;
         const fullPath = joinPath(paneDirPath(side), name);
         // P2-10：提交前重名预检，命中即提示且弹层保持打开。
-        if ((await pathExists(side, fullPath)) === true) return rejectDuplicate(name);
-        await callFor(side, "files/mkdir", { path: fullPath });
+        if ((await pathExists(id, fullPath)) === true) return rejectDuplicate(name);
+        await invokeConfirmed("files/mkdir", { path: fullPath });
         showNotice(t("folderCreated"));
         break;
       }
@@ -1029,8 +1079,8 @@ async function onConfirm() {
         const name = confirmDraft.value.trim();
         if (!checkConfirmName()) return;
         const fullPath = joinPath(paneDirPath(side), name);
-        if ((await pathExists(side, fullPath)) === true) return rejectDuplicate(name);
-        await callFor(side, "files/write", { path: fullPath, dataBase64: "" });
+        if ((await pathExists(id, fullPath)) === true) return rejectDuplicate(name);
+        await invokeConfirmed("files/write", { path: fullPath, dataBase64: "" });
         showNotice(t("fileCreated"));
         break;
       }
@@ -1041,18 +1091,15 @@ async function onConfirm() {
         if (!checkConfirmName()) return;
         if (!name || name === entry.name) return;
         const newPath = joinPath(parentPath(entry.path), name);
-        if ((await pathExists(side, newPath)) === true) return rejectDuplicate(name);
-        const result = await callFor<{ transport?: string; jobId?: string | null }>(side, "files/rename", {
+        if ((await pathExists(id, newPath)) === true) return rejectDuplicate(name);
+        const retry = transferRequest(id, "files/rename", {
           path: entry.path,
           newPath,
         });
+        const result = await call<{ transport?: string; jobId?: string | null }>(retry.method, retry.params);
         if (result.transport === "job" && result.jobId) {
           // 目录 rename 降级（P-FILES ②）：等终态再刷新。
-          trackSidecarJob(result.jobId, "rename", `${entry.path} → ${newPath}`, {
-            method: "files/rename",
-            side,
-            params: { path: entry.path, newPath },
-          });
+          trackSidecarJob(result.jobId, "rename", `${entry.path} → ${newPath}`, retry);
           jobStarted = true;
         }
         showNotice(t("renamed"));
@@ -1071,7 +1118,7 @@ async function onConfirm() {
         // 覆盖确认（弹层保持打开、危险态、按钮变「覆盖」），确认后才执行。
         // 草稿在确认后又被改动则重新预检。
         if (!confirmForce.value || confirmForcePath.value !== targetPath) {
-          if ((await pathExists(side, targetPath)) === true) {
+          if ((await pathExists(id, targetPath)) === true) {
             confirmForce.value = true;
             confirmForcePath.value = targetPath;
             confirmDanger.value = true;
@@ -1079,16 +1126,13 @@ async function onConfirm() {
             return;
           }
         }
-        const result = await callFor<{ success: boolean; transport?: string; jobId?: string | null }>(side, `files/${confirmKind.value}`, {
+        const retry = transferRequest(id, `files/${kind}`, {
           sourcePath: entry.path,
           targetPath,
         });
+        const result = await call<{ success: boolean; transport?: string; jobId?: string | null }>(retry.method, retry.params);
         if (result.transport === "job" && result.jobId) {
-          trackSidecarJob(result.jobId, confirmKind.value, `${entry.path} → ${targetPath}`, {
-            method: `files/${confirmKind.value}`,
-            side,
-            params: { sourcePath: entry.path, targetPath },
-          });
+          trackSidecarJob(result.jobId, kind, `${entry.path} → ${targetPath}`, retry);
           jobStarted = true;
         }
         showNotice(t("jobStarted", { name: baseName(targetPath) }));
@@ -1112,8 +1156,8 @@ async function onConfirm() {
         // R3-P2-9：取消真实中断剩余分批；已取消时不再补「已删除」通知。
         const batch = await runBatch("delete", paneDirPath(side), targets.length, async (index) => {
           const target = targets[index];
-          if (target.kind === "directory") await callFor(side, "files/purge", { path: target.path });
-          else await callFor(side, "files/delete", { path: target.path });
+          if (target.kind === "directory") await invokeConfirmed("files/purge", { path: target.path });
+          else await invokeConfirmed("files/delete", { path: target.path });
         });
         if (!batch.canceled) showNotice(t("deleted"));
         break;
@@ -1121,7 +1165,7 @@ async function onConfirm() {
       case "purge": {
         const target = confirmTarget.value.path;
         if (!target) return;
-        await callFor(side, "files/purge", { path: target });
+        await invokeConfirmed("files/purge", { path: target });
         showNotice(t("deleted"));
         break;
       }
@@ -1130,16 +1174,13 @@ async function onConfirm() {
         const entry = confirmTarget.value.entry;
         const targetPath = confirmDraft.value.trim();
         if (!entry || !targetPath) return;
-        const result = await callFor<{ jobId: string }>(side, `files/${confirmKind.value}`, {
+        const retry = transferRequest(id, `files/${kind}`, {
           sourcePath: entry.path,
           targetPath,
         });
+        const result = await call<{ jobId: string }>(retry.method, retry.params);
         if (result.jobId) {
-          trackSidecarJob(result.jobId, confirmKind.value, `${entry.path} → ${targetPath}`, {
-            method: `files/${confirmKind.value}`,
-            side,
-            params: { sourcePath: entry.path, targetPath },
-          });
+          trackSidecarJob(result.jobId, kind, `${entry.path} → ${targetPath}`, retry);
         }
         jobStarted = true;
         showNotice(t("jobStarted", { name: baseName(targetPath) }));
@@ -1151,7 +1192,7 @@ async function onConfirm() {
         if (!entry || !targetPath) return;
         // files/extract 为后端交接方法：未实现时走 featureMissing 提示，
         // 实现后（transport=job）复用 copy/move 的 job 进度语义。
-        const result = await callFor<{ success?: boolean; transport?: string; jobId?: string | null }>(side, "files/extract", {
+        const result = await invokeConfirmed<{ success?: boolean; transport?: string; jobId?: string | null }>("files/extract", {
           path: entry.path,
           targetPath,
         });
@@ -1166,7 +1207,7 @@ async function onConfirm() {
         const targets = confirmTarget.value.targets ?? [];
         const targetPath = confirmDraft.value.trim();
         if (!targets.length || !targetPath) return;
-        const result = await callFor<{ success: boolean; transport?: string; jobId?: string | null }>(side, "files/compress", {
+        const result = await invokeConfirmed<{ success: boolean; transport?: string; jobId?: string | null }>("files/compress", {
           paths: targets.map((entry) => entry.path),
           targetPath,
         });
@@ -1210,6 +1251,9 @@ function pickSideEntries(side: PaneSide, paths: string[]): FileEntry[] {
 async function transferBetween(from: PaneSide, move: boolean, dragged?: FileEntry[]) {
   if (!canWrite.value) return;
   const to: PaneSide = from === "left" ? "right" : "left";
+  const version = hostContextVersion;
+  const sourceId = sideConnectionId(from) ?? connectionId.value;
+  const targetId = sideConnectionId(to) ?? connectionId.value;
   const paths = dragged ? dragged.map((entry) => entry.path) : from === "left" ? selection.value : rightSelection.value;
   const list = dragged ?? pickSideEntries(from, paths);
   if (!list.length) return;
@@ -1217,6 +1261,7 @@ async function transferBetween(from: PaneSide, move: boolean, dragged?: FileEntr
   // 目标冲突预检（R3-P2-5）：一次 list 目标目录取同名集合（避免逐条 stat），
   // 命中即整批挂起等覆盖确认；目标不可列（不存在/失败）交后端兜底。
   const conflicts = await findTargetConflicts(to, destPath, list);
+  if (version !== hostContextVersion || sourceId !== (sideConnectionId(from) ?? connectionId.value) || targetId !== (sideConnectionId(to) ?? connectionId.value)) return;
   if (conflicts.length) {
     pendingPaneTransfer.value = { from, move, list, destPath };
     openConfirm("overwrite", {
@@ -1244,20 +1289,23 @@ async function findTargetConflicts(to: PaneSide, destPath: string, list: FileEnt
 /** 跨栏传输执行体（R3-P2-5 拆出）：overwrite 确认与无冲突路径共用。 */
 async function executePaneTransfer(from: PaneSide, move: boolean, list: FileEntry[], destPath: string) {
   const to: PaneSide = from === "left" ? "right" : "left";
-  // 该栏显式连接（右栏其它连接 / 双栏左栏本地 __local__）；当前连接为 undefined（默认注入）。
-  const sourceConnectionId = sideConnectionId(from);
-  const targetConnection = sideConnectionId(to);
+  // 在提交前固定两端连接，后续切栏/宿主换连接不能重定向重试。
+  const sourceConnectionId = sideConnectionId(from) ?? connectionId.value;
+  const targetConnection = sideConnectionId(to) ?? connectionId.value;
+  const requestConnectionId = connectionId.value;
   try {
     for (const item of list) {
       const params: Record<string, unknown> = {
+        connectionId: requestConnectionId,
+        sourceConnectionId,
+        targetConnectionId: targetConnection,
         sourcePath: item.path,
         targetPath: joinPath(destPath, item.name),
       };
-      if (sourceConnectionId) params.sourceConnectionId = sourceConnectionId;
-      if (targetConnection) params.targetConnectionId = targetConnection;
-      const result = await call<{ transport?: string; jobId?: string | null }>(`files/${move ? "move" : "copy"}`, params);
+      const method = `files/${move ? "move" : "copy"}`;
+      const result = await call<{ transport?: string; jobId?: string | null }>(method, params);
       if (result.transport === "job" && result.jobId) {
-        trackSidecarJob(result.jobId, move ? "move" : "copy", `${item.path} → ${String(params.targetPath)}`);
+        trackSidecarJob(result.jobId, move ? "move" : "copy", `${item.path} → ${String(params.targetPath)}`, { method, params });
       }
     }
     showNotice(t("paneTransferred", { count: list.length }));
@@ -1308,21 +1356,21 @@ function writeU64(bytes: Uint8Array, value: number) {
 
 /** 上传目标（P1-5）：上传=传向远端。双栏固定右栏（远端目标面），单栏为当前连接当前目录。 */
 function uploadTarget(): UploadTarget {
-  return resolveUploadTarget({
+  const target = resolveUploadTarget({
     dualPane: dualPane.value,
     leftPath: path.value,
     rightPath: rightPath.value,
     leftConnectionId: sideConnectionId("left"),
     rightConnectionId: sideConnectionId("right"),
   });
+  return { ...target, connectionId: target.connectionId ?? connectionId.value };
 }
 
-async function uploadSource(name: string, size: number, readChunk: (offset: number, length: number) => Promise<Uint8Array>) {
+async function uploadSource(name: string, size: number, readChunk: (offset: number, length: number) => Promise<Uint8Array>, target: UploadTarget) {
   // P1-5 上传方向语义：上传=传向远端（对标 FileZilla/tiny-rdm）。双栏时固定
   // 落到目标栏（右栏连接面恒为远端，不含本地 __local__）；单栏时落到当前
   // 连接的当前目录（原行为）。不再固定写左栏——双栏默认左栏是本地面板，
   // 把「上传」写进本地盘与直觉相反。
-  const target = uploadTarget();
   const remotePath = joinPath(target.path, name);
   const startParams: Record<string, unknown> = { remotePath, size };
   if (target.connectionId) startParams.connectionId = target.connectionId;
@@ -1374,19 +1422,19 @@ async function uploadSource(name: string, size: number, readChunk: (offset: numb
 }
 
 /** 上传后刷新目标栏并按目标路径提示（P1-5）：双栏刷新右栏，单栏刷新左栏。 */
-async function afterUpload(count: number) {
-  const target = uploadTarget();
+async function afterUpload(count: number, target: UploadTarget) {
   if (dualPane.value) await loadRightDirectory().catch(() => undefined);
   else await loadDirectory().catch(() => undefined);
   refreshAuditPanel();
   if (count) showNotice(t("uploaded", { count, path: target.path }));
 }
 
-async function uploadLocalFiles(files: readonly File[]) {
+async function uploadLocalFiles(files: readonly File[], target: UploadTarget) {
   for (const file of files) {
     try {
       await uploadSource(file.name, file.size, async (offset, length) =>
         new Uint8Array(await file.slice(offset, offset + length).arrayBuffer()),
+        target,
       );
     } catch (cause) {
       // R5-P2-4：用户取消当前文件后不再继续上传剩余文件（也不补「已上传 N 个」）。
@@ -1394,10 +1442,10 @@ async function uploadLocalFiles(files: readonly File[]) {
       showError(cause);
     }
   }
-  await afterUpload(files.length);
+  await afterUpload(files.length, target);
 }
 
-async function uploadHostFiles(files: Array<{ handleId: string; name: string; size: number }>) {
+async function uploadHostFiles(files: Array<{ handleId: string; name: string; size: number }>, target: UploadTarget) {
   const fileTransfer = window.dbxPlugin.fileTransfer;
   if (!fileTransfer) return;
   for (const file of files) {
@@ -1405,7 +1453,7 @@ async function uploadHostFiles(files: Array<{ handleId: string; name: string; si
       await uploadSource(file.name, file.size, async (offset, length) => {
         const result = await fileTransfer.read(file.handleId, offset, length);
         return window.dbxPlugin.decodeBase64(result.dataBase64);
-      });
+      }, target);
     } catch (cause) {
       // R5-P2-4：同 uploadLocalFiles——取消即终止整个批量上传（handle 释放由
       // finally 统一处理）。
@@ -1415,35 +1463,34 @@ async function uploadHostFiles(files: Array<{ handleId: string; name: string; si
       await fileTransfer.cancel(file.handleId).catch(() => undefined);
     }
   }
-  await afterUpload(files.length);
+  await afterUpload(files.length, target);
 }
 
 async function onUpload(files: File[] | null) {
   if (!canWrite.value) return;
+  const target = uploadTarget();
   if (files === null) {
     const fileTransfer = window.dbxPlugin.fileTransfer;
     if (!fileTransfer) return;
     try {
       const picked = await fileTransfer.pick({ multiple: true });
-      await uploadHostFiles(picked.files);
+      await uploadHostFiles(picked.files, target);
     } catch (cause) {
       showError(cause);
     }
     return;
   }
-  await uploadLocalFiles(files);
+  await uploadLocalFiles(files, target);
 }
 
-async function downloadEntry(entry: FileEntry, side: PaneSide = "left") {
+async function downloadEntry(entry: FileEntry, side: PaneSide = "left", id = sideConnectionId(side) ?? connectionId.value) {
   const fileTransfer = window.dbxPlugin.fileTransfer;
   let taskId: string | undefined;
   // R5-P2-4：泵级取消标志（cancelTransfer 置位 + releaseFrames 打断帧等待）。
   const cancelFlag = { canceled: false };
   let channel: string | undefined;
   try {
-    const startParams: Record<string, unknown> = { remotePath: entry.path };
-    const explicit = sideConnectionId(side);
-    if (explicit) startParams.connectionId = explicit;
+    const startParams = { remotePath: entry.path, connectionId: id };
     const info = await call<{ taskId: string; size: number; fileName?: string; chunkSize?: number }>("files/download/start", startParams);
     taskId = info.taskId;
     pumpCancelFlags.set(taskId, cancelFlag);
@@ -1453,7 +1500,7 @@ async function downloadEntry(entry: FileEntry, side: PaneSide = "left") {
     registerJob({
       jobId: taskId,
       taskId,
-      connectionId: connectionId.value,
+      connectionId: id,
       kind: "download",
       remotePath: entry.path,
       state: "running",
@@ -1515,6 +1562,7 @@ function saveBrowserDownload(chunks: Uint8Array[], fileName: string) {
 }
 
 async function downloadSelection(side: PaneSide = "left") {
+  const id = sideConnectionId(side) ?? connectionId.value;
   // R3-P1-2：按活动栏解析选择集（此前只读左栏，右栏选中时工具栏下载灰置）。
   const pool = side === "right" ? rightSorted.value : sortedEntries.value;
   const sel = side === "right" ? rightSelection.value : selection.value;
@@ -1525,7 +1573,7 @@ async function downloadSelection(side: PaneSide = "left") {
     return;
   }
   for (const entry of files) {
-    await downloadEntry(entry, side);
+    await downloadEntry(entry, side, id);
   }
 }
 
@@ -1635,12 +1683,13 @@ function menuAction(action: MenuAction) {
     // ---- 批量（多选右键）------------------------------------------------
     case "downloadSelected":
       void (async () => {
+        const id = sideConnectionId(side) ?? connectionId.value;
         const files = pickSideEntries(side, menuSelection).filter((item) => item.kind === "file");
         if (!files.length) {
           showNotice(t("downloadNoneSelected"));
           return;
         }
-        for (const item of files) await downloadEntry(item, side);
+        for (const item of files) await downloadEntry(item, side, id);
         showNotice(t("downloaded", { name: files[0].name }));
       })();
       break;
@@ -1703,6 +1752,52 @@ function sideMenuAction(action: "open" | "openOther" | "copyPath" | "copyName") 
 
 // ---- lifecycle -----------------------------------------------------------------
 
+/** SDK context 消费：重新绑定默认连接，只丢弃依赖该连接的栏位缓存。 */
+function updateHostContext(context: Record<string, unknown>) {
+  const previous = connectionId.value;
+  hostContext.value = context;
+  if (!initialized.value || previous === connectionId.value) return;
+  hostContextVersion += 1;
+  bindApi((method, params, options) => window.dbxPlugin.invoke(method, params, options), connectionId.value || null);
+  capabilities.value = undefined;
+  connState.value = "connecting";
+  error.value = "";
+  notice.value = "";
+  onContextClick();
+  closeConfirm();
+  previewPath.value = null;
+  if (!sideConnectionId("left")) {
+    leftNav.next();
+    path.value = "/";
+    entries.value = [];
+    selection.value = [];
+    activePath.value = "";
+    searchQuery.value = "";
+    leftQuickPaths.value = [];
+    leftTree.value = createTreeRoot("/", "/");
+    void loadDirectory("/").catch(() => undefined);
+    void loadQuickPaths("left");
+  }
+  if (!sideConnectionId("right")) {
+    rightNav.next();
+    rightPath.value = "/";
+    rightEntries.value = [];
+    rightSelection.value = [];
+    rightActivePath.value = "";
+    rightSearchQuery.value = "";
+    rightQuickPaths.value = [];
+    rightTree.value = createTreeRoot("/", "/");
+    if (dualPane.value) {
+      void loadRightDirectory("/").catch(() => undefined);
+      void loadQuickPaths("right");
+    }
+  }
+  void loadCapabilities();
+  if (sideTab.value === "tree") ensureTreeRoots();
+  void probeConnections();
+  refreshAuditPanel();
+}
+
 // P1-2 窄视口（<900px）策略：进入窄视口时默认一次性收起 dock 与双栏——
 // 720px 下「双栏 + dock + 双侧栏」会把左栏主区挤到 ~134px（路径栏/搜索框
 // 不可用且被 overflow:hidden 静默裁切）。收起后单栏 + 侧栏仍有 ~570px 主区。
@@ -1725,28 +1820,39 @@ async function initialize() {
   } catch {
     hostContext.value = api.context ?? {};
   }
-  locale.value = api.locale || "zh-CN";
-  if (api.appearance) applyAppearance(document.documentElement, api.appearance);
-  else if (isDbxPluginTheme(api.theme)) applyAppearance(document.documentElement, themeToAppearance(api.theme));
+  // ready 保存 init 时的快照；request 期间 context 可能已经更新。
+  hostContext.value = api.context ?? hostContext.value;
+  const applyHostEnvironment = () => {
+    locale.value = api.locale || "zh-CN";
+    if (api.appearance) applyAppearance(document.documentElement, api.appearance);
+    else if (isDbxPluginTheme(api.theme)) applyAppearance(document.documentElement, themeToAppearance(api.theme));
+  };
+  applyHostEnvironment();
   // appearance 契约缺失（当前 1.1 桥只推 theme）时订阅 env 主题推送，两套不同时挂。
   if (!api.onAppearanceChange) unsubscribeTheme = onHostThemeChange((theme) => applyAppearance(document.documentElement, themeToAppearance(theme)));
-  unsubscribeLocale = api.onLocaleChange?.((next) => (locale.value = next || "zh-CN"));
-  unsubscribeContext = api.onContextChange?.((context) => {
-    hostContext.value = context;
+  unsubscribeContext = api.onContext?.(updateHostContext);
+  // host.getContext 可能先于 ready 完成；迟到的 init 仍需接住 locale/theme/context。
+  unsubscribeInit = api.onInit?.((context) => {
+    updateHostContext(context);
+    applyHostEnvironment();
   });
   unsubscribeEvent = api.onEvent(handleEvent);
   unsubscribeBinary = api.onBinary(handleBinary);
   bindApi((method, params, options) => api.invoke(method, params, options), connectionId.value || null);
   initialized.value = true;
+  const version = hostContextVersion;
   await loadCapabilities();
-  await loadDirectory("/").catch(() => undefined);
-  if (dualPane.value) await loadRightDirectory("/").catch(() => undefined);
-  await loadQuickPaths("left");
-  if (sideTab.value === "tree") ensureTreeRoots();
-  if (dualPane.value) {
-    // 双栏左栏默认本地（__local__）：起点落到主目录（对标 tiny-rdm/FileZilla）。
-    await enterLocalPaneIfAtRoot();
-    void loadQuickPaths("right");
+  if (version === hostContextVersion) {
+    await loadDirectory("/").catch(() => undefined);
+    if (version === hostContextVersion) {
+      if (dualPane.value) await loadRightDirectory("/").catch(() => undefined);
+      await loadQuickPaths("left");
+      if (sideTab.value === "tree") ensureTreeRoots();
+      if (dualPane.value) {
+        await enterLocalPaneIfAtRoot();
+        void loadQuickPaths("right");
+      }
+    }
   }
   void probeConnections();
   pollTimer = window.setInterval(() => {
@@ -1801,6 +1907,8 @@ onMounted(() => {
   window.addEventListener("resize", syncViewportLayout);
   syncViewportLayout();
   void initialize().catch((cause) => {
+    loading.value = false;
+    listingFailed.value = true;
     error.value = { kind: "failure", detail: errorMessage(cause), inner: errorMessage(cause) };
   });
 });
@@ -1813,8 +1921,8 @@ onBeforeUnmount(() => {
   window.clearInterval(pollTimer);
   unsubscribeEvent?.();
   unsubscribeBinary?.();
-  unsubscribeLocale?.();
   unsubscribeContext?.();
+  unsubscribeInit?.();
   unsubscribeTheme?.();
 });
 </script>
@@ -1902,11 +2010,16 @@ onBeforeUnmount(() => {
               :active-path="activePath"
               :sort="sort"
               :loading="loading"
+              :failed="listingFailed"
+              :can-write="canWrite && !confirmOpen && !previewPath"
               :filtered="Boolean(searchQuery.trim())"
               :t="t"
               @update:selection="setPaneSelection('left', $event)"
               @update:active-path="setPaneActivePath('left', $event)"
               @open="(entry) => { markActiveSide('left'); openEntry(entry, 'left'); }"
+              @delete="startDelete(toolbarSelectionEntries('left'), 'left')"
+              @rename="startRename($event, 'left')"
+              @retry="refreshDirectory"
               @contextmenu="openContextMenu('left', $event)"
               @blank-context="openBlank('left', $event)"
               @sort="(column) => sortRouted('left', column)"
@@ -1985,11 +2098,16 @@ onBeforeUnmount(() => {
               :active-path="rightActivePath"
               :sort="rightSort"
               :loading="rightLoading"
+              :failed="rightListingFailed"
+              :can-write="canWrite && !confirmOpen && !previewPath"
               :filtered="Boolean(rightSearchQuery.trim())"
               :t="t"
               @update:selection="setPaneSelection('right', $event)"
               @update:active-path="setPaneActivePath('right', $event)"
               @open="(entry) => { markActiveSide('right'); openEntry(entry, 'right'); }"
+              @delete="startDelete(toolbarSelectionEntries('right'), 'right')"
+              @rename="startRename($event, 'right')"
+              @retry="refreshRightDirectory"
               @contextmenu="openContextMenu('right', $event)"
               @blank-context="openBlank('right', $event)"
               @sort="(column) => sortRouted('right', column)"

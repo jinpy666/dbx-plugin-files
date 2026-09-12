@@ -5,10 +5,20 @@ interface DbxPluginBinaryEvent {
   dataBase64?: string;
 }
 
-interface DbxPluginEvent {
+interface DbxPluginBackendEvent {
+  type?: "event";
   method: string;
   params: Record<string, unknown>;
 }
+
+/** 当前 SDK 通过 onEvent 同时投递后端事件与宿主环境更新。 */
+interface DbxPluginEnvironmentEvent {
+  type: "env";
+  locale?: string;
+  theme?: DbxPluginTheme;
+}
+
+type DbxPluginEvent = DbxPluginBackendEvent | DbxPluginEnvironmentEvent;
 
 interface DbxPluginFileTransferApi {
   pick(options?: { accept?: string; multiple?: boolean }): Promise<{ files: Array<{ handleId: string; name: string; size: number; contentType: string }> }>;
@@ -56,8 +66,8 @@ interface DbxPluginApi {
   onEvent(listener: (event: DbxPluginEvent) => void): () => void;
   onBinary(listener: (event: DbxPluginBinaryEvent) => void): () => void;
   onAppearanceChange?(listener: (appearance: DbxPluginAppearance) => void): () => void;
-  onLocaleChange?(listener: (locale: string) => void): () => void;
-  onContextChange?(listener: (context: Record<string, unknown>) => void): () => void;
+  onContext?(listener: (context: Record<string, unknown>) => void): () => void;
+  onInit?(listener: (context: Record<string, unknown>) => void): () => void;
   decodeBase64(value: string): Uint8Array;
   encodeBase64(value: Uint8Array | ArrayBuffer): string;
   readonly fileTransfer?: DbxPluginFileTransferApi;

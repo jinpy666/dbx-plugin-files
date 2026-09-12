@@ -120,3 +120,90 @@ describe("FileTable 空态与 a11y（R3-P2-6 / R3-P2-8）", () => {
     expect(wrapper.findAll('[role="columnheader"]')[0].attributes("aria-sort")).toBeUndefined();
   });
 });
+
+describe("FileTable write shortcuts", () => {
+  it("Delete requests confirmation and F2 targets exactly one selected entry", async () => {
+    const wrapper = mountTable();
+    await wrapper.setProps({ canWrite: true, selection: ["/b.txt"], activePath: "/b.txt" });
+    await wrapper.get('.wb-file-scroll').trigger('keydown', { key: 'Delete' });
+    expect(wrapper.emitted('delete')).toEqual([[]]);
+    await wrapper.get('.wb-file-scroll').trigger('keydown', { key: 'F2' });
+    expect(wrapper.emitted('rename')).toEqual([[entries[1]]]);
+    await wrapper.setProps({ selection: ["/a.txt", "/b.txt"] });
+    await wrapper.get('.wb-file-scroll').trigger('keydown', { key: 'F2' });
+    expect(wrapper.emitted('rename')).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it.each([
+    { canWrite: false }, { loading: true }, { failed: true }, { selection: [] },
+  ])("does not request write actions when unavailable: %j", async (props) => {
+    const wrapper = mountTable();
+    await wrapper.setProps({ canWrite: true, selection: ["/a.txt"], ...props });
+    await wrapper.get('.wb-file-scroll').trigger('keydown', { key: 'Delete' });
+    await wrapper.get('.wb-file-scroll').trigger('keydown', { key: 'F2' });
+    expect(wrapper.emitted('delete')).toBeUndefined();
+    expect(wrapper.emitted('rename')).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it.each(['metaKey', 'ctrlKey', 'altKey', 'shiftKey', 'repeat', 'isComposing'])("leaves %s shortcuts to their owner", async (modifier) => {
+    const wrapper = mountTable();
+    await wrapper.setProps({ canWrite: true, selection: ["/a.txt"] });
+    for (const key of ['Delete', 'F2']) {
+      const event = new KeyboardEvent('keydown', { key, [modifier]: true, bubbles: true, cancelable: true });
+      wrapper.get('.wb-file-scroll').element.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+    }
+    expect(wrapper.emitted('delete')).toBeUndefined();
+    expect(wrapper.emitted('rename')).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it("does not steal Space or write shortcuts from a focused checkbox", async () => {
+    const wrapper = mountTable();
+    await wrapper.setProps({ canWrite: true, selection: ["/a.txt"], activePath: "/a.txt" });
+    for (const key of [' ', 'Delete', 'F2']) {
+      const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+      wrapper.get('input[type=checkbox]').element.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+    }
+    expect(wrapper.emitted('update:selection')).toBeUndefined();
+    expect(wrapper.emitted('delete')).toBeUndefined();
+    expect(wrapper.emitted('rename')).toBeUndefined();
+    wrapper.unmount();
+  });
+});
+
+describe("FileTable loading and failure states", () => {
+  it("returns to visible loading feedback after scrolling and blocks hidden-row navigation", async () => {
+    const wrapper = mountTable();
+    const scroll = wrapper.get('.wb-file-scroll');
+    (scroll.element as HTMLElement).scrollTop = 10_000;
+    await scroll.trigger('scroll');
+    await wrapper.setProps({ loading: true, activePath: '/a.txt' });
+    expect((scroll.element as HTMLElement).scrollTop).toBe(0);
+    expect(scroll.attributes('aria-busy')).toBe('true');
+    expect(wrapper.get('.wb-file-footer [role=status]').text()).toBe('loading');
+    expect(wrapper.text()).not.toContain('emptyDirectory');
+    expect(wrapper.text()).not.toContain('entriesCount');
+    await scroll.trigger('keydown', { key: 'Enter' });
+    expect(wrapper.emitted('open')).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it.each([{ cached: [] as FileEntry[] }, { cached: entries }])("distinguishes failure from an empty or cached listing: %j", async ({ cached }) => {
+    const wrapper = mountTable();
+    await wrapper.setProps({ entries: cached, failed: true, selection: ['/a.txt'] });
+    expect(wrapper.get('[role=status]').text()).toContain('directoryLoadFailed');
+    expect(wrapper.findAll('.wb-file-row')).toHaveLength(0);
+    expect(wrapper.text()).not.toContain('emptyDirectory');
+    expect(wrapper.text()).not.toContain('entriesCount');
+    expect(wrapper.text()).not.toContain('selectedCount');
+    await wrapper.get('[role=status] button').trigger('click');
+    expect(wrapper.emitted('retry')).toEqual([[]]);
+    await wrapper.setProps({ failed: false, entries: [] });
+    expect(wrapper.get('.wb-file-empty').text()).toBe('emptyDirectory');
+    wrapper.unmount();
+  });
+});

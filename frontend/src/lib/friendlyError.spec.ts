@@ -7,10 +7,10 @@ const t = (key: string, values?: Record<string, string | number>) => workbenchMe
 
 describe("friendlyError", () => {
   it("maps known error classes to localized text", () => {
-    expect(friendlyError("NotFound: /docs/gone", t)).toBe("目标不存在或已被删除");
-    expect(friendlyError("open /etc/hosts: permission denied", t)).toBe("没有操作权限");
-    expect(friendlyError("Archive target 'a.tar.gz' already exists", t)).toBe("目标已存在");
-    expect(friendlyError("dial tcp: connection refused", t)).toBe("存储连接失败或超时");
+    expect(friendlyError("NotFound: /docs/gone", t)).toBe("目标不存在或已被删除。请刷新目录并检查路径。");
+    expect(friendlyError("open /etc/hosts: permission denied", t)).toBe("没有操作权限。请检查连接凭据、访问权限和只读设置。");
+    expect(friendlyError("Archive target 'a.tar.gz' already exists", t)).toBe("目标已存在。请更换名称或目标路径。");
+    expect(friendlyError("dial tcp: connection refused", t)).toBe("存储连接失败或超时。请检查服务器地址和网络后重新连接。");
   });
 
   it("keeps unknown messages verbatim (fallback to raw)", () => {
@@ -19,7 +19,7 @@ describe("friendlyError", () => {
 
   it("is locale aware", () => {
     const en = (key: string) => workbenchMessage("en", key);
-    expect(friendlyError("NotFound: /x", en)).toBe("The target does not exist or has been removed");
+    expect(friendlyError("NotFound: /x", en)).toBe("The target does not exist or has been removed. Refresh the folder and check the path.");
   });
 });
 

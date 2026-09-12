@@ -247,7 +247,7 @@ export function createTransferTracker() {
     },
     /** 轮询兜底：事件流缺失（旧宿主/断流）时以 list 为准。 */
     async refresh(invoke: <T>(method: string, params?: unknown) => Promise<T>, connectionId?: string) {
-      const payload = await invoke<TransferListResponse>("files/transfers/list", { connectionId: connectionId ?? "" });
+      const payload = await invoke<TransferListResponse>("files/transfers/list", connectionId === undefined ? {} : { connectionId });
       applyList(jobs, payload, connectionId ?? "");
       // 轮询同样喂给速率采样器（轮询间隔不均，EWMA 平滑后仍可用）。
       for (const job of Object.values(jobs)) {

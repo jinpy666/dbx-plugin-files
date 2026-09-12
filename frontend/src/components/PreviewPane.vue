@@ -95,6 +95,8 @@ async function load() {
   hex.value = "";
   text.value = "";
   draft.value = "";
+  size.value = 0;
+  truncated.value = false;
   try {
     if (isArchivePath(props.path)) {
       // 压缩包内容列表：files/archiveList 分页渲染（B-ARCHIVE 遗留③收口）。
@@ -232,7 +234,7 @@ watch(
   <div v-if="path" ref="previewEl" tabindex="-1" class="wb-preview">
     <div class="wb-preview-header">
       <strong :title="path">{{ title }}</strong>
-      <span class="wb-muted">{{ mode === "image" || mode === "archive" ? "" : formatBytes(size) }}</span>
+      <span class="wb-muted">{{ loading || mode === "image" || mode === "archive" ? "" : formatBytes(size) }}</span>
       <button v-if="canEdit && !saving" class="wb-icon-button wb-icon-neutral" :title="t('edit')" @click="startEdit"><Pencil /></button>
       <button class="wb-icon-button wb-icon-neutral" :title="t('download')" @click="emit('download', path)"><Download /></button>
       <button class="wb-icon-button wb-icon-neutral" :title="t('close')" @click="emit('close')"><X /></button>
@@ -245,10 +247,11 @@ watch(
       </template>
       <span v-else class="wb-muted">{{ t("edit") }}</span>
     </div>
-    <div class="wb-preview-body">
+    <div class="wb-preview-body" :aria-busy="loading">
       <template v-if="loading">
         <div class="wb-preview-skeleton">
-          <span v-for="row in 8" :key="row" class="wb-skeleton" :style="{ width: `${100 - (row % 3) * 12}%` }" />
+          <span role="status" class="wb-muted">{{ t("loading") }}</span>
+          <span v-for="row in 8" :key="row" class="wb-skeleton" aria-hidden="true" :style="{ width: `${100 - (row % 3) * 12}%` }" />
         </div>
       </template>
       <div v-else-if="error" class="wb-preview-notice">{{ t("previewLoadError", { error }) }}</div>

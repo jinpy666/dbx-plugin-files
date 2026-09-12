@@ -10,6 +10,8 @@ const props = defineProps<{
   activePath: string;
   sort: { column: "name" | "size" | "modified"; direction: "asc" | "desc" };
   loading?: boolean;
+  failed?: boolean;
+  canWrite?: boolean;
   /** 双栏拖拽标识：写入 dataTransfer，接收端据此判断来源与目标。 */
   paneId?: string;
   /** R3-P2-6：当前处于文件名过滤态——空列表时区分「无匹配」与「空目录」。 */
@@ -21,6 +23,9 @@ const emit = defineEmits<{
   (event: "update:selection", value: string[]): void;
   (event: "update:activePath", value: string): void;
   (event: "open", entry: FileEntry): void;
+  (event: "delete"): void;
+  (event: "rename", entry: FileEntry): void;
+  (event: "retry"): void;
   (event: "contextmenu", payload: { entry: FileEntry; x: number; y: number }): void;
   /** 空白区右键（表头/列表空余处）：弹插件菜单（新建/刷新），拦截浏览器默认菜单。 */
   (event: "blank-context", payload: { x: number; y: number }): void;
@@ -54,6 +59,13 @@ watch(
   },
 );
 
+// 刷新从顶部显示骨架；停留在大目录底部时不留下看不到反馈的空白区。
+watch(() => props.loading, (loading) => {
+  if (!loading) return;
+  scrollTop.value = 0;
+  if (viewport.value) viewport.value.scrollTop = 0;
+});
+
 // 键盘导航（对标 tiny-rdm/FileZilla）：↑↓/Home/End 移动，Shift 连续扩选，
 // Enter 打开、Space 切换勾选、Cmd/Ctrl+A 全选；焦点在列表上即生效。
 const nav = ref<ListNavState>({ index: -1, anchor: -1 });
@@ -63,7 +75,23 @@ function activeIndex() {
 }
 
 function onListKeydown(event: KeyboardEvent) {
-  if (!props.entries.length) return;
+  // 仅列表自身取焦时接管，保留复选框/输入控件的原生键盘行为。
+  if (event.defaultPrevented || event.isComposing || event.target !== event.currentTarget || props.loading || props.failed || !props.entries.length) return;
+  if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && (event.key === "Delete" || event.key === "F2")) {
+    if (!props.canWrite || event.repeat || !props.selection.length) return;
+    if (event.key === "Delete") {
+      event.preventDefault();
+      event.stopPropagation();
+      emit("delete");
+    } else if (props.selection.length === 1) {
+      const entry = props.entries.find((candidate) => candidate.path === props.selection[0]);
+      if (!entry) return;
+      event.preventDefault();
+      event.stopPropagation();
+      emit("rename", entry);
+    }
+    return;
+  }
   if ((event.metaKey || event.ctrlKey) && (event.key === "a" || event.key === "A")) {
     event.preventDefault();
     nav.value = { index: props.entries.length - 1, anchor: 0 };
@@ -169,8 +197,12 @@ function onDragStart(entry: FileEntry, event: DragEvent) {
     </span>
   </div>
   <!-- R3-P2-8：滚动容器 role=listbox + aria-label，行 role=option + aria-selected。 -->
-  <div ref="viewport" class="wb-file-scroll" role="listbox" aria-multiselectable="true" :aria-label="t('fileListLabel')" tabindex="0" @scroll="onScroll" @keydown="onListKeydown" @contextmenu.prevent.stop="emit('blank-context', { x: $event.clientX, y: $event.clientY })">
-    <div class="wb-file-spacer" :style="{ height: `${totalHeight}px` }">
+  <div ref="viewport" class="wb-file-scroll" role="listbox" aria-multiselectable="true" :aria-label="t('fileListLabel')" :aria-busy="Boolean(loading)" tabindex="0" @scroll="onScroll" @keydown="onListKeydown" @contextmenu.prevent.stop="emit('blank-context', { x: $event.clientX, y: $event.clientY })">
+    <div v-if="failed && !loading" class="wb-file-empty" role="status" style="display: flex; flex-direction: column; align-items: center">
+      <p>{{ t("directoryLoadFailed") }}</p>
+      <button type="button" class="wb-toolbar-button" @click="emit('retry')">{{ t("retry") }}</button>
+    </div>
+    <div v-else class="wb-file-spacer" :style="{ height: `${totalHeight}px` }">
       <div
         v-for="(entry, localIndex) in visibleEntries"
         v-show="!loading"
@@ -216,7 +248,10 @@ function onDragStart(entry: FileEntry, event: DragEvent) {
     </div>
   </div>
   <div class="wb-file-footer">
-    <span>{{ t("entriesCount", { count: entries.length }) }}</span>
-    <span v-if="selection.length">{{ t("selectedCount", { count: selection.length }) }}</span>
+    <span v-if="loading" role="status">{{ t("loading") }}</span>
+    <template v-else-if="!failed">
+      <span>{{ t("entriesCount", { count: entries.length }) }}</span>
+      <span v-if="selection.length">{{ t("selectedCount", { count: selection.length }) }}</span>
+    </template>
   </div>
 </template>

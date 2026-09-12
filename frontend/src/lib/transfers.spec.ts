@@ -28,6 +28,21 @@ function job(overrides: Partial<TransferJob>): TransferJob {
 }
 
 describe("transfers", () => {
+  it("omits an absent connection filter but preserves an explicitly supplied filter", async () => {
+    const tracker = createTransferTracker();
+    const calls = vi.fn();
+    const invoke = async <T,>(method: string, params?: unknown): Promise<T> => {
+      calls(method, params);
+      return { jobs: [] } as T;
+    };
+    await tracker.refresh(invoke);
+    expect(calls).toHaveBeenLastCalledWith("files/transfers/list", {});
+    await tracker.refresh(invoke, "conn-1");
+    expect(calls).toHaveBeenLastCalledWith("files/transfers/list", { connectionId: "conn-1" });
+    await tracker.refresh(invoke, "");
+    expect(calls).toHaveBeenLastCalledWith("files/transfers/list", { connectionId: "" });
+  });
+
   it("upserts progress events keyed by jobId", () => {
     const jobs: Record<string, TransferJob> = {};
     applyProgress(jobs, { jobId: "a", kind: "upload", transferred: 10, size: 100, state: "running" });
