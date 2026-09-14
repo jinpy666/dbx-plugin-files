@@ -13,12 +13,15 @@ dbx-plugin-sdk = "0.1.0"
 # opendal 0.58.x needs rustc >= 1.91 (edition 2024 workspace); the host
 # toolchain is pinned to 1.88.0, so we lock the newest compatible line (0.57,
 # MSRV 1.85). Re-evaluate on toolchain upgrades.
+# `services-sftp` is declared per-target below: its `openssh` dependency is
+# Unix-only (stdio.rs impls fail E0119 on Windows), so Windows builds omit it
+# and the `sftp` quick protocol is rejected with an actionable hint — use
+# `sftp-native` (russh, all platforms) there.
 opendal = { version = "0.57", features = [
     "services-fs",
     "services-s3",
     "services-webdav",
     "services-ftp",
-    "services-sftp",
     "services-gcs",
     "services-azblob",
     "services-oss",
@@ -53,6 +56,11 @@ uuid = { version = "1", features = ["v4"] }
 # docs/REPOSITORY_SPLIT.zh-CN.md for the future public-package migration plan.
 [patch.crates-io]
 dbx-plugin-sdk = { path = "../shared/sdk/rust/dbx-plugin-sdk" }
+
+# OpenDAL's sftp service (keyfile auth, `sftp` quick protocol) is Unix-only
+# via its `openssh` dependency; see the note above the base feature list.
+[target.'cfg(not(windows))'.dependencies]
+opendal = { version = "0.57", features = ["services-sftp"] }
 
 [dev-dependencies]
 tempfile = "3"

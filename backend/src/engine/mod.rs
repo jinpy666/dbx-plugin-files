@@ -224,6 +224,17 @@ pub fn build_operator(connection: &StoredConnection) -> Result<Operator, String>
     if connection.protocol == "sftp-native" {
         return build_sftp_native_operator(connection);
     }
+    // OpenDAL's sftp service is Unix-only (its `openssh` dependency does not
+    // compile on Windows), so the `sftp` quick protocol is unavailable there.
+    // Fail with an actionable hint instead of a cryptic registry lookup error.
+    #[cfg(windows)]
+    if connection.protocol == "sftp" {
+        return Err(
+            "the 'sftp' quick protocol (OpenDAL sftp service, keyfile auth) is not available on \
+             Windows; use the 'sftp-native' protocol (russh, password or keyfile) instead"
+                .to_string(),
+        );
+    }
     let (scheme, kv) = protocol_kv(connection)?;
     Operator::via_iter(scheme, kv)
         .map_err(|error| format!("Failed to build storage operator: {error}"))
