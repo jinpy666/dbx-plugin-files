@@ -1,6 +1,6 @@
 // 薄 spec：验证 shared/frontend/themeSync 在本插件工具链下 import 解析与行为成立。
 import { describe, expect, it } from "vitest";
-import { themeBridgeCss, THEME_BRIDGE_STYLE_ID } from "../../../../shared/frontend/themeSync";
+import { themeBridgeCss, THEME_BRIDGE_STYLE_ID } from "../../../shared/frontend/themeSync";
 
 describe("themeBridgeCss", () => {
   it("bridges plugin vars onto host theme tokens", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bridgeBinaryBytes } from "../../../../shared/frontend/binaryEvent";
+import { bridgeBinaryBytes } from "../../../shared/frontend/binaryEvent";
 
 const decodeBase64 = (value: string) => Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
 

@@ -11,7 +11,7 @@ import App from "../App.vue";
 import FileTable from "../components/FileTable.vue";
 import { emitUiIntent, installMockHost } from "./mockHost";
 import { workbenchMessage } from "./i18n";
-import { readUiIntentEvent } from "../../../../shared/frontend/uiIntent";
+import { readUiIntentEvent } from "../../../shared/frontend/uiIntent";
 
 let wrapper: VueWrapper | undefined;
 let invoke: ReturnType<typeof vi.spyOn>;

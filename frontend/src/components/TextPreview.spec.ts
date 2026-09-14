@@ -7,7 +7,7 @@ import { tags } from "@lezer/highlight";
 import TextPreview from "./TextPreview.vue";
 // shared/frontend 公共层薄断言：本插件工具链下 editorTheme 的 import 解析、
 // 真实 CodeMirror 运行时构造与调色板取值成立（接线方式见 TextPreview.vue）。
-import { dbxSyntaxHighlight, EDITOR_TOKEN_COLORS, syntaxTokenSpecs } from "../../../../shared/frontend/editorTheme";
+import { dbxSyntaxHighlight, EDITOR_TOKEN_COLORS, syntaxTokenSpecs } from "../../../shared/frontend/editorTheme";
 
 // CodeMirror 依赖 ResizeObserver 观察编辑器尺寸（happy-dom 无内置实现）。
 class ResizeObserverStub {

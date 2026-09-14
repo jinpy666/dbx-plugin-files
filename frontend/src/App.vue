@@ -12,8 +12,8 @@ import PathField from "./components/PathField.vue";
 import SideNavPanel from "./components/SideNavPanel.vue";
 import { isDbxPluginTheme, onHostThemeChange, themeToAppearance } from "./lib/hostTheme";
 import { DBX_POPOVER, resolveAppearance, type DbxPluginAppearanceInput } from "./lib/appearance";
-import { bridgeBinaryBytes } from "../../../shared/frontend/binaryEvent";
-import { useUiIntent, type UiIntentOutcome, type UiIntentSummary } from "../../../shared/frontend/uiIntent";
+import { bridgeBinaryBytes } from "../../shared/frontend/binaryEvent";
+import { useUiIntent, type UiIntentOutcome, type UiIntentSummary } from "../../shared/frontend/uiIntent";
 import {
   bindApi,
   baseName,

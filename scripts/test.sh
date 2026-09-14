@@ -18,7 +18,7 @@ fi
 export PATH="$HOME/.cargo/bin:$PATH"
 
 echo "==> backend unit tests"
-node ../shared/connection-forms/verify.mjs files
+node scripts/connection-forms/verify.mjs files
 if [ -f backend/src/main.rs ] && [ "$(wc -l < backend/src/main.rs)" -gt 1 ]; then
   cargo test --manifest-path backend/Cargo.toml
 else

@@ -6,8 +6,8 @@
   "version": "0.1.57",
   "publisher": "xynanan",
   "description": "A unified file workspace for local folders, S3-compatible storage, WebDAV, FTP, SFTP, SMB/CIFS, and other OpenDAL services.",
-  "source": "https://github.com/jinpy666/dbx-plugins",
-  "homepage": "https://github.com/jinpy666/dbx-plugins/tree/main/files",
+  "source": "https://github.com/jinpy666/dbx-plugin-files",
+  "homepage": "https://github.com/jinpy666/dbx-plugin-files",
   "icon": "assets/plugin.svg",
   "engines": {
     "dbx": ">=0.5.77",

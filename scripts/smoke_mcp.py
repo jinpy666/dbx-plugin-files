@@ -106,11 +106,13 @@ SKIP semantics (M0 §5.2, same as smoke_test.py):
 
 Usage:
     python3 scripts/smoke_mcp.py                       # release binary from the repo
+    python3 scripts/smoke_mcp.py --binary /path/to/dbx-plugin-files
     DBX_PLUGIN_SIDECAR=/path/to/dbx-plugin-files python3 scripts/smoke_mcp.py
 """
 
 from __future__ import annotations
 
+import argparse
 import base64
 import json
 import os
@@ -1571,9 +1573,13 @@ def _all_scenarios():
 
 
 def main() -> int:
-    binary = default_binary()
+    parser = argparse.ArgumentParser(description="Offline MCP stdio smoke for the dbx-files sidecar")
+    parser.add_argument("--binary", default=None,
+                        help="sidecar binary path (default: DBX_PLUGIN_SIDECAR or backend/target/release/dbx-plugin-files)")
+    args = parser.parse_args()
+    binary = args.binary or default_binary()
     if not os.path.exists(binary):
-        message = f"sidecar binary not found: {binary} (set DBX_PLUGIN_SIDECAR)"
+        message = f"sidecar binary not found: {binary} (use --binary or set DBX_PLUGIN_SIDECAR)"
         for fn in _all_scenarios():
             RESULTS.append(ScenarioResult(fn.no, fn.name, "FAIL" if REQUIRE else "SKIP", message))
         report()
@@ -1581,7 +1587,7 @@ def main() -> int:
 
     # 隔离数据目录：mcp-settings.json 与 audit.jsonl 不污染真实插件数据。
     data_dir = tempfile.mkdtemp(prefix="dbx-files-mcp-smoke-")
-    client = SidecarClient.start(data_dir=data_dir)
+    client = SidecarClient.start(binary, data_dir=data_dir)
     try:
         client.initialize()
         for fn in _all_scenarios():

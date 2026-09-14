@@ -9,7 +9,7 @@ import { HighlightStyle, LanguageDescription, syntaxHighlighting } from "@codemi
 import { languages } from "@codemirror/language-data";
 import { tags } from "@lezer/highlight";
 // 语法高亮调色板来自 shared 公共层（唯一实现点），暗色为提亮后的 GitHub Dark 系。
-import { dbxSyntaxHighlight } from "../../../../shared/frontend/editorTheme";
+import { dbxSyntaxHighlight } from "../../../shared/frontend/editorTheme";
 
 const props = defineProps<{
   text: string;

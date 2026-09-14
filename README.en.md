@@ -1,12 +1,13 @@
 # DBX Files
 
-[中文](README.md) · [Workspace contribution guide](../CONTRIBUTING.md)
+[![CI](https://github.com/jinpy666/dbx-plugin-files/actions/workflows/ci.yml/badge.svg)](https://github.com/jinpy666/dbx-plugin-files/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/jinpy666/dbx-plugin-files?display_name=tag)](https://github.com/jinpy666/dbx-plugin-files/releases)
 
-DBX Files is a unified workspace for multi-backend file operations. It gives
-local folders, object storage, and remote file services a consistent browsing,
-transfer, and administration experience.
+[中文](README.md) · [Repository split notes](docs/REPOSITORY_SPLIT.en.md) · [Files MCP reference](docs/MCP.zh-CN.md)
 
-![DBX Files dual-pane workspace](docs/screenshots-a-files/01-dual-pane.png)
+DBX Files (`io.dbx.files`) is a unified workspace for multi-backend file
+operations. It gives local folders, object storage, and remote file services a
+consistent browsing, transfer, and administration experience.
 
 ## Use cases
 
@@ -26,8 +27,6 @@ transfer, and administration experience.
 - Simplified Chinese, Traditional Chinese, English, Spanish, Italian, Japanese,
   and Portuguese UI.
 
-![Object storage connection settings](docs/screenshots/files-form-s3-vhs-zhcn.png)
-
 ## MCP automation
 
 Start standalone stdio mode with:
@@ -39,7 +38,7 @@ backend/target/release/dbx-plugin-files --mcp
 Useful tools include `files_scan_digest`, `files_cursor_next`, `files_write`,
 `files_mkdir`, `files_rename`, and `files_delete`. Use digest plus cursors for
 large directories; delete and purge require two-phase confirmation. See the
-[MCP guide](../docs/MCP_USAGE.en.md) and [Files MCP reference](docs/MCP.zh-CN.md).
+[Files MCP reference](docs/MCP.zh-CN.md).
 
 ## Security
 
@@ -51,11 +50,13 @@ private keys, or connection exports to logs or local configuration.
 ## Development
 
 ```bash
-cd frontend && pnpm install && pnpm typecheck && pnpm test && pnpm build
-cd ../backend && cargo test
-cd ..
+pnpm --dir frontend install
+pnpm --dir frontend typecheck && pnpm --dir frontend test && pnpm --dir frontend build
+cargo test --manifest-path backend/Cargo.toml
 scripts/test.sh
 ```
 
-Provider capabilities and integration details live under `docs/`. Contributors
-should read the [workspace contribution guide](../CONTRIBUTING.md) first.
+Repository contracts (manifest/backend identity/connection forms) are enforced by
+`scripts/validate_repo.py` and `scripts/connection-forms/verify.mjs`; CI builds
+candidate packages for five targets. Provider capabilities and integration
+details live under `docs/`.

@@ -48,10 +48,11 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 uuid = { version = "1", features = ["v4"] }
 
-# The SDK is consumed from the in-repo host/ submodule (t8y2/dbx); crates.io
-# does not carry it. Override with [patch] in a local config when needed.
+# The DBX sidecar SDK is vendored under shared/ so a standalone checkout does
+# not depend on the source monorepo or a sibling host checkout. See
+# docs/REPOSITORY_SPLIT.zh-CN.md for the future public-package migration plan.
 [patch.crates-io]
-dbx-plugin-sdk = { path = "../../host/plugins/sdk/rust/dbx-plugin-sdk" }
+dbx-plugin-sdk = { path = "../shared/sdk/rust/dbx-plugin-sdk" }
 
 [dev-dependencies]
 tempfile = "3"
