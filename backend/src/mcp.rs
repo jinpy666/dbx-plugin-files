@@ -5543,7 +5543,28 @@ mod tests {
                 "arguments": { "connection": connection, "path": "/", "glob": "*.txt" },
             }),
         ));
-        assert_eq!(digest["matched"], 2, "NFC and NFD stay distinct entries: {digest}");
+        // 插件契约是“不自行归一化”：两种拼写都按字面写成功（上方 unwrap）。
+        // 落盘后剩几条由文件系统语义决定：APFS（macOS 默认卷）NFC/NFD 查找
+        // 不敏感，后写覆盖先写只剩 1 条；ext4/NTFS 逐字节保留则是 2 条。
+        // matched 还含 ~/x.txt（glob 对分隔符宽松），所以只数 café 条目。
+        let cafe_entries = digest["sample"]
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .filter(|r| {
+                        r["path"].as_str().is_some_and(|p| p.contains("caf"))
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                cafe_entries, 1,
+                "APFS folds NFC/NFD; plugin itself must not: {digest}"
+            );
+        } else {
+            assert_eq!(cafe_entries, 2, "NFC and NFD stay distinct entries: {digest}");
+        }
     }
 
     // -- 第七轮（并发安全与口径拉齐）-----------------------------------------
