@@ -22,6 +22,7 @@ jobs:
     if: startsWith(github.event.release.tag_name, 'files-v')
     name: Validate Files release identity
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Validate manifest and release tag
@@ -43,6 +44,7 @@ jobs:
     if: startsWith(github.event.release.tag_name, 'files-v')
     name: Build ${{ matrix.target }}
     needs: validate
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -102,6 +104,7 @@ jobs:
     if: startsWith(github.event.release.tag_name, 'files-v')
     name: Publish plugin release assets
     needs: build
+    timeout-minutes: 15
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
