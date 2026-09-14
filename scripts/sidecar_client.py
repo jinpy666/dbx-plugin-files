@@ -15,11 +15,11 @@ from __future__ import annotations
 
 import json
 import os
-import select
-import socket
+import queue
 import struct
 import subprocess
 import sys
+import threading
 import time
 
 FRAME_JSON = 0
@@ -58,6 +58,27 @@ class SidecarClient:
         self.events: list[dict] = []
         self.binary_frames: list[bytes] = []
         self._pending: dict[int, dict] = {}
+        # A daemon reader thread feeds raw chunks into a queue so frame reads
+        # can use deadline-based timeouts portably: `select.select` only works
+        # on sockets on Windows, but blocking pipe reads + queue.get work
+        # everywhere (Linux/macOS/Windows). `_buf` keeps the unconsumed
+        # remainder so frame order survives chunk boundaries.
+        self._chunks: queue.Queue = queue.Queue()
+        self._buf = bytearray()
+        self._reader = threading.Thread(target=self._read_chunks, args=(read_fd,), daemon=True)
+        self._reader.start()
+
+    def _read_chunks(self, fd: int) -> None:
+        try:
+            while True:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    break
+                self._chunks.put(chunk)
+        except OSError:
+            pass
+        finally:
+            self._chunks.put(None)
 
     @classmethod
     def start(cls, binary: str | None = None, data_dir: str | None = None, timeout: float = 20.0) -> "SidecarClient":
@@ -84,24 +105,30 @@ class SidecarClient:
         self.process.stdin.write(payload)
         self.process.stdin.flush()
 
+    def _read_exact(self, n: int, deadline: float) -> bytes:
+        """Read exactly n bytes (header or payload span) with a deadline."""
+        while len(self._buf) < n:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SidecarError("timeout waiting for sidecar frame")
+            try:
+                chunk = self._chunks.get(timeout=remaining)
+            except queue.Empty:
+                raise SidecarError("timeout waiting for sidecar frame") from None
+            if chunk is None:
+                if self._buf:
+                    raise SidecarError("sidecar closed mid-frame")
+                raise SidecarError("sidecar closed")
+            self._buf.extend(chunk)
+        data = bytes(self._buf[:n])
+        del self._buf[:n]
+        return data
+
     def _read_frame(self, deadline: float) -> tuple[int, bytes]:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise SidecarError("timeout waiting for sidecar frame")
-        ready, _, _ = select.select([self.read_fd], [], [], remaining)
-        if not ready:
-            raise SidecarError("timeout waiting for sidecar frame")
-        header = os.read(self.read_fd, 5)
-        if len(header) < 5:
-            raise SidecarError(f"sidecar closed (header={header!r})")
+        header = self._read_exact(5, deadline)
         kind = header[0]
         (length,) = struct.unpack(">I", header[1:5])
-        payload = b""
-        while len(payload) < length:
-            chunk = os.read(self.read_fd, length - len(payload))
-            if not chunk:
-                raise SidecarError("sidecar closed mid-payload")
-            payload += chunk
+        payload = self._read_exact(length, deadline)
         return kind, payload
 
     def _pump(self, want_id: int | None = None, on_event=None) -> object:
