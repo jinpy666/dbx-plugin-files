@@ -1,0 +1,27 @@
+{
+  "name": "DBX Files",
+  "description": "A unified file workspace for local folders, S3-compatible storage, WebDAV, FTP, SFTP, SMB/CIFS, transfers, archives, and MCP automation.",
+  "icon": "assets/plugin.svg",
+  "tags": [
+    "files",
+    "storage",
+    "s3",
+    "transfer"
+  ],
+  "permissions": [
+    "host.workbench",
+    "host.events",
+    "host.binary",
+    "host.filesystem"
+  ],
+  "source": "https://github.com/jinpy666/dbx-plugin-files",
+  "homepage": "https://github.com/jinpy666/dbx-plugin-files",
+  "license": "MIT",
+  "releaseNotes": "首个商店版本：统一文件工作台，多协议引擎覆盖本地 fs、S3/MinIO、阿里云 OSS、WebDAV、FTP、SFTP（双栈）、SMB/CIFS；支持浏览、上传下载、复制移动、传输任务（进度/取消/历史）、zip 归档压缩解压、目录同步、presigned 公开链接、只读与删除保护，以及面向自动化的 MCP 工具接口。",
+  "localizations": {
+    "zh-CN": {
+      "name": "DBX 文件",
+      "description": "统一管理本地文件夹、S3 兼容存储、WebDAV、FTP、SFTP、SMB/CIFS 的文件工作台：传输任务、归档与受控运维集中在一个界面。"
+    }
+  }
+}
