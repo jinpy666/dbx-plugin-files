@@ -1,37 +1,58 @@
-# dbx-files-plugin（io.dbx.files）
+# DBX Files
 
-DBX 的多协议文件管理插件：统一 **Apache OpenDAL** 引擎访问
-fs/s3(MinIO)/webdav/ftp/sftp + 全部已编译服务（`opendal-custom` 透传）；
-浏览/读写/复制/移动/删除、二进制通道大文件传输（异步 job + 进度 + 取消）、
-目录同步、公开链接（presign）。能力覆盖 Fs 22 方法，
-能力缺口显式声明。
+[English](README.en.md) · [工作区贡献指南](../CONTRIBUTING.zh-CN.md)
 
-## 状态
+DBX Files 是统一的多后端文件工作台。它让本地目录、对象存储和远程文件服务
+使用一致的浏览、传输和管理体验，适合日常文件运维、跨存储迁移和受控共享。
 
-**待实施**（v3 方案定稿：弃 rclone+Go，改 OpenDAL + Rust）。里程碑：
-M0（公共基线）→ M2（核心）→ M3（sftp + 云盘模板）→ M4（MCP 工具）。
+![DBX Files 双栏工作台](docs/screenshots-a-files/01-dual-pane.png)
 
-## 技术形态
+## 适合场景
 
-- sidecar：**Rust**（dbx-plugin-sdk，`stdio-framed` + **二进制通道**，
-  与 ssh-sftp 插件同栈；上传/下载复用 `sftp/upload|download/*` 帧语义）
-- 引擎：`opendal` crate 0.58.x（Apache-2.0），feature 白名单
-  fs/s3/webdav/ftp/sftp/gcs/azblob/oss/memory
-- 凭据：Builder 全内存（无 obscure 层/无配置文件/不进环境变量）；
-  secret 由宿主 binding 管理
-- SDK 引用：照 ssh-sftp `backend/Cargo.toml` 的 `[patch.crates-io]`
-  模式指向 `~/btroot/dbx-plugin-host-worktree` 的 Rust SDK
+- 在本地目录、对象存储和远程文件服务之间迁移数据。
+- 用统一的操作方式检查、预览和整理不同存储后端中的文件。
+- 在受限根路径和只读策略下，为团队提供安全的文件运维入口。
 
-## 文档
+## 核心能力
 
-- 实施文档（唯一工作来源）：[docs/IMPL_PLAN_DBX_FILES.zh-CN.md](docs/IMPL_PLAN_DBX_FILES.zh-CN.md)
-  ——v3 决策依据、迁移映射、manifest 字段表、方法契约（含二进制传输槽）、
-  异步 job 设计、能力缺口表 §5.5、任务表 F2/F3/F4
-- 公共基线：`../shared/IMPL_PLAN_M0_COMMON.zh-CN.md`（注意：其 Go SDK
-  部分仅适用 LDAP；本插件走 Rust 栈，验证并入 F2-1）
+- 支持本地文件系统、S3/MinIO、阿里云 OSS、WebDAV、FTP、SFTP、SMB/CIFS 以及
+  其他已编译的 OpenDAL 服务。
+- 统一浏览、读取、上传、下载、复制、移动、重命名和删除操作。
+- 大文件传输支持进度、取消、异步任务和二进制通道。
+- 支持目录同步、公开链接（presigned URL）和根路径限制。
+- 支持只读模式、删除保护、Known Hosts 策略和连接级超时控制。
+- 连接凭据由 DBX 宿主 secret binding 管理，不写入插件配置。
+- 界面支持简体中文、繁体中文、英语、西班牙语、意大利语、日语和葡萄牙语。
 
-## 脚手架入口
+![对象存储连接配置](docs/screenshots/files-form-s3-vhs-zhcn.png)
 
-M0 期间先做 F2-0/F2-1：Cargo 骨架 + opendal feature 白名单 + manifest +
-framed sidecar 装配（参照 ssh-sftp `backend/src/main.rs` 模式），
-安装联调对测试宿主（`~/btroot/dbx-plugin-host-worktree` 构建产物）。
+## MCP 自动化
+
+独立 stdio 模式启动：
+
+```bash
+backend/target/release/dbx-plugin-files --mcp
+```
+
+常用工具包括 `files_scan_digest`、`files_cursor_next`、`files_write`、
+`files_mkdir`、`files_rename` 和 `files_delete`。大目录先 digest 再 cursor，
+删除和 purge 需要两阶段确认。完整配置见
+[MCP 使用指南](../docs/MCP_USAGE.zh-CN.md)和[Files MCP 参考](docs/MCP.zh-CN.md)。
+
+## 安全设计
+
+建议为生产连接启用根路径锁定和只读模式，并谨慎配置删除权限。S3、OSS、
+WebDAV、FTP、SFTP 和 SMB 的凭据由宿主安全存储管理；插件不会把密钥、私钥或
+连接导出写入日志和本地配置。
+
+## 开发与验证
+
+```bash
+cd frontend && pnpm install && pnpm typecheck && pnpm test && pnpm build
+cd ../backend && cargo test
+cd ..
+scripts/test.sh
+```
+
+协议、后端能力和集成验证说明位于 `docs/`；公开贡献请先阅读
+[贡献指南](../CONTRIBUTING.zh-CN.md)。

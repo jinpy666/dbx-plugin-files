@@ -3,9 +3,11 @@
   "manifest_version": 1,
   "id": "io.dbx.files",
   "name": "DBX Files",
-  "version": "0.1.56",
+  "version": "0.1.57",
   "publisher": "xynanan",
-  "description": "Multi-backend storage workbench plugin for DBX, powered by Apache OpenDAL.",
+  "description": "A unified file workspace for local folders, S3-compatible storage, WebDAV, FTP, SFTP, SMB/CIFS, and other OpenDAL services.",
+  "source": "https://github.com/jinpy666/dbx-plugins",
+  "homepage": "https://github.com/jinpy666/dbx-plugins/tree/main/files",
   "icon": "assets/plugin.svg",
   "engines": {
     "dbx": ">=0.5.77",
@@ -445,7 +447,7 @@
   "localizations": {
     "zh-CN": {
       "name": "DBX 文件",
-      "description": "基于 Apache OpenDAL 的 DBX 多后端存储工作台插件。",
+      "description": "统一管理本地文件夹、S3 兼容存储、WebDAV、FTP、SFTP、SMB/CIFS 及其他 OpenDAL 服务的文件工作台。",
       "contributions": {
         "io.dbx.files.connection": {
           "label": "存储",
@@ -705,7 +707,7 @@
     },
     "en": {
       "name": "DBX Files",
-      "description": "Multi-backend storage workbench plugin for DBX, powered by Apache OpenDAL.",
+      "description": "A unified file workspace for local folders, S3-compatible storage, WebDAV, FTP, SFTP, SMB/CIFS, and other OpenDAL services.",
       "contributions": {
         "io.dbx.files.connection": {
           "label": "Storage",
