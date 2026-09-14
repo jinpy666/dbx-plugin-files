@@ -424,7 +424,7 @@ job 状态机、redact、出网校验（scheme/host/私有地址分流用例）�
 现为可选：留空时连接服务器根并枚举可见共享，路径首段选择共享；填写后
 保持指定共享直连。服务器级连接不能设置 share-relative 的 `root`。
 
-### M4（MCP 工具）——**sidecar 侧已落地（2026-09-12），前端接线待下一轮**
+### M4（MCP 工具）——**已落地（2026-09-12）：sidecar 全部 + 前端 useUiIntent 接线完成；host-e2e 真机 intent 流待复验**
 
 `backend/src/mcp.rs`：`mcp/tools`（注册 + JSON Schema；12 工具：UI 驱动 4 +
 本地读 2 + 元发现 1 + 写 5）、`mcp/call`（lifecycle payload 转发 + 分派 +

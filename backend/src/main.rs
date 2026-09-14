@@ -890,6 +890,14 @@ fn to_plugin_error(error: String) -> PluginError {
 }
 
 fn main() -> std::io::Result<()> {
+    // Standalone MCP stdio server mode (`--mcp`, plugin-MCP design §0.2/§5
+    // stdio row): serve the MCP tool surface over newline-delimited JSON-RPC
+    // instead of the DBX framed protocol. The two modes are mutually
+    // exclusive in one process — `--mcp` returns before `PluginServer::serve()`
+    // ever starts (ssh plugin `run_mcp_stdio` parity).
+    if wants_stdio_mode(std::env::args()) {
+        return mcp::run_mcp_stdio(store::Store::default_dir());
+    }
     let plugin = Plugin::new().map_err(std::io::Error::other)?;
     let metadata = PluginMetadata::new("io.dbx.files", env!("CARGO_PKG_VERSION"))
         .with_capability("connections")
@@ -902,9 +910,29 @@ fn main() -> std::io::Result<()> {
         .serve()
 }
 
+/// Pure argument check (unit-tested): `--mcp` anywhere in the argument list
+/// selects the standalone stdio MCP server; the DBX framed protocol stays the
+/// default and never runs in the same process.
+fn wants_stdio_mode<I: Iterator<Item = String>>(mut args: I) -> bool {
+    args.any(|arg| arg == "--mcp")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wants_stdio_mode_matches_only_the_exact_flag() {
+        // `--mcp` anywhere in the argument list selects the stdio server …
+        assert!(wants_stdio_mode(["--mcp"].into_iter().map(String::from)));
+        assert!(wants_stdio_mode(
+            ["--verbose", "--mcp", "extra"].into_iter().map(String::from)
+        ));
+        // … while the plain invocation (and lookalikes) stay on the framed
+        // protocol: the modes never run in the same process.
+        assert!(!wants_stdio_mode(Vec::<String>::new().into_iter()));
+        assert!(!wants_stdio_mode(["--mcpfoo", "-mcp"].into_iter().map(String::from)));
+    }
 
     #[test]
     fn operation_id_falls_back_to_uuid() {

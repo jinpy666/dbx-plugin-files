@@ -858,6 +858,61 @@ mod tests {
         assert!(policy.check_purge("/mnt/nas/sub").is_ok());
     }
 
+    /// 第五轮（可靠性纵深）路径门对抗输入表。两类结果：
+    /// - **拒绝**：任何能逃逸可视空间或含歧义字节的拼写；
+    /// - **字面透传（设计内保守行为）**：协议不做 `~` 展开、URL 解码与
+    ///   unicode NFC/NFD 归一化——这些拼写只会寻址到「字面同名」条目，
+    ///   无法走私遍历或根绕过；`~`/`%2e%2e`/NFD 拼写在后端就是一个
+    ///   同名文件。该语义同时钉住 MCP 面（mcp.rs validate_path_shape）
+    ///   与本文件的 split('-segment') 归一化两条路径。
+    #[test]
+    fn sanitize_path_adversarial_inputs_reject_or_stay_literal() {
+        // 拒绝：遍历逃逸与歧义字节（`..` 段在栈空时必须报错，不许吞）。
+        for input in [
+            "/..",
+            "../x",
+            "a/../../etc",
+            "/a/../..",
+            "a\\..\\b",
+            "a\0b",
+            "a\nb",
+        ] {
+            assert!(
+                sanitize_path(input).is_err(),
+                "sanitize('{input}') should be rejected"
+            );
+        }
+        // `.` 段等价吞并（与 MCP 面的 fail-fast 拒绝是记录在案的双面语义）。
+        assert_eq!(sanitize_path("/a/./b").unwrap(), "/a/b");
+        assert_eq!(sanitize_path(".").unwrap(), "/");
+        // 字面透传：不展开、不解码、不归一化（相对输入补前导 `/` 属既有
+        // 根相对语义，`~` 依旧是字面名）。
+        for (input, literal) in [
+            ("~", "/~"),
+            ("/home/u/~x", "/home/u/~x"),
+            ("/etc/file.", "/etc/file."),
+            ("/dir/%2e%2e/next", "/dir/%2e%2e/next"),
+            ("/caf\u{e9}", "/caf\u{e9}"),   // NFC
+            ("/cafe\u{301}", "/cafe\u{301}"), // NFD 组合（与 NFC 不同字节 → 不同条目）
+            ("/data/报告 v2.txt", "/data/报告 v2.txt"), // 空格与 unicode 文件名合法
+        ] {
+            assert_eq!(
+                sanitize_path(input).unwrap(),
+                literal,
+                "'{input}' must pass through literally"
+            );
+        }
+        // 根红线在对抗拼写下依然成立：`/.` `//.` 归一化后即根 → purge 拒绝。
+        let rooted = policy("/mnt/nas", false, false, true);
+        for input in ["/.", "//.", "/./", "/mnt/nas/."] {
+            let error = rooted.check_purge(input).unwrap_err();
+            assert!(
+                error.contains("refusing to purge"),
+                "purge('{input}') bypassed the root red line: {error}"
+            );
+        }
+    }
+
     // -- Egress URL validation ----------------------------------------------
 
     enum Expect {

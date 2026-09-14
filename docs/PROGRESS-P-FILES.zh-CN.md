@@ -991,3 +991,739 @@ files/frontend/。
   PathField/FileTable handler、ui/state/report 快照上报、mockHost/env.d.ts
   镜像同步、host-e2e 真机复验）；七语文案中 intent/hint 面向 MCP 调用方
   （sidecar 英文常量），前端可见文案随接线轮补。
+
+### 补充（2026-09-12 晚）：前端接线完成 + 真机 host-e2e 验收
+
+- 前端接线落地（App.vue 挂 shared/frontend/useUiIntent，focus/search/
+  select + 快照上报，mockHost 镜像 report 契约与 emitUiIntent 注入，
+  env.d.ts 同步，七语全补，uiIntent.spec 7 用例）；`scripts/test.sh`
+  全套 all green（cargo 174、前端 272、打包 0.1.48 dbxp）。
+- smoke_mcp 纳入 `scripts/test.sh`；`WRITE_TOOLS` dead_code 告警修复
+  （cargo check 干净）。IMPL_PLAN M4 注记更新。
+- 真机：v0.1.48 隔离安装，插件中心显示兼容；`launch.sh`（DBX_DATA_DIR）
+  拉起验证。桌面 HTTP MCP 工具面验证待服务开启，
+  见 shared/PROGRESS-HOST-SUBREPO.zh-CN.md §27。
+
+
+## MCP 独立 stdio 模式（`--mcp`，2026-09-12）
+
+设计来源 `shared/IMPL_PLAN_PLUGIN_MCP.zh-CN.md` §0.2/§5（降级矩阵 stdio
+行）+ ssh 插件 `mcp.rs` stdio server 基线移植；此前跳过的独立运行模式，
+真机验证确认这是插件 MCP 工具被 AI 客户端调用的现实暴露路径。只动
+`files/backend/`、`files/scripts/smoke_mcp.py`、`files/docs/`，未触碰
+host/、ldap/、kafka/、ssh/、shared/ 与 files/frontend/。
+
+- **入口与互斥**：main.rs 接受 `--mcp`（`wants_stdio_mode` 纯函数 +
+  单测）即返回 `mcp::run_mcp_stdio(Store::default_dir())`，不启动 framed
+  协议循环；同进程两模式互斥（ssh 同构）。
+- **协议**：MCP 2024-11-05 换行分隔 JSON-RPC；`initialize`
+  （serverInfo `io.dbx.files`）/`notifications/initialized`（不回包）/
+  `tools/list`/`tools/call`/`ping`/未知方法 -32000/无 id 请求 -32600/
+  非 JSON 行 -32700。逐请求 tokio::spawn + 退出前有界 drain（ssh parity）。
+- **工具面零复制**：stdio `tools/call` 复用 `Mcp::run_tool` 同一分派；
+  `run_tool`/`ui_intent_tool` 的 emitter 参数改为 `Option`（桥路径恒
+  Some，stdio 恒 None）；16 KiB cap + content envelope 收敛为共用
+  `finalize_payload`，两种传输出口字节同形。
+- **UI 工具 UNAVAILABLE**：`files_ui_focus/search/select/state` 在 stdio
+  直接返回 `UNAVAILABLE: 此工具需要 DBX 工作台（工作台模式可用）`+
+  digest/桥引导（不做 5s intent 等待，不假死）；`files_ui_quick_paths`
+  纯元发现不受影响。
+- **内联凭据连接**：工具参数 `connection` 对象（camelCase，字段与连接
+  表单对齐：`accessKeyId`/`secretAccessKey`/`readOnly`/`allowDelete`/
+  `timeoutSecs` 等），复用 lifecycle 解析器构造 StoredConnection 后
+  `engine.connect` 池化，连接 id = `mcp-inline-<参数 FNV-1a hash>`
+  （`inline_pool_id` 纯函数单测：键序无关、凭据敏感）；`protocol:
+  "local"/"localFs"` 是 `fs` 便捷别名（给 root 即连）；缺/未知
+  connectionId 均报可执行出路引导错误。
+- **语义差异（文档已记）**：目录 rename 降级 job 依赖工作台事件通道，
+  stdio 下明确报错不假死；宿主 TCP 桥接兜底（ssh L1）未做，为后续项。
+- **smoke**：`smoke_mcp.py` 新增 StdioSession 助手 + S1–S4 场景（真实
+  `--mcp` 进程：握手/tools list/notifications/未知方法/parse error、
+  UI UNAVAILABLE ×4、localFs digest+cursor 真实往返 + 池化 id 稳定 +
+  寻址引导、两阶段 delete 全流程含篡动作废/磁盘校验/重放拒绝）。无外部
+  依赖必跑不 SKIP。
+- **验证**：`cargo test` 181 passed/0 failed/3 ignored（新增 stdio 行
+  解析、协议形状、UNAVAILABLE 分支、内联池化键、localFs 全链路往返、
+  `--mcp` 互斥分发 8 个用例）；`DBX_PLUGIN_SIDECAR=<release>`
+  `python3 scripts/smoke_mcp.py` 14/14 PASS（M1–M10 + S1–S4，无 SKIP）；
+  手工冒烟 `printf initialize… | dbx-plugin-files --mcp` 返回合法
+  initialize 响应与 12 工具清单。cargo check --all-targets 无警告。
+- **未尽**：桥接兜底缺位（带未注册 connectionId 的 stdio 调用不会转发
+  运行中的 DBX 应用，仅引导错误）；凭据字段对齐为"表单字段的 camelCase
+  镜像"，与宿主 lifecycle 载荷的 snake_case `external_config` 键名存在
+  有意差异（映射层单测覆盖）；s3/oss/webdav 等远端协议的 stdio 真实
+  往返仅覆盖构建/校验路径，未起容器实测（容器段冒烟仍走工作台协议）。
+
+
+## MCP 测试覆盖专项：六维审计与容错修复（2026-09-13）
+
+对 MCP 工具面（12 工具）做「参数校验 / 错误消息质量 / 成功路径 / 降级路径 /
+两阶段确认 / 文档一致性」覆盖审计，从易用性、准确性、容错性三维度发现并
+修复 8 处问题。只动 `files/backend/src/{mcp,model}.rs`、
+`files/scripts/smoke_mcp.py`、`files/docs/MCP.zh-CN.md`；host/、shared/、
+其他插件与 files/frontend 未触碰。
+
+### 问题清单（现象 → 根因 → 修复）
+
+1. **cursor/confirm 过期消息写死时长**：`cursor expired (10 minutes)` /
+   `confirmToken expired (60s)` 在 `cursorTtlSecs`/`confirmTtlSecs` 经
+   `mcp/settings/set` 调整后误导 AI。→ 报文携带实际生效值
+   `TTL <n>s`（新单测 `expiry_errors_report_the_tuned_ttl`）。
+2. **未知 cursorId 无引导**：只报 `unknown cursorId: …`。→ 追加
+   `re-run files_scan_digest to get a fresh cursorId`（与过期同构）。
+3. **空 dataBase64 被误拒**：`required_str` 拒绝空串，MCP 无法建空文件，
+   与工作台写路径（允许空 payload）不一致。→ files_write 单独校验
+   dataBase64（存在且为字符串即可，空串建空文件），schema 描述同步。
+4. **必填参数类型错误误报缺失**：`path: 123` 报
+   `Missing required parameter: path`，LLM 易原样重发。→ `required_str`
+   区分缺失（Missing required parameter）与类型/空串错误
+   （`Parameter '<key>' must be a non-empty string`）。
+5. **数值参数不接受数字字符串**：谓词参数报错而 `depth`/`n`/`offset`/
+   `limit` 静默回退默认值，行为不一致且 `"8"` 的意图被丢弃。→ 统一
+   `numeric_arg_u64`：数字 / trim 后数字字符串 / 整型浮点（`8.0`）均接受，
+   其余报 `{key} must be a non-negative integer` 并点名参数。
+6. **内联连接布尔字符串静默反转意图**（安全相关）：`readOnly: "true"`
+   经 `bool_field`（仅 `as_bool`）解析为 false → 意图只读的连接实际可写。
+   → `bool_field` 容忍 `"true"/"1"/"yes"/"on"`、`"false"/"0"/"no"/"off"`
+   （大小写/空白不敏感），无法解析回退字段默认（model.rs 单测覆盖）。
+7. **尾斜杠路径陷阱**（OpenDAL 语义）：`files_write`/`files_rename` 目标
+   带尾斜杠报难懂的 NotFound；`files_delete` 文件路径带尾斜杠（LLM 回显
+   误拼）preview kind=missing → 确认执行 → success 但文件还在（静默
+   no-op）。→ 新增 `normalize_slashes`/`file_target_path`（写/rename 目标
+   去尾斜杠、拒绝连接根）/`canonical_delete_target`（delete/purge 执行
+   拼写由 preview kind 决定：目录保留一个尾斜杠、文件去除），digest 起点
+   path 归一化后回显。
+8. **stdio `tools/call` arguments 非对象无清晰报错**：静默按空对象处理。
+   → `prepare_arguments` 入口校验，报 `arguments must be a JSON object`
+   （与 DBX 桥 mcp/call 同语义）。
+
+### 新增覆盖
+
+- Rust 单测 +8（181→189）：数值字符串/整型浮点容错（filter + cursor）；
+  required_str 两类错误；canonical_delete_target / file_target_path 纯函数
+  表；TTL 实值报错（cursor+confirm）；未知 cursorId 引导；stdio localFs
+  全链路扩展（quick_paths limit="1"、空写磁盘校验、尾斜杠真删、两阶段
+  purge 成功路径磁盘校验、readOnly:"true" 拒写、arguments 非对象）；
+  model.rs 布尔字符串变体。
+- smoke_mcp 15 场景（14→15）：M10 扩展（两阶段 purge 成功 + quick_paths
+  limit）；新增 M11 LLM 输入变体（数字字符串谓词、越界 depth clamp、
+  空 dataBase64、尾斜杠真删磁盘校验、未知参数容忍、非数字报错点名、
+  cursor 未知引导）；S3 扩展（stdio quick_paths）。
+
+### 回归证据
+
+- `cargo test`：189 passed / 0 failed / 3 ignored；`cargo check
+  --all-targets` 0 warning。
+- `cargo build --release`：Finished（无警告）。
+- `DBX_PLUGIN_SIDECAR=<release> python3 scripts/smoke_mcp.py`：
+  total=15 PASS=15 FAIL=0 SKIP=0（M1–M11 + S1–S4）。
+- `scripts/test.sh` 全绿（后端单测 + 连接表单校验 + 前端
+  typecheck/test/build + release 构建 + framed smoke PASS 57 / SKIP 6 /
+  FAIL 0（容器段按环境 SKIP）+ MCP smoke 15 PASS + 打包
+  io.dbx.files-0.1.50 dbxp）。
+
+### 剩余风险
+
+- 10 万条扫描 clamp、cursor TTL 真实超时（10 分钟）依赖真实大树/长等待，
+  单测以纯逻辑等价覆盖（`max_cursor_rows` 截断、手动过期），未起大目录
+  实测。
+- s3/oss/webdav 等远端协议的 MCP 往返仍只有构建/校验路径（容器未起），
+  与上轮记录一致。
+- `bool_field` 容忍面收敛在字符串变体；数字 `0/1` 未纳入（JSON 数字布尔
+  属罕见变体，避免过度猜测）。
+- stdio 宿主 TCP 桥接兜底（ssh L1 同构）仍未做，未注册 connectionId 维持
+  引导错误（前轮已记，非本轮范围）。
+
+## MCP 测试覆盖专项第二轮：远端往返 / 深水区实测 / 错误消息走查（2026-09-13）
+
+第一轮遗留的深水区全部落地：远端协议 MCP 真实往返（上轮最大遗留）、
+10 万条 clamp 真实大树实测、TTL 真实时钟超时实测、12 工具错误消息全量
+走查补引导、同族一致性交叉核对。改动仅 `files/backend/src/mcp.rs`、
+`files/scripts/{smoke_mcp.py,container_smoke.sh}` 与两份 docs；host/、
+shared/、其他插件只读。
+
+### 问题清单（现象 → 根因 → 修复 → 验证）
+
+1. **stdio 对未知工具名先报 connectionId 引导**（走查新发现）：
+   `tools/call {name:"files_nonexistent"}` 经 `prepare_arguments`
+   （`needs_connection_id` 白名单不含未知名）先答
+   `Missing required parameter: connectionId`——LLM 会被引去补一个
+   无意义的连接参数，而非纠正工具名。→ stdio `call_tool` 入口对不在
+   `ALL_TOOL_NAMES` 的名字直接返回 `unknown_tool_message`（桥/stdio
+   两路同源）；单测 `unknown_tool_suggests_variants_and_lists_discovery`
+   钉死该顺序。
+2. **`Unknown tool: {other}` 无自纠出路**：对照 ssh 基线
+   （`unknown_tool_message`：Did-you-mean + tools/list 指引）与 ldap
+   （`available:` 全列）存在引导缺口。→ 新增 `ALL_TOOL_NAMES` 常量 +
+   `unknown_tool_message`：分隔符/大小写变体（`FILES-SCANDIGEST`）给
+   Did-you-mean，全部报错列出 12 个注册名与发现面（桥 `mcp/tools` /
+   stdio `tools/list`）。
+3. **`files_scan_digest` 可选字符串参数静默降级**：`path: 123` 被忽略
+   后静默按 `/` 扫描（扫错整棵树）、`glob: true`/`format: 7` 静默忽略——
+   与第一轮「数值参数静默回退」同型的容错缺口。→ 新增 `optional_str`
+   fail-fast：存在但非字符串/空串一律报 `Parameter '<key>' must be a
+   non-empty string` 并点名参数；缺省值路径不变（单测
+   `digest_rejects_non_string_optional_args_instead_of_silent_defaults`）。
+4. **`unknown intentId` 无引导**：→ 补「intent 进程内 60s 过期；重发
+   files_ui_* 调用或省略 intentId 读最新快照」（单测
+   `unknown_intent_id_error_guides_caller`）。
+5. **`Invalid base64 file data` 无格式期望**：→ 补「standard base64
+   (RFC 4648, no data-URI prefix)」（单测 `base64_error_names_the_expected_format`）。
+6. **allow_delete=false 拒绝无出路**：→ 补「enable allowDelete on the
+   connection…」（单测 `allow_delete_refusal_names_the_way_out`）。
+7. **M12 首跑即暴露 clamp 精确语义**（实测价值）：断言按
+   `scanned==budget` 写，真实行为是 `scanned=100001`（越界探测条目计入
+   scanned 以发现截断、不保留进 matched）——修正断言为
+   `scanned==min(count,budget+1) / matched==min(count,budget)`，并在
+   MCP.zh-CN.md 固化该语义，修正而非放宽。
+
+### 新增覆盖
+
+- Rust 单测 +5（189→194）：未知工具建议/全列/dispatch 顺序、unknown
+  intentId 引导、digest 非字符串可选参数 fail-fast、allow_delete 出路、
+  base64 格式点名。
+- smoke_mcp 20 场景（15→20）：
+  - **M12 真实 10 万条 clamp**：扁平 100 001 文件真实目录树
+    （`DBX_FILES_MCP_CLAMP_FILES` 可调做参数化等效压测）→
+    `scanned=100001/matched=100000/scanTruncated=true`；cursor 物化
+    10 万→1 万截断（`cursorTruncated=true`），offset 9999 翻页剩 1 行
+    done=true，显式 `offset:10000` 起恒空——「物化上限 1 万条」首次
+    在真实大树上验证（此前仅纯逻辑截断单测）。
+  - **M13 TTL 真实超时**：`cursorTtlSecs:10`+`confirmTtlSecs:10`（sanitize
+    下限）真实等待 10.6s → `cursor expired (TTL 10s)` 与
+    `confirmToken expired (TTL 10s)` 在真实时钟上携带实际生效 TTL（第
+    一轮为单测注入时钟）；过期 token 未执行删除（digest 复查文件仍在，
+    fail-safe）；finally 恢复默认 TTL 不污染后续场景。
+  - **R1–R3 远端协议 stdio MCP 真实往返**（上轮最大遗留关闭）：MinIO
+    (s3) / mod_dav (webdav) / pyftpdlib (ftp) 真实容器上，`--mcp` stdio
+    内联凭据（`mcp-inline-<hash>` 池化）跑 agent 全链路：files_mkdir/
+    files_write → files_scan_digest 聚合 → files_cursor_next 翻页 →
+    files_delete 两阶段（参数篡改作废→重开预览→确认执行）→ files_purge
+    两阶段；删除结果以 re-digest matched 计数校验（MCP 面不读文件正文，
+    matched 即真相源），purge 后根下精确剩 1 文件强断言。env 缺失自动
+    SKIP（硬性规则 5）。
+- `container_smoke.sh` 末尾新增 MCP smoke 段：复用同一份运行时随机凭据
+  env，七协议容器下 MCP R 段从 SKIP 翻成真跑（本机实跑 R1/R2/R3 全
+  PASS）。
+
+### 回归证据
+
+- `cargo test`：194 passed / 0 failed / 3 ignored。
+- `cargo build --release`：Finished（无警告）。
+- `DBX_PLUGIN_SIDECAR=<release> python3 scripts/smoke_mcp.py`（无容器）：
+  total=20 PASS=17 FAIL=0 SKIP=3（R1–R3 按设计 SKIP）。
+- `DBX_PLUGIN_SIDECAR=<release> bash scripts/container_smoke.sh`（七协议
+  容器全起）：framed smoke PASS 186 / SKIP 0 / FAIL 0 + MCP smoke
+  total=20 PASS=20 FAIL=0 SKIP=0（R1 s3 / R2 webdav / R3 ftp 真跑）。
+- `bash scripts/test.sh` 全绿（后端单测 + 连接表单校验 + 前端
+  typecheck/test/build + release 构建 + framed smoke + MCP smoke +
+  打包 io.dbx.files-0.1.50 dbxp）。
+
+### 同族一致性交叉核对（files 只读对照 ssh/ldap/kafka）
+
+- **settings 字段表**：files `McpSettings` 与 ldap `settingsFields` 字段
+  名/默认值/上限逐项一致（reportWaitMs 1–30000、cellWidth 1–2000、
+  digestGroupLimit 1–20、digestTopN 1–10、digestSampleRows 1–5、
+  digestRowLimit 1–20、responseLimitBytes 1KiB–1MiB、maxCursorRows
+  100–100000、cursorTtlSecs 10–3600、maxCursorSessions 1–32、
+  confirmTtlSecs 10–600）——无漂移，files 侧无需改动。
+- **digest/cursor/两阶段形状**：`{matched, scanned, scanTruncated,
+  cursorId}`、`{rows, offset, nextOffset, done}`、
+  `{preview, confirmToken, expiresAt, note}` 三家同构（kafka digest
+  stats 段为领域特化属设计内差异）。
+- **发现的别家形状漂移（只报告不动）**：
+  1. `ldap/backend/internal/mcp/server.go:407`：cursor 过期消息仍写死
+     `cursor expired (10 minutes)`——files 第一轮已改实值 TTL 报文
+     （`TTL <n>s`），ldap 未跟进；`cursorTtlSecs` 可调后同样误导。
+  2. `ldap/backend/internal/mcp/server.go:271`：`unknown intentId: %s`
+     无引导（files 本轮已补 60s/重发/省略 intentId 三要素）。
+  3. `kafka/backend/internal/mcp/server.go:150`：`unknown tool: %s` 无
+     自纠提示——ssh（Did-you-mean + tools/list）、ldap（available 全
+     列）、files（本轮对齐）均有引导，kafka 是唯一缺口。
+
+### 剩余风险
+
+- oss/smb/sftp/sftp-native 协议的 MCP R 段未单独建场景（container_smoke
+  已提供全部 env，`run_remote_stdio_roundtrip` 单函数可复用，按需加
+  R4+ 即可）；本轮按任务要求覆盖 3 个协议（s3/webdav/ftp）。
+- M12 真实大树使无容器 smoke 增加约 10–15s（文件生成 + 双次 digest），
+  可用 `DBX_FILES_MCP_CLAMP_FILES` 调小做参数化等效压测。
+- M13 真实等待固定 +10.6s（TTL 下限 10s 所限，属确定性成本）。
+- stdio 宿主 TCP 桥接兜底（ssh L1 同构）仍未做（前轮已记，非本轮范围）。
+
+## MCP 专项第三轮（收敛轮）：stdio 桥接兜底 + 错误码族内统一（2026-09-13）
+
+### 桥接兜底（L1，ssh L1 / ldap M14 同构）
+
+- **`mcp.rs` 内新增 `mod appbridge`**（参照 ssh `app_bridge.rs` 结构、
+  ldap `appbridge.go` 同族，模块化放置不外开新文件）：端口发现
+  （`<app_data_dir>/mcp-bridge-port`，`DBX_APP_DATA_DIR` → macOS 默认
+  app-data）、十进制空白容忍解析、TCP connect 探测防陈旧端口、
+  `DBX_APP_LAUNCH_CMD`（缺省 `open -a DBX.app`）尽力拉起 + 500ms 轮询
+  ensure（预算 30s）、`POST /call-plugin-tool` snake_case 五字段契约
+  （`plugin_id=io.dbx.files`）、64 KiB 单写上限、手写 HTTP/1.1（零新
+  依赖）、全部失败路径带 "DBX app bridge" 统一前缀（fail-closed，不假
+  死不静默）。
+- **stdio 转发集成**（`StdioServer` 新增 `bridge_fallback` 开关 + 
+  `bridge_ensure_wait` 预算字段，`bridge_forward_plan` 纯决策 +
+  `forward_via_bridge` 执行）：仅"需要连接"的工具且显式 `connectionId`
+  未池化（非 `__local__`、非内联 `connection` 在场）才转发——
+  `files_cursor_next` 会话类、UI 类（本就 UNAVAILABLE）、内联凭据调用
+  均本地路径；转发参数原样、超时固定 300s（files 工具无逐调用超时参
+  数，读余量 +150s）、200 envelope 逐字透传、非 envelope 防御性按成功
+  content 包装、转发不污染本地池。
+- **fail-closed 合并引导错误（files 特化）**：桥失败时以
+  `Unknown connectionId '<id>'` 开头，携带桥失败原因与三条出路，内联
+  参数出路点名 files 自己的字段（`protocol/root/bucket/endpoint/region/
+  accessKeyId/secretAccessKey`）；fallback 关闭（测试 hermetic）时同一
+  消息形状注明会话内禁用。替换原"桥接兜底未实现"的临时文案。
+
+### 错误码族内统一（stdio JSON-RPC 分档）
+
+- **未知方法 -32000 → -32601**（ssh 本轮同步改、ldap/kafka 原生
+  -32601，四插件 stdio 对齐）；`tools/call` 缺工具名与 arguments 非对
+  象两类结构性校验升 **-32602**（ldap/kafka Invalid params 分档同构，
+  消息保留 "tool name" / "arguments must be a JSON object" 关键字）；
+  工具级/应用级错误维持 **-32000**（-32700 parse / -32600 无 id 不
+  变）。smoke SKIP 判定认 "Method not found" 文本与数字码解耦（M9 无
+  需改动），S1 改钉 -32601/-32602/-32000 三档。
+
+### 测试
+
+- Rust 单测 +11（194→205）：端口解析/垃圾拒绝、五字段契约、HTTP 响应
+  拆分、ensure 未发布 fail-closed（短预算限时）、ensure 已发布立即返
+  回、mock 桥转发契约+envelope 逐字+非 200/非法 JSON、forward_plan 六
+  决策分支、stdio mock 桥转发端到端、非 envelope 包装、桥不可达
+  fail-closed 引导（含 files 字段点名）；mock 宿主桥为进程内 std
+  TcpListener（探测连接即空数据跳过），env 变更用模块级锁串行化。
+- smoke +1 场景（20→21）：**B1 桥接兜底段**（ssh 场景 8/12 + ldap M14
+  同构）——①桥未发布（空 app-data + `:` no-op launch）30s 唤醒预算后
+  fail-closed 断言四要素；②进程内 MockBridge 转发契约（path/五字段/
+  plugin_id）+ envelope 逐字；③桥 404 透出 "DBX app bridge returned
+  HTTP 404"。S3 的未知 id 断言迁移至 B1（避免常规段触发 30s 唤醒预
+  算）；`StdioSession` 支持 `extra_env`。
+
+### 回归证据
+
+- `cd backend && cargo test`：205 passed / 0 failed / 3 ignored（测试
+  构建零警告；顺手修掉第二轮遗留的 1 处 `unused_mut`）。
+- `cargo build --release --manifest-path backend/Cargo.toml`：Finished，
+  0 警告。
+- `DBX_PLUGIN_SIDECAR=… python3 scripts/smoke_mcp.py`（无容器）：
+  total=21 PASS=18 FAIL=0 SKIP=3（R1–R3 按设计 SKIP，B1 PASS）。
+- `bash scripts/test.sh`：all green（后端单测 + 连接表单校验 + 前端
+  typecheck/test/build + release 构建 + framed smoke + MCP smoke +
+  打包 io.dbx.files-0.1.50 dbxp）。
+
+### 剩余风险
+
+- B1 场景①固定 +30s（与 ssh 场景 8 / ldap M14 同为"唤醒预算即被测行
+  为"的确定性成本）；无容器 smoke 总时长相应增加。
+- 真机对真 DBX.app 的桥转发（saved connection 端到端）与
+  `/list-plugin-connections` 路由（files 无连接名选择器，本轮未移植，
+  与 ldap 一致）未覆盖——前者依赖真机 DBX.app 运行态，契约已由 mock
+  段钉死；后续如需连接名/endpoint 寻址再引入 list 路由。
+- 转发超时固定 300s（files 工具无逐调用超时参数；应用侧长 digest 由
+  读余量 +150s 兜底），未来若引入工具级超时参数需同步转发超时 clamp。
+
+## MCP 专项第四轮（实施轮）：oss/smb/sftp/sftp-native 远端 R 段补齐（2026-09-13）
+
+第三轮遗留「R 段只有 s3/webdav/ftp」本轮收口：smoke_mcp.py 场景
+R1–R3 → R1–R7（25 场景），七种远端协议全部有 stdio MCP 真实往返
+场景；oss 无 OSS API 兼容容器（MinIO 只讲 S3 API，OpenDAL oss
+service 讲阿里云 API），按任务要求常驻 SKIP 并如实记录原因，env
+钩子（`DBX_FILES_OSS_ENDPOINT/BUCKET/ACCESS_KEY/SECRET_KEY`）保留，
+对真实 OSS endpoint 设 env 即可启用（secret 经 s3 形状绑定落到
+OpenDAL `access_key_secret` 键，这正是 R7 启用后要钉的特化点）。
+
+### 新增场景与协议特化点
+
+- **R4 sftp（OpenSSH 容器）**：keyfile-only 认证全链路——内联 payload
+  不带 password（OpenDAL 0.57 sftp service 无 password 选项，engine
+  也从不转发）；`ssh://user@host:port` URI endpoint（openssh crate 只
+  从 URI 解析 user/port）+ `knownHostsStrategy: "accept"` 容忍容器
+  临时主机密钥。
+- **R5 smb（Samba 容器）**：裸 `host:port` endpoint + share 限定 +
+  username/password（password 走 secret 绑定）；共享循环的两阶段
+  purge 首次在 stdio 面钉住自研适配器实现的 delete_with_recursive
+  （smb2 crate 无服务端递归删除）。
+- **R6 sftp-native（russh 双栈，同一 OpenSSH 容器）**：password 认证
+  全链路——该协议存在的理由（OpenDAL sftp service 做不到 password）；
+  裸 `user@host:port` endpoint，默认主机密钥策略 Tolerate（accept-new）
+  适配临时密钥；KEY 环境备选与 framed 段对齐。
+- **R7 oss**：env 门控 SKIP（见上），场景结构与 R1–R3 同构。
+
+### 真实缺陷发现与修复（R4/R6 首跑）
+
+现象：直接复用 R1–R3 的 `root=/mcp-smoke-<uuid>` 连接隔离法，R4 报
+`files_write 'NotFound (permanent) … NoSuchFile'`、R6 报
+`files_mkdir 'PermissionDenied'`，framed 面同协议全 PASS——纯 stdio
+新增形状踩坑。
+
+根因（两层）：
+1. 场景层：`root` 指向 sftpuser 无权创建的文件系统 `/` 下；受限 home
+   服务器上「root 隔离法」前提（对象存储/webdav/ftp 的 root 可随意
+   自物化）不成立。
+2. 上游层（记录不 patch）：OpenDAL 0.57 sftp service 的 root 自动创建
+   循环用 `is_sftp_protocol_error` 判「已存在即忽略」，而该函数对
+   **任意**协议错误码（含 PermissionDenied）返回 true——root 建失败
+   被静默吞掉，错误延迟到写路径 `canonicalize`（SSH_FXP_REALPATH）
+   才以 `NoSuchFile` 透出，误导性强（错误点与根因相距两层）。自研
+   sftp-native 适配器的 stat-first mkdir -p 则诚实报出 PermissionDenied
+   （行为正确）。`connection/test` 的 `check()`（root stat）可提前暴露
+   该类配置错误；上游是否收紧错误分类记为观察项，本仓不 vendor
+   patch OpenDAL。
+
+修复（场景侧，对齐 framed smoke 已验证形状）：共享循环
+`run_remote_stdio_roundtrip` 改为「唯一可写 base 目录」建树——
+`files_mkdir` 在各后端都是 mkdir -p，base 自物化，不依赖任何协议的
+root 自动创建；sftp/sftp-native 的 base 落在 `/config`（容器用户
+home）。R1–R3 同步迁移（行为等价，容器下复验通过）。可行动结论：
+sftp/sftp-native 连接的 root 应指向已存在或父目录可写的路径。
+
+### 回归证据
+
+- `cd backend && cargo test`：205 passed / 0 failed / 3 ignored
+  （0 warning）。
+- `cargo build --release --manifest-path backend/Cargo.toml`：Finished，
+  0 警告。
+- `DBX_PLUGIN_SIDECAR=… python3 scripts/smoke_mcp.py`（无容器）：
+  total=25 PASS=18 FAIL=0 SKIP=7（R1–R7 按设计 SKIP）。
+- `DBX_PLUGIN_SIDECAR=… bash scripts/container_smoke.sh`（七协议容器
+  全起）：framed smoke PASS 186 / SKIP 0 / FAIL 0 + MCP smoke
+  total=25 PASS=24 FAIL=0 SKIP=1（R1–R6 真跑、R7 按设计 SKIP）。
+- `bash scripts/test.sh`：all green（后端单测 + 连接表单校验 + 前端
+  typecheck/test/build + release 构建 + framed smoke + MCP smoke +
+  打包 io.dbx.files-0.1.54 dbxp）。
+
+### 剩余风险
+
+- R7 oss 常驻 SKIP：真实 OSS endpoint 往返仍未验证（无 OSS API 兼容
+  容器可用；如后续引入 oss emulator 容器可把 SKIP 翻成真跑）。
+- R1–R3 迁移到 base 目录建树后行为等价但路径形状变了（`/mcp-smoke-*`
+  在协议默认根下而非 root 前缀下）——依赖旧路径形状的外部脚本（如有）
+  需知悉。
+- OpenDAL 0.57 sftp service root 自动创建吞 PermissionDenied 的上游
+  行为仍在（connection/test 可提前暴露；升级 0.58+ 时复查该循环是否
+  收紧）。
+- stdio 内联 sftp 的 key 字段只支持路径/内容二选一经 connection
+  secrets 传递（与工作台同源），key 内容含敏感信息的转义/长度上限未
+  专项压测（容器跑用的是路径形态）。
+
+## 第四轮（2026-09-13）桥回环：真机 DBX.app 端到端验证
+
+（接上节遗留项①）本机隔离 app-data（`shared/host-e2e/app-data`）+
+测试 DBX.app（host debug bundle，经 launch.sh 注入 `DBX_DATA_DIR`），
+files 0.1.54 重打并随四插件装入同一 app-data；桥端口发布后 TCP 探测
+通过。
+
+- **转发契约（核心验收）**：standalone `dbx-plugin-files --mcp`
+  （`DBX_APP_DATA_DIR` 指向隔离 app-data）`tools/call files_scan_digest
+  {connectionId:"no-such-files-conn", path:"/"}` → 未池化 connectionId
+  经桥转发 → 宿主 resolve_connection 404
+  `{"error":"Connection with id 'no-such-files-conn' not found"}` 并入
+  引导错误（files 的「Ways out」内联出路文案）——转发路径端到端通，
+  上一节遗留项①的「真机对真 DBX.app 的桥转发」闭环。
+- **fail-closed 对照**：同调用换空 `DBX_APP_DATA_DIR` → `DBX app bridge
+  unreachable after 30s` 本地 fail-closed，与「app 侧 returned HTTP
+  404」明确区分。
+- **app-data 内无 files 保存连接**（仅 ssh 的 vagrant 固件），「转发 →
+  宿主 → files workbench sidecar → 真实结果」全链路未覆盖，待后续
+  seed 一个 localFs/s3 连接后补。
+- **沉淀**：`shared/host-e2e/mcp_bridge_e2e.sh`（四插件统一回环脚本，
+  本轮真机 4/4 全绿；files 探针为其中一环）。
+- 本轮插件源码只读，未改代码。
+
+**剩余风险**：全链路真实结果层待 seed 连接补齐；偶发观察到跨插件转发
+调用偶发 90s 无响应、单独重跑立即成功（疑似宿主侧/GUI 渲染竞态）。
+
+## MCP 专项第五轮（可靠性纵深轮）：stdio 传输层 / 存储 churn / 路径门对抗（2026-09-13）
+
+三类主题（stdio 传输层健壮性、会话/存储长期 churn、路径门对抗输入），
+发现问题立即修复、立即回归。只动 `files/backend/src/{mcp,policy}.rs`、
+`files/scripts/smoke_mcp.py`、`files/docs/MCP.zh-CN.md`；host/、shared/
+与其他插件未触碰。
+
+### 问题清单（现象 → 根因 → 修复 → 验证）
+
+1. **非法 UTF-8 字节流杀死 stdio 会话**：`run_mcp_stdio` 用
+   `BufRead::lines()` 读行，其 UTF-8 校验错误经 `line?` 直接传播出主
+   函数 → 进程退出（合法客户端不会发，但对抗/故障输入一个坏行就终结
+   整个会话）。→ 改 `read_until(b'\n')` + `from_utf8_lossy`：坏字节行
+   lossy 解码后解析失败 → `-32700`（null id），连接继续。smoke T1
+   端到端验证（`BufRead::lines()` 语义保真对照：ssh 同构实现仍在，
+   族内建议已记「剩余风险」）。
+2. **超长行无界读取**：读行无上限，恶意/故障客户端可拖无限行打爆
+   内存。→ 单行上限 16 MiB（`DBX_FILES_MCP_STDIO_MAX_LINE` 可调；
+   8 MiB 参数 base64 后 ≈10.7 MiB 行仍在限内），超限在读取层回
+   `-32700` 点名上限与 env，连接继续。smoke T4 双路径验证（8 MiB
+   参数走 4 MiB 写上限的 -32000；调小 env 后超限行 -32700）。
+3. **confirm 令牌表无界增长**：`confirms: HashMap` 只在 verify 时
+   remove 单条，TTL 只在消费时检查——大量签发 preview 而从不 confirm
+   的调用让表单调增长直至进程结束。→ `confirm_begin` 先 prune 过期
+   条目，再加 1024 硬上限（超限淘汰**最早过期**者：最接近自然到期、
+   最不可能是调用方正持有的 token）。单测：1200 次 churn 后表恒
+   ≤1024 且全未过期、过期条目下次签发即清、上限淘汰语义逐项断言、
+   TTL 调整不追溯（旧 token 保留原窗口可用）。
+4. **`maxCursorSessions` settings 对 LRU 容量不生效**：`Mcp::new` 把
+   LRU cap 冻结为默认 8，`mcp/settings/set maxCursorSessions`（1–32）
+   只写进 settings，实际容量纹丝不动。→ `LruTable::set_cap`（缩容
+   立即驱逐溢出），`cursor_put` 每次按当前 settings 执行。单测：
+   2 会话下 LRU 逐出最旧、活跃会话（touch）不被误逐、8→1 缩容下一
+   次物化即收敛到 1。
+5. **MCP 面路径不过形状门**：framed 面有 `policy.sanitize`，MCP 面
+   的 write/mkdir/rename/delete/purge/digest 直通 OpenDAL——`..` 段
+   （`/..`、`a/../../etc`）依赖各后端自行拒绝、`/.` 语义上等价连接根
+   却能绕过 `refuse_root_purge` 的 trim 判定、控制字符（JSON
+   `\u0000`）与 >4096 路径透传 OS 层怪错。→ 新增
+   `validate_path_shape`（`..`/`.` 段、控制字符、4096 字节上限）接入
+   全部路径工具。单测：对抗拼写表 + purge/delete 根红线对抗（`/`、
+   `//`、`/.`、`/..`、空白等全拒绝且磁盘树完好）；smoke/Rust 双面
+   钉 `~` 不展开、URL 编码不解码、NFC/NFD 不归一（设计内保守行为，
+   只寻址字面同名条目）。
+6. **缺 method / 非法 id 类型无结构化分档**：缺 method 落入
+   "Method not found: "（-32601），id 为 object 被原样回显——均与
+   `shared/MCP_ACCEPTANCE.zh-CN.md` §2 的 -32600 invalid request 档
+   不齐。→ dispatch 前置校验：缺失/非字符串 method → `-32600
+   Invalid request: missing method`；id ∉ {string, number, null} →
+   `-32600 Invalid request: id must be a string, number, or null`
+   （id 不回显）。`jsonrpc` 版本字段**宽容不校验**（ssh/ldap/kafka
+   同形状，真实客户端可能省略/变体；拒绝无行为收益），钉测试存档。
+   smoke T2/T3 验证且每条后健康探针。
+7. **smoke T1 自身缺陷（首跑暴露）**：二进制噪声行
+   `bytes(range(1,32))` 内含 `\n`(10)——一次 send 实际产生两行、两份
+   -32700，只读一份，残留响应污染管线 → 后续场景 recv/read 互等
+   死锁（python 卡 readline、sidecar 卡 read，sample 栈定位）。→
+   噪声字节集排除 `\n`/`\r`（恰好一行、响应数可预期）；T5 顺带改为
+   收集式断言（响应乱序不假设先到顺序）。重跑全绿。
+
+### 新增覆盖
+
+- Rust 单测 +17（205→222）：stdio 结构校验 -32600（缺 method/非标量
+  id/合法 id 三形状/无 id 非 notification）、jsonrpc 宽容钉测试、
+  parse_request_line 空白行表、行上限 env 解析、confirm churn+上限
+  淘汰+TTL 不追溯（2 例）、cursor churn LRU+settings 即时生效、
+  物化上限 churn 循环（100×1 配置 50 轮）、intent churn+快照
+  last-write-wins ×100、digest 幂等 ×100、validate_path_shape 对抗
+  表、file_target_path 组合门、purge/delete 根红线对抗拼写（端到端
+  磁盘校验）、`~`/`%2e%2e`/NFC-NFD 字面语义（端到端）；policy.rs
+  对抗输入表（拒绝 vs 字面透传 + `.` 段 purge 根红线）。
+- smoke_mcp 25→31 场景（新增 T1–T6，无外部依赖必跑不 SKIP）：
+  T1 垃圾行/非法 UTF-8 进程存活、T2 通知静默+无 id -32600、T3 结构
+  校验+jsonrpc 宽容、T4 超长行双路径、T5 pipelining 4 id+垃圾行
+  逐一对应、T6 空行/CRLF。每条对抗断言后跟合法请求健康探针（进程
+  poll is None + ping 成功）。
+
+### 回归证据
+
+- `cd backend && cargo test`：**222 passed / 0 failed / 3 ignored**
+  （0 warning）。
+- `cargo build --release --manifest-path backend/Cargo.toml`：
+  Finished，0 警告。
+- `DBX_PLUGIN_SIDECAR=… python3 scripts/smoke_mcp.py`（无容器）：
+  **total=31 PASS=24 FAIL=0 SKIP=7**（R1–R7 按设计 SKIP，T1–T6 全
+  PASS）。
+- `bash scripts/test.sh`：**all green**（后端单测 + 连接表单 18 组合
+  + 前端 typecheck/test/build + release 构建 + framed smoke + MCP
+  smoke 31 场景 + 打包 io.dbx.files-0.1.55 dbxp）。
+
+### 并行会话冲突记录（本轮真实发生）
+
+回归中途 `files/backend/src/mcp.rs` 被另一并行会话（stdio tools/list
+schema 增强方向：连接类工具显式声明内联 `connection` 参数 + required
+connectionId 放宽 anyOf）多次写入，其中两次中间态造成编译断裂
+（`stdio_tool_list` 调用先于定义、`const … = json!` 非法——后者由该
+会话自行收敛为 `fn`）。本会话处置：等待写入稳定（mtime 窗口）后在其
+最终态上回归，未回退对方改动；T5 段对方亦改进为收集式断言（保留）。
+最终 222 全绿为两方改动共存态。
+
+### 剩余风险
+
+- **族内沿袭（只报告不动）**：ssh `run_mcp_stdio` 同用 `lines()`，
+  非法 UTF-8 同样会杀会话；ldap ConfirmStore 同样无签发期 prune/
+  上限（Go json.Unmarshal 对无效 UTF-8 宽容，传输层不受影响）；
+  files 的 `-32600` 结构校验（缺 method/非标量 id）与 confirm 上限
+  是族内首例，`MCP_ACCEPTANCE` §2 的 -32600「无 id 等」语义已覆盖，
+  其余三家跟进与否由各自轮次决策。
+- **`std_tool_list` 增强的 schema 断言**（并行会话新增）与本轮 T 段
+  共存于 smoke_mcp.py，后续轮次改任一侧时需对侧回归。
+- 行上限 16 MiB 是读取层防线而非协议约定；MCP 宿主若引入自己的
+  请求大小上限（通常更小），超出部分在宿主侧先被拒。
+- `/.` 段 MCP 面拒绝 vs framed 面吞并的双面语义已文档化
+  （MCP.zh-CN.md「路径形状门」），不改 framed 面既有行为。
+
+### 2026-09-14 ZCode MCP 接入与真机 agent 调用测试（MCP 集成会话）
+
+- **ZCode 接入**：用户级 `~/.zcode/cli/config.json` → `mcp.servers` 新增
+  `dbx-files`（`backend/target/release/dbx-plugin-files --mcp` +
+  `DBX_PLUGIN_DATA_DIR=~/.dbx-plugin-data/io.dbx.files`，镜像 dbx-ssh
+  条目形状；ldap/kafka 同轮接入）。会话重启后自动连接。
+- **stdio 错误形状对齐**（本会话实现，见上文冲突记录的共存态）：
+  `tools/call` 工具级错误改 MCP `isError:true` content（原 -32000 协议
+  错误为族内旧约定，ldap/kafka stdio 均已按 MCP 规约用 isError；结构性
+  -32602 分档保持）。`mcp.rs` 单测 + smoke S1/S2/T4 断言同步更新。
+- **stdio tools/list 内联 schema**：`stdio_tool_list` 为连接类工具声明
+  `connection` 对象（`fn inline_connection_properties` 全 camelCase 键）
+  并把 required `connectionId` 放宽 anyOf（与并行会话的同名增强为同一
+  改动的两个会话视角，最终态见 mcp.rs）。
+- **真机 agent 调用测试**：`__local__`/内联 localFs 全链路（digest/rows/
+  cursor/write/mkdir/rename/两阶段 delete+purge/根拒绝/UI UNAVAILABLE/
+  缺连接指引/非法 base64）实测通过；改进后复验 isError 与 schema 声明
+  生效。smoke 终态 **total=31 PASS=24 FAIL=0 SKIP=7**。
+- **smoke 客户端**：`StdioSession.wait_for` 乱序帧缓冲化（不丢弃）+
+  `os.read` 自管行缓冲（与 ldap M18/kafka K17 同源修复）；T5 改收集式
+  断言。
+- **引导 skill**：新增 `.agents/skills/dbx-mcp-usage`（agent 使用指引：
+  服务器配置、内联连接、两阶段写、常见坑速查），AGENTS.md skill 表加行。
+
+## MCP 专项第七轮（并发安全与口径拉齐轮，2026-09-13）
+
+三个任务：并发 store 压力测试（Rust 侧等价 Go -race 轮）、缺参报错枚举
+式拉齐（对齐 ssh，契约表 §3.9）、enum 报错在线冒烟补强（§3.3 钉进容器段）。
+
+### 任务一：并发 store 压力测试
+
+**锁用法审查结论（mcp.rs confirm 表 / cursor LRU 表 / intent 表）——无真
+竞态/逻辑缺陷，测试 + 注释钉死**：
+
+- `confirm_verify` 的「消费即原子」：remove 发生在锁内，hash/TTL 校验在
+  已移除的条目上进行——并发双 verify 同一 token 恰有一次 Ok，输家见
+  "unknown or already used"，无 verify-then-remove 窗口。
+- `confirm_begin` 的 prune → 上限淘汰 → insert 全在同一临界区，并发签发
+  不会越过 1024 硬上限（无跨锁 check-then-act）。已注释钉死：同毫秒签发
+  的 token 共享 `expires_at_millis`，淘汰为「文档化的任选」——被逐方重开
+  预览即可，无双重写入。
+- `cursor_next` 的 lookup → 过期判定 → offset 读/推进全程单临界区，并发
+  翻同一 cursor 不可能观察到（或返回）同一 offset 窗口。
+- `cursor_put` 的 settings 读取与表锁是两个临界区：与 `settings_set` 竞争
+  时单次物化可能用旧 `maxCursorSessions`——但每次 put 都按新读到的值
+  `set_cap`，语义是「调参后下一次物化收敛」（第六轮既有契约），注释明确
+  为「收敛而非原子」。锁序唯一嵌套点 cursor_next（cursors→settings）无
+  反向嵌套，无死锁面。
+- intent 表 register/report/lookup 各自单临界区；LruTable::get 的
+  remove+push touch 在锁内，活跃会话并发 touch 不失踪。
+
+**新增并发压力测试（std::thread + Arc，3 个）**：
+
+- `confirm_table_survives_concurrent_churn_without_double_consumption`：
+  8 线程 × 250 轮 = 2000+ 次签发（超 1024 硬上限，淘汰参与）混
+  preview/立即消费/持有后消费。断言：一次性（成功消费后重放必败）、
+  被逐 token 只允许明确 unknown（绝不出现 hash/expiry 类错误）、表容量
+  收敛 ≤1024、无过期残留。
+- `cursor_table_survives_concurrent_materialize_page_evict`：阶段 A
+  物化驻留 2 条（< cap 4）+ 5 线程 × 1000 高并发 touch——活跃会话全程
+  必活、翻页窗口恒定；阶段 B 8 线程 × 100 唯一会话超压物化 + 4 线程并发
+  翻同一会话——成功翻页不重叠（offset 推进原子）、路径集合不越界、表
+  收敛 ≤cap、无过期残留。
+- `stdio_concurrent_dispatch_keeps_id_correlation`：stdio dispatch 是
+  spawn **并发**（`run_mcp_stdio` 每行一个 tokio task，"Spawned handlers
+  may finish out of order" 注释既有）；16 个并发 dispatch 唯一 id，响应
+  id 一一对应。pipelining 线上断言已有 T5，本轮补进程内并发面。
+
+**测试过程中的一次自纠错**：cursor 阶段 A 初版把 churn 设计成反复 put
+同一路径——实际 `cursor_put` 每次物化都是**新 UUID 会话**（无 upsert），
+800 个唯一会话把 active 挤出属正确 LRU 行为而非缺陷；用最小复现探针
+（临时 mod，验证后删除）确认驱逐路径后改为「有限物化 + 高并发 touch」
+设计。
+
+### 任务二：缺参报错枚举式拉齐（§3.9）
+
+- 新增 `missing_required`（ssh 同款）：absent/null 视为缺失，一次报
+  `Missing required parameters: a, b`（按 schema required 顺序）；保留
+  "Missing required" 关键词兼容 smoke 匹配。
+- **口径决策**：枚举范围 = 工具业务参数（stdio schema `anyOf` 放宽后的
+  required 集合，即去 `connectionId`）；`connectionId` 缺失保持单数
+  `Missing required parameter: connectionId` + 内联指引——既与 stdio
+  schema required 一致（核对器 B1 多报即 DRIFT 的约束），也与 §3.7
+  「连接参数门先于业务参数校验」的登记顺序一致（核对器归一 WARN）。
+- 接入 8 处：ui_focus(panel)/ui_search(path)/ui_select(path)/
+  cursor_next(cursorId)/write(path,dataBase64)/mkdir(path)/
+  rename(path,newPath)/delete|purge(path)。present-but-类型错误不混入
+  枚举，仍由 `Parameter '<key>' must be ...` 精确单独点名。
+- 单测 2 个：纯函数枚举表（全缺/部分缺/null 同罪/空串豁免
+  dataBase64=""、类型错误不混入）+ stdio dispatch 穿透（空参先连接门
+  WARN 口径、内联连接在场时业务枚举达、rename 单点、类型错单独点名）；
+  smoke M11/S4 各补断言。
+
+### 任务三：enum 报错在线冒烟补强（§3.3）
+
+- `normalized_format` 纯函数（case-insensitive + trim）：`"ROWS"` /
+  `" Rows "` / `"Digest"` 归一工作；非法值报
+  `format must be 'digest' or 'rows' (got '<原值>')` 列合法值，不静默
+  降级。`depth` 非数字报错附合法范围 `depth accepts an integer in
+  1..=16`（单测 `depth_error_spells_the_legal_range_inline` 在真实
+  localFs 连接上断言）。
+- `run_remote_stdio_roundtrip`（R1–R6 共享）补在线 enum 段：`format:
+  "bogus"` / `depth: "bogus"` 真实连接上报错列合法值 + `format: "ROWS"`
+  归一后 rows 形状正常返回。无容器时随 R 场景 SKIP（合规）。
+- **容器实测**：MinIO + OpenSSH 临时容器（凭据运行时随机、跑完即焚）
+  下 R1（s3）+ R4（sftp）真实往返含新 enum 断言 PASS。
+
+### 新增覆盖
+
+- Rust 单测 +7（222→229）：并发 confirm churn、并发 cursor churn、
+  并发 dispatch id 对应、missing_required 枚举表、missing_required
+  dispatch 穿透、normalized_format、depth 范围报错。
+- smoke_mcp：M11（depth 范围 + 缺参枚举两条）、S4（stdio 缺参枚举）
+  断言增强；R 段共享 roundtrip 在线 enum 探针段。
+
+### 回归证据
+
+- `cd backend && cargo test`：**229 passed / 0 failed / 3 ignored**。
+- `cargo build --release --manifest-path backend/Cargo.toml`：
+  Finished，0 警告。
+- `DBX_PLUGIN_SIDECAR=… python3 scripts/smoke_mcp.py`（无容器）：
+  **total=31 PASS=24 FAIL=0 SKIP=7**。
+- 容器段（MinIO+OpenSSH）：**total=31 PASS=26 FAIL=0 SKIP=5**
+  （R1/R4 全链路含在线 enum 断言 PASS）。
+- `python3 shared/mcp_schema_check.py --binary backend/target/release/
+  dbx-plugin-files`：**RESULT: CLEAN**（12 工具；18 WARN 为既有连接门
+  /门禁归一，与第六轮一致）。
+- `bash scripts/test.sh`：all green（见下）。
+
+### 剩余风险
+
+- confirm 上限淘汰在同毫秒并发签发下是「任选淘汰」语义（1024 容量 +
+  TTL 60s 下概率极低），被逐方收到明确 unknown 指引重开预览，无数据
+  损坏面；族内 ssh/ldap/kafka 的同位表语义由各自轮次决策是否跟进。
+- files 的 stdio schema `anyOf` 放宽（connectionId 出 required）与缺参
+  枚举「业务参数口径」互相咬合：后续若把 `connectionId` 拉回 required
+  或改变 anyOf 形状，需同步 `missing_required` 口径与核对器 B1 比对
+  （§3.7 张力随之消解或再登记）。
+- R2/R3/R5/R6/R7 在本轮容器窗口外，enum 在线断言由共享 roundtrip
+  函数覆盖，待下次全容器冒烟自然带跑。
+
+## 第八轮（2026-09-14）终验：全容器组合冒烟 + MCP 后性能基线
+
+MCP 专项收口轮：第七轮代码之后首次完整全容器组合验证（framed + MCP
+local/R 段），并采集 MCP 专项七轮改动后的性能基线。本插件源码本轮只读。
+
+### 全容器冒烟（`bash scripts/container_smoke.sh`）
+
+- 首跑 FTP 段 FAIL（pyftpdlib 容器未就绪、启动即退）：手动最小复现
+  （同镜像同挂载同启动命令）容器正常拉起、pyftpdlib 正常监听，宿主侧
+  2121/30100-30109 端口绑定无冲突——判定为 pip 联网安装/容器时序的瞬时
+  环境问题，非代码问题，无法稳定复现。
+- 重跑全绿：framed smoke **PASS 186 / SKIP 0 / FAIL 0**；MCP smoke
+  **total=31 PASS=30 FAIL=0 SKIP=1**，唯一 SKIP=R7（oss 按设计 env-gated）。
+- **第七轮遗留闭环**：R1–R6 全 PASS，且 R2/R3/R5/R6 的 enum 在线断言
+  （bogus depth/format 拒绝并列合法值、`ROWS` 归一化）随全容器冒烟自然
+  带跑全部通过——上一节「待下次全容器冒烟自然带跑」风险消除（R7 仍按
+  设计 env-gated）。
+
+### 性能基线（`scripts/perf_files_test.py`，release 二进制，协议层口径）
+
+| 项 | 实测（2026-09-14） |
+|---|---|
+| ingest 10k 条目（memory） | 0.27s（约 37k ops/s） |
+| listPaged 全扫 10k 条（500/页） | 165ms |
+| 50 MiB upload（memory） | 1919.3 MiB/s |
+| 50 MiB download（memory） | 1069.6 MiB/s |
+| 50 MiB upload（fs 真盘） | 478.7 MiB/s |
+| 50 MiB download（fs 真盘） | 1131.9 MiB/s |
+| 进度事件节流 | up/down 各 92 事件（200 帧上界，~200ms 地板） |
+
+对比 §4（2026-08-29 cargo bench，内部层口径）：两者口径不同层（协议
+roundtrip vs Rust 内部），不做直接数值对齐；协议层数值同数量级、无一个
+数量级级别的回退。**以本表作为 MCP 专项改动后的首个协议层基线存档**
+（采集时本机有并行 cargo 构建负载，数据偏保守）。

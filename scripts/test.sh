@@ -37,6 +37,9 @@ cargo build --release --manifest-path backend/Cargo.toml
 echo "==> framed smoke (fs + memory; containers optional)"
 DBX_PLUGIN_SIDECAR="$ROOT/backend/target/release/dbx-plugin-files" python3 scripts/smoke_test.py
 
+echo "==> MCP smoke (release sidecar; container cases auto-SKIP)"
+DBX_PLUGIN_SIDECAR="$ROOT/backend/target/release/dbx-plugin-files" python3 scripts/smoke_mcp.py
+
 echo "==> package .dbxp"
 if [ ! -f manifest.json ]; then
   echo "SKIP: manifest.json not present yet (F-A owns it); packaging deferred"

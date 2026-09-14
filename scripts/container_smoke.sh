@@ -309,3 +309,9 @@ set -a
 . "$ENV_FILE"
 set +a
 python3 scripts/smoke_test.py
+
+# MCP smoke 带同一份容器 env 重跑：smoke_mcp.py 的 R1/R2/R3 场景（stdio 内联
+# 凭据下 s3/webdav/ftp 的 write→digest→cursor→两阶段 delete/purge 全链路）
+# 由 env 存在性自动从 SKIP 翻成真跑；无容器环境下它们保持 SKIP 不 FAIL。
+echo "==> running MCP smoke (local + container-backed remote stdio sections)"
+python3 scripts/smoke_mcp.py

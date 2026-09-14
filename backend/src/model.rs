@@ -473,10 +473,19 @@ fn secret_string(object: Option<&serde_json::Map<String, Value>>, key: &str) -> 
 }
 
 fn bool_field(object: Option<&serde_json::Map<String, Value>>, key: &str, default: bool) -> bool {
-    object
-        .and_then(|object| object.get(key))
-        .and_then(Value::as_bool)
-        .unwrap_or(default)
+    match object.and_then(|object| object.get(key)) {
+        None | Some(Value::Null) => default,
+        Some(Value::Bool(value)) => *value,
+        // Quoted booleans from LLM-built inline connections ("true"/"false")
+        // must honor the caller's intent, never silently flip it; an
+        // unparseable string keeps the field default.
+        Some(Value::String(text)) => match text.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => true,
+            "false" | "0" | "no" | "off" => false,
+            _ => default,
+        },
+        Some(_) => default,
+    }
 }
 
 #[cfg(test)]
@@ -602,6 +611,38 @@ mod tests {
         }))
         .unwrap();
         assert!(!writable.read_only);
+    }
+
+    /// Boolean form fields tolerate the quoted variants LLM-built inline
+    /// connections emit (`"true"`/`"false"`); an unparseable string keeps the
+    /// field default instead of silently flipping the caller's intent (a
+    /// string-typed `read_only: "true"` must never yield a writable gate).
+    #[test]
+    fn bool_fields_tolerate_string_variants() {
+        let quoted = StoredConnection::from_lifecycle_params(&json!({
+            "connection": {
+                "id": "conn-quoted",
+                "external_config": {
+                    "protocol": "fs",
+                    "read_only": "true",
+                    "allow_delete": "false",
+                    "lock_to_root": "yes",
+                }
+            }
+        }))
+        .unwrap();
+        assert!(quoted.read_only, "quoted read_only must force the gate");
+        assert!(!quoted.allow_delete, "quoted allow_delete=false must bind");
+        assert!(quoted.lock_to_root);
+
+        let junk = StoredConnection::from_lifecycle_params(&json!({
+            "connection": {
+                "id": "conn-junk",
+                "external_config": { "protocol": "fs", "allow_delete": "maybe" }
+            }
+        }))
+        .unwrap();
+        assert!(junk.allow_delete, "unparseable string keeps the default");
     }
 
     #[test]
