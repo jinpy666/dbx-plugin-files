@@ -64,30 +64,36 @@ cleanup() {
 trap cleanup EXIT
 
 # GitHub 托管 runner 的共享 IP 池常年被 Docker Hub 匿名限流（pull access
-# denied / toomanyrequests）：先拉原镜像；失败则回落到备用 registry（默认
-# mirror.gcr.io 的 Docker Hub 缓存）并打回原 tag，后续 docker run 直接命中
-# 本地镜像不再联网。ghcr.io 源（servercontainers/samba）不经此路径。
+# denied / toomanyrequests）：先拉原镜像；失败则按序尝试备用引用（mirror.gcr.io
+# 的 Docker Hub 缓存、各上游的官方镜像源）并打回原 tag，后续 docker run 直接
+# 命中本地镜像不再联网。ghcr.io 源（servercontainers/samba）不经此路径。
 ensure_image() {
   local image="$1"
-  local fallback="${2:-mirror.gcr.io}"
+  shift
   docker image inspect "$image" >/dev/null 2>&1 && return 0
   if docker pull "$image" >/dev/null 2>&1; then
     return 0
   fi
-  echo "  (docker hub pull failed for ${image}; falling back to ${fallback})" >&2
-  docker pull "${fallback}/${image}" >/dev/null 2>&1 || {
-    echo "FAIL: cannot pull ${image} from Docker Hub or ${fallback}" >&2
-    return 1
-  }
-  docker tag "${fallback}/${image}" "$image"
+  local alt
+  for alt in "$@"; do
+    echo "  (docker hub pull failed for ${image}; trying ${alt})" >&2
+    if docker pull "$alt" >/dev/null 2>&1; then
+      docker tag "$alt" "$image"
+      return 0
+    fi
+  done
+  echo "FAIL: cannot pull ${image} from Docker Hub or any fallback" >&2
+  return 1
 }
 
 # 一次性 SFTP 密钥对（ed25519，仅存在于临时目录）
 ssh-keygen -t ed25519 -N "" -f "$TMPDIR_SMOKE/smoke_key" -C dbx-files-smoke >/dev/null
 
 echo "==> starting MinIO (:${MINIO_PORT})"
-ensure_image minio/minio
-ensure_image minio/mc
+# MinIO 官方在 quay.io 维护同名组织镜像；mirror.gcr.io 对非 library 镜像
+# 只有按需缓存、命中率不稳（2026-09-15 CI 实测 miss），故两路都留。
+ensure_image minio/minio "quay.io/minio/minio" "mirror.gcr.io/minio/minio"
+ensure_image minio/mc "quay.io/minio/mc" "mirror.gcr.io/minio/mc"
 docker rm -f dbx-files-minio-test >/dev/null 2>&1 || true
 # /data 走 tmpfs：MinIO 按剩余空间百分比拒绝写入（XMinioStorageFull，新版不可
 # 配置关闭）；宿主盘富余度低时 sparse Docker 虚拟盘会误触发该保护。测试容器
@@ -119,7 +125,7 @@ docker run --rm --link dbx-files-minio-test:minio \
   minio/mc mb "local/${MINIO_BUCKET}" >/dev/null
 
 echo "==> starting OpenSSH test server (:${SFTP_PORT}, 密码+密钥双认证)"
-ensure_image "linuxserver/openssh-server" "ghcr.io/linuxserver"
+ensure_image "linuxserver/openssh-server" "ghcr.io/linuxserver/openssh-server" "mirror.gcr.io/linuxserver/openssh-server"
 docker rm -f dbx-files-sftp-test >/dev/null 2>&1 || true
 # PASSWORD_ACCESS + USER_PASSWORD：同一容器同时服务 sftp 段（OpenDAL keyfile）
 # 与 sftp-native 段（russh 密码认证）。
@@ -176,7 +182,7 @@ done
 [ "$smb_up" = 1 ] || { echo "FAIL: samba did not become ready on port ${SMB_PORT}" >&2; exit 1; }
 
 echo "==> preparing WebDAV config (hand-rolled minimal mod_dav httpd.conf)"
-ensure_image "httpd:2.4-alpine"
+ensure_image "httpd:2.4-alpine" "mirror.gcr.io/library/httpd:2.4-alpine" "public.ecr.aws/docker/library/httpd:2.4-alpine"
 mkdir -p "$TMPDIR_SMOKE/dav-data" "$TMPDIR_SMOKE/dav-runtime"
 chmod 777 "$TMPDIR_SMOKE/dav-data" "$TMPDIR_SMOKE/dav-runtime"
 cat > "$TMPDIR_SMOKE/httpd.conf" <<'EOF'
@@ -248,7 +254,7 @@ done
 }
 
 echo "==> preparing FTP server script (pyftpdlib, PASV masquerade 127.0.0.1)"
-ensure_image "python:3-alpine"
+ensure_image "python:3-alpine" "mirror.gcr.io/library/python:3-alpine" "public.ecr.aws/docker/library/python:3-alpine"
 cat > "$TMPDIR_SMOKE/ftp_server.py" <<'EOF'
 import os
 from pyftpdlib.authorizers import DummyAuthorizer
