@@ -59,7 +59,12 @@ cleanup() {
   fi
   docker rm -f dbx-files-minio-test dbx-files-sftp-test dbx-files-samba-test \
     dbx-files-webdav-test dbx-files-ftp-test >/dev/null 2>&1 || true
-  rm -rf "$TMPDIR_SMOKE"
+  # mod_dav 以容器内 daemon 用户写出的文件在 Linux 卷上保留其 uid，宿主用户
+  # rm 会 Permission denied（2026-09-15 CI 实测把 job 拉爆）。清理是尽力而
+  # 为：依次尝试宿主删除、免密 sudo（GH runner 可用），都失败只告警。
+  rm -rf "$TMPDIR_SMOKE" 2>/dev/null \
+    || sudo -n rm -rf "$TMPDIR_SMOKE" 2>/dev/null \
+    || echo "WARN: could not fully remove ${TMPDIR_SMOKE} (container-owned files)" >&2
 }
 trap cleanup EXIT
 
