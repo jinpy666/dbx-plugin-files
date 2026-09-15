@@ -34,8 +34,9 @@ def default_binary() -> str:
     env = os.environ.get("DBX_PLUGIN_SIDECAR")
     if env:
         return env
+    exe = "dbx-plugin-files.exe" if os.name == "nt" else "dbx-plugin-files"
     repo = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend", "target",
-                        "release", "dbx-plugin-files")
+                        "release", exe)
     if os.path.exists(repo):
         return repo
     home = os.path.expanduser("~")

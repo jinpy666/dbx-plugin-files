@@ -51,7 +51,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from sidecar_client import SidecarClient, SidecarError, lifecycle_params
+from sidecar_client import SidecarClient, SidecarError, default_binary, lifecycle_params
 
 CHUNK = 256 * 1024  # upload/download binary frame budget: 8B offset + <=256KiB data
 
@@ -1123,10 +1123,8 @@ def scenario_sftp_native_capabilities(runner: Runner) -> None:
 
 def main() -> None:
     started = time.monotonic()
-    sidecar = os.environ.get("DBX_PLUGIN_SIDECAR")
-    if not sidecar and not Path(
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend", "target", "release", "dbx-plugin-files")
-    ).exists():
+    sidecar = os.environ.get("DBX_PLUGIN_SIDECAR") or default_binary()
+    if not Path(sidecar).exists():
         print("SKIP: sidecar binary not built yet (backend/target/release/dbx-plugin-files; "
               "set DBX_PLUGIN_SIDECAR to override)")
         return

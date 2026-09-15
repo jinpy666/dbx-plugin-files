@@ -895,7 +895,11 @@ def r7_remote_oss(_client: SidecarClient) -> str:
 class StdioSession:
     """One `--mcp` sidecar process speaking newline-delimited JSON-RPC 2.0."""
 
-    def __init__(self, binary: str, extra_env: dict | None = None):
+    def __init__(self, binary: str | None = None, extra_env: dict | None = None):
+        binary = binary or default_binary()
+        if not os.path.exists(binary):
+            raise SidecarError(
+                f"sidecar binary not found: {binary} (use --binary or set DBX_PLUGIN_SIDECAR)")
         self.data_dir = tempfile.mkdtemp(prefix="dbx-files-mcp-stdio-")
         env = dict(os.environ)
         env["DBX_PLUGIN_DATA_DIR"] = self.data_dir
@@ -1584,6 +1588,11 @@ def main() -> int:
             RESULTS.append(ScenarioResult(fn.no, fn.name, "FAIL" if REQUIRE else "SKIP", message))
         report()
         return 0
+    # Pin the resolved binary for every default_binary() call site: the stdio
+    # scenarios (StdioSession) read the env independently, and on Windows the
+    # repo-relative fallback lacks the .exe suffix — the 2026-09-15 Windows
+    # candidate run failed exactly there (WinError 2 on process spawn).
+    os.environ["DBX_PLUGIN_SIDECAR"] = binary
 
     # 隔离数据目录：mcp-settings.json 与 audit.jsonl 不污染真实插件数据。
     data_dir = tempfile.mkdtemp(prefix="dbx-files-mcp-smoke-")
