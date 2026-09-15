@@ -1,21 +1,23 @@
-# DBX Files
+# Files Studio
 
 [![CI](https://github.com/jinpy666/dbx-plugin-files/actions/workflows/ci.yml/badge.svg)](https://github.com/jinpy666/dbx-plugin-files/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/jinpy666/dbx-plugin-files?display_name=tag)](https://github.com/jinpy666/dbx-plugin-files/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-[English](README.en.md) · [产品宣传页](docs/MEDIA.zh-CN.md) · [特性与竞品对比](docs/COMPARISON.zh-CN.md) · [MCP 使用指南](docs/MCP_USAGE.zh-CN.md) · [Files MCP 参考](docs/MCP.zh-CN.md) · [独立仓库迁移说明](docs/REPOSITORY_SPLIT.zh-CN.md)
+[English](README.en.md) · [产品宣传页](docs/MEDIA.zh-CN.md) · [特性与竞品对比](docs/COMPARISON.zh-CN.md) · [MCP 使用指南](docs/MCP_USAGE.zh-CN.md) · [Files MCP 参考](docs/MCP.zh-CN.md) · [独立仓库迁移说明](docs/REPOSITORY_SPLIT.zh-CN.md) · [发布清单](docs/RELEASE.zh-CN.md)
 
-DBX Files（`io.dbx.files`，DBX 文件）是统一的多后端文件工作台：本地文件夹、对象存储和
+Files Studio（`io.dbx.files`，DBX 文件）是统一的多后端文件工作台：本地文件夹、对象存储和
 远程文件服务共用一套浏览、传输和管理体验，把"在多个存储之间来回搬文件"压缩成一个
 连贯、可审计、可自动化的工作流。
 
 > Files · Storage · Transfer：fs、S3、WebDAV、FTP、SFTP、SMB 和传输、归档、自动化
 > 集中在一个 DBX 工作台面板中。
 
+![Files Studio 功能演示](docs/media/dbx-files-demo.mp4)
+
 ## 为什么值得用
 
-| 你要完成的事 | DBX Files 给你的体验 |
+| 你要完成的事 | Files Studio 给你的体验 |
 | --- | --- |
 | 在本地与远端存储之间迁移数据 | 统一浏览、复制、移动、目录同步，传输任务带进度、取消和历史 |
 | 快速检查和整理不同存储里的文件 | 大目录 digest 分页浏览、排序、统计和快捷路径，行为跨协议一致 |

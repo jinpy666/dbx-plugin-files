@@ -1,12 +1,12 @@
-# DBX Files
+# Files Studio
 
 [![CI](https://github.com/jinpy666/dbx-plugin-files/actions/workflows/ci.yml/badge.svg)](https://github.com/jinpy666/dbx-plugin-files/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/jinpy666/dbx-plugin-files?display_name=tag)](https://github.com/jinpy666/dbx-plugin-files/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-[中文](README.md) · [Product media](docs/MEDIA.en.md) · [Feature comparison](docs/COMPARISON.en.md) · [MCP usage guide](docs/MCP_USAGE.en.md) · [Files MCP reference](docs/MCP.zh-CN.md) · [Repository split notes](docs/REPOSITORY_SPLIT.en.md)
+[中文](README.md) · [Product media](docs/MEDIA.en.md) · [Feature comparison](docs/COMPARISON.en.md) · [MCP usage guide](docs/MCP_USAGE.en.md) · [Files MCP reference](docs/MCP.zh-CN.md) · [Repository split notes](docs/REPOSITORY_SPLIT.en.md) · [Release checklist](docs/RELEASE.en.md)
 
-DBX Files (`io.dbx.files`) is a unified workspace for multi-backend file operations:
+Files Studio (`io.dbx.files`) is a unified workspace for multi-backend file operations:
 local folders, object storage, and remote file services share one browsing,
 transfer, and administration experience, turning "moving files between storages"
 into a coherent, auditable, and automatable workflow.
@@ -14,9 +14,11 @@ into a coherent, auditable, and automatable workflow.
 > Files · Storage · Transfer: fs, S3, WebDAV, FTP, SFTP, SMB plus transfers,
 > archives, and automation in a single DBX workbench panel.
 
+![Files Studio walkthrough](docs/media/dbx-files-demo.mp4)
+
 ## Why it is worth using
 
-| What you need to do | What DBX Files gives you |
+| What you need to do | What Files Studio gives you |
 | --- | --- |
 | Move data between local and remote storage | Unified browse, copy, move, and directory sync with transfer jobs: progress, cancel, and history |
 | Inspect and organize files across providers | digest-paged browsing for large directories with sorting, stats, and quick paths, consistent across protocols |
