@@ -17,7 +17,7 @@ dbx-plugin-sdk = "0.1.0"
 # Unix-only (stdio.rs impls fail E0119 on Windows), so Windows builds omit it
 # and the `sftp` quick protocol is rejected with an actionable hint — use
 # `sftp-native` (russh, all platforms) there.
-opendal = { version = "0.57", features = [
+opendal = { version = "0.59", features = [
     "services-fs",
     "services-s3",
     "services-webdav",
@@ -60,7 +60,7 @@ dbx-plugin-sdk = { path = "../shared/sdk/rust/dbx-plugin-sdk" }
 # OpenDAL's sftp service (keyfile auth, `sftp` quick protocol) is Unix-only
 # via its `openssh` dependency; see the note above the base feature list.
 [target.'cfg(not(windows))'.dependencies]
-opendal = { version = "0.57", features = ["services-sftp"] }
+opendal = { version = "0.59", features = ["services-sftp"] }
 
 [dev-dependencies]
 tempfile = "3"
