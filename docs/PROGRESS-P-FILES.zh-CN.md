@@ -1727,3 +1727,71 @@ local/R 段），并采集 MCP 专项七轮改动后的性能基线。本插件�
 roundtrip vs Rust 内部），不做直接数值对齐；协议层数值同数量级、无一个
 数量级级别的回退。**以本表作为 MCP 专项改动后的首个协议层基线存档**
 （采集时本机有并行 cargo 构建负载，数据偏保守）。
+
+## 第九轮（2026-09-15）i18n 清理：冗余 key 删除、失准译文更正、manifest 顶层描述补翻
+
+多语言专项（只动 `frontend/src/lib/i18n.ts` 与 `manifest.json` 文案，零逻辑改动）。
+
+### 冗余 key 删除（23 键 × 七语，共 161 行）
+
+审计脚本（临时 vitest spec，跑完即删）做三件事：① 以 `messages.en` 的叶子 key
+为准，全前端源码（.vue/.ts，排除 spec 与 i18n.ts 自身）静态字符串扫描，动态
+key 家族（`sessionStatus.*`/`transferStatus.*`/`transferKind.*`，模板字面量
+拼接）整族视为可达；② 模板硬编码属性字面量（title/placeholder/aria-label/alt）
+与文本节点扫描——零发现（唯一命中 `&nbsp;*` 为必填星号）；③ manifest 七语
+localizations 结构路径对齐——完全一致。
+
+23 个无引用 key 全部逐一 grep 复核后删除（后端/scripts/spec 均无引用）：
+`confirmTitle`（openConfirm 调用点全部显式传 title）、`connectionUnknown`、
+`intent.rejected`（拒绝原因只回报 MCP 调用方，UI 不展示）、`notConnected`、
+`previewBinary`（二进制走 hex dump，兜底用 `previewUnsupported`）、`purgeTitle/
+purgeBody`（删除弹层实际用 `deleteTitle/deleteBody + danger*` 系）、
+`rootLabel/lockToRootLabel/readOnlyLabel/protocolLabel`（连接表单由 manifest
+宿主渲染）、`smb*` 11 键（同因；SMB 错误走 `friendlyError` 通用类别）。
+`operationFailed` 表面无 UI 引用，实际被 `errorBannerOf`（i18n.ts 内部）使用，
+保留。
+
+### 失准译文更正（8 处）
+
+- ja `copyBody`：正文误用「移動先」（move 用词），与 `copyTitle` 的「コピー先…」
+  自相矛盾 →「コピー先」。
+- ja `overwriteAsk`/`overwriteBatch`：「コピー先」→「配置先」——覆盖确认在
+  copy 与 move 两种跨栏传输都会触发（App.vue `openConfirm("overwrite")`），
+  原文在 move 场景语义错误。
+- zh-TW `transferKind.rename`：「重命名」（大陆用语，简体字形残留，同前轮
+  `transferKind.move` 同类问题）→「重新命名」。
+- es `transferStatus.failed`：`Error`（名词）→ `Fallida`——与同组
+  `Completada`/`Cancelada` 阴性形容词一致（修饰 transferencia）。
+- ja `active`：`実行中` 与 `transferStatus.running` 撞词（Active 是传输面板
+  分组标题）→「進行中」。
+- ja `sessionStatus.disconnected`：「切断」（动作名词）→「切断済み」，与
+  `接続済み` 对仗。
+- it `sessionStatus.connecting`：`Connessione`（名词）→ `Connessione in
+  corso`（进行态）。
+
+### manifest.json 顶层描述补翻（五语）
+
+en 顶层 description 在 a3802c9 已更新为「统一文件工作台」新文案（zh-CN 同步），
+zh-TW/es/it/ja/pt-BR 仍滞留 fcef37f 时代的旧描述（"Apache OpenDAL 多后端
+存储工作台插件"）——本次按当前 en 源文补翻五语。各语 `name` 保留「DBX 檔案/
+DBX Archivos/…」别名（README 明示 "Files Studio（io.dbx.files，DBX 文件）"
+为有意命名）。字段级 localizations 经逐条抽查与长度异常检测，七语一致且
+质量良好，未改动。
+
+### 回归证据
+
+- `npx vitest run`（frontend）：**35 files / 272 tests 全过**（含 i18n 七语
+  key 集合一致、占位符一致断言）。
+- `npx vue-tsc --noEmit`：0 错误。
+- 冗余审计脚本复扫：无静态引用且不属于动态家族的 key 剩余 0 个
+  （`operationFailed` 为 i18n.ts 内部使用，预期内）。
+- `scripts/`、`backend/src` 对被删 key 零引用（grep 确认）。
+
+### 剩余风险
+
+- `lib/opendalServices.ts` 的 `SERVICE_TEMPLATES`（快捷协议字段模板）内含
+  英文 placeholder，当前无任何渲染入口（连接表单由 manifest 宿主渲染、
+  opendal-custom 编辑器用 `CUSTOM_SERVICE_SCHEMAS`），属未接线的导出；
+  若未来前端自渲染快捷协议表单需先补七语。
+- 译文审校为单轮人工比对（en 基准 × 六语），es/it 语域混用（tú/usted）等
+  风格层面差异未统一，仅修语义错误。

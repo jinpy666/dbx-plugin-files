@@ -578,7 +578,7 @@
     },
     "zh-TW": {
       "name": "DBX 檔案",
-      "description": "基於 Apache OpenDAL 的 DBX 多後端儲存工作台外掛。",
+      "description": "統一管理本機資料夾、S3 相容儲存、WebDAV、FTP、SFTP、SMB/CIFS 及其他 OpenDAL 服務的檔案工作台。",
       "contributions": {
         "io.dbx.files.connection": {
           "label": "儲存",
@@ -838,7 +838,7 @@
     },
     "es": {
       "name": "DBX Archivos",
-      "description": "Complemento de almacenamiento multi-backend para DBX, impulsado por Apache OpenDAL.",
+      "description": "Espacio de trabajo de archivos unificado para carpetas locales, almacenamiento compatible con S3, WebDAV, FTP, SFTP, SMB/CIFS y otros servicios de OpenDAL.",
       "contributions": {
         "io.dbx.files.connection": {
           "label": "Almacenamiento",
@@ -968,7 +968,7 @@
     },
     "it": {
       "name": "DBX File",
-      "description": "Plugin di archiviazione multi-backend per DBX, basato su Apache OpenDAL.",
+      "description": "Area di lavoro unificata per i file: cartelle locali, archiviazione compatibile S3, WebDAV, FTP, SFTP, SMB/CIFS e altri servizi OpenDAL.",
       "contributions": {
         "io.dbx.files.connection": {
           "label": "Archiviazione",
@@ -1098,7 +1098,7 @@
     },
     "ja": {
       "name": "DBX ファイル",
-      "description": "Apache OpenDAL を利用した DBX 用マルチバックエンドストレージワークベンチ。",
+      "description": "ローカルフォルダー、S3 互換ストレージ、WebDAV、FTP、SFTP、SMB/CIFS など各種 OpenDAL サービスを束ねた統合ファイルワークベンチ。",
       "contributions": {
         "io.dbx.files.connection": {
           "label": "ストレージ",
@@ -1228,7 +1228,7 @@
     },
     "pt-BR": {
       "name": "DBX Arquivos",
-      "description": "Plugin de armazenamento multi-backend para DBX, com Apache OpenDAL.",
+      "description": "Espaço de trabalho unificado de arquivos para pastas locais, armazenamento compatível com S3, WebDAV, FTP, SFTP, SMB/CIFS e outros serviços OpenDAL.",
       "contributions": {
         "io.dbx.files.connection": {
           "label": "Armazenamento",

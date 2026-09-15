@@ -1,5 +1,5 @@
 {
-  "name": "DBX Files",
+  "name": "Files Studio",
   "description": "A unified file workspace for local folders, S3-compatible storage, WebDAV, FTP, SFTP, SMB/CIFS, transfers, archives, and MCP automation.",
   "icon": "assets/plugin.svg",
   "tags": [
