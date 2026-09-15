@@ -1,4 +1,4 @@
-# DBX Files Product Media
+# Files Studio Product Media
 
 This page collects material ready to use on GitHub, in release notes, and in product
 introductions. It is text-only and matches the plugin's real, current capabilities;
@@ -7,11 +7,11 @@ references media files that do not exist.
 
 ## One-line positioning
 
-`DBX Files: one file workspace for local folders, S3-compatible storage, and remote file services.`
+`Files Studio: one file workspace for local folders, S3-compatible storage, and remote file services.`
 
 ## Long-form copy
 
-`DBX Files is built for everyday file operations and cross-storage migration. Open one
+`Files Studio is built for everyday file operations and cross-storage migration. Open one
 connection to browse, upload, download, copy, move, run transfer jobs, handle zip
 archives, and perform guarded deletes. The multi-protocol engine covers local fs,
 S3/MinIO, Alibaba Cloud OSS, WebDAV, FTP, SFTP (dual stack: keyfile and password

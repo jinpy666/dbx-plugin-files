@@ -1,0 +1,33 @@
+version: 1
+plugin: dbx-plugin-files
+base_branch: main
+branch_prefix: codex/files/
+workflow:
+  stages: [discovery, contract, implementation, review, integration, verification]
+  merge_policy: integrator_only
+  implementation_isolation: one_branch_per_agent
+  dependencies:
+    implementation: [contract]
+    review: [implementation]
+    integration: [review]
+    verification: [integration]
+ownership:
+  contract: [manifest.json, docs/PROTOCOL.zh-CN.md]
+  backend: [backend/]
+  frontend: [frontend/, manifest.json]
+  tests: [scripts/]
+  integrator: [Cargo.lock, ui/, dist/, version_metadata, shared_contract_docs]
+validation:
+  local:
+    - python3 scripts/validate_repo.py
+    - node scripts/connection-forms/verify.mjs files
+    - pnpm --dir frontend typecheck
+    - pnpm --dir frontend test
+    - pnpm --dir frontend build
+    - cargo test --locked --manifest-path backend/Cargo.toml
+  ci_required: [validate, frontend, backend, container-smoke, candidates-check]
+security:
+  secrets: none_in_agent_environment
+  production_access: forbidden
+  generated_artifacts: integrator_only
+

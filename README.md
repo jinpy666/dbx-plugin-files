@@ -6,7 +6,7 @@
 
 [English](README.en.md) · [产品宣传页](docs/MEDIA.zh-CN.md) · [特性与竞品对比](docs/COMPARISON.zh-CN.md) · [MCP 使用指南](docs/MCP_USAGE.zh-CN.md) · [Files MCP 参考](docs/MCP.zh-CN.md) · [独立仓库迁移说明](docs/REPOSITORY_SPLIT.zh-CN.md) · [发布清单](docs/RELEASE.zh-CN.md)
 
-Files Studio（`io.dbx.files`，DBX 文件）是统一的多后端文件工作台：本地文件夹、对象存储和
+Files Studio（`io.dbx.files`）是统一的多后端文件工作台：本地文件夹、对象存储和
 远程文件服务共用一套浏览、传输和管理体验，把"在多个存储之间来回搬文件"压缩成一个
 连贯、可审计、可自动化的工作流。
 

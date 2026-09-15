@@ -447,7 +447,7 @@
   ],
   "localizations": {
     "zh-CN": {
-      "name": "DBX 文件",
+      "name": "Files Studio",
       "description": "统一管理本地文件夹、S3 兼容存储、WebDAV、FTP、SFTP、SMB/CIFS 及其他 OpenDAL 服务的文件工作台。",
       "contributions": {
         "io.dbx.files.connection": {
@@ -577,7 +577,7 @@
       }
     },
     "zh-TW": {
-      "name": "DBX 檔案",
+      "name": "Files Studio",
       "description": "統一管理本機資料夾、S3 相容儲存、WebDAV、FTP、SFTP、SMB/CIFS 及其他 OpenDAL 服務的檔案工作台。",
       "contributions": {
         "io.dbx.files.connection": {
@@ -837,7 +837,7 @@
       }
     },
     "es": {
-      "name": "DBX Archivos",
+      "name": "Files Studio",
       "description": "Espacio de trabajo de archivos unificado para carpetas locales, almacenamiento compatible con S3, WebDAV, FTP, SFTP, SMB/CIFS y otros servicios de OpenDAL.",
       "contributions": {
         "io.dbx.files.connection": {
@@ -967,7 +967,7 @@
       }
     },
     "it": {
-      "name": "DBX File",
+      "name": "Files Studio",
       "description": "Area di lavoro unificata per i file: cartelle locali, archiviazione compatibile S3, WebDAV, FTP, SFTP, SMB/CIFS e altri servizi OpenDAL.",
       "contributions": {
         "io.dbx.files.connection": {
@@ -1097,7 +1097,7 @@
       }
     },
     "ja": {
-      "name": "DBX ファイル",
+      "name": "Files Studio",
       "description": "ローカルフォルダー、S3 互換ストレージ、WebDAV、FTP、SFTP、SMB/CIFS など各種 OpenDAL サービスを束ねた統合ファイルワークベンチ。",
       "contributions": {
         "io.dbx.files.connection": {
@@ -1227,7 +1227,7 @@
       }
     },
     "pt-BR": {
-      "name": "DBX Arquivos",
+      "name": "Files Studio",
       "description": "Espaço de trabalho unificado de arquivos para pastas locais, armazenamento compatível com S3, WebDAV, FTP, SFTP, SMB/CIFS e outros serviços OpenDAL.",
       "contributions": {
         "io.dbx.files.connection": {

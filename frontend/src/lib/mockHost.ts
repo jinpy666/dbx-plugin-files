@@ -80,7 +80,7 @@ export function installMockHost() {
   put("/downloads", "dir");
   put("/documents", "dir");
   put("/pictures", "dir");
-  putText("/docs/readme.md", "# DBX Files\n\n双栏文件浏览（A-FILES）验证样例。\n\n- 左栏：源（当前连接）\n- 右栏：目标面板 / 预览\n\n编辑此文件并保存会走 files/write。\n");
+  putText("/docs/readme.md", "# Files Studio\n\n双栏文件浏览（A-FILES）验证样例。\n\n- 左栏：源（当前连接）\n- 右栏：目标面板 / 预览\n\n编辑此文件并保存会走 files/write。\n");
   putText("/docs/notes.txt", "line 1\nline 2\nline 3\n");
   {
     // 1x1 PNG（图片预览 / data URI）

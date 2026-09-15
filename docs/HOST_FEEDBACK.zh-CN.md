@@ -1,4 +1,4 @@
-# DBX Files 插件 → 宿主能力反馈（HOST_FEEDBACK）
+# Files Studio 插件 → 宿主能力反馈（HOST_FEEDBACK）
 
 > 记录 files 插件在连接表单/工作台集成中发现的宿主能力缺口与改进建议。
 > 宿主仓库（t8y2/dbx）不归本仓库管理；本文件是向上游反馈的依据与跟踪点。

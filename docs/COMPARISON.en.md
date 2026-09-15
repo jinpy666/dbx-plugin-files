@@ -9,7 +9,7 @@ target platform and exact version before choosing.
 
 ## Capability matrix
 
-| Capability | DBX Files | rclone | WinSCP | Traditional file managers (Finder/Explorer) |
+| Capability | Files Studio | rclone | WinSCP | Traditional file managers (Finder/Explorer) |
 | --- | --- | --- | --- | --- |
 | Graphical browsing of remote storage | Built-in | — (CLI-first; third-party GUI wrappers exist) | Built-in (SFTP/SCP/FTP/WebDAV/S3) | Local disks only |
 | Local folders | Built-in | Built-in | Built-in | Built-in |
@@ -39,7 +39,7 @@ target platform and exact version before choosing.
 - **Traditional file managers** target local disks; remote protocols either depend on
   OS mounts (SMB) or need external tools, and they lack transfer queues and
   protocol-level safety gates.
-- **DBX Files** folds "multi-protocol browsing + transfer jobs + archives + guarded
+- **Files Studio** folds "multi-protocol browsing + transfer jobs + archives + guarded
   policies" into the DBX host workbench: credentials are managed by the host, and the
   same capabilities are exposed to automation clients via MCP tools. It does not try
   to replace rclone's CLI ecosystem — it makes graphical and automated work share one
@@ -49,7 +49,7 @@ target platform and exact version before choosing.
 
 | Plugin | Primary objects | Typical tasks |
 | --- | --- | --- |
-| DBX Files | Filesystems and object storage | File browsing, uploads/downloads, archives, cross-storage organizing |
+| Files Studio | Filesystems and object storage | File browsing, uploads/downloads, archives, cross-storage organizing |
 | DBX SSH Terminal | SSH hosts, terminal, SFTP, remote ops | Log into servers, run commands, browse and transfer files |
 | DBX LDAP | LDAP directories | Query, aggregate, and edit directory entries |
 | DBX Kafka | Kafka clusters | Topic, message, consumer group, and Schema operations |
@@ -68,4 +68,4 @@ sftp/sftp-native connections as needed.
 - You only manage local disks: the OS file manager is enough.
 - You already use DBX host connections, MCP, or plugin workbenches, or you want
   multi-protocol file operations and automation inside one set of connections and
-  permission boundaries: choose DBX Files.
+  permission boundaries: choose Files Studio.
