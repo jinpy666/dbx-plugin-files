@@ -116,11 +116,12 @@ import argparse
 import base64
 import json
 import os
-import select
+import queue
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 
@@ -913,9 +914,44 @@ class StdioSession:
         )
         self.next_id = 0
         # Out-of-order response frames buffered by wait_for (never discarded);
-        # _rawbuf is wait_for's own line buffer over os.read.
+        # _rawbuf is the shared line buffer fed by the reader thread.
         self.pending: list[dict] = []
         self._rawbuf = b""
+        self._chunks: "queue.Queue[bytes]" = queue.Queue()
+        # Single read path via a background os.read pump. select() is not an
+        # option: Windows select only accepts sockets (WinError 10093 on pipe
+        # fds, 2026-09-15 candidate run), and select-on-BufferedReader reports
+        # "not ready" when a previous read already pulled later frames into
+        # the userspace buffer (ldap M18 2/6 flake root cause).
+        self._reader = threading.Thread(target=self._pump_stdout, daemon=True)
+        self._reader.start()
+
+    def _pump_stdout(self) -> None:
+        fd = self.proc.stdout.fileno()
+        while True:
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                return
+            if not chunk:
+                return
+            self._chunks.put(chunk)
+
+    def _next_line(self, timeout: float) -> bytes:
+        deadline = time.monotonic() + timeout
+        while True:
+            index = self._rawbuf.find(b"\n")
+            if index >= 0:
+                line = self._rawbuf[:index + 1]
+                self._rawbuf = self._rawbuf[index + 1:]
+                return line
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError("timed out waiting for a stdio line")
+            try:
+                self._rawbuf += self._chunks.get(timeout=remaining)
+            except queue.Empty:
+                raise AssertionError("timed out waiting for a stdio line") from None
 
     def send(self, payload: dict) -> None:
         self.proc.stdin.write((json.dumps(payload) + "\n").encode())
@@ -931,8 +967,8 @@ class StdioSession:
         self.proc.stdin.flush()
 
     def recv(self) -> dict:
-        line = self.proc.stdout.readline()
-        if not line:
+        line = self._next_line(60)
+        if not line.strip():
             raise AssertionError("stdio sidecar closed the stream before replying")
         return json.loads(line)
 
@@ -946,11 +982,8 @@ class StdioSession:
         answers are buffered (never discarded): discarding a frame that a
         later wait_for awaits hangs the scenario forever (files T5 root
         cause). Notifications (no id key) never answer anything. Reads via
-        os.read + our own line buffer — select() on the BufferedReader reports
-        "not ready" when a previous read already pulled later frames into the
-        userspace buffer (data there, pipe empty), which mimics a lost
-        response (ldap M18 2/6 flake root cause); the deadline stays honest
-        so a missing frame fails instead of hanging."""
+        the background os.read pump + our own line buffer — the deadline
+        stays honest so a missing frame fails instead of hanging."""
         deadline = time.monotonic() + 60
         while True:
             for index, message in enumerate(self.pending):
@@ -959,26 +992,14 @@ class StdioSession:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise AssertionError(f"timed out waiting for response id {want_id}")
-            ready, _, _ = select.select([self.proc.stdout.fileno()], [], [], remaining)
-            if not ready:
-                raise AssertionError(f"timed out waiting for response id {want_id}")
-            chunk = os.read(self.proc.stdout.fileno(), 65536)
-            if not chunk:
-                raise AssertionError("stdio sidecar closed the stream before replying")
-            self._rawbuf += chunk
-            while True:
-                index = self._rawbuf.find(b"\n")
-                if index < 0:
-                    break
-                raw = self._rawbuf[:index + 1]
-                self._rawbuf = self._rawbuf[index + 1:]
-                text = raw.decode(errors="replace").strip()
-                if not text:
-                    continue
-                message = json.loads(text)
-                if "id" not in message:
-                    continue  # notification: silent by protocol
-                self.pending.append(message)
+            raw = self._next_line(remaining)
+            text = raw.decode(errors="replace").strip()
+            if not text:
+                continue
+            message = json.loads(text)
+            if "id" not in message:
+                continue  # notification: silent by protocol
+            self.pending.append(message)
 
     def request(self, method: str, params: dict) -> dict:
         self.next_id += 1
