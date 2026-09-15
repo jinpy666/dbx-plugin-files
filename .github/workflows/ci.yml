@@ -6,6 +6,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# One run per branch/PR: superseded pushes cancel instead of queueing.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -80,9 +85,34 @@ jobs:
           cache-on-failure: true
       - run: cargo test --locked --manifest-path backend/Cargo.toml
 
+  container-smoke:
+    # Real-wire protocol coverage the unit tests cannot provide: MinIO (s3),
+    # OpenSSH (sftp keyfile + sftp-native password), Samba (smb), Apache
+    # mod_dav (webdav) and pyftpdlib (ftp) — the same faces the offline jobs
+    # otherwise SKIP. All credentials are generated at run time.
+    name: Containerized protocol smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: [validate, backend]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config nasm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+          cache-on-failure: true
+      - name: Build release sidecar
+        run: cargo build --locked --release --manifest-path backend/Cargo.toml
+      - name: Protocol smoke against real containers
+        env:
+          DBX_PLUGIN_SIDECAR: ${{ github.workspace }}/backend/target/release/dbx-plugin-files
+        run: scripts/container_smoke.sh
+
   candidate:
     name: Package candidate (${{ matrix.target }})
-    needs: [validate, frontend, backend]
+    needs: [validate, frontend, backend, container-smoke]
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -137,6 +167,12 @@ jobs:
       - run: pnpm --dir frontend install --frozen-lockfile
       - run: pnpm --dir frontend build
       - run: cargo build --locked --release --manifest-path backend/Cargo.toml
+      # The backend job runs the test suite on Linux only; Windows-only
+      # branches (the sftp quick-protocol refusal hint asserted by the
+      # connection-form matrix) execute here on the real MSVC toolchain.
+      - name: Windows test suite
+        if: matrix.os == 'windows'
+        run: cargo test --locked --manifest-path backend/Cargo.toml
       - name: Offline MCP smoke
         run: ${{ matrix.python }} scripts/smoke_mcp.py --binary "$SIDECAR_BINARY"
       - run: npm install --global "@dbx-app/plugin-cli@${PLUGIN_CLI_VERSION}"

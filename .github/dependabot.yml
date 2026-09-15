@@ -1,0 +1,30 @@
+# Dependency update automation. The sidecar pins opendal 0.57 (0.58 needs a
+# newer rustc than the host toolchain, see backend/Cargo.toml) and smb2 to an
+# exact version (see the SMB regression checklist), so cargo bumps arrive as
+# grouped PRs that CI validates against the locked build.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: cargo
+    directory: /backend
+    schedule:
+      interval: monthly
+    groups:
+      opendal:
+        patterns: ["opendal*"]
+      rust-deps:
+        patterns: ["*"]
+        exclude-patterns: ["opendal*", "smb2"]
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: monthly
+    groups:
+      frontend-deps:
+        patterns: ["*"]
