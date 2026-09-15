@@ -21,6 +21,14 @@ updates:
       rust-deps:
         patterns: ["*"]
         exclude-patterns: ["opendal*", "smb2"]
+    # Deliberate pins, not staleness: opendal 0.58+ requires rustc >= 1.91
+    # while the host toolchain is pinned to 1.88, and smb2 is an exact pin
+    # whose upgrades go through the SMB regression checklist
+    # (docs/IMPL_PLAN_SMB.zh-CN.md §0.2/§4).
+    ignore:
+      - dependency-name: "opendal"
+        versions: [">=0.58"]
+      - dependency-name: "smb2"
   - package-ecosystem: npm
     directory: /frontend
     schedule:
