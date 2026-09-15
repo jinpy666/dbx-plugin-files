@@ -140,12 +140,18 @@ impl StoredConnection {
             None | Some(Value::Null) => Value::Object(serde_json::Map::new()),
             Some(Value::Object(map)) => Value::Object(map.clone()),
             Some(Value::String(text)) => {
-                let parsed: Value = serde_json::from_str(text)
-                    .map_err(|error| format!("Invalid service config JSON: {error}"))?;
-                if !parsed.is_object() {
-                    return Err("Service config JSON must be an object".to_string());
+                // A cleared textarea arrives as an empty (or whitespace-only)
+                // string: that means "no service config", not broken JSON.
+                if text.trim().is_empty() {
+                    Value::Object(serde_json::Map::new())
+                } else {
+                    let parsed: Value = serde_json::from_str(text)
+                        .map_err(|error| format!("Invalid service config JSON: {error}"))?;
+                    if !parsed.is_object() {
+                        return Err("Service config JSON must be an object".to_string());
+                    }
+                    parsed
                 }
-                parsed
             }
             Some(_) => return Err("Service config must be a JSON object".to_string()),
         };
@@ -1088,11 +1094,12 @@ mod tests {
         assert!(share.get("required_when").is_none());
 
         // endpoint is conditionally required on a SUBSET of its visible
-        // protocols: webdav/ftp/sftp/smb/sftp-native need it, s3/oss stay
-        // optional (the AWS default endpoint applies when unset). The host
-        // evaluates required_when independently of visible_when, so the
-        // subset must never leave the required scope hidden — asserted here
-        // by keeping it inside the endpoint visible list.
+        // protocols: oss/webdav/ftp/sftp/smb/sftp-native need it (the OSS
+        // service has no default endpoint), s3 stays optional (the AWS
+        // default endpoint applies when unset). The host evaluates
+        // required_when independently of visible_when, so the subset must
+        // never leave the required scope hidden — asserted here by keeping
+        // it inside the endpoint visible list.
         let endpoint = field_of("endpoint");
         assert!(
             required("endpoint") == false,
@@ -1119,15 +1126,15 @@ mod tests {
                 .all(|value| endpoint_visible.contains(value)),
             "endpoint required_when must stay inside its visible_when"
         );
-        for required_protocol in ["webdav", "ftp", "sftp", "smb", "sftp-native"] {
+        for required_protocol in ["oss", "webdav", "ftp", "sftp", "smb", "sftp-native"] {
             assert!(
                 endpoint_required.contains(&required_protocol),
                 "endpoint must be conditionally required for '{required_protocol}'"
             );
         }
         assert!(
-            !endpoint_required.contains(&"s3") && !endpoint_required.contains(&"oss"),
-            "endpoint stays optional for s3/oss (AWS default endpoint)"
+            !endpoint_required.contains(&"s3"),
+            "endpoint stays optional for s3 (AWS default endpoint)"
         );
     }
 

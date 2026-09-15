@@ -2438,7 +2438,7 @@ fn inline_connection_properties() -> Value {
     "service": { "type": "string", "description": "OpenDAL service name (opendal-custom)" },
     "config": { "type": "object", "description": "OpenDAL service config map (opendal-custom)" },
     "readOnly": { "type": "boolean", "description": "Open read-only (write tools refused)" },
-    "allowDelete": { "type": "boolean", "description": "Allow delete-class tools (default false)" },
+    "allowDelete": { "type": "boolean", "description": "Allow delete-class tools (default true; set false to refuse delete/purge)" },
     "lockToRoot": { "type": "boolean", "description": "Confine paths to the root prefix" },
     "timeoutSecs": { "type": "integer", "description": "Operation timeout seconds" },
     "id": { "type": "string", "description": "Explicit connection id (default: hash-pooled mcp-inline-…)" },
@@ -4616,6 +4616,142 @@ mod tests {
         assert!(unknown.contains("Unsupported protocol"), "{unknown}");
         let not_object = stored_connection_from_inline(&json!("fs")).unwrap_err();
         assert!(not_object.contains("object"), "{not_object}");
+    }
+
+    /// Form↔MCP consistency: every camelCase key the inline parser maps into
+    /// the lifecycle payload must be declared in the `tools/list` connection
+    /// schema. Strict MCP hosts silently drop undeclared keys, so a drifted
+    /// schema would quietly change connection behavior (e.g. drop the private
+    /// key and fall back to anonymous) instead of erroring.
+    #[test]
+    fn inline_connection_schema_covers_every_mapped_key() {
+        let properties = inline_connection_properties();
+        let properties = properties.as_object().expect("schema properties object");
+        let mapped: &[&str] = &[
+            // config-bound keys, in stored_connection_from_inline mapping order
+            "root",
+            "bucket",
+            "endpoint",
+            "region",
+            "accessKeyId",
+            "enableVirtualHostStyle",
+            "username",
+            "user",
+            "share",
+            "domain",
+            "knownHostsStrategy",
+            "readOnly",
+            "allowDelete",
+            "lockToRoot",
+            "timeoutSecs",
+            "service",
+            "config",
+            // secret-bound keys
+            "secretAccessKey",
+            "password",
+            "key",
+        ];
+        for key in mapped {
+            assert!(
+                properties.contains_key(*key),
+                "inline key '{key}' is mapped but undeclared in tools/list schema; \
+                 strict MCP hosts would silently drop it"
+            );
+        }
+        // protocol (validated below), id and name are transport fields — the
+        // only schema entries allowed outside the mapping.
+        let extra: Vec<&str> = properties
+            .keys()
+            .map(String::as_str)
+            .filter(|key| *key != "protocol" && !mapped.contains(key))
+            .collect();
+        assert_eq!(extra.len(), 2, "undeclared schema keys: {extra:?}");
+        assert!(properties.contains_key("id") && properties.contains_key("name"));
+        // The protocol description must enumerate every engine protocol so an
+        // LLM caller can never be offered a value the engine would reject.
+        let description = properties["protocol"]["description"]
+            .as_str()
+            .expect("protocol description");
+        for protocol in crate::model::PROTOCOLS {
+            assert!(
+                description.contains(protocol),
+                "protocol '{protocol}' missing from the inline schema description"
+            );
+        }
+    }
+
+    /// Manifest↔MCP leg of the contract triangle: every connection-provider
+    /// field in manifest.json must be reachable through the inline connection
+    /// (config-bound → the camelCase config map, secret-bound → the secret
+    /// map, display_name → `name`), and no mapping entry may exist without a
+    /// manifest field behind it. Catches "field added to the form but never
+    /// wired into MCP" drift.
+    #[test]
+    fn manifest_fields_are_fully_covered_by_inline_mapping() {
+        let manifest: Value = serde_json::from_str(
+            &std::fs::read_to_string(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../manifest.json"
+            ))
+            .expect("manifest.json readable"),
+        )
+        .expect("manifest.json parses");
+        let fields = manifest["contributions"]
+            .as_array()
+            .expect("contributions")
+            .iter()
+            .find(|item| item["type"] == "connection-provider")
+            .expect("connection-provider")["fields"]
+            .as_array()
+            .expect("fields");
+        let config_map: &[(&str, &str)] = &[
+            ("root", "root"),
+            ("bucket", "bucket"),
+            ("endpoint", "endpoint"),
+            ("region", "region"),
+            ("access_key_id", "accessKeyId"),
+            ("enable_virtual_host_style", "enableVirtualHostStyle"),
+            ("username", "username"),
+            ("user", "user"),
+            ("share", "share"),
+            ("domain", "domain"),
+            ("known_hosts_strategy", "knownHostsStrategy"),
+            ("read_only", "readOnly"),
+            ("allow_delete", "allowDelete"),
+            ("lock_to_root", "lockToRoot"),
+            ("timeout_secs", "timeoutSecs"),
+            ("service", "service"),
+            ("config", "config"),
+        ];
+        let secret_map: &[(&str, &str)] = &[
+            ("secret_access_key", "secretAccessKey"),
+            ("password", "password"),
+            ("key", "key"),
+        ];
+        let mut covered: Vec<&str> = Vec::new();
+        for field in fields {
+            let key = field["key"].as_str().expect("field key");
+            match field["binding"].as_str().expect("field binding") {
+                "name" => assert_eq!(key, "display_name", "unexpected name-bound field"),
+                "secret" => assert!(
+                    secret_map.iter().any(|(source, _)| *source == key),
+                    "secret field '{key}' missing from the inline secret mapping"
+                ),
+                _ if key == "protocol" => {}
+                _ => assert!(
+                    config_map.iter().any(|(source, _)| *source == key),
+                    "config field '{key}' missing from the inline mapping; \
+                     MCP callers could never set it"
+                ),
+            }
+            covered.push(key);
+        }
+        for (source, _) in config_map.iter().chain(secret_map) {
+            assert!(
+                covered.contains(source),
+                "inline mapping key '{source}' has no manifest field behind it"
+            );
+        }
     }
 
     /// The full stdio loop against a real localFs connection: mkdir/write via

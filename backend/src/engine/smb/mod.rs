@@ -158,13 +158,35 @@ impl Builder for SmbBuilder {
 /// Both `/` and `\` act as separators; empty segments collapse; the user
 /// root (if any) is joined UNDER the nested prefix. Locking semantics
 /// (`lock_to_root`) are enforced by the engine policy layer as before.
-fn split_share_and_root(share: &str, user_root: Option<&str>) -> (String, String) {
-    let mut segments = share
-        .split(['/', '\\'])
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let share = segments.next().unwrap_or_default().to_string();
-    let nested: Vec<&str> = segments.collect();
+///
+/// The form keeps `share` and `root` independently optional, so the
+/// combination "share empty, root filled" is submittable; instead of a
+/// dead-end build error it follows UNC semantics (`//host/share/path`) and
+/// lifts the root's first segment to the share (root `/media/data` connects
+/// to share `media` rooted at `/data`). Only a root of `/` (or empty) keeps
+/// share-discovery mode.
+fn split_share_and_root(share_value: &str, user_root: Option<&str>) -> (String, String) {
+    fn segments(text: &str) -> impl Iterator<Item = &str> {
+        text.split(['/', '\\']).map(str::trim).filter(|s| !s.is_empty())
+    }
+
+    let mut share_segments = segments(share_value);
+    let share = share_segments.next().unwrap_or_default().to_string();
+    let nested: Vec<&str> = share_segments.collect();
+
+    if share.is_empty() {
+        let root_segments: Vec<&str> = user_root
+            .map(|root| segments(root).collect())
+            .unwrap_or_default();
+        return match root_segments.split_first() {
+            Some((&first, rest)) => {
+                let root = normalize_root(&format!("/{}", rest.join("/")));
+                (first.to_string(), root)
+            }
+            None => (String::new(), "/".to_string()),
+        };
+    }
+
     let root = if nested.is_empty() {
         normalize_root(user_root.unwrap_or("/"))
     } else {
@@ -341,13 +363,27 @@ mod tests {
     }
 
     #[test]
-    fn smb_builder_rejects_root_without_selected_share() {
-        let error = SmbBuilder::new()
-            .endpoint("nas.local")
-            .root("/data")
-            .build()
-            .expect_err("server-level browsing cannot have a share-relative root");
-        assert_eq!(error.kind(), ErrorKind::ConfigInvalid);
+    fn smb_builder_lifts_filled_root_first_segment_to_share() {
+        // The form keeps share and root independently optional; a filled root
+        // plus share discovery follows UNC semantics instead of a dead-end
+        // build error (form-combination fix, see split_share_and_root).
+        let operator = Operator::new(
+            SmbBuilder::new()
+                .endpoint("nas.local")
+                .root("/data/archive"),
+        )
+        .unwrap()
+        .finish();
+        assert_eq!(operator.info().name(), "data", "root head becomes the share");
+        assert_eq!(operator.info().root(), "/archive/", "root tail becomes the root");
+
+        // A plain `/` root keeps share-discovery mode.
+        let discovery = Operator::new(
+            SmbBuilder::new().endpoint("nas.local").root("/"),
+        )
+        .unwrap()
+        .finish();
+        assert_eq!(discovery.info().root(), "/");
     }
 
     #[test]
@@ -413,10 +449,29 @@ mod tests {
                 "split('{share}', {root:?})"
             );
         }
-        // Separator-only values leave an empty share → build-time error.
+        // Separator-only values leave an empty share; with an empty root that
+        // keeps share-discovery mode (build sees share=None, root "/").
         for bad in ["", "   ", "/", r"\\", "//"] {
-            let (share, _) = split_share_and_root(bad, None);
-            assert!(share.is_empty(), "split('{bad}') must yield an empty share");
+            let (share, root) = split_share_and_root(bad, None);
+            assert!(
+                share.is_empty() && root == "/",
+                "split('{bad}') must stay in discovery mode, got ({share:?}, {root:?})"
+            );
+        }
+        // UNC-lift combinations: a filled root with no share names the share
+        // with its first segment and serves the rest as the root.
+        let lifts: Vec<(&str, Option<&str>, (String, String))> = vec![
+            (  "", Some("/data"), ("data".into(), "/".into())),
+            ("", Some("/data/archive"), ("data".into(), "/archive/".into())),
+            ("", Some("data"), ("data".into(), "/".into())),
+            ("", Some("  /  "), ("".into(), "/".into())),
+        ];
+        for (share, root_value, expected) in lifts {
+            assert_eq!(
+                split_share_and_root(share, root_value),
+                expected,
+                "lift('{share}', {root_value:?})"
+            );
         }
     }
 

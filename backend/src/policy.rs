@@ -844,6 +844,37 @@ mod tests {
     }
 
     #[test]
+    fn delete_gate_combinations_pin_read_only_precedence() {
+        // Both form flags deny at once (the form can submit this combination
+        // when the host read_only flag ORs in on top of allow_delete=false):
+        // the read-only message must win everywhere, so callers never see the
+        // allow_delete hint for a connection that rejects ALL writes anyway.
+        let both = policy("/", false, true, false);
+        assert!(both.check_read("a").is_ok());
+        let error = both.check_write("a").unwrap_err();
+        assert!(error.contains("read-only"), "write: {error}");
+        assert!(!error.contains("allow_delete"), "write: {error}");
+        for (label, result) in [
+            ("delete", both.check_delete("a").map(|_| ())),
+            ("purge", both.check_purge("a").map(|_| ())),
+            ("rename", both.check_rename("a", "b").map(|_| ())),
+            ("delete_allowed", both.check_delete_allowed("delete").map(|_| ())),
+        ] {
+            let error = result.unwrap_err();
+            assert!(
+                error.contains("read-only") && !error.contains("allow_delete=false"),
+                "{label}: read-only gate must take precedence: {error}"
+            );
+        }
+
+        // The mirror combination (writable + deletable) stays fully open.
+        let open = policy("/", false, false, true);
+        assert!(open.check_write("a").is_ok());
+        assert!(open.check_delete("a").is_ok());
+        assert!(open.check_rename("a", "b").is_ok());
+    }
+
+    #[test]
     fn purge_refuses_root() {
         let policy = policy("/mnt/nas", false, false, true);
         for input in ["", "/", "/mnt/nas"] {

@@ -117,7 +117,7 @@ describe("custom service schemas", () => {
   it("marks required keys consistently with OpenDAL needs", () => {
     const requiredOf = (service: string) =>
       (schemaForService(service) ?? []).filter((spec) => spec.required).map((spec) => spec.key);
-    expect(requiredOf("fs")).toEqual(["root"]);
+    expect(requiredOf("fs")).toEqual([]);
     expect(requiredOf("s3")).toEqual(["bucket", "access_key_id", "secret_access_key"]);
     expect(requiredOf("webdav")).toEqual(["endpoint"]);
     expect(requiredOf("ftp")).toEqual(["endpoint"]);

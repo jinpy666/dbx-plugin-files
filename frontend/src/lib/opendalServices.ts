@@ -32,7 +32,8 @@ export const SERVICE_TEMPLATES: Record<string, ServiceTemplate> = {
   fs: {
     id: "fs",
     kind: "quick",
-    fields: [{ key: "root", type: "text", required: true, placeholder: "/path/to/dir" }],
+    // root 留空 = 整个文件系统（sidecar 兜底为 "/"，与内置本地连接一致）。
+    fields: [{ key: "root", type: "text", placeholder: "empty = whole filesystem" }],
   },
   s3: {
     id: "s3",
@@ -195,7 +196,8 @@ const SFTP_KNOWN_HOSTS: CustomFieldSpec = {
  * 保留为后端 smoke 测试后端，经 JSON 模式仍可用于开发调试）。
  */
 export const CUSTOM_SERVICE_SCHEMAS: Readonly<Record<string, readonly CustomFieldSpec[]>> = {
-  fs: [{ key: "root", type: "text", required: true, placeholder: "/path/to/dir" }],
+  // root 留空 = 整个文件系统（sidecar 兜底为 "/"，与内置本地连接一致）。
+  fs: [{ key: "root", type: "text", placeholder: "empty = whole filesystem" }],
   s3: [
     { key: "bucket", type: "text", required: true },
     { key: "endpoint", type: "text", security: "url", placeholder: "https://s3.amazonaws.com" },

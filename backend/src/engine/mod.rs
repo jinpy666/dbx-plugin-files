@@ -27,6 +27,11 @@ pub mod smb;
 // adapter for the `sftp-native` quick protocol — password auth the OpenDAL
 // 0.57 sftp service cannot do. Additive; OpenDAL `sftp` stays available.
 pub mod sftp_native;
+// Connection-form × engine combination matrix (test-only): replays the
+// manifest form contract (visible_when/required_when) against parse+build so
+// form-allowed combinations can never regress into runtime errors.
+#[cfg(test)]
+mod form_matrix;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -294,14 +299,36 @@ pub fn protocol_kv(
 
     let scheme: String = match connection.protocol.as_str() {
         "fs" => {
-            push(&mut kv, "root", &connection.root);
+            // The form leaves `root` optional, but OpenDAL's fs service
+            // rejects an unset root ("root is not specified"). An fs
+            // connection without a root means the whole filesystem — same
+            // semantics as the built-in local connection (root "/").
+            let root = if connection.root.is_empty() {
+                "/"
+            } else {
+                &connection.root
+            };
+            push(&mut kv, "root", root);
             "fs".to_string()
         }
         "s3" => {
             push(&mut kv, "root", &connection.root);
             push(&mut kv, "bucket", &connection.bucket);
             push(&mut kv, "endpoint", &connection.endpoint);
-            push(&mut kv, "region", &connection.region);
+            // The form leaves region optional ("leave empty when the
+            // endpoint implies it"), but OpenDAL's s3 service hard-fails the
+            // build when region is unset and AWS_REGION/AWS_DEFAULT_REGION
+            // are absent. Default to us-east-1 — the de-facto signature
+            // region for AWS, MinIO and Ceph deployments — so the
+            // form-allowed combination keeps building; a server pinned to a
+            // different region surfaces a signature error the user fixes by
+            // filling the field.
+            let region = if connection.region.is_empty() {
+                "us-east-1"
+            } else {
+                &connection.region
+            };
+            push(&mut kv, "region", region);
             push(&mut kv, "access_key_id", &connection.access_key_id);
             push(&mut kv, "secret_access_key", &connection.secret_access_key);
             if connection.enable_virtual_host_style {
@@ -338,11 +365,22 @@ pub fn protocol_kv(
             push(&mut kv, "endpoint", &connection.endpoint);
             push(&mut kv, "user", &connection.user);
             push(&mut kv, "key", &connection.key);
-            push(
-                &mut kv,
-                "known_hosts_strategy",
-                &connection.known_hosts_strategy,
-            );
+            // The form's strategy select shares the sftp-native vocabulary
+            // (Tolerate/Strict/Trust, default Tolerate), but OpenDAL's sftp
+            // service only understands strict|accept|add and fails the build
+            // with "unknown known_hosts strategy" for anything else. Map the
+            // shared select onto that set: Tolerate → accept (accept-new);
+            // Trust degrades to accept — the service has no blanket-trust
+            // mode; unknown/legacy values fall back to the tolerant default
+            // instead of bricking the connection.
+            if !connection.known_hosts_strategy.is_empty() {
+                let strategy = match connection.known_hosts_strategy.to_ascii_lowercase().as_str() {
+                    "strict" => "strict",
+                    "add" => "add",
+                    _ => "accept",
+                };
+                push(&mut kv, "known_hosts_strategy", strategy);
+            }
             // Note: OpenDAL's sftp service is key-based; `password` has no
             // matching option in 0.57 and is deliberately not forwarded.
             "sftp".to_string()

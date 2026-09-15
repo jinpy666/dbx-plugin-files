@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/t8y2/dbx/dev/plugin-framework-current/plugins/manifest.schema.json",
   "manifest_version": 1,
   "id": "io.dbx.files",
-  "name": "DBX Files",
+  "name": "Files Studio",
   "version": "0.1.57",
   "publisher": "xynanan",
   "description": "A unified file workspace for local folders, S3-compatible storage, WebDAV, FTP, SFTP, SMB/CIFS, and other OpenDAL services.",
@@ -115,6 +115,7 @@
           "required_when": {
             "field": "protocol",
             "one_of": [
+              "oss",
               "webdav",
               "ftp",
               "sftp",
@@ -189,7 +190,7 @@
           "binding": "config",
           "default": "",
           "placeholder": "us-east-1",
-          "description": "S3 region; leave empty when the endpoint implies it.",
+          "description": "S3 region; leave empty to default to us-east-1 (AWS, MinIO, Ceph).",
           "visible_when": {
             "field": "protocol",
             "one_of": [
@@ -379,7 +380,7 @@
               "sftp-native"
             ]
           },
-          "description": "Strict requires known host keys. Tolerate accepts unknown hosts but rejects changed known keys; native SFTP does not remember new keys. Trust skips verification."
+          "description": "Strict requires known host keys. Tolerate accepts unknown hosts but rejects changed known keys; native SFTP does not remember new keys. Trust skips verification (the OpenDAL SFTP protocol degrades it to Tolerate)."
         },
         {
           "key": "root",
@@ -507,7 +508,7 @@
             "region": {
               "label": "区域",
               "placeholder": "us-east-1",
-              "description": "S3 区域；端点已隐含时可留空。"
+              "description": "S3 区域；留空时默认使用 us-east-1（AWS、MinIO、Ceph 通用）。"
             },
             "access_key_id": {
               "label": "Access Key ID",
@@ -544,7 +545,7 @@
             },
             "known_hosts_strategy": {
               "label": "Known Hosts 策略",
-              "description": "Strict 仅接受已知主机密钥；Tolerate 接受未知主机，但拒绝已知密钥变化，原生 SFTP 不记住新密钥；Trust 跳过验证。",
+              "description": "Strict 仅接受已知主机密钥；Tolerate 接受未知主机，但拒绝已知密钥变化，原生 SFTP 不记住新密钥；Trust 跳过验证（OpenDAL SFTP 协议下会降级为 Tolerate）。",
               "options": {
                 "Tolerate": "宽容（记住新主机）",
                 "Strict": "严格（校验已知主机）",
@@ -637,7 +638,7 @@
             "region": {
               "label": "區域",
               "placeholder": "us-east-1",
-              "description": "S3 區域；端點已隱含時可留空。"
+              "description": "S3 區域；留空時預設使用 us-east-1（AWS、MinIO、Ceph 通用）。"
             },
             "access_key_id": {
               "label": "Access Key ID",
@@ -674,7 +675,7 @@
             },
             "known_hosts_strategy": {
               "label": "Known Hosts 策略",
-              "description": "Strict 僅接受已知主機金鑰；Tolerate 接受未知主機，但拒絕已知金鑰變更，原生 SFTP 不記住新金鑰；Trust 略過驗證。",
+              "description": "Strict 僅接受已知主機金鑰；Tolerate 接受未知主機，但拒絕已知金鑰變更，原生 SFTP 不記住新金鑰；Trust 略過驗證（OpenDAL SFTP 協定下會降級為 Tolerate）。",
               "options": {
                 "Tolerate": "寬容（記住新主機）",
                 "Strict": "嚴格（驗證已知主機）",
@@ -706,7 +707,7 @@
       }
     },
     "en": {
-      "name": "DBX Files",
+      "name": "Files Studio",
       "description": "A unified file workspace for local folders, S3-compatible storage, WebDAV, FTP, SFTP, SMB/CIFS, and other OpenDAL services.",
       "contributions": {
         "io.dbx.files.connection": {
@@ -767,7 +768,7 @@
             "region": {
               "label": "Region",
               "placeholder": "us-east-1",
-              "description": "S3 region; leave empty when the endpoint implies it."
+              "description": "S3 region; leave empty to default to us-east-1 (AWS, MinIO, Ceph)."
             },
             "access_key_id": {
               "label": "Access key ID",
@@ -804,7 +805,7 @@
             },
             "known_hosts_strategy": {
               "label": "Known hosts strategy",
-              "description": "Strict requires known host keys. Tolerate accepts unknown hosts but rejects changed known keys; native SFTP does not remember new keys. Trust skips verification.",
+              "description": "Strict requires known host keys. Tolerate accepts unknown hosts but rejects changed known keys; native SFTP does not remember new keys. Trust skips verification (the OpenDAL SFTP protocol degrades it to Tolerate).",
               "options": {
                 "Tolerate": "Tolerate (remember new hosts)",
                 "Strict": "Strict (verify known hosts)",
@@ -897,7 +898,7 @@
             "region": {
               "label": "Región",
               "placeholder": "us-east-1",
-              "description": "Región de S3; déjelo vacío si el endpoint ya la implica."
+              "description": "Región de S3; déjelo vacío para usar us-east-1 por defecto (AWS, MinIO, Ceph)."
             },
             "access_key_id": {
               "label": "ID de clave de acceso",
@@ -934,7 +935,7 @@
             },
             "known_hosts_strategy": {
               "label": "Estrategia de known hosts",
-              "description": "Strict exige claves conocidas. Tolerate acepta hosts nuevos y rechaza claves conocidas modificadas; SFTP nativo no recuerda claves nuevas. Trust omite la verificación.",
+              "description": "Strict exige claves conocidas. Tolerate acepta hosts nuevos y rechaza claves conocidas modificadas; SFTP nativo no recuerda claves nuevas. Trust omite la verificación (en el protocolo SFTP de OpenDAL se degrada a Tolerate).",
               "options": {
                 "Tolerate": "Tolerante (recordar hosts nuevos)",
                 "Strict": "Estricto (verificar known hosts)",
@@ -1027,7 +1028,7 @@
             "region": {
               "label": "Regione",
               "placeholder": "us-east-1",
-              "description": "Regione S3; lasciare vuoto se l'endpoint la implica già."
+              "description": "Regione S3; lasciare vuoto per usare us-east-1 predefinita (AWS, MinIO, Ceph)."
             },
             "access_key_id": {
               "label": "ID chiave di accesso",
@@ -1064,7 +1065,7 @@
             },
             "known_hosts_strategy": {
               "label": "Strategia known hosts",
-              "description": "Strict richiede chiavi note. Tolerate accetta host nuovi e rifiuta chiavi note modificate; SFTP nativo non memorizza chiavi nuove. Trust salta la verifica.",
+              "description": "Strict richiede chiavi note. Tolerate accetta host nuovi e rifiuta chiavi note modificate; SFTP nativo non memorizza chiavi nuove. Trust salta la verifica (con il protocollo SFTP di OpenDAL viene degradata a Tolerate).",
               "options": {
                 "Tolerate": "Tollerante (ricorda i nuovi host)",
                 "Strict": "Rigoroso (verifica i known hosts)",
@@ -1157,7 +1158,7 @@
             "region": {
               "label": "リージョン",
               "placeholder": "us-east-1",
-              "description": "S3 リージョン。エンドポイントで判別できる場合は空のままで構いません。"
+              "description": "S3 リージョン。空欄の場合は us-east-1（AWS・MinIO・Ceph の既定）を使用します。"
             },
             "access_key_id": {
               "label": "アクセスキー ID",
@@ -1194,7 +1195,7 @@
             },
             "known_hosts_strategy": {
               "label": "Known Hosts 戦略",
-              "description": "Strict は既知の鍵のみ許可します。Tolerate は未知のホストを許可し、既知の鍵の変更を拒否します。ネイティブ SFTP は新しい鍵を記録しません。Trust は検証を省略します。",
+              "description": "Strict は既知の鍵のみ許可します。Tolerate は未知のホストを許可し、既知の鍵の変更を拒否します。ネイティブ SFTP は新しい鍵を記録しません。Trust は検証を省略します（OpenDAL SFTP プロトコルでは Tolerate に低下します）。",
               "options": {
                 "Tolerate": "許容（新しいホストを記憶）",
                 "Strict": "厳格（known hosts を検証）",
@@ -1287,7 +1288,7 @@
             "region": {
               "label": "Região",
               "placeholder": "us-east-1",
-              "description": "Região do S3; deixe vazio quando o endpoint já a implicar."
+              "description": "Região do S3; deixe vazio para usar us-east-1 como padrão (AWS, MinIO, Ceph)."
             },
             "access_key_id": {
               "label": "ID da chave de acesso",
@@ -1324,7 +1325,7 @@
             },
             "known_hosts_strategy": {
               "label": "Estratégia de known hosts",
-              "description": "Strict exige chaves conhecidas. Tolerate aceita hosts novos e rejeita alterações em chaves conhecidas; SFTP nativo não memoriza chaves novas. Trust ignora a verificação.",
+              "description": "Strict exige chaves conhecidas. Tolerate aceita hosts novos e rejeita alterações em chaves conhecidas; SFTP nativo não memoriza chaves novas. Trust ignora a verificação (no protocolo SFTP do OpenDAL é rebaixada para Tolerate).",
               "options": {
                 "Tolerate": "Tolerar (lembrar novos hosts)",
                 "Strict": "Estrito (verificar known hosts)",

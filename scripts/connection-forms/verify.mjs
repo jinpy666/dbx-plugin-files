@@ -48,6 +48,16 @@ for (const [index, field] of fields.entries()) {
     const values = target.type === "boolean" ? ["true", "false"] : target.options?.map((option) => option.value);
     if (values) assert(condition.one_of.every((value) => values.includes(value)), `${field.key}: invalid condition value`);
   }
+  // Conflict guard: a conditionally required field must stay visible in
+  // every state where it is required, otherwise the host demands a value
+  // the user cannot type ("required but hidden" combination).
+  if (field.required_when) {
+    assert(field.visible_when, `${field.key}: required_when without visible_when`);
+    assert(
+      field.required_when.one_of.every((value) => field.visible_when.one_of.includes(value)),
+      `${field.key}: required_when values outside visible_when`,
+    );
+  }
   if (field.type === "select" && field.default !== undefined) {
     assert(field.options.some((option) => option.value === field.default), `${field.key}: invalid default`);
   }
@@ -80,9 +90,10 @@ function state(overrides) {
 for (const protocol of options("protocol")) {
   for (const read_only of [true, false]) {
     const current = state({ protocol, read_only });
-    // Object storage (S3 / OSS): endpoint+bucket+keys required.
+    // Object storage (S3 / OSS): bucket+keys required; endpoint required for
+    // OSS (no default endpoint) but optional for S3 (AWS default endpoint).
     current.visible("endpoint", !["fs", "opendal-custom"].includes(protocol));
-    current.required("endpoint", ["webdav", "ftp", "sftp", "smb", "sftp-native"].includes(protocol));
+    current.required("endpoint", ["oss", "webdav", "ftp", "sftp", "smb", "sftp-native"].includes(protocol));
     current.visible("bucket", ["s3", "oss"].includes(protocol));
     current.required("bucket", ["s3", "oss"].includes(protocol));
     current.visible("region", protocol === "s3");
