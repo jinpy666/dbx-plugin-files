@@ -199,6 +199,7 @@ fn bench_load_history_hydration_cost_200_records() {
                     error: None,
                     started_at: None,
                     finished_at: None,
+                    local_path: None,
                 })
                 .unwrap();
         }

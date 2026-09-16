@@ -22,6 +22,8 @@ type DbxPluginEvent = DbxPluginBackendEvent | DbxPluginEnvironmentEvent;
 
 interface DbxPluginFileTransferApi {
   pick(options?: { accept?: string; multiple?: boolean }): Promise<{ files: Array<{ handleId: string; name: string; size: number; contentType: string }> }>;
+  /** Optional native directory picker; older hosts simply omit it. */
+  pickDirectory?: () => Promise<string | { path: string } | undefined>;
   read(handleId: string, offset: number, length?: number): Promise<{ dataBase64: string; length: number; eof: boolean }>;
   beginSave(options: { name: string; contentType?: string; size?: number }): Promise<{ handleId: string; chunkBytes: number }>;
   write(handleId: string, offset: number, data: Uint8Array | ArrayBuffer | string): Promise<{ written: number; nextOffset: number }>;

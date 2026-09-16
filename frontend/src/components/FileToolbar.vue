@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { Columns2, Download, FolderPlus, Gauge, ScrollText, Trash2, Upload, Plug } from "@lucide/vue";
+import { Columns2, Download, FolderPlus, Gauge, ScrollText, Settings, Trash2, Upload, Plug } from "@lucide/vue";
 
 // 全局动作栏：路径/面包屑/过滤等栏内控件已下沉到各栏 wb-pane-header
 // （双栏对称性修复），这里只承载跨栏的全局操作。
@@ -9,7 +9,7 @@ const props = defineProps<{
   busy: boolean;
   hasSelection: boolean;
   dockOpen: boolean;
-  dockTab: "transfers" | "audit" | "connection";
+  dockTab: "transfers" | "audit" | "connection" | "settings";
   dualPane: boolean;
   /** 顶栏 identity（对标 ssh 工具栏左侧）：连接名/色条/只读徽章 + 状态 pill。 */
   connectionName: string;
@@ -25,7 +25,7 @@ const emit = defineEmits<{
   (event: "upload", files: File[] | null): void;
   (event: "download"): void;
   (event: "delete"): void;
-  (event: "toggle-dock", tab: "transfers" | "audit" | "connection"): void;
+  (event: "toggle-dock", tab: "transfers" | "audit" | "connection" | "settings"): void;
   (event: "toggle-dual-pane"): void;
 }>();
 
@@ -52,7 +52,7 @@ function onPicked(event: Event) {
 </script>
 
 <template>
-  <header class="wb-toolbar">
+  <header class="wb-toolbar" @contextmenu.prevent>
     <div class="wb-identity">
       <span v-if="connectionColor" class="wb-connection-color" :style="{ background: connectionColor }" />
       <strong :title="connectionName">{{ connectionName }}</strong>
@@ -70,6 +70,7 @@ function onPicked(event: Event) {
       <button class="wb-icon-button wb-icon-neutral" v-tip="t('transfers')" :class="{ 'is-active': dockOpen && dockTab === 'transfers' }" @click="emit('toggle-dock', 'transfers')"><Gauge /></button>
       <button class="wb-icon-button wb-icon-neutral" v-tip="t('auditPanel')" :class="{ 'is-active': dockOpen && dockTab === 'audit' }" @click="emit('toggle-dock', 'audit')"><ScrollText /></button>
       <button class="wb-icon-button wb-icon-neutral" v-tip="t('connectionPanel')" :class="{ 'is-active': dockOpen && dockTab === 'connection' }" @click="emit('toggle-dock', 'connection')"><Plug /></button>
+      <button class="wb-icon-button wb-icon-neutral" v-tip="t('settingsPanel')" :class="{ 'is-active': dockOpen && dockTab === 'settings' }" @click="emit('toggle-dock', 'settings')"><Settings /></button>
     </div>
   </header>
 </template>

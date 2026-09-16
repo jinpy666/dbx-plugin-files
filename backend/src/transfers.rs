@@ -19,6 +19,7 @@
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -99,6 +100,10 @@ pub struct TransferJob {
     /// Unix epoch millis.
     pub started_at: Option<u64>,
     pub finished_at: Option<u64>,
+    /// 本机落盘路径：仅 saveToLocal 完成的下载行携带；面板据此提供
+    /// reveal/open（`files/local/reveal|open` 白名单校验的唯一数据源）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_path: Option<String>,
 }
 
 /// What triggered a dir-table job. Pure display/routing metadata: the engine
@@ -173,9 +178,12 @@ struct UploadSlot {
 struct DownloadSlot {
     connection_id: String,
     remote_path: String,
-    #[allow(dead_code)]
+    /// start 时 stat 的期望字节数：finish 时校验暂存文件大小（短读判失败）。
     size: u64,
     cancel: Arc<AtomicBool>,
+    /// saveToLocal 时的暂存文件（`<final>.part`）：pump 逐块追加，finish 时
+    /// 原子改名为最终落盘路径（防碰撞命名在 finish 时决定，失败不占名字）。
+    staging: Option<PathBuf>,
 }
 
 /// Progress throttle: emit when >= 200 ms elapsed OR >= 1% fraction changed;
@@ -311,6 +319,7 @@ impl Inner {
             error: job.error.clone(),
             started_at: job.started_at,
             finished_at: job.finished_at,
+            local_path: job.local_path.clone(),
         };
         {
             let mut cache = self
@@ -416,6 +425,7 @@ impl JobTable {
             error: None,
             started_at: Some(now),
             finished_at: None,
+            local_path: None,
         };
         self.inner
             .jobs
@@ -617,11 +627,18 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
     /// pump task that pushes `files/download/{taskId}` binary frames
     /// (8-byte BE offset + <= 256 KiB payload, sidecar → host direction) via
     /// `emitter.binary`. The pump honours cancellation.
+    ///
+    /// `save_to_local`（对标 ssh 插件）：桌面端 sidecar 在推帧的同时把字节
+    /// 追加写入 `<下载目录>/<name>.part` 暂存文件；`finish_download` 时原子
+    /// 改名为最终路径并把 `localPath` 记入历史，供面板 reveal/open。最终的
+    /// 防碰撞命名在 finish 时决定，失败/取消的传输永不占用目标文件名。
     pub async fn start_download(
         &self,
         connection: &StoredConnection,
         operator: &opendal::Operator,
         remote_path: &str,
+        save_to_local: bool,
+        download_dir: Option<&str>,
         emitter: &PluginEmitter,
     ) -> Result<(String, u64), String> {
         let (reader, size) = slot::open_download_reader(operator, remote_path).await?;
@@ -638,12 +655,35 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
             error: None,
             started_at: Some(now),
             finished_at: None,
+            local_path: None,
         };
         self.inner
             .jobs
             .lock()
             .await
             .insert(task_id.clone(), job.clone());
+        let staging = if save_to_local {
+            let base = crate::local_downloads::downloads_base_dir(
+                download_dir,
+                |key| std::env::var_os(key),
+                &Store::default_dir(),
+            );
+            Some(base.join(format!(
+                "{}.part",
+                crate::local_downloads::sanitize_file_name(remote_file_name(remote_path))
+            )))
+        } else {
+            None
+        };
+        if let Some(staging) = &staging {
+            if let Some(parent) = staging.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|error| format!("Failed to create download dir: {error}"))?;
+            }
+            // 预创建暂存文件，目录不可写在这里就失败（而不是写完一个块后）。
+            std::fs::File::create(staging)
+                .map_err(|error| format!("Failed to create staging file: {error}"))?;
+        }
         let cancel = Arc::new(AtomicBool::new(false));
         self.inner.downloads.lock().await.insert(
             task_id.clone(),
@@ -652,6 +692,7 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
                 remote_path: remote_path.to_string(),
                 size,
                 cancel: cancel.clone(),
+                staging: staging.clone(),
             },
         );
         emit_job_progress(emitter, &job);
@@ -662,27 +703,80 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
             size,
             connection.id.clone(),
             cancel,
+            staging,
             emitter.clone(),
         ));
         Ok((task_id, size))
     }
 
     /// `files/download/finish` (§8.3): releases the reader and marks the job
-    /// completed. Safe to call twice (idempotent).
+    /// completed. Safe to call twice (idempotent). With `saveToLocal`, the
+    /// staging `.part` file is renamed to its final (collision-free) name and
+    /// the resulting path is returned as `localPath` (also recorded into the
+    /// persisted history row via `complete_job` → `record_history`).
     pub async fn finish_download(
         &self,
         task_id: &str,
         emitter: &PluginEmitter,
-    ) -> Result<(), String> {
+    ) -> Result<Option<String>, String> {
         let slot = self.inner.downloads.lock().await.remove(task_id);
+        let had_slot = slot.is_some();
+        let staging = slot.as_ref().and_then(|slot| slot.staging.clone());
+        let expected_size = slot.as_ref().map(|slot| slot.size);
+        let mut local_path = None;
+        if let Some(staging) = staging {
+            // saveToLocal：pump 已写完全部字节并保持 running，这里改名落
+            // 盘。暂存字节数必须与 start 时 stat 的 size 一致——短读（远
+            // 端文件比 stat 小）在这里判失败，不落半截文件进历史。
+            let promoted = Self::promote_staging(&staging, expected_size.unwrap_or(0));
+            match promoted {
+                Ok(path) => {
+                    if let Some(job) = self.inner.jobs.lock().await.get_mut(task_id) {
+                        job.local_path = Some(path.clone());
+                    }
+                    local_path = Some(path);
+                }
+                Err(error) => {
+                    let _ = std::fs::remove_file(&staging);
+                    self.inner
+                        .complete_job(task_id, JobStatus::Failed, Some(error.clone()), emitter)
+                        .await;
+                    return Err(error);
+                }
+            }
+        }
         let transitioned = self
             .inner
             .complete_job(task_id, JobStatus::Completed, None, emitter)
             .await;
-        if slot.is_none() && !transitioned && !self.inner.job_exists(task_id).await {
+        if !had_slot && !transitioned && !self.inner.job_exists(task_id).await {
             return Err(format!("Download task '{task_id}' was not found"));
         }
-        Ok(())
+        Ok(local_path)
+    }
+
+    /// Renames the finished `.part` staging file to its final collision-free
+    /// name (decided here, at finish time, so a failed transfer never
+    /// reserves a name) after verifying the staged byte count matches `size`.
+    fn promote_staging(staging: &std::path::Path, size: u64) -> Result<String, String> {
+        let staged = std::fs::metadata(staging)
+            .map_err(|error| format!("Failed to stat staging file: {error}"))?
+            .len();
+        if staged != size {
+            return Err(format!(
+                "Download ended short: {staged} of {size} bytes were received"
+            ));
+        }
+        let base = staging.parent().unwrap_or(std::path::Path::new("."));
+        let name = staging
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_suffix(".part"))
+            .unwrap_or("download");
+        let final_path = crate::local_downloads::pick_download_path(base, name);
+        std::fs::rename(staging, &final_path)
+            .map_err(|error| format!("Failed to finalize download: {error}"))?;
+        Ok(final_path.to_string_lossy().to_string())
     }
 
     /// `files/transfer/cancel` (§8.3): cancels a single-file job (`taskId`)
@@ -768,6 +862,7 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
                 error: record.error,
                 started_at: record.started_at,
                 finished_at: record.finished_at,
+                local_path: record.local_path,
             });
         }
         Ok(result)
@@ -859,6 +954,52 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
             }
         }
         removed += store.clear_transfers(connection_id)? as u64;
+        Ok(removed)
+    }
+
+    /// `files/transfers/delete`（传输面板单条删除）：按 taskId 移除一条已
+    /// 结束的传输记录。三个历史面一起清（单文件 job 表、目录 job 表、持久化
+    /// transfers.json），queued/running 的活动任务拒绝删除。返回实际移除的
+    /// 面数（0 = 未知 id，前端按失败提示）。
+    pub async fn delete_record(
+        &self,
+        store: &crate::store::Store,
+        task_id: &str,
+    ) -> Result<u64, String> {
+        let mut removed: u64 = 0;
+        {
+            let mut jobs = self.inner.jobs.lock().await;
+            if let Some(job) = jobs.get(task_id) {
+                if !job.status.is_terminal() {
+                    return Err("Transfer is still in progress; cancel it first".to_string());
+                }
+                jobs.remove(task_id);
+                removed += 1;
+            }
+        }
+        {
+            let mut dir_jobs = self.inner.dir_jobs.lock().await;
+            if let Some(job) = dir_jobs.get(task_id) {
+                if !job.status.is_terminal() {
+                    return Err("Transfer is still in progress; cancel it first".to_string());
+                }
+                dir_jobs.remove(task_id);
+                removed += 1;
+            }
+        }
+        {
+            let mut cache = self
+                .inner
+                .history
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let before = cache.len();
+            cache.retain(|record| record.task_id != task_id);
+            removed += (before - cache.len()) as u64;
+        }
+        if store.delete_transfer(task_id)? {
+            removed += 1;
+        }
         Ok(removed)
     }
 
@@ -1218,6 +1359,7 @@ fn validate_dir_job_gates(target: &StoredConnection, sync: bool) -> Result<(), S
 /// Download pump (§8.3): pushes the whole file through the binary channel in
 /// `TRANSFER_CHUNK_SIZE` slices, FIFO per connection, capped by the global
 /// semaphore. Honors the cooperative cancel flag between chunks.
+#[allow(clippy::too_many_arguments)]
 async fn download_pump(
     inner: Arc<Inner>,
     task_id: String,
@@ -1225,6 +1367,7 @@ async fn download_pump(
     size: u64,
     connection_id: String,
     cancel: Arc<AtomicBool>,
+    staging: Option<PathBuf>,
     emitter: PluginEmitter,
 ) {
     // Per-connection FIFO, then the global cap (§7). Every spawned job
@@ -1235,6 +1378,9 @@ async fn download_pump(
         return;
     };
     if cancel.load(Ordering::Acquire) {
+        if let Some(staging) = &staging {
+            let _ = std::fs::remove_file(staging);
+        }
         inner
             .complete_job(&task_id, JobStatus::Canceled, None, &emitter)
             .await;
@@ -1243,10 +1389,32 @@ async fn download_pump(
     inner.mark_running(&task_id).await;
     emit_running(&emitter, &task_id);
     let channel = format!("files/download/{task_id}");
+    // saveToLocal：暂存文件在 start 时已预创建，这里以追加模式持有句柄；
+    // 写盘失败等同传输失败（清暂存 + Failed），不静默丢块。
+    let mut sink = match &staging {
+        Some(staging) => match std::fs::OpenOptions::new().append(true).open(staging) {
+            Ok(file) => Some(file),
+            Err(error) => {
+                inner
+                    .complete_job(
+                        &task_id,
+                        JobStatus::Failed,
+                        Some(format!("Failed to open staging file: {error}")),
+                        &emitter,
+                    )
+                    .await;
+                return;
+            }
+        },
+        None => None,
+    };
     let mut offset = 0u64;
     let mut throttle = Throttle::default();
     while offset < size {
         if cancel.load(Ordering::Acquire) {
+            if let Some(staging) = &staging {
+                let _ = std::fs::remove_file(staging);
+            }
             inner
                 .complete_job(&task_id, JobStatus::Canceled, None, &emitter)
                 .await;
@@ -1260,6 +1428,9 @@ async fn download_pump(
         .await
         {
             Err(error) => {
+                if let Some(staging) = &staging {
+                    let _ = std::fs::remove_file(staging);
+                }
                 inner
                     .complete_job(&task_id, JobStatus::Failed, Some(error), &emitter)
                     .await;
@@ -1267,8 +1438,24 @@ async fn download_pump(
             }
             Ok(bytes) if bytes.is_empty() => break, // backend file shorter than stat
             Ok(bytes) => {
+                if let Some(sink) = sink.as_mut() {
+                    use std::io::Write;
+                    if let Err(error) = sink.write_all(&bytes) {
+                        if let Some(staging) = &staging {
+                            let _ = std::fs::remove_file(staging);
+                        }
+                        let detail = format!("Failed to write staging file: {error}");
+                        inner
+                            .complete_job(&task_id, JobStatus::Failed, Some(detail), &emitter)
+                            .await;
+                        return;
+                    }
+                }
                 let payload = slot::frame(offset, &bytes);
                 if let Err(error) = emitter.binary(&channel, &payload) {
+                    if let Some(staging) = &staging {
+                        let _ = std::fs::remove_file(staging);
+                    }
                     let detail = format!("Failed to push download frame: {error:?}");
                     inner
                         .complete_job(&task_id, JobStatus::Failed, Some(detail), &emitter)
@@ -1285,9 +1472,24 @@ async fn download_pump(
             }
         }
     }
+    if staging.is_some() {
+        // saveToLocal：终态由 `finish_download` 在改名落盘后统一落（Completed
+        // + localPath 进历史）。这里保持 running——若前端从不调 finish，任务
+        // 以 running 留在面板，与「未确认完成」的真实语义一致。
+        return;
+    }
     inner
         .complete_job(&task_id, JobStatus::Completed, None, &emitter)
         .await;
+}
+
+/// Remote path → display/download file name: last non-empty path segment
+/// (both separators accepted; remote backends use `/`).
+fn remote_file_name(remote_path: &str) -> &str {
+    remote_path
+        .rsplit(['/', '\\'])
+        .find(|segment| !segment.is_empty())
+        .unwrap_or(remote_path)
 }
 
 /// syncDir/copyDir traversal (§7) and the X-A degraded copy/move job (§8.2):
@@ -2133,6 +2335,7 @@ mod tests {
             error: error.map(String::from),
             started_at: None,
             finished_at: Some(1),
+            local_path: None,
         };
         assert_eq!(
             JobTable::terminal_finish_result(&build(JobStatus::Failed, Some("Upload write failed: boom"))),
@@ -2245,6 +2448,7 @@ mod tests {
                     error: None,
                     started_at: None,
                     finished_at: None,
+                    local_path: None,
                 })
                 .unwrap();
 
@@ -2267,6 +2471,7 @@ mod tests {
                         error: None,
                         started_at: None,
                         finished_at: None,
+                        local_path: None,
                     },
                 );
             // record the same id in history to prove the live map wins
@@ -2282,6 +2487,7 @@ mod tests {
                     error: None,
                     started_at: None,
                     finished_at: None,
+                    local_path: None,
                 })
                 .unwrap();
 
@@ -2377,6 +2583,7 @@ mod tests {
                         error: None,
                         started_at: None,
                         finished_at: None,
+                        local_path: None,
                     },
                 );
             let mixed = table.list_merged(&store, Some("c1")).await.unwrap();
@@ -2406,6 +2613,7 @@ mod tests {
                 error: None,
                 started_at: None,
                 finished_at: None,
+                local_path: None,
             };
             {
                 let mut jobs = table.inner.jobs.lock().await;
@@ -2451,6 +2659,7 @@ mod tests {
                         error: None,
                         started_at: None,
                         finished_at: None,
+                        local_path: None,
                     })
                     .unwrap();
             }
@@ -2478,6 +2687,101 @@ mod tests {
             let remaining = table.inner.jobs.lock().await;
             assert_eq!(remaining.len(), 1, "running job survives: {remaining:?}");
             assert_eq!(remaining["run-1"].status, JobStatus::Running);
+        });
+    }
+
+    /// saveToLocal：暂存 `.part` 改名为最终路径；字节数与 stat 不符（短读）
+    /// 判失败且不产出目标文件。改名决策发生在 finish 时（失败不占名字）。
+    #[test]
+    fn promote_staging_renames_complete_and_rejects_short_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let staging = dir.path().join("log.txt.part");
+        std::fs::write(&staging, b"0123456789").unwrap();
+        let final_path = JobTable::promote_staging(&staging, 10).unwrap();
+        assert_eq!(final_path, dir.path().join("log.txt").to_string_lossy());
+        assert!(dir.path().join("log.txt").is_file());
+        assert!(!staging.exists(), "staging must be gone after rename");
+
+        // Short read: staged bytes != expected size.
+        let staging = dir.path().join("short.bin.part");
+        std::fs::write(&staging, b"0123").unwrap();
+        let error = JobTable::promote_staging(&staging, 10).unwrap_err();
+        assert!(error.contains("ended short"), "unexpected error: {error}");
+        assert!(!dir.path().join("short.bin").exists());
+    }
+
+    #[test]
+    fn remote_file_name_takes_last_segment() {
+        assert_eq!(remote_file_name("/remote/dir/report.tar.gz"), "report.tar.gz");
+        assert_eq!(remote_file_name("/remote/dir/"), "dir");
+        assert_eq!(remote_file_name("plain.txt"), "plain.txt");
+        assert_eq!(remote_file_name("a\\b\\c.bin"), "c.bin");
+    }
+
+    /// `files/transfers/delete`（单条删除）：已结束记录三面齐删（单文件 job
+    /// 表、目录 job 表、持久化 transfers.json）；活动任务拒绝。
+    #[test]
+    fn delete_record_drops_terminal_and_rejects_active() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::new(dir.path().to_path_buf());
+            let table = JobTable::new();
+            let mk_job = |task_id: &str, status: JobStatus| TransferJob {
+                task_id: task_id.into(),
+                connection_id: "c1".into(),
+                kind: TransferKind::Download,
+                remote_path: format!("/{task_id}.bin"),
+                total_bytes: Some(5),
+                transferred_bytes: 5,
+                status,
+                error: None,
+                started_at: None,
+                finished_at: None,
+                local_path: Some(format!("/Downloads/{task_id}.bin")),
+            };
+            {
+                let mut jobs = table.inner.jobs.lock().await;
+                jobs.insert("done-1".into(), mk_job("done-1", JobStatus::Completed));
+                jobs.insert("run-1".into(), mk_job("run-1", JobStatus::Running));
+            }
+            store
+                .record_transfer(store::TransferRecord {
+                    task_id: "hist-1".into(),
+                    connection_id: "c1".into(),
+                    kind: "download".into(),
+                    remote_path: "/hist-1.bin".into(),
+                    total_bytes: Some(5),
+                    transferred_bytes: 5,
+                    status: "completed".into(),
+                    error: None,
+                    started_at: None,
+                    finished_at: None,
+                    local_path: Some("/Downloads/hist-1.bin".into()),
+                })
+                .unwrap();
+
+            // Active job is refused.
+            let refused = table.delete_record(&store, "run-1").await;
+            assert!(refused.is_err(), "running job must not be deletable");
+
+            // Terminal in-memory job is dropped from the live table.
+            assert_eq!(table.delete_record(&store, "done-1").await.unwrap(), 1);
+            assert!(!table.inner.jobs.lock().await.contains_key("done-1"));
+
+            // Persisted history row is dropped from disk and the mirror.
+            assert_eq!(table.delete_record(&store, "hist-1").await.unwrap(), 1);
+            assert!(store.load_transfers().iter().all(|record| record.task_id != "hist-1"));
+            assert!(table
+                .inner
+                .history
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|record| record.task_id != "hist-1"));
+
+            // Unknown id reports zero removals.
+            assert_eq!(table.delete_record(&store, "ghost").await.unwrap(), 0);
         });
     }
 }

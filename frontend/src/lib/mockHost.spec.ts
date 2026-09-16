@@ -61,6 +61,16 @@ describe("mockHost query and lifecycle contracts", () => {
 
   const connection = (id: string) => ({ connection: { id, external_config: { protocol: "fs", root: "/mock" } } });
 
+  it("records failed upload completion as failed rather than canceled", async () => {
+    const api = await setup();
+    const { taskId } = await api.invoke<{ taskId: string }>("files/upload/start", { connectionId: "mock-conn", remotePath: "/error/.~超市电费.xlsx", size: 0 });
+    await expect(api.invoke("files/upload/finish", { taskId })).rejects.toThrow("mock backend failure");
+    expect(await api.invoke("files/transfer/status", { jobId: taskId })).toMatchObject({
+      job: { status: "failed", error: expect.stringContaining("mock backend failure") },
+    });
+    await expect(api.invoke("files/transfer/cancel", { taskId })).rejects.toThrow("Transfer task was not found");
+  });
+
   it("attributes local writes and upload completion to their original connection", async () => {
     const api = await setup();
     await api.invoke("files/mkdir", { path: "/remote" });

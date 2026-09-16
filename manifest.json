@@ -3,7 +3,7 @@
   "manifest_version": 1,
   "id": "io.dbx.files",
   "name": "Files Studio",
-  "version": "0.1.58",
+  "version": "0.1.59",
   "publisher": "jinpy",
   "description": "A unified file workspace for local folders, S3-compatible storage, WebDAV, FTP, SFTP, SMB/CIFS, and other OpenDAL services.",
   "source": "https://github.com/jinpy666/dbx-plugin-files",

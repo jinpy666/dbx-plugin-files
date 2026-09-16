@@ -29,6 +29,7 @@ import {
 import FileTable from "./components/FileTable.vue";
 import FileToolbar from "./components/FileToolbar.vue";
 import TransferPanel from "./components/TransferPanel.vue";
+import SettingsPanel from "./components/SettingsPanel.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
 import AuditPanel from "./components/AuditPanel.vue";
 import PreviewPane from "./components/PreviewPane.vue";
@@ -55,7 +56,7 @@ import { createTransferTracker, isActive, isRetryableKind, type TransferJob, typ
 import { inspect, type DangerousHit } from "./lib/dangerousPaths";
 import { errorBannerOf, i18nTextOf, workbenchMessage, type ErrorBannerState, type I18nInput, type I18nText } from "./lib/i18n";
 import { isArchivePath } from "./lib/archive";
-import { loadUiPrefs, saveUiPrefs } from "./lib/prefs";
+import { loadDownloadDir, loadUiPrefs, persistDownloadDir, saveUiPrefs } from "./lib/prefs";
 import { sortEntries, toggleSortState, type SortColumn, type SortState } from "./lib/sorting";
 import { filterEntries } from "./lib/searchFilter";
 import { isLargeDirectory } from "./lib/largeDir";
@@ -141,9 +142,11 @@ const initialized = ref(false);
 // ---- 目标栏（右栏，A-FILES ①）---------------------------------------------
 // 双栏为会话内开关（工具栏可切），不再持久化：每次打开默认只开远程单栏。
 const dualPane = ref(false);
-// 侧栏形态偏好：tree/quick tab（默认 tree）与收起状态，随布局偏好持久化。
-const sideTab = ref<"tree" | "quick">(prefs.sideTab);
-const sideCollapsed = ref(prefs.sideCollapsed);
+// 左右侧栏状态完全独立；本地左栏默认收藏（quick），右栏默认目录树。
+const leftSideTab = ref<"tree" | "quick">(prefs.leftSideTab);
+const rightSideTab = ref<"tree" | "quick">(prefs.rightSideTab);
+const leftSideCollapsed = ref(prefs.leftSideCollapsed);
+const rightSideCollapsed = ref(prefs.rightSideCollapsed);
 const rightPath = ref("/");
 const rightEntries = ref<FileEntry[]>([]);
 const rightSelection = ref<string[]>([]);
@@ -251,9 +254,9 @@ function navigateQuickPath(side: PaneSide, targetPath: string) {
   else void loadRightDirectory(targetPath).catch(() => undefined);
 }
 
-// 右侧 dock（transfers/audit/connection）不持久化，默认收起。
+// 右侧 dock（transfers/audit/connection/settings）不持久化，默认收起。
 const dockOpen = ref(false);
-const dockTab = ref<"transfers" | "audit" | "connection">("transfers");
+const dockTab = ref<"transfers" | "audit" | "connection" | "settings">("transfers");
 const auditRef = ref<InstanceType<typeof AuditPanel>>();
 
 const previewPath = ref<string | null>(null);
@@ -481,14 +484,23 @@ function toolbarSelectionEntries(side: PaneSide): FileEntry[] {
   return pool.filter((entry) => sel.includes(entry.path));
 }
 
-// 双栏不持久化（会话内开关），布局偏好只存 sort/sideTab/sideCollapsed。
-watch([sort, sideTab, sideCollapsed], () => {
-  saveUiPrefs({ sort: sort.value, sideTab: sideTab.value, sideCollapsed: sideCollapsed.value });
+// 双栏开关不持久化；两侧侧栏状态分别持久化，切换一侧不影响另一侧。
+watch([sort, leftSideTab, rightSideTab, leftSideCollapsed, rightSideCollapsed], () => {
+  saveUiPrefs({
+    sort: sort.value,
+    leftSideTab: leftSideTab.value,
+    rightSideTab: rightSideTab.value,
+    leftSideCollapsed: leftSideCollapsed.value,
+    rightSideCollapsed: rightSideCollapsed.value,
+  });
 }, { deep: true });
 
-// 切到 tree tab 时懒加载根目录子项（首次进入/从 quick 切回均适用）。
-watch(sideTab, (tab) => {
-  if (tab === "tree") ensureTreeRoots();
+// 任一侧切到 tree tab 时懒加载对应根目录。
+watch(leftSideTab, (tab) => {
+  if (tab === "tree") void expandTreeNode("left", leftTree.value);
+});
+watch(rightSideTab, (tab) => {
+  if (tab === "tree") void expandTreeNode("right", rightTree.value);
 });
 
 // 双栏切换：开启时左栏默认本地（quickPaths 到位后若仍在根目录则落到主目录，
@@ -501,8 +513,10 @@ async function enterLocalPaneIfAtRoot() {
 
 watch(dualPane, async (on) => {
   if (on) {
-    // 两栏独立首载，远端不等待本地 quick paths 探测。
+    // 两栏独立首载，远端不等待本地 quick paths 探测；右栏默认 tree
+    // 不会触发 rightSideTab watcher（值没有发生变化），所以这里显式首展开。
     void loadRightDirectory().catch(() => undefined);
+    if (rightSideTab.value === "tree") void expandTreeNode("right", rightTree.value);
     await loadDirectory("/").catch(() => undefined);
     await loadQuickPaths("left");
     await enterLocalPaneIfAtRoot();
@@ -520,6 +534,7 @@ watch(targetConnectionId, () => {
 });
 
 let noticeTimer = 0;
+let errorTimer = 0;
 let pollTimer = 0;
 let pollingDisabled = false;
 let unsubscribeEvent: (() => void) | undefined;
@@ -536,20 +551,24 @@ function showNotice(message: I18nInput) {
 
 function showError(cause: unknown, side: PaneSide | "global" = "global") {
   errorSide.value = side;
+  notice.value = "";
+  window.clearTimeout(noticeTimer);
+  window.clearTimeout(errorTimer);
   // 组件 emit 的 key + 参数错误（CustomConfigEditor）：整条横幅存 I18nText 惰性求值。
   if (cause && typeof cause === "object" && "key" in (cause as Record<string, unknown>)) {
     error.value = { kind: "i18n", text: cause as I18nText };
-    return;
+  } else {
+    const message = errorMessage(cause);
+    if (isMethodMissing(cause)) {
+      const method = cause instanceof Error && "method" in cause ? String((cause as { method?: string }).method) : "";
+      error.value = { kind: "i18n", text: { key: "featureMissing", values: { method } }, detail: message };
+    } else {
+      // P2-1：已知错误类别映射七语文案；未知错误原文透传（横幅 title 保留原文）。
+      // friendlyRaw 在渲染时重跑 friendlyError，横幅存活期间切 locale 内层同步跟随。
+      error.value = { kind: "failure", detail: message, friendlyRaw: message };
+    }
   }
-  const message = errorMessage(cause);
-  if (isMethodMissing(cause)) {
-    const method = cause instanceof Error && "method" in cause ? String((cause as { method?: string }).method) : "";
-    error.value = { kind: "i18n", text: { key: "featureMissing", values: { method } }, detail: message };
-    return;
-  }
-  // P2-1：已知错误类别映射七语文案；未知错误原文透传（横幅 title 保留原文）。
-  // friendlyRaw 在渲染时重跑 friendlyError，横幅存活期间切 locale 内层同步跟随。
-  error.value = { kind: "failure", detail: message, friendlyRaw: message };
+  errorTimer = window.setTimeout(() => (error.value = ""), 3000);
 }
 
 /** 错误横幅上的重试（④ UI 三态：错误可恢复）。P2-4：按出错栏位重放——
@@ -601,12 +620,20 @@ function handleEvent(event: DbxPluginEvent) {
     return;
   }
   if (event.method === "files/transfer/progress") {
-    const job = tracker.onProgress(event.params as Parameters<typeof tracker.onProgress>[0]);
+    const progress = event.params as Parameters<typeof tracker.onProgress>[0];
+    const job = tracker.onProgress(progress);
+    // 失败事件必须给出全局错误条；部分宿主只返回 failed 状态而不带 error，
+    // 仍给出可操作的兜底提示，避免移动失败时只在传输面板里静默结束。
+    if (progress.state === "failed") showError(progress.error ? new Error(progress.error) : { key: "transferFailed" });
     // P-FILES ①b：transport=job 的 copy/move/rename 在终态后自动刷新目录。
     if (job && awaitingRefresh.has(job.jobId) && !isActive(job.state)) {
       awaitingRefresh.delete(job.jobId);
-      void loadDirectory().catch(() => undefined);
-      if (dualPane.value) void loadRightDirectory().catch(() => undefined);
+      // 失败/取消时不要用一次成功的目录刷新把错误条清掉；只有真正完成
+      // 的 copy/move/rename 才需要同步两侧目录。
+      if (job.state === "completed") {
+        void loadDirectory().catch(() => undefined);
+        if (dualPane.value) void loadRightDirectory().catch(() => undefined);
+      }
       refreshAuditPanel();
     }
   }
@@ -665,7 +692,7 @@ const uiIntentHandlers = {
       uiIntent.reportSnapshot({ panel: "browse", path: path.value, count: entries.value.length });
       return { status: "applied", summary: { panel } };
     }
-    if (panel === "transfers" || panel === "audit") {
+    if (panel === "transfers" || panel === "audit" || panel === "settings") {
       dockOpen.value = true;
       dockTab.value = panel;
       if (panel === "audit") auditRef.value?.refresh();
@@ -1254,7 +1281,8 @@ async function onConfirm() {
           sourcePath: entry.path,
           targetPath,
         });
-        const result = await call<{ success: boolean; transport?: string; jobId?: string | null }>(retry.method, retry.params);
+        const result = await call<{ success: boolean; error?: string; transport?: string; jobId?: string | null }>(retry.method, retry.params);
+        if (result.success === false) throw new Error(result.error || t("transferFailed"));
         if (result.transport === "job" && result.jobId) {
           trackSidecarJob(result.jobId, kind, `${entry.path} → ${targetPath}`, retry);
           jobStarted = true;
@@ -1427,7 +1455,8 @@ async function executePaneTransfer(from: PaneSide, move: boolean, list: FileEntr
         targetPath: joinPath(destPath, item.name),
       };
       const method = `files/${move ? "move" : "copy"}`;
-      const result = await call<{ transport?: string; jobId?: string | null }>(method, params);
+      const result = await call<{ success?: boolean; error?: string; transport?: string; jobId?: string | null }>(method, params);
+      if (result.success === false) throw new Error(result.error || t("transferFailed"));
       if (result.transport === "job" && result.jobId) {
         trackSidecarJob(result.jobId, move ? "move" : "copy", `${item.path} → ${String(params.targetPath)}`, { method, params });
       }
@@ -1548,17 +1577,22 @@ async function uploadSource(name: string, size: number, readChunk: (offset: numb
 }
 
 /** 上传后刷新目标栏并按目标路径提示（P1-5）：双栏刷新右栏，单栏刷新左栏。 */
-async function afterUpload(count: number, target: UploadTarget) {
+async function afterUpload(count: number, target: UploadTarget, hadFailure = false) {
+  // 单栏刷新成功时 loadDirectory 会清理 error；保存本批次最后一个上传错误，
+  // 避免权限失败在目录刷新后变成“无提示”。失败批次也不显示成功 notice。
+  const uploadError = hadFailure ? error.value : "";
   if (dualPane.value) await loadRightDirectory().catch(() => undefined);
   else await loadDirectory().catch(() => undefined);
+  if (hadFailure && uploadError) error.value = uploadError;
   refreshAuditPanel();
-  if (count) showNotice(t("uploaded", { count, path: target.path }));
+  if (count && !hadFailure) showNotice(t("uploaded", { count, path: target.path }));
 }
 
 async function uploadLocalFiles(files: readonly File[], target: UploadTarget) {
   // issue#6-3：只统计真正成功的文件数。此前无条件按 files.length 提示
   // 「已上传 N 个」，目标目录不可写时逐文件报错后仍被成功提示覆盖（假成功）。
   let uploaded = 0;
+  let hadFailure = false;
   for (const file of files) {
     try {
       await uploadSource(file.name, file.size, async (offset, length) =>
@@ -1569,10 +1603,11 @@ async function uploadLocalFiles(files: readonly File[], target: UploadTarget) {
     } catch (cause) {
       // R5-P2-4：用户取消当前文件后不再继续上传剩余文件（也不补「已上传 N 个」）。
       if (cause instanceof TransferCanceled) return;
+      hadFailure = true;
       showError(cause);
     }
   }
-  await afterUpload(uploaded, target);
+  await afterUpload(uploaded, target, hadFailure);
 }
 
 async function uploadHostFiles(files: Array<{ handleId: string; name: string; size: number }>, target: UploadTarget) {
@@ -1580,6 +1615,7 @@ async function uploadHostFiles(files: Array<{ handleId: string; name: string; si
   if (!fileTransfer) return;
   // issue#6-3：同 uploadLocalFiles——成功计数替代「按总数报成功」。
   let uploaded = 0;
+  let hadFailure = false;
   for (const file of files) {
     try {
       await uploadSource(file.name, file.size, async (offset, length) => {
@@ -1591,12 +1627,13 @@ async function uploadHostFiles(files: Array<{ handleId: string; name: string; si
       // R5-P2-4：同 uploadLocalFiles——取消即终止整个批量上传（handle 释放由
       // finally 统一处理）。
       if (cause instanceof TransferCanceled) return;
+      hadFailure = true;
       showError(cause);
     } finally {
       await fileTransfer.cancel(file.handleId).catch(() => undefined);
     }
   }
-  await afterUpload(uploaded, target);
+  await afterUpload(uploaded, target, hadFailure);
 }
 
 async function onUpload(files: File[] | null) {
@@ -1622,8 +1659,19 @@ async function downloadEntry(entry: FileEntry, side: PaneSide = "left", id = sid
   // R5-P2-4：泵级取消标志（cancelTransfer 置位 + releaseFrames 打断帧等待）。
   const cancelFlag = { canceled: false };
   let channel: string | undefined;
+  // 桌面端优先 sidecar 本机落盘：完成的下载保留经过校验的 localPath，
+  // 传输面板才能提供「定位/打开」，历史重开也能恢复。本地落盘不可用
+  // （web/docker）时回退宿主 fileTransfer 保存对话框，再退浏览器下载。
+  const local = await probeLocalCapabilities();
+  const saveToLocal = !!local?.canSaveLocal;
+  const hostTransfer = saveToLocal ? undefined : fileTransfer;
   try {
-    const startParams = { remotePath: entry.path, connectionId: id };
+    const startParams: Record<string, unknown> = { remotePath: entry.path, connectionId: id };
+    if (saveToLocal) {
+      startParams.saveToLocal = true;
+      const downloadDir = saveDirDraft.value.trim();
+      if (downloadDir) startParams.downloadDir = downloadDir;
+    }
     const info = await call<{ taskId: string; size: number; fileName?: string; chunkSize?: number }>("files/download/start", startParams);
     taskId = info.taskId;
     pumpCancelFlags.set(taskId, cancelFlag);
@@ -1643,8 +1691,10 @@ async function downloadEntry(entry: FileEntry, side: PaneSide = "left", id = sid
     });
     // 泵式下载：sidecar 在 start 后自行按 offset 顺序推送
     // files/download/{taskId} 帧（8 字节 BE offset + <=256KiB），前端只收帧。
-    const target = fileTransfer ? await fileTransfer.beginSave({ name: info.fileName ?? entry.name, size }) : undefined;
-    const chunks = target ? undefined : ([] as Uint8Array[]);
+    // saveToLocal 时字节由 sidecar 写盘（前端纯跟进度）；否则宿主 beginSave
+    // 或浏览器 blob 兜底，语义与此前一致。
+    const target = hostTransfer ? await hostTransfer.beginSave({ name: info.fileName ?? entry.name, size }) : undefined;
+    const chunks = saveToLocal ? undefined : target ? undefined : ([] as Uint8Array[]);
     let offset = 0;
     while (offset < size) {
       // R5-P2-4：泵级取消检查点——等待中的帧由 cancelTransfer 的 releaseFrames
@@ -1654,22 +1704,28 @@ async function downloadEntry(entry: FileEntry, side: PaneSide = "left", id = sid
       if (!chunk.data.byteLength) throw new Error("download frame carried no data");
       if (chunks) {
         chunks.push(chunk.data);
+        offset += chunk.data.byteLength;
       } else if (target) {
-        const write = await fileTransfer!.write(target.handleId, chunk.offset, chunk.data);
+        const write = await hostTransfer!.write(target.handleId, chunk.offset, chunk.data);
         offset = Math.max(offset + chunk.data.byteLength, write.nextOffset);
+      } else {
+        // saveToLocal：字节已在 sidecar 侧写入暂存文件，这里只跟进进度。
+        offset += chunk.data.byteLength;
       }
-      if (!target && chunks) offset += chunk.data.byteLength;
       tracker.onProgress({ jobId: taskId, taskId, state: "running", transferred: offset });
     }
+    let localPath: string | undefined;
     if (target) {
-      await fileTransfer!.finish(target.handleId);
+      await hostTransfer!.finish(target.handleId);
     } else if (chunks) {
       saveBrowserDownload(chunks, info.fileName ?? entry.name);
     }
-    await window.dbxPlugin.invoke("files/download/finish", { taskId });
+    const finishResult = await call<{ localPath?: string }>("files/download/finish", { taskId });
+    localPath = finishResult?.localPath;
     releaseFrames(channel);
-    tracker.onProgress({ jobId: taskId, taskId, state: "completed", transferred: size });
-    showNotice(t("downloaded", { name: info.fileName ?? entry.name }));
+    tracker.onProgress({ jobId: taskId, taskId, state: "completed", transferred: size, localPath });
+    if (localPath) showNotice(t("downloadedTo", { name: info.fileName ?? entry.name, path: localPath }));
+    else showNotice(t("downloaded", { name: info.fileName ?? entry.name }));
   } catch (cause) {
     // 下载泵失败同样落终态（此前漏标，job 会永远停在 running）；取消走
     // canceled 终态（无 error 文案、不弹横幅），失败仍落 failed。
@@ -1760,6 +1816,62 @@ async function clearTransferHistory() {
     await call("files/transfers/clear", {});
     tracker.clearFinished();
     showNotice(t("historyCleared"));
+  } catch (cause) {
+    showError(cause);
+  }
+}
+
+/** 单条删除传输记录（对标 ssh 面板 + 新增）：sidecar 三面齐删，本地同步移除。 */
+async function deleteTransferRecord(jobId: string) {
+  try {
+    await call("files/transfers/delete", { taskId: jobId });
+    tracker.remove(jobId);
+    showNotice(t("recordDeleted"));
+  } catch (cause) {
+    showError(cause);
+  }
+}
+
+// —— 下载本机落盘（对标 ssh 插件 local_downloads）———————————————
+
+// canSaveLocal=false（web/docker / 宿主无下载目录）时回退宿主 fileTransfer
+// 保存或浏览器 <a download>。结果按工作台生命周期缓存。
+let localCapabilities: Promise<{ canSaveLocal: boolean; downloadsDir: string } | undefined> | undefined;
+const localDownloadDir = ref("");
+const canSaveLocal = ref(false);
+function probeLocalCapabilities() {
+  localCapabilities ??= window.dbxPlugin
+    .invoke<{ canSaveLocal: boolean; downloadsDir: string }>("files/local/capabilities")
+    .then((result) => {
+      localDownloadDir.value = result.downloadsDir || "";
+      canSaveLocal.value = !!result.canSaveLocal;
+      return result;
+    })
+    .catch(() => undefined);
+  return localCapabilities;
+}
+
+/** 「保存到」偏好（localStorage），空串 = 跟随 sidecar 默认下载目录。 */
+const saveDirDraft = ref(loadDownloadDir());
+function onSaveDirChange(dir: string) {
+  persistDownloadDir(dir);
+  saveDirDraft.value = loadDownloadDir();
+}
+
+// 在文件管理器中定位本机落盘的下载（sidecar 校验过该路径确为本插件记录）。
+async function revealTransferTarget(path: string) {
+  try {
+    await call("files/local/reveal", { path });
+  } catch (cause) {
+    showError(cause);
+  }
+}
+
+// 在系统默认应用中打开已完成的下载；sidecar 会校验路径必须来自本插件的
+// 完成历史，避免把这个按钮变成任意本机路径打开入口。
+async function openTransferTarget(path: string) {
+  try {
+    await call("files/local/open", { path });
   } catch (cause) {
     showError(cause);
   }
@@ -1926,7 +2038,14 @@ function updateHostContext(context: Record<string, unknown>) {
     }
   }
   void loadCapabilities();
-  if (sideTab.value === "tree") ensureTreeRoots();
+  if (leftSideTab.value === "tree") {
+    const tree = leftTree.value;
+    if (!tree.loaded && !tree.loading) void expandTreeNode("left", tree);
+  }
+  if (rightSideTab.value === "tree") {
+    const tree = rightTree.value;
+    if (!tree.loaded && !tree.loading) void expandTreeNode("right", tree);
+  }
   void probeConnections();
   refreshAuditPanel();
 }
@@ -1980,8 +2099,16 @@ async function initialize() {
     if (version === hostContextVersion) {
       if (dualPane.value) await loadRightDirectory("/").catch(() => undefined);
       await loadQuickPaths("left");
-      if (sideTab.value === "tree") ensureTreeRoots();
+      if (leftSideTab.value === "tree") {
+        const tree = leftTree.value;
+        if (!tree.loaded && !tree.loading) void expandTreeNode("left", tree);
+      }
       if (dualPane.value) {
+        if (rightSideTab.value === "tree") {
+          const tree = rightTree.value;
+          if (!tree.loaded && !tree.loading) void expandTreeNode("right", tree);
+        }
+
         await enterLocalPaneIfAtRoot();
         void loadQuickPaths("right");
       }
@@ -2039,6 +2166,8 @@ onMounted(() => {
   document.addEventListener("keydown", onDocumentKeydown);
   window.addEventListener("resize", syncViewportLayout);
   syncViewportLayout();
+  // 本机落盘能力探测（决定下载走 sidecar 落盘还是宿主/浏览器兜底）。
+  void probeLocalCapabilities();
   void initialize().catch((cause) => {
     loading.value = false;
     listingFailed.value = true;
@@ -2051,6 +2180,7 @@ onBeforeUnmount(() => {
   document.removeEventListener("keydown", onDocumentKeydown);
   window.removeEventListener("resize", syncViewportLayout);
   window.clearTimeout(noticeTimer);
+  window.clearTimeout(errorTimer);
   window.clearInterval(pollTimer);
   uiIntent.stop();
   unsubscribeEvent?.();
@@ -2104,14 +2234,14 @@ onBeforeUnmount(() => {
           <!-- 侧栏导航：tree（目录树，默认）/ quick（快捷目录）双 tab，可收起 -->
           <SideNavPanel
             side="left"
-            :tab="sideTab"
-            :collapsed="sideCollapsed"
+            :tab="leftSideTab"
+            :collapsed="leftSideCollapsed"
             :tree-root="leftTree"
             :quick-paths="leftQuickPaths"
             :current-path="path"
             :t="t"
-            @update:tab="sideTab = $event"
-            @update:collapsed="sideCollapsed = $event"
+            @update:tab="leftSideTab = $event"
+            @update:collapsed="leftSideCollapsed = $event"
             @navigate="navigateQuickPath('left', $event)"
             @toggle-node="expandTreeNode('left', $event)"
             @refresh-tree="refreshTree('left')"
@@ -2192,14 +2322,14 @@ onBeforeUnmount(() => {
         <div class="wb-pane-body">
           <SideNavPanel
             side="right"
-            :tab="sideTab"
-            :collapsed="sideCollapsed"
+            :tab="rightSideTab"
+            :collapsed="rightSideCollapsed"
             :tree-root="rightTree"
             :quick-paths="rightQuickPaths"
             :current-path="rightPath"
             :t="t"
-            @update:tab="sideTab = $event"
-            @update:collapsed="sideCollapsed = $event"
+            @update:tab="rightSideTab = $event"
+            @update:collapsed="rightSideCollapsed = $event"
             @navigate="navigateQuickPath('right', $event)"
             @toggle-node="expandTreeNode('right', $event)"
             @refresh-tree="refreshTree('right')"
@@ -2252,14 +2382,34 @@ onBeforeUnmount(() => {
       </section>
 
       <aside v-if="dockOpen" class="wb-dock">
-        <div class="wb-dock-tabs">
+        <div class="wb-dock-tabs" @contextmenu.prevent>
           <button :class="{ 'is-active': dockTab === 'transfers' }" @click="dockTab = 'transfers'">{{ t("transferPanel") }}</button>
           <button :class="{ 'is-active': dockTab === 'audit' }" @click="dockTab = 'audit'">{{ t("auditPanel") }}</button>
           <button :class="{ 'is-active': dockTab === 'connection' }" @click="dockTab = 'connection'">{{ t("connectionPanel") }}</button>
+          <button :class="{ 'is-active': dockTab === 'settings' }" @click="dockTab = 'settings'">{{ t("settingsPanel") }}</button>
         </div>
         <div class="wb-dock-body">
-          <TransferPanel v-if="dockTab === 'transfers'" :jobs="transferJobs" :t="t" :retryable-ids="retryableTransferIds" @cancel="cancelTransfer" @clear-history="clearTransferHistory" @retry="retryTransfer" />
+          <TransferPanel
+            v-if="dockTab === 'transfers'"
+            :jobs="transferJobs"
+            :t="t"
+            :retryable-ids="retryableTransferIds"
+            @cancel="cancelTransfer"
+            @clear-history="clearTransferHistory"
+            @retry="retryTransfer"
+            @delete="deleteTransferRecord"
+            @reveal="revealTransferTarget"
+            @open="openTransferTarget"
+          />
           <AuditPanel v-else-if="dockTab === 'audit'" ref="auditRef" :t="t" />
+          <SettingsPanel
+            v-else-if="dockTab === 'settings'"
+            :t="t"
+            :can-save-local="canSaveLocal"
+            :save-dir="saveDirDraft"
+            :default-save-dir="localDownloadDir"
+            @save-dir="onSaveDirChange"
+          />
           <div v-else style="display: flex; flex-direction: column; gap: 10px">
             <div class="wb-transfer-item">
               <div class="wb-transfer-title"><strong>{{ connectionLabel }}</strong></div>

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { RotateCw, Trash2, X } from "@lucide/vue";
+import { CircleCheck, CircleDashed, CircleX, FolderOpen, FileText, LoaderCircle, RotateCw, Trash2, X } from "@lucide/vue";
 import { formatBytes, formatTime } from "../lib/api";
-import { etaSeconds, formatEta, formatRate, isByteBased, isRetryableKind, percentOf, type TransferJob } from "../lib/transfers";
+import { etaSeconds, formatEta, formatRate, isByteBased, isRetryableKind, percentOf, sortedJobs, splitTransferPath, transferPathLabel, type TransferJob } from "../lib/transfers";
 
 const props = defineProps<{
   jobs: TransferJob[];
@@ -15,20 +15,56 @@ const emit = defineEmits<{
   (event: "cancel", jobId: string): void;
   (event: "clear-history"): void;
   (event: "retry", jobId: string): void;
+  (event: "delete", jobId: string): void;
+  (event: "reveal", path: string): void;
+  (event: "open", path: string): void;
 }>();
 
 const retryable = computed(() => new Set(props.retryableIds ?? []));
+
+const statusIcons = {
+  queued: CircleDashed,
+  running: LoaderCircle,
+  completed: CircleCheck,
+  failed: CircleX,
+  canceled: CircleX,
+} as const;
+
+function statusIcon(job: TransferJob) {
+  return statusIcons[job.state];
+}
+
+function statusLabel(job: TransferJob): string {
+  return stateLabel(job);
+}
 
 /** 失败且可原样重发的历史任务才显示 ↻（kind 可重发 + App 有登记参数）。 */
 function canRetry(job: TransferJob): boolean {
   return job.state === "failed" && isRetryableKind(job.kind) && retryable.value.has(job.jobId);
 }
 
-const active = computed(() => props.jobs.filter((job) => job.state === "queued" || job.state === "running"));
-const history = computed(() => props.jobs.filter((job) => job.state !== "queued" && job.state !== "running"));
+/** 已完成的本机下载才可定位/打开（sidecar 按历史白名单二次校验）。 */
+function canReveal(job: TransferJob): boolean {
+  return !!job.localPath;
+}
+
+const orderedJobs = computed(() => {
+  const jobs = Object.fromEntries(props.jobs.map((job) => [job.jobId, job]));
+  return sortedJobs(jobs);
+});
+const active = computed(() => orderedJobs.value.filter((job) => job.state === "queued" || job.state === "running"));
+const history = computed(() => orderedJobs.value.filter((job) => job.state !== "queued" && job.state !== "running"));
 
 function label(job: TransferJob): string {
+  return transferPathLabel(job.remotePath || job.jobId);
+}
+
+function fullLabel(job: TransferJob): string {
   return job.remotePath || job.jobId;
+}
+
+function pathParts(path: string) {
+  return splitTransferPath(path);
 }
 
 function stateLabel(job: TransferJob): string {
@@ -56,9 +92,8 @@ function speedMeta(job: TransferJob): string {
 }
 
 function timeLabel(job: TransferJob): string {
-  // issue#6-1b：历史时间优先用 sidecar 完成时刻（finishedAt，轮询不覆盖），
-  // 退回事件流写入的 updatedAt——两者都不随本机时钟漂移。
-  return formatTime(new Date(job.finishedAt ?? job.updatedAt).toISOString());
+  // 历史时间显示任务加入/登记时刻，而不是完成时刻。
+  return formatTime(new Date(job.createdAt ?? job.startedAt ?? job.updatedAt).toISOString());
 }
 </script>
 
@@ -67,9 +102,19 @@ function timeLabel(job: TransferJob): string {
     <div class="wb-muted" style="margin: 2px 0 6px">{{ t("active") }}</div>
     <div v-for="job in active" :key="job.jobId" class="wb-transfer-item">
       <div class="wb-transfer-title">
-        <strong :title="label(job)">{{ label(job) }}</strong>
-        <span class="wb-transfer-state" :class="`is-${job.state}`">{{ stateLabel(job) }}</span>
+        <component
+          :is="statusIcon(job)"
+          class="wb-transfer-status-icon"
+          :class="[`is-${job.state}`, { 'wb-spin': job.state === 'running' }]"
+          :title="statusLabel(job)"
+          :aria-label="statusLabel(job)"
+          role="img"
+        />
+        <strong :title="fullLabel(job)">{{ label(job) }}</strong>
         <button class="wb-icon-button wb-icon-danger" v-tip="t('cancelTransfer')" @click="emit('cancel', job.jobId)"><X /></button>
+      </div>
+      <div v-if="pathParts(job.remotePath || job.jobId).parent" class="wb-transfer-localpath wb-mono" :title="fullLabel(job)">
+        <span class="wb-transfer-path-parent">{{ pathParts(job.remotePath || job.jobId).parent }}</span>
       </div>
       <div class="wb-transfer-meta">
         <span>{{ t(`transferKind.${job.kind}`) }}</span>
@@ -87,14 +132,28 @@ function timeLabel(job: TransferJob): string {
     </div>
     <div v-for="job in history" :key="job.jobId" class="wb-transfer-item">
       <div class="wb-transfer-title">
-        <strong :title="label(job)">{{ label(job) }}</strong>
-        <span class="wb-transfer-state" :class="`is-${job.state}`">{{ stateLabel(job) }}</span>
+        <component
+          :is="statusIcon(job)"
+          class="wb-transfer-status-icon"
+          :class="[`is-${job.state}`, { 'wb-spin': job.state === 'running' }]"
+          :title="statusLabel(job)"
+          :aria-label="statusLabel(job)"
+          role="img"
+        />
+        <strong :title="fullLabel(job)">{{ label(job) }}</strong>
         <button v-if="canRetry(job)" class="wb-icon-button" v-tip="t('retryTransfer')" @click="emit('retry', job.jobId)"><RotateCw /></button>
+        <button v-if="canReveal(job)" class="wb-icon-button" v-tip="t('revealInFolder')" @click="emit('reveal', job.localPath!)"><FolderOpen /></button>
+        <button v-if="canReveal(job)" class="wb-icon-button" v-tip="t('openDownloadedFile')" @click="emit('open', job.localPath!)"><FileText /></button>
+        <button class="wb-icon-button wb-icon-danger" v-tip="t('deleteRecord')" @click="emit('delete', job.jobId)"><Trash2 /></button>
       </div>
       <div class="wb-transfer-meta">
         <span>{{ t(`transferKind.${job.kind}`) }} · {{ timeLabel(job) }}</span>
         <span>{{ progressMeta(job) }}</span>
       </div>
+      <p v-if="job.localPath" class="wb-transfer-localpath wb-mono" :title="job.localPath">
+        <span v-if="pathParts(job.localPath!).parent" class="wb-transfer-path-parent">{{ pathParts(job.localPath!).parent }}</span>
+        <span class="wb-transfer-path-name">{{ pathParts(job.localPath!).name }}</span>
+      </p>
       <div v-if="job.error" class="wb-transfer-error">{{ job.error }}</div>
     </div>
   </div>

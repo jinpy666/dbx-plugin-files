@@ -20,7 +20,13 @@ let host: NonNullable<ReturnType<typeof installMockHost>>;
 beforeEach(() => {
   vi.useFakeTimers();
   window.localStorage.clear();
-  saveUiPrefs({ sort: { column: "name", direction: "asc" }, sideTab: "quick", sideCollapsed: false });
+  saveUiPrefs({
+    sort: { column: "name", direction: "asc" },
+    leftSideTab: "quick",
+    rightSideTab: "tree",
+    leftSideCollapsed: false,
+    rightSideCollapsed: false,
+  });
   Reflect.deleteProperty(window, "dbxPlugin");
   window.history.replaceState(null, "", "/?mock=1&locale=en&delay=0");
   host = installMockHost()!;
@@ -75,6 +81,29 @@ describe("fresh review UI smoke", () => {
     table("left").vm.$emit("open", empty);
     await settle();
     expect(table("left").get(".wb-file-empty").text()).toBe(workbenchMessage("en", "emptyDirectory"));
+  });
+
+  it("keeps left and right side navigation tabs independent", async () => {
+    mountWorkbench();
+    await settle();
+    await openDualPane();
+    const panels = () => wrapper!.findAllComponents(SideNavPanel);
+    expect(panels()[0].props("tab")).toBe("quick");
+    expect(panels()[1].props("tab")).toBe("tree");
+    await panels()[0].findAll(".wb-side-tabs button")[0].trigger("click");
+    await nextTick();
+    expect(panels()[0].props("tab")).toBe("tree");
+    expect(panels()[1].props("tab")).toBe("tree");
+    const rightTree = panels()[1].props("treeRoot");
+    expect(rightTree).not.toBeNull();
+    if (!rightTree) throw new Error("right tree root is missing");
+    expect(rightTree.loaded).toBe(true);
+    expect(rightTree.expanded).toBe(true);
+    expect(rightTree.children.map((node: { path: string }) => node.path)).toContain("/docs");
+    await panels()[1].findAll(".wb-side-tabs button")[1].trigger("click");
+    await nextTick();
+    expect(panels()[0].props("tab")).toBe("tree");
+    expect(panels()[1].props("tab")).toBe("quick");
   });
 
   it("loads the right pane on first open even while the local pane is waiting", async () => {
@@ -172,6 +201,50 @@ async function showTransfers() {
   }
   return wrapper!.getComponent(TransferPanel);
 }
+
+describe("toolbar interaction safeguards", () => {
+  it("blocks the browser context menu on the global and dock toolbars", async () => {
+    mountWorkbench();
+    await settle();
+    const toolbarEvent = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    wrapper!.get(".wb-toolbar").element.dispatchEvent(toolbarEvent);
+    expect(toolbarEvent.defaultPrevented).toBe(true);
+
+    await showTransfers();
+    const dockEvent = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    wrapper!.get(".wb-dock-tabs").element.dispatchEvent(dockEvent);
+    expect(dockEvent.defaultPrevented).toBe(true);
+  });
+
+  it("shows an error banner when move returns an explicit failure response", async () => {
+    mountWorkbench();
+    await settle();
+    const entry = table("left").props("entries").find((item) => item.path === "/backup.zip")!;
+    table("left").vm.$emit("contextmenu", { entry, x: 10, y: 10 });
+    await nextTick();
+    await wrapper!.findAll("[role=menuitem]").find((item) => item.text() === `${workbenchMessage("en", "transferKind.move")}…`)!.trigger("click");
+    await wrapper!.get("[role=dialog] input").setValue("/moved-readme.md");
+
+    const original = window.dbxPlugin.invoke;
+    vi.spyOn(window.dbxPlugin, "invoke").mockImplementation(async <T,>(method: string, params: unknown) => {
+      if (method === "files/move") return { success: false, error: "permission denied" } as T;
+      return original<T>(method, params);
+    });
+    await wrapper!.get("[role=dialog] footer button:last-child").trigger("click");
+    await settle();
+
+    expect(wrapper!.get(".wb-error-banner").text()).toContain(workbenchMessage("en", "errPermission"));
+  });
+});
+
+describe("failed transfer feedback", () => {
+  it("keeps the error banner visible when an async move fails", async () => {
+    mountWorkbench();
+    await settle();
+    await submitFailedTransfer("move");
+    expect(wrapper!.get(".wb-error-banner").text()).toContain("mock job failure");
+  });
+});
 
 type RetryKind = "copy" | "move" | "rename" | "copyDir" | "syncDir";
 
@@ -378,6 +451,43 @@ describe("round5 current host context/environment UI smoke", () => {
     expect(deletes).toHaveLength(9);
     expect(deletes.every(([, params]) => (params as Record<string, unknown>).connectionId === "mock-conn")).toBe(true);
     for (const path of paths) await expect(original("files/stat", { connectionId: "other", path })).resolves.toMatchObject({ entry: { path } });
+  });
+
+  it("keeps an upload permission failure visible after the destination refresh", async () => {
+    mountWorkbench();
+    await settle();
+    const original = window.dbxPlugin.invoke;
+    const invoke = vi.spyOn(window.dbxPlugin, "invoke").mockImplementation(async <T,>(method: string, params: unknown) => {
+      if (method === "files/upload/finish") throw new Error("PermissionDenied: permission denied");
+      return original<T>(method, params);
+    });
+    wrapper!.getComponent(FileToolbar).vm.$emit("upload", [new File(["A"], "failed-upload.txt")]);
+    await settle();
+    expect(invoke.mock.calls.some(([method]) => method === "files/upload/start")).toBe(true);
+    expect(invoke.mock.calls.some(([method]) => method === "files/upload/finish")).toBe(true);
+    expect(wrapper!.get(".wb-error-banner").text()).toContain(workbenchMessage("en", "errPermission"));
+    expect(wrapper!.find(".wb-notice").exists()).toBe(false);
+    await vi.advanceTimersByTimeAsync(3001);
+    await nextTick();
+    expect(wrapper!.find(".wb-error-banner").exists()).toBe(false);
+  });
+
+  it("shows a banner when a sidecar transfer progress event reports failure", async () => {
+    mountWorkbench();
+    await settle();
+    host.emitEvent("files/transfer/progress", {
+      taskId: "sidecar-failed",
+      kind: "upload",
+      connectionId: "mock-conn",
+      remotePath: "/home/www/.~超市电费.xlsx",
+      state: "failed",
+      error: "PermissionDenied (permanent): permission denied",
+      size: 10,
+      transferred: 0,
+      total: 10,
+    });
+    await nextTick();
+    expect(wrapper!.get(".wb-error-banner").text()).toContain(workbenchMessage("en", "errPermission"));
   });
 
   it("keeps a multi-file upload on the destination chosen before a host switch", async () => {
