@@ -125,6 +125,8 @@ fn sample_value(key: &str, protocol: &str) -> Value {
         "endpoint" => json!(match protocol {
             "s3" | "oss" | "webdav" => "http://127.0.0.1:9000",
             "cos" => "https://cos.ap-guangzhou.myqcloud.com",
+            "azblob" => "https://account.blob.core.windows.net",
+            "obs" => "https://obs.cn-north-4.myhuaweicloud.com",
             "ftp" => "ftp://127.0.0.1:2121",
             "sftp" | "sftp-native" => "127.0.0.1:22",
             "smb" => "nas.local:445",
@@ -136,6 +138,14 @@ fn sample_value(key: &str, protocol: &str) -> Value {
         "secret_access_key" => json!("sk"),
         "secret_id" => json!("secret-id"),
         "secret_key" => json!("secret-key"),
+        "credential" => json!(r#"{"type":"service_account"}"#),
+        "scope" => json!("https://www.googleapis.com/auth/devstorage.read_only"),
+        "container" => json!("container"),
+        "account_name" => json!("account"),
+        // Azure validates this field as base64 during Builder::build; a
+        // throwaway syntactically valid value is sufficient for offline form
+        // contract tests (no request is made).
+        "account_key" => json!("YWJj"),
         "share" => json!("media"),
         "username" => json!("alice"),
         "user" => json!("bob"),
@@ -341,6 +351,15 @@ fn stale_cross_protocol_values_never_leak_into_builder_kv() {
         (
             "oss",
             &["root", "bucket", "endpoint", "access_key_id", "access_key_secret"],
+        ),
+        ("gcs", &["root", "bucket", "credential", "scope"]),
+        (
+            "azblob",
+            &["root", "container", "account_name", "account_key", "endpoint"],
+        ),
+        (
+            "obs",
+            &["root", "bucket", "endpoint", "access_key_id", "secret_access_key"],
         ),
         ("webdav", &["root", "endpoint", "username", "password"]),
         ("ftp", &["root", "endpoint", "user", "password"]),

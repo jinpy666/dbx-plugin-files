@@ -2347,7 +2347,7 @@ fn stored_connection_from_inline(connection: &Value) -> Result<StoredConnection,
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
             "Missing protocol in connection (one of: local, fs, s3, oss, cos, webdav, ftp, \
-             sftp, smb, sftp-native, opendal-custom)"
+             gcs, azblob, obs, sftp, smb, sftp-native, opendal-custom)"
                 .to_string()
         })?;
     let protocol = match protocol {
@@ -2364,6 +2364,9 @@ fn stored_connection_from_inline(connection: &Value) -> Result<StoredConnection,
         ("bucket", "bucket"),
         ("endpoint", "endpoint"),
         ("region", "region"),
+        ("scope", "scope"),
+        ("container", "container"),
+        ("accountName", "account_name"),
         ("accessKeyId", "access_key_id"),
         ("enableVirtualHostStyle", "enable_virtual_host_style"),
         ("username", "username"),
@@ -2387,6 +2390,8 @@ fn stored_connection_from_inline(connection: &Value) -> Result<StoredConnection,
         ("secretAccessKey", "secret_access_key"),
         ("secretId", "secret_id"),
         ("secretKey", "secret_key"),
+        ("credential", "credential"),
+        ("accountKey", "account_key"),
         ("password", "password"),
         ("key", "key"),
     ] {
@@ -2423,15 +2428,20 @@ fn stored_connection_from_inline(connection: &Value) -> Result<StoredConnection,
 fn inline_connection_properties() -> Value {
     json!({
     "protocol": { "type": "string",
-        "description": "Storage protocol (required): local (alias of fs), fs, s3, oss, cos, webdav, ftp, sftp, smb, sftp-native, opendal-custom" },
+        "description": "Storage protocol (required): local (alias of fs), fs, s3, oss, cos, gcs, azblob, obs, webdav, ftp, sftp, smb, sftp-native, opendal-custom" },
     "root": { "type": "string", "description": "OpenDAL root prefix" },
-    "bucket": { "type": "string", "description": "Bucket (s3/oss)" },
+    "bucket": { "type": "string", "description": "Bucket (s3/oss/cos/gcs/obs)" },
     "region": { "type": "string", "description": "Region (s3/oss)" },
     "endpoint": { "type": "string", "description": "Endpoint URL (s3/oss)" },
     "accessKeyId": { "type": "string", "description": "Access key id (s3/oss)" },
     "secretAccessKey": { "type": "string", "description": "Secret access key (s3/oss; stays in process memory only)" },
     "secretId": { "type": "string", "description": "Tencent Cloud COS secret id (stays in process memory only)" },
     "secretKey": { "type": "string", "description": "Tencent Cloud COS secret key (stays in process memory only)" },
+    "credential": { "type": "string", "description": "GCS service-account JSON (stays in process memory only)" },
+    "scope": { "type": "string", "description": "OAuth scope (gcs)" },
+    "container": { "type": "string", "description": "Container (azblob)" },
+    "accountName": { "type": "string", "description": "Storage account name (azblob)" },
+    "accountKey": { "type": "string", "description": "Storage account key (azblob; stays in process memory only)" },
     "enableVirtualHostStyle": { "type": "boolean", "description": "Virtual-host style addressing (s3)" },
     "username": { "type": "string", "description": "Username (webdav/smb)" },
     "user": { "type": "string", "description": "User (ftp/sftp/sftp-native)" },
@@ -4650,6 +4660,9 @@ mod tests {
             "bucket",
             "endpoint",
             "region",
+            "scope",
+            "container",
+            "accountName",
             "accessKeyId",
             "enableVirtualHostStyle",
             "username",
@@ -4667,6 +4680,8 @@ mod tests {
             "secretAccessKey",
             "secretId",
             "secretKey",
+            "credential",
+            "accountKey",
             "password",
             "key",
         ];
@@ -4728,6 +4743,9 @@ mod tests {
             ("bucket", "bucket"),
             ("endpoint", "endpoint"),
             ("region", "region"),
+            ("scope", "scope"),
+            ("container", "container"),
+            ("account_name", "accountName"),
             ("access_key_id", "accessKeyId"),
             ("enable_virtual_host_style", "enableVirtualHostStyle"),
             ("username", "username"),
@@ -4746,6 +4764,8 @@ mod tests {
             ("secret_access_key", "secretAccessKey"),
             ("secret_id", "secretId"),
             ("secret_key", "secretKey"),
+            ("credential", "credential"),
+            ("account_key", "accountKey"),
             ("password", "password"),
             ("key", "key"),
         ];

@@ -357,6 +357,29 @@ pub fn protocol_kv(
             push(&mut kv, "secret_key", &connection.secret_key);
             "cos".to_string()
         }
+        "gcs" => {
+            push(&mut kv, "root", &connection.root);
+            push(&mut kv, "bucket", &connection.bucket);
+            push(&mut kv, "credential", &connection.credential);
+            push(&mut kv, "scope", &connection.scope);
+            "gcs".to_string()
+        }
+        "azblob" => {
+            push(&mut kv, "root", &connection.root);
+            push(&mut kv, "container", &connection.container);
+            push(&mut kv, "account_name", &connection.account_name);
+            push(&mut kv, "account_key", &connection.account_key);
+            push(&mut kv, "endpoint", &connection.endpoint);
+            "azblob".to_string()
+        }
+        "obs" => {
+            push(&mut kv, "root", &connection.root);
+            push(&mut kv, "bucket", &connection.bucket);
+            push(&mut kv, "endpoint", &connection.endpoint);
+            push(&mut kv, "access_key_id", &connection.access_key_id);
+            push(&mut kv, "secret_access_key", &connection.secret_access_key);
+            "obs".to_string()
+        }
         "webdav" => {
             push(&mut kv, "root", &connection.root);
             push(&mut kv, "endpoint", &connection.endpoint);
@@ -480,7 +503,7 @@ fn kv_from_custom_config(connection: &StoredConnection, kv: &mut Vec<(String, St
 fn validate_endpoints(connection: &StoredConnection) -> Result<(), String> {
     let http_class = matches!(
         connection.protocol.as_str(),
-        "s3" | "oss" | "cos" | "webdav" | "opendal-custom"
+        "s3" | "oss" | "cos" | "gcs" | "azblob" | "obs" | "webdav" | "opendal-custom"
     );
     if http_class && !connection.endpoint.is_empty() {
         check_http_scheme(&connection.endpoint)?;

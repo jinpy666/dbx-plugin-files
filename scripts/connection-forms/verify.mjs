@@ -98,7 +98,7 @@ for (const [index, field] of fields.entries()) {
 // store (lifecycle `connection_secrets`, masked input) — never to the config
 // binding, which is persisted in plaintext alongside the connection record.
 // `password` inputs must always be secret-bound so the host masks them.
-const SECRET_FIELDS = new Set(["key", "password", "secret_access_key", "secret_id", "secret_key"]);
+const SECRET_FIELDS = new Set(["key", "password", "secret_access_key", "secret_id", "secret_key", "credential", "account_key"]);
 for (const field of fields) {
   if (field.type === "password") {
     assert.equal(field.binding, "secret", `${field.key}: password input must bind to secret`);
@@ -136,20 +136,29 @@ for (const protocol of options("protocol")) {
     const current = state({ protocol, read_only });
     // Object storage (S3 / OSS): bucket+keys required; endpoint required for
     // OSS (no default endpoint) but optional for S3 (AWS default endpoint).
-    current.visible("endpoint", !["fs", "opendal-custom"].includes(protocol));
-    current.required("endpoint", ["oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native"].includes(protocol));
-    current.visible("bucket", ["s3", "oss", "cos"].includes(protocol));
-    current.required("bucket", ["s3", "oss", "cos"].includes(protocol));
+    current.visible("endpoint", !["fs", "gcs", "opendal-custom"].includes(protocol));
+    current.required("endpoint", ["oss", "cos", "azblob", "obs", "webdav", "ftp", "sftp", "smb", "sftp-native"].includes(protocol));
+    current.visible("bucket", ["s3", "oss", "cos", "gcs", "obs"].includes(protocol));
+    current.required("bucket", ["s3", "oss", "cos", "gcs", "obs"].includes(protocol));
     current.visible("region", protocol === "s3");
     current.visible("enable_virtual_host_style", protocol === "s3");
-    current.visible("access_key_id", ["s3", "oss"].includes(protocol));
-    current.required("access_key_id", ["s3", "oss"].includes(protocol));
-    current.visible("secret_access_key", ["s3", "oss"].includes(protocol));
-    current.required("secret_access_key", ["s3", "oss"].includes(protocol));
+    current.visible("access_key_id", ["s3", "oss", "obs"].includes(protocol));
+    current.required("access_key_id", ["s3", "oss", "obs"].includes(protocol));
+    current.visible("secret_access_key", ["s3", "oss", "obs"].includes(protocol));
+    current.required("secret_access_key", ["s3", "oss", "obs"].includes(protocol));
     current.visible("secret_id", protocol === "cos");
     current.required("secret_id", protocol === "cos");
     current.visible("secret_key", protocol === "cos");
     current.required("secret_key", protocol === "cos");
+    current.visible("credential", protocol === "gcs");
+    current.required("credential", protocol === "gcs");
+    current.visible("scope", protocol === "gcs");
+    current.visible("container", protocol === "azblob");
+    current.required("container", protocol === "azblob");
+    current.visible("account_name", protocol === "azblob");
+    current.required("account_name", protocol === "azblob");
+    current.visible("account_key", protocol === "azblob");
+    current.required("account_key", protocol === "azblob");
     // Custom OpenDAL service descriptor.
     current.visible("service", protocol === "opendal-custom");
     current.required("service", protocol === "opendal-custom");

@@ -71,6 +71,18 @@
               "value": "cos"
             },
             {
+              "label": "Google Cloud Storage",
+              "value": "gcs"
+            },
+            {
+              "label": "Azure Blob Storage",
+              "value": "azblob"
+            },
+            {
+              "label": "Huawei OBS",
+              "value": "obs"
+            },
+            {
               "label": "WebDAV",
               "value": "webdav"
             },
@@ -110,6 +122,8 @@
               "s3",
               "oss",
               "cos",
+              "azblob",
+              "obs",
               "webdav",
               "ftp",
               "sftp",
@@ -122,6 +136,8 @@
             "one_of": [
               "oss",
               "cos",
+              "azblob",
+              "obs",
               "webdav",
               "ftp",
               "sftp",
@@ -179,7 +195,9 @@
             "one_of": [
               "s3",
               "oss",
-              "cos"
+              "cos",
+              "gcs",
+              "obs"
             ]
           },
           "required_when": {
@@ -187,8 +205,81 @@
             "one_of": [
               "s3",
               "oss",
-              "cos"
+              "cos",
+              "gcs",
+              "obs"
             ]
+          }
+        },
+        {
+          "key": "credential",
+          "label": "Service account JSON",
+          "type": "textarea",
+          "binding": "secret",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": ["gcs"]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": ["gcs"]
+          }
+        },
+        {
+          "key": "scope",
+          "label": "OAuth scope (optional)",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": ["gcs"]
+          }
+        },
+        {
+          "key": "container",
+          "label": "Container",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": ["azblob"]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": ["azblob"]
+          }
+        },
+        {
+          "key": "account_name",
+          "label": "Account name",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": ["azblob"]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": ["azblob"]
+          }
+        },
+        {
+          "key": "account_key",
+          "label": "Account key",
+          "type": "password",
+          "binding": "secret",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": ["azblob"]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": ["azblob"]
           }
         },
         {
@@ -231,15 +322,17 @@
           "visible_when": {
             "field": "protocol",
             "one_of": [
-              "s3",
-              "oss"
+            "s3",
+              "oss",
+              "obs"
             ]
           },
           "required_when": {
             "field": "protocol",
             "one_of": [
-              "s3",
-              "oss"
+            "s3",
+              "oss",
+              "obs"
             ]
           }
         },
@@ -254,14 +347,16 @@
             "field": "protocol",
             "one_of": [
               "s3",
-              "oss"
+              "oss",
+              "obs"
             ]
           },
           "required_when": {
             "field": "protocol",
             "one_of": [
               "s3",
-              "oss"
+              "oss",
+              "obs"
             ]
           }
         },
@@ -515,7 +610,10 @@
                 "opendal-custom": "OpenDAL 自定义服务",
                 "sftp-native": "SFTP（原生）",
                 "oss": "阿里云 OSS",
-                "cos": "腾讯云 COS"
+                "cos": "腾讯云 COS",
+                "gcs": "Google Cloud Storage",
+                "azblob": "Azure Blob 存储",
+                "obs": "华为云 OBS"
               }
             },
             "root": {
@@ -572,6 +670,11 @@
             "secret_key": {
               "label": "Secret Key"
             },
+            "credential": { "label": "服务账号 JSON" },
+            "scope": { "label": "OAuth 范围（可选）" },
+            "container": { "label": "容器" },
+            "account_name": { "label": "账户名称" },
+            "account_key": { "label": "账户密钥" },
             "username": {
               "label": "用户名",
               "placeholder": "user",
@@ -652,7 +755,10 @@
                 "opendal-custom": "OpenDAL 自訂服務",
                 "sftp-native": "SFTP（原生）",
                 "oss": "阿里雲 OSS",
-                "cos": "騰訊雲 COS"
+                "cos": "騰訊雲 COS",
+                "gcs": "Google Cloud Storage",
+                "azblob": "Azure Blob 儲存體",
+                "obs": "華為雲 OBS"
               }
             },
             "root": {
@@ -709,6 +815,11 @@
             "secret_key": {
               "label": "Secret Key"
             },
+            "credential": { "label": "服務帳戶 JSON" },
+            "scope": { "label": "OAuth 範圍（選填）" },
+            "container": { "label": "容器" },
+            "account_name": { "label": "帳戶名稱" },
+            "account_key": { "label": "帳戶金鑰" },
             "username": {
               "label": "使用者名稱",
               "placeholder": "user",
@@ -789,7 +900,10 @@
                 "opendal-custom": "OpenDAL custom service",
                 "sftp-native": "SFTP (native)",
                 "oss": "Alibaba OSS",
-                "cos": "Tencent COS"
+                "cos": "Tencent COS",
+                "gcs": "Google Cloud Storage",
+                "azblob": "Azure Blob Storage",
+                "obs": "Huawei OBS"
               }
             },
             "root": {
@@ -846,6 +960,11 @@
             "secret_key": {
               "label": "Secret key"
             },
+            "credential": { "label": "Service account JSON" },
+            "scope": { "label": "OAuth scope (optional)" },
+            "container": { "label": "Container" },
+            "account_name": { "label": "Account name" },
+            "account_key": { "label": "Account key" },
             "username": {
               "label": "Username",
               "placeholder": "user",
@@ -926,7 +1045,10 @@
                 "opendal-custom": "Servicio personalizado de OpenDAL",
                 "sftp-native": "SFTP (nativo)",
                 "oss": "OSS de Alibaba",
-                "cos": "Tencent COS"
+                "cos": "COS de Tencent",
+                "gcs": "Google Cloud Storage",
+                "azblob": "Azure Blob Storage",
+                "obs": "Huawei OBS"
               }
             },
             "root": {
@@ -983,6 +1105,11 @@
             "secret_key": {
               "label": "Secret key"
             },
+            "credential": { "label": "JSON de cuenta de servicio" },
+            "scope": { "label": "Ámbito OAuth (opcional)" },
+            "container": { "label": "Contenedor" },
+            "account_name": { "label": "Nombre de cuenta" },
+            "account_key": { "label": "Clave de cuenta" },
             "username": {
               "label": "Usuario",
               "placeholder": "usuario",
@@ -1063,7 +1190,10 @@
                 "opendal-custom": "Servizio OpenDAL personalizzato",
                 "sftp-native": "SFTP (nativo)",
                 "oss": "OSS di Alibaba",
-                "cos": "Tencent COS"
+                "cos": "COS Tencent",
+                "gcs": "Google Cloud Storage",
+                "azblob": "Azure Blob Storage",
+                "obs": "Huawei OBS"
               }
             },
             "root": {
@@ -1120,6 +1250,11 @@
             "secret_key": {
               "label": "Secret key"
             },
+            "credential": { "label": "JSON account di servizio" },
+            "scope": { "label": "Ambito OAuth (facoltativo)" },
+            "container": { "label": "Contenitore" },
+            "account_name": { "label": "Nome account" },
+            "account_key": { "label": "Chiave account" },
             "username": {
               "label": "Nome utente",
               "placeholder": "utente",
@@ -1200,7 +1335,10 @@
                 "opendal-custom": "OpenDAL カスタムサービス",
                 "sftp-native": "SFTP（ネイティブ）",
                 "oss": "Alibaba OSS",
-                "cos": "Tencent COS"
+                "cos": "Tencent COS",
+                "gcs": "Google Cloud Storage",
+                "azblob": "Azure Blob Storage",
+                "obs": "Huawei OBS"
               }
             },
             "root": {
@@ -1257,6 +1395,11 @@
             "secret_key": {
               "label": "Secret key"
             },
+            "credential": { "label": "サービスアカウント JSON" },
+            "scope": { "label": "OAuth スコープ（任意）" },
+            "container": { "label": "コンテナー" },
+            "account_name": { "label": "アカウント名" },
+            "account_key": { "label": "アカウントキー" },
             "username": {
               "label": "ユーザー名",
               "placeholder": "user",
@@ -1337,7 +1480,10 @@
                 "opendal-custom": "Serviço personalizado do OpenDAL",
                 "sftp-native": "SFTP (nativo)",
                 "oss": "OSS da Alibaba",
-                "cos": "Tencent COS"
+                "cos": "COS da Tencent",
+                "gcs": "Google Cloud Storage",
+                "azblob": "Azure Blob Storage",
+                "obs": "Huawei OBS"
               }
             },
             "root": {
@@ -1394,6 +1540,11 @@
             "secret_key": {
               "label": "Secret key"
             },
+            "credential": { "label": "JSON da conta de serviço" },
+            "scope": { "label": "Escopo OAuth (opcional)" },
+            "container": { "label": "Contêiner" },
+            "account_name": { "label": "Nome da conta" },
+            "account_key": { "label": "Chave da conta" },
             "username": {
               "label": "Nome de usuário",
               "placeholder": "usuario",

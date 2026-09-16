@@ -35,11 +35,14 @@ pub const JSON_CHUNK_BYTES: usize = 1024 * 1024;
 /// fixed OpenDAL scheme (`smb` via the custom `engine::smb` adapter,
 /// `sftp-native` via the custom `engine::sftp_native` adapter); the
 /// generic pass-through is `opendal-custom`.
-pub const PROTOCOLS: [&str; 10] = [
+pub const PROTOCOLS: [&str; 13] = [
     "fs",
     "s3",
     "oss",
     "cos",
+    "gcs",
+    "azblob",
+    "obs",
     "webdav",
     "ftp",
     "sftp",
@@ -77,6 +80,14 @@ pub struct StoredConnection {
     pub secret_id: String,
     /// Secret (`connection_secrets.secret_key`).
     pub secret_key: String,
+    // --- GCS / Azure Blob ---
+    /// Secret service-account JSON (`connection_secrets.credential`).
+    pub credential: String,
+    pub scope: String,
+    pub container: String,
+    pub account_name: String,
+    /// Secret Azure account key (`connection_secrets.account_key`).
+    pub account_key: String,
     /// s3 only: address the bucket as `bucket.host` instead of a path-style
     /// URL (`external_config.enable_virtual_host_style`).
     pub enable_virtual_host_style: bool,
@@ -187,6 +198,11 @@ impl StoredConnection {
             secret_access_key: secret_string(connection_secrets, "secret_access_key"),
             secret_id: secret_string(connection_secrets, "secret_id"),
             secret_key: secret_string(connection_secrets, "secret_key"),
+            credential: secret_string(connection_secrets, "credential"),
+            scope: optional_string(external_config, "scope"),
+            container: optional_string(external_config, "container"),
+            account_name: optional_string(external_config, "account_name"),
+            account_key: secret_string(connection_secrets, "account_key"),
             enable_virtual_host_style: bool_field(
                 external_config,
                 "enable_virtual_host_style",
@@ -1015,14 +1031,19 @@ mod tests {
         // Protocol-gated field matrix: each protocol only surfaces its own
         // fields, global fields stay ungated.
         let expects: &[(&str, &[&str])] = &[
-            ("bucket", &["s3", "oss", "cos"]),
+            ("bucket", &["s3", "oss", "cos", "gcs", "obs"]),
             ("region", &["s3"]),
-            ("access_key_id", &["s3", "oss"]),
-            ("secret_access_key", &["s3", "oss"]),
+            ("access_key_id", &["s3", "oss", "obs"]),
+            ("secret_access_key", &["s3", "oss", "obs"]),
+            ("credential", &["gcs"]),
+            ("scope", &["gcs"]),
+            ("container", &["azblob"]),
+            ("account_name", &["azblob"]),
+            ("account_key", &["azblob"]),
             ("enable_virtual_host_style", &["s3"]),
             (
                 "endpoint",
-                &["s3", "oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native"],
+                &["s3", "oss", "cos", "azblob", "obs", "webdav", "ftp", "sftp", "smb", "sftp-native"],
             ),
             ("secret_id", &["cos"]),
             ("secret_key", &["cos"]),
@@ -1119,6 +1140,10 @@ mod tests {
             "secret_access_key",
             "secret_id",
             "secret_key",
+            "credential",
+            "container",
+            "account_name",
+            "account_key",
             "service",
         ];
         for key in conditionally_required {
@@ -1175,7 +1200,7 @@ mod tests {
                 .all(|value| endpoint_visible.contains(value)),
             "endpoint required_when must stay inside its visible_when"
         );
-        for required_protocol in ["oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native"] {
+        for required_protocol in ["oss", "cos", "azblob", "obs", "webdav", "ftp", "sftp", "smb", "sftp-native"] {
             assert!(
                 endpoint_required.contains(&required_protocol),
                 "endpoint must be conditionally required for '{required_protocol}'"
