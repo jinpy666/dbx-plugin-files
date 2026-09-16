@@ -319,9 +319,10 @@ mod tests {
         let home = tempfile::tempdir().expect("tempdir");
         let downloads = home.path().join("Downloads");
         std::fs::create_dir_all(&downloads).expect("mkdir");
+        let home_key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
         let dir = downloads_base_dir(
             None,
-            lookup_from(&[("HOME", home.path().to_string_lossy().as_ref())]),
+            lookup_from(&[(home_key, home.path().to_string_lossy().as_ref())]),
             data_dir.path(),
         );
         assert_eq!(dir, downloads);
