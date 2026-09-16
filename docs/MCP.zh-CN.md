@@ -72,10 +72,11 @@ stdio 模式没有宿主连接存储，OpenDAL 连接参数随调用内联传入
 
 | `connection` 字段（camelCase） | 对应表单字段 | 说明 |
 | --- | --- | --- |
-| `protocol` | protocol | `local`/`localFs` 为 `fs` 便捷别名；其余 `s3`/`oss`/`webdav`/`ftp`/`sftp`/`smb`/`sftp-native`/`opendal-custom` 原样 |
+| `protocol` | protocol | `local`/`localFs` 为 `fs` 便捷别名；其余 `s3`/`oss`/`cos`/`webdav`/`ftp`/`sftp`/`smb`/`sftp-native`/`opendal-custom` 原样 |
 | `root` | root | OpenDAL 根前缀 |
-| `bucket` / `region` / `endpoint` / `accessKeyId` / `enableVirtualHostStyle` | bucket/region/endpoint/access_key_id/enable_virtual_host_style | s3/oss |
+| `bucket` / `region` / `endpoint` / `accessKeyId` / `enableVirtualHostStyle` | bucket/region/endpoint/access_key_id/enable_virtual_host_style | s3/oss/cos |
 | `secretAccessKey` | secret_access_key（secret） | s3/oss |
+| `secretId` / `secretKey` / `securityToken` | secret_id / secret_key / security_token（均为 secret） | cos；endpoint 使用腾讯云地域端点，如 `https://cos.ap-guangzhou.myqcloud.com` |
 | `username`（webdav/smb）/ `user`（ftp/sftp/sftp-native） | username / user | 按协议 |
 | `password` | password（secret） | webdav/ftp/smb/sftp-native |
 | `key` / `knownHostsStrategy` | key（secret）/ known_hosts_strategy | sftp/sftp-native |
@@ -122,7 +123,8 @@ files sidecar（与工作台同进程）——保存的连接因此可用，凭�
 - **fail-closed 出路（files 特化）**：桥不可用时合并错误点名 files 自己
   的内联参数字段——`"connection": {"protocol": "local", "root": "/data"}`
   或 `{"protocol": "s3", "bucket": "…", "endpoint": "…", "region": "…",
-  "accessKeyId": "…", "secretAccessKey": "…"}`——外加 `__local__` 与
+  "accessKeyId": "…", "secretAccessKey": "…"}`；腾讯云 COS 使用
+  `{"protocol": "cos", "bucket": "bucket-appid", "endpoint": "https://cos.ap-guangzhou.myqcloud.com", "secretId": "…", "secretKey": "…"}`——外加 `__local__` 与
   启动 DBX 应用两条出路。
 
 ### stdio 语义差异与后续项

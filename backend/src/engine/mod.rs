@@ -355,6 +355,7 @@ pub fn protocol_kv(
             push(&mut kv, "endpoint", &connection.endpoint);
             push(&mut kv, "secret_id", &connection.secret_id);
             push(&mut kv, "secret_key", &connection.secret_key);
+            push(&mut kv, "security_token", &connection.security_token);
             "cos".to_string()
         }
         "webdav" => {
@@ -766,6 +767,7 @@ mod tests {
         cos.endpoint = "https://cos.ap-guangzhou.myqcloud.com".into();
         cos.secret_id = "throwaway-secret-id".into();
         cos.secret_key = "throwaway-secret-key".into();
+        cos.security_token = "throwaway-security-token".into();
 
         let (scheme, kv) = protocol_kv(&cos).unwrap();
         assert_eq!(scheme, "cos");
@@ -775,8 +777,11 @@ mod tests {
         assert_eq!(map["endpoint"], "https://cos.ap-guangzhou.myqcloud.com");
         assert_eq!(map["secret_id"], "throwaway-secret-id");
         assert_eq!(map["secret_key"], "throwaway-secret-key");
+        assert_eq!(map["security_token"], "throwaway-security-token");
         assert!(!map.contains_key("secret_access_key"));
         assert!(!map.contains_key("access_key_id"));
+        let operator = build_operator(&cos).expect("services-cos must build offline");
+        assert_eq!(operator.info().scheme(), "cos");
     }
 
     #[test]
