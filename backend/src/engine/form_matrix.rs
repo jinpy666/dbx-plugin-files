@@ -21,7 +21,6 @@
 //! service only speaks strict|accept|add and failed the build outright).
 
 use super::*;
-use crate::model::PROTOCOLS;
 use serde_json::{json, Map, Value};
 
 /// Throwaway ed25519 key generated for this matrix (never a real secret);
@@ -72,6 +71,29 @@ fn form_fields() -> Vec<FormField> {
             visible_when: condition_of(field.get("visible_when")),
             required_when: condition_of(field.get("required_when")),
         })
+        .collect()
+}
+
+/// Keep the manifest-driven matrix scoped to protocols currently advertised by
+/// the checked-in form. Backend-only protocols are covered by focused engine
+/// tests until the integrator wires their fields into the shared manifest.
+fn advertised_protocols() -> Vec<String> {
+    let manifest = manifest();
+    manifest["contributions"]
+        .as_array()
+        .expect("contributions array")
+        .iter()
+        .find(|item| item["type"] == "connection-provider")
+        .expect("connection-provider")["fields"]
+        .as_array()
+        .expect("fields array")
+        .iter()
+        .find(|field| field["key"] == "protocol")
+        .expect("protocol field")["options"]
+        .as_array()
+        .expect("protocol options")
+        .iter()
+        .map(|option| option["value"].as_str().expect("option value").to_string())
         .collect()
 }
 
@@ -226,14 +248,14 @@ fn expected_scheme(protocol: &str) -> String {
 /// keep stale values from another protocol) must parse and build offline.
 #[test]
 fn form_complete_connections_build_for_every_protocol() {
-    for protocol in PROTOCOLS {
-        let params = lifecycle_params(protocol, &Map::new());
+    for protocol in advertised_protocols() {
+        let params = lifecycle_params(&protocol, &Map::new());
         let connection = parse(&params);
         match build_operator(&connection) {
             Ok(operator) => {
                 assert_eq!(
                     operator.info().scheme(),
-                    expected_scheme(protocol),
+                    expected_scheme(&protocol),
                     "scheme mismatch for form-complete {protocol}"
                 );
             }
@@ -259,7 +281,7 @@ fn form_complete_connections_build_for_every_protocol() {
 /// may fail the build, but only with a descriptive error.
 #[test]
 fn visible_field_left_empty_never_breaks_optional_builds() {
-    for protocol in PROTOCOLS {
+    for protocol in advertised_protocols() {
         for field in form_fields() {
             let blankable = matches!(
                 field.ftype.as_str(),
@@ -271,7 +293,7 @@ fn visible_field_left_empty_never_breaks_optional_builds() {
             let visible = match &field.visible_when {
                 None => true,
                 Some((target, one_of)) => {
-                    target == "protocol" && one_of.iter().any(|value| value == protocol)
+                    target == "protocol" && one_of.iter().any(|value| value == &protocol)
                 }
             };
             if !visible {
@@ -286,13 +308,13 @@ fn visible_field_left_empty_never_breaks_optional_builds() {
                     json!("")
                 },
             );
-            let params = lifecycle_params(protocol, &overrides);
+            let params = lifecycle_params(&protocol, &overrides);
             let connection = parse(&params);
             let form_required = field
                 .required_when
                 .as_ref()
                 .is_some_and(|(target, one_of)| {
-                    target == "protocol" && one_of.iter().any(|value| value == protocol)
+                    target == "protocol" && one_of.iter().any(|value| value == &protocol)
                 });
             match build_operator(&connection) {
                 Ok(_) => {}

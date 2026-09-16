@@ -777,6 +777,8 @@ mod tests {
         assert_eq!(map["secret_key"], "throwaway-secret-key");
         assert!(!map.contains_key("secret_access_key"));
         assert!(!map.contains_key("access_key_id"));
+        let operator = build_operator(&cos).expect("services-cos must build offline");
+        assert_eq!(operator.info().scheme(), "cos");
     }
 
     #[test]
