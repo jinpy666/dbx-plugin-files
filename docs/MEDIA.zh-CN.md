@@ -5,18 +5,18 @@
 
 ## 一句话定位
 
-`Files Studio：把本地文件夹、S3 对象存储和远程文件服务放进同一个文件工作台。`
+`Files Studio：把本地文件夹、S3/OSS/腾讯云 COS 对象存储和远程文件服务放进同一个文件工作台。`
 
 ## 长版文案
 
 `面向日常文件运维与跨存储迁移的 Files Studio，打开一个连接即可完成浏览、上传下载、
 复制移动、传输任务、zip 归档和受控删除。多协议引擎覆盖本地 fs、S3/MinIO、阿里云 OSS、
-WebDAV、FTP、SFTP（双栈：keyfile 与密码认证）和 SMB/CIFS，凭据由宿主 secret binding
+腾讯云 COS、WebDAV、FTP、SFTP（双栈：keyfile 与密码认证）和 SMB/CIFS，凭据由宿主 secret binding
 管理，并提供面向自动化的 MCP 工具接口与七语界面。`
 
 ## 三句卖点
 
-- **从一个连接到多种存储**：fs、S3、WebDAV、FTP、SFTP、SMB 共用同一套浏览与传输
+- **从一个连接到多种存储**：fs、S3、OSS、COS、WebDAV、FTP、SFTP、SMB 共用同一套浏览与传输
   体验，换存储不换操作习惯。
 - **从能用到敢用**：根路径锁定、只读模式、删除保护和宿主 secret binding 把高风险
   操作放进明确的权限边界。
@@ -35,7 +35,7 @@ WebDAV、FTP、SFTP（双栈：keyfile 与密码认证）和 SMB/CIFS，凭据�
 
 ## 使用边界
 
-本页描述的是插件 UI 与离线可验证的能力。真实 S3/WebDAV/FTP/SFTP/SMB 后端、
+本页描述的是插件 UI 与离线可验证的能力。真实 S3/OSS/COS/WebDAV/FTP/SFTP/SMB 后端、
 DBX.app 宿主桥和平台安装流程需要对应运行环境；请以 CI、smoke（容器类用例按环境
 SKIP）和发布说明中的实际验证结果为准。Windows 平台的 `sftp` 快捷协议不可用，
 请使用 `sftp-native`。
