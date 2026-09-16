@@ -5,7 +5,7 @@
   "name": "Files Studio",
   "version": "0.1.59",
   "publisher": "jinpy",
-  "description": "A unified file workspace for local folders, S3-compatible storage, WebDAV, FTP, SFTP, SMB/CIFS, and other OpenDAL services.",
+  "description": "A unified file workspace for local folders, S3-compatible storage, Tencent COS, WebDAV, FTP, SFTP, SMB/CIFS, and other OpenDAL services.",
   "source": "https://github.com/jinpy666/dbx-plugin-files",
   "homepage": "https://github.com/jinpy666/dbx-plugin-files",
   "icon": "assets/plugin.svg",
@@ -36,7 +36,7 @@
       "label": "Storage",
       "icon": "assets/plugin.svg",
       "database_type": "storage",
-      "description": "Storage connection through Apache OpenDAL: local filesystem, S3/MinIO, WebDAV, FTP, SFTP, or any compiled OpenDAL service.",
+      "description": "Storage connection through Apache OpenDAL: local filesystem, S3/MinIO, Tencent COS, WebDAV, FTP, SFTP, or any compiled OpenDAL service.",
       "fields": [
         {
           "key": "display_name",
@@ -65,6 +65,10 @@
             {
               "label": "Alibaba OSS",
               "value": "oss"
+            },
+            {
+              "label": "Tencent COS",
+              "value": "cos"
             },
             {
               "label": "WebDAV",
@@ -99,12 +103,13 @@
           "binding": "config",
           "default": "",
           "placeholder": "https://storage.example.com",
-          "description": "S3/OSS/WebDAV: https://host (TLS) or http://host. FTP: ftp://host:21 or ftps://host:21 (explicit TLS; implicit TLS on 990 is unsupported). SFTP: ssh://user@host:22. SMB: host:445. Set the root separately.",
+          "description": "S3/OSS/COS/WebDAV: https://host (TLS) or http://host. FTP: ftp://host:21 or ftps://host:21 (explicit TLS; implicit TLS on 990 is unsupported). SFTP: ssh://user@host:22. SMB: host:445. Set the root separately.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
               "s3",
               "oss",
+              "cos",
               "webdav",
               "ftp",
               "sftp",
@@ -116,6 +121,7 @@
             "field": "protocol",
             "one_of": [
               "oss",
+              "cos",
               "webdav",
               "ftp",
               "sftp",
@@ -172,14 +178,16 @@
             "field": "protocol",
             "one_of": [
               "s3",
-              "oss"
+              "oss",
+              "cos"
             ]
           },
           "required_when": {
             "field": "protocol",
             "one_of": [
               "s3",
-              "oss"
+              "oss",
+              "cos"
             ]
           }
         },
@@ -254,6 +262,44 @@
             "one_of": [
               "s3",
               "oss"
+            ]
+          }
+        },
+        {
+          "key": "secret_id",
+          "label": "Secret ID",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "cos"
+            ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
+              "cos"
+            ]
+          }
+        },
+        {
+          "key": "secret_key",
+          "label": "Secret Key",
+          "type": "password",
+          "binding": "secret",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "cos"
+            ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
+              "cos"
             ]
           }
         },
@@ -448,11 +494,11 @@
   "localizations": {
     "zh-CN": {
       "name": "Files Studio",
-      "description": "统一管理本地文件夹、S3 兼容存储、WebDAV、FTP、SFTP、SMB/CIFS 及其他 OpenDAL 服务的文件工作台。",
+          "description": "统一管理本地文件夹、S3 兼容存储、腾讯云 COS、WebDAV、FTP、SFTP、SMB/CIFS 及其他 OpenDAL 服务的文件工作台。",
       "contributions": {
         "io.dbx.files.connection": {
           "label": "存储",
-          "description": "经 Apache OpenDAL 的存储连接：本地文件系统、S3/MinIO、阿里云 OSS、WebDAV、FTP、SFTP、SMB/CIFS 或任意已编译的 OpenDAL 服务。",
+          "description": "经 Apache OpenDAL 的存储连接：本地文件系统、S3/MinIO、阿里云 OSS、腾讯云 COS、WebDAV、FTP、SFTP、SMB/CIFS 或任意已编译的 OpenDAL 服务。",
           "fields": {
             "display_name": {
               "label": "连接名称"
@@ -468,7 +514,8 @@
                 "smb": "SMB / CIFS",
                 "opendal-custom": "OpenDAL 自定义服务",
                 "sftp-native": "SFTP（原生）",
-                "oss": "阿里云 OSS"
+                "oss": "阿里云 OSS",
+                "cos": "腾讯云 COS"
               }
             },
             "root": {
@@ -518,6 +565,12 @@
             "secret_access_key": {
               "label": "Secret Access Key",
               "description": "密钥由宿主 secret binding 保管。"
+            },
+            "secret_id": {
+              "label": "Secret ID"
+            },
+            "secret_key": {
+              "label": "Secret Key"
             },
             "username": {
               "label": "用户名",
