@@ -1529,8 +1529,10 @@ async function uploadSource(name: string, size: number, readChunk: (offset: numb
       payload.set(chunk, 8);
       await window.dbxPlugin.sendBinary(`files/upload/${taskId}`, payload);
       offset += chunk.byteLength;
-      // 经 onProgress 走统一入口：保留速率采样（而非直接改 job 字段）。
-      tracker.onProgress({ jobId: taskId, taskId, state: "running", transferred: offset });
+      // issue#6-5：上传进度以 sidecar 收到的权威字节为准（节流事件 + 5s 轮询
+      // 兜底），不再上报本地已入队的 offset——宿主 sendBinary 即发即忘，本地
+      // offset 按内存速度跑到 100%（视频里 265 MiB/s 的假速度），真实网络
+      // 写入远未完成，进度条严重失真。
     }
     await window.dbxPlugin.invoke("files/upload/finish", { taskId }, { timeoutMs: 30 * 60 * 1000 });
     tracker.onProgress({ jobId: taskId, taskId, state: "completed", transferred: size });
@@ -1554,30 +1556,37 @@ async function afterUpload(count: number, target: UploadTarget) {
 }
 
 async function uploadLocalFiles(files: readonly File[], target: UploadTarget) {
+  // issue#6-3：只统计真正成功的文件数。此前无条件按 files.length 提示
+  // 「已上传 N 个」，目标目录不可写时逐文件报错后仍被成功提示覆盖（假成功）。
+  let uploaded = 0;
   for (const file of files) {
     try {
       await uploadSource(file.name, file.size, async (offset, length) =>
         new Uint8Array(await file.slice(offset, offset + length).arrayBuffer()),
         target,
       );
+      uploaded += 1;
     } catch (cause) {
       // R5-P2-4：用户取消当前文件后不再继续上传剩余文件（也不补「已上传 N 个」）。
       if (cause instanceof TransferCanceled) return;
       showError(cause);
     }
   }
-  await afterUpload(files.length, target);
+  await afterUpload(uploaded, target);
 }
 
 async function uploadHostFiles(files: Array<{ handleId: string; name: string; size: number }>, target: UploadTarget) {
   const fileTransfer = window.dbxPlugin.fileTransfer;
   if (!fileTransfer) return;
+  // issue#6-3：同 uploadLocalFiles——成功计数替代「按总数报成功」。
+  let uploaded = 0;
   for (const file of files) {
     try {
       await uploadSource(file.name, file.size, async (offset, length) => {
         const result = await fileTransfer.read(file.handleId, offset, length);
         return window.dbxPlugin.decodeBase64(result.dataBase64);
       }, target);
+      uploaded += 1;
     } catch (cause) {
       // R5-P2-4：同 uploadLocalFiles——取消即终止整个批量上传（handle 释放由
       // finally 统一处理）。
@@ -1587,7 +1596,7 @@ async function uploadHostFiles(files: Array<{ handleId: string; name: string; si
       await fileTransfer.cancel(file.handleId).catch(() => undefined);
     }
   }
-  await afterUpload(files.length, target);
+  await afterUpload(uploaded, target);
 }
 
 async function onUpload(files: File[] | null) {

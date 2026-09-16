@@ -21,6 +21,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use dbx_plugin_sdk::PluginEmitter;
 use opendal::Writer;
@@ -32,6 +33,13 @@ use crate::model::{
     TRANSFER_HISTORY_LIMIT,
 };
 use crate::store::{self, Store};
+
+/// issue#6-6：`finish_upload` 等待在途上传帧的采样间隔与停滞判定窗口。
+/// 宿主 sendBinary 是即发即忘队列，`files/upload/finish` 可能越过仍在排队的
+/// 帧；只要字节数持续前进就继续等，停滞 `UPLOAD_FINISH_STALL_TICKS` 轮
+/// （40 × 250ms = 10s）才判不完整。
+const UPLOAD_FINISH_TICK: Duration = Duration::from_millis(250);
+const UPLOAD_FINISH_STALL_TICKS: u32 = 40;
 
 /// Direction of a transfer job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -502,15 +510,58 @@ impl JobTable {
         task_id: &str,
         emitter: &PluginEmitter,
     ) -> Result<(), String> {
-        let mut uploads = self.inner.uploads.lock().await;
-        if uploads.get(task_id).is_none() {
-            // Idempotent finish: an already-terminal job is a success.
-            if self.inner.job_is_terminal(task_id).await {
-                return Ok(());
+        // issue#6-3：终态 job 不再一律幂等成功——只有 Completed 才返回 Ok；
+        // Failed/Canceled 把存储的错误带回去，宿主侧 finish 如实落失败
+        // （此前写中途失败后再 finish 会拿到 Ok，前端标 completed 并提示
+        // 「已上传」，形成假成功）。
+        if self.inner.job_is_terminal(task_id).await {
+            if let Some(job) = self.status(task_id).await? {
+                return Self::terminal_finish_result(&job);
             }
             return Err("Upload task was not found".to_string());
         }
-        let mut slot = uploads.remove(task_id).expect("slot checked above");
+        let mut slot = {
+            let mut uploads = self.inner.uploads.lock().await;
+            if !uploads.contains_key(task_id) {
+                return Err("Upload task was not found".to_string());
+            }
+            // issue#6-6：finish 可能越过宿主仍在排队的在途帧，received 暂时
+            // 小于声明值。这里等待在途帧落地：字节数仍在前进就继续等，停滞
+            // 超过 UPLOAD_FINISH_STALL_TICKS 才判不完整（真丢帧时也只多等
+            // 10s，而不是把排队中的合法上传误杀）。
+            let mut last = uploads.get(task_id).map(|s| s.received).unwrap_or(0);
+            let mut stall_ticks: u32 = 0;
+            while uploads
+                .get(task_id)
+                .map(|s| s.received < s.declared_size)
+                .unwrap_or(false)
+            {
+                if stall_ticks >= UPLOAD_FINISH_STALL_TICKS {
+                    break;
+                }
+                drop(uploads);
+                tokio::time::sleep(UPLOAD_FINISH_TICK).await;
+                uploads = self.inner.uploads.lock().await;
+                let Some(current) = uploads.get(task_id) else {
+                    // 等待期间写失败：append_upload 已摘除 slot 并落 Failed，
+                    // 带出存储的错误而不是笼统的 not found。
+                    let stored = self
+                        .status(task_id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(|job| job.error);
+                    return Err(stored.unwrap_or_else(|| "Upload task was not found".to_string()));
+                };
+                if current.received == last {
+                    stall_ticks += 1;
+                } else {
+                    stall_ticks = 0;
+                    last = current.received;
+                }
+            }
+            uploads.remove(task_id).expect("slot checked above")
+        };
         if slot.received != slot.declared_size {
             let detail = format!(
                 "Upload is incomplete: expected {}, received {}",
@@ -522,7 +573,6 @@ impl JobTable {
             return Err(detail);
         }
         let closed = slot.writer.close().await;
-        drop(uploads);
         match closed {
             Err(error) => {
                 let detail = format!("Failed to close upload writer: {error}");
@@ -550,6 +600,16 @@ impl JobTable {
             }
         }
     }
+
+/// issue#6-3：终态 finish 的语义映射（纯函数便于单测）。Completed 幂等成功；
+/// Failed 带出存储的错误；Canceled 如实报取消。
+fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
+    match job.status {
+        JobStatus::Completed => Ok(()),
+        JobStatus::Canceled => Err("Upload was canceled".to_string()),
+        _ => Err(job.error.clone().unwrap_or_else(|| "Upload failed".to_string())),
+    }
+}
 
     /// `files/download/start` (§8.3): `remotePath` → `{taskId, size}`.
     ///
@@ -2055,6 +2115,38 @@ mod tests {
     fn job_status_strings_match_contract() {
         assert_eq!(JobStatus::Queued.as_str(), "queued");
         assert_eq!(JobStatus::Canceled.as_str(), "canceled");
+    }
+
+    #[test]
+    fn terminal_finish_maps_failed_and_canceled_to_errors() {
+        // issue#6-3：终态 finish 不得一律幂等成功——Failed 带出存储的错误，
+        // Canceled 如实报取消；只有 Completed 才 Ok（此前 Failed 再 finish
+        // 返回 Ok，前端标 completed 并提示「已上传」，形成假成功）。
+        let build = |status: JobStatus, error: Option<&str>| TransferJob {
+            task_id: "t".into(),
+            connection_id: "c".into(),
+            kind: TransferKind::Upload,
+            remote_path: "/x.bin".into(),
+            total_bytes: Some(100),
+            transferred_bytes: 5,
+            status,
+            error: error.map(String::from),
+            started_at: None,
+            finished_at: Some(1),
+        };
+        assert_eq!(
+            JobTable::terminal_finish_result(&build(JobStatus::Failed, Some("Upload write failed: boom"))),
+            Err("Upload write failed: boom".to_string())
+        );
+        assert_eq!(
+            JobTable::terminal_finish_result(&build(JobStatus::Failed, None)),
+            Err("Upload failed".to_string())
+        );
+        assert_eq!(
+            JobTable::terminal_finish_result(&build(JobStatus::Canceled, None)),
+            Err("Upload was canceled".to_string())
+        );
+        assert_eq!(JobTable::terminal_finish_result(&build(JobStatus::Completed, None)), Ok(()));
     }
 
     #[test]

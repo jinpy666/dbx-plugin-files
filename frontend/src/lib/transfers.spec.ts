@@ -256,3 +256,48 @@ describe("applyList remotePath preservation (P2-8)", () => {
     expect(jobs.j.remotePath).toBe("/fresh/path");
   });
 });
+
+// issue#6-1b：历史任务时间不得跟着本机时钟走——轮询兜底每 5s 全量刷新一次，
+// 若一律写 Date.now()，历史列表展示的「上传/下载时间」会持续漂移到当前时刻。
+describe("applyList historical timestamps (issue #6)", () => {
+  it("adopts the sidecar finishedAt for a first-seen finished job instead of the poll wall clock", () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      const jobs: Record<string, TransferJob> = {};
+      applyList(jobs, { jobs: [{ taskId: "t1", status: "completed", finishedAt: 500_000, startedAt: 400_000 }] }, "conn");
+      expect(jobs.t1.finishedAt).toBe(500_000);
+      expect(jobs.t1.updatedAt).toBe(500_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not clobber an existing job's updatedAt on later polls", () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      const jobs: Record<string, TransferJob> = {
+        j1: job({ jobId: "j1", state: "completed", updatedAt: 123_456, finishedAt: 123_456 }),
+      };
+      // 5s 后的轮询（墙钟已是 1_000_000）：updatedAt 保持完成时刻不变；
+      // finishedAt 继续采信 sidecar（服务端权威完成时刻）。
+      applyList(jobs, { jobs: [{ jobId: "j1", status: "completed", finishedAt: 999_999 }] }, "conn");
+      expect(jobs.j1.updatedAt).toBe(123_456);
+      expect(jobs.j1.finishedAt).toBe(999_999);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("falls back to startedAt, then now, when the payload carries no timestamps", () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      const jobs: Record<string, TransferJob> = {};
+      applyList(jobs, { jobs: [{ taskId: "t1", status: "running", startedAt: 900_000 }] }, "conn");
+      expect(jobs.t1.updatedAt).toBe(900_000);
+      applyList(jobs, { jobs: [{ taskId: "t2", status: "queued" }] }, "conn");
+      expect(jobs.t2.updatedAt).toBe(1_000_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

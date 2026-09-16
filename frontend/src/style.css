@@ -34,8 +34,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px
 
 /* ---- workbench shell -------------------------------------------------- */
 .wb-workbench { position: relative; display: flex; width: 100%; height: 100%; min-width: 0; min-height: 0; flex-direction: column; background: var(--background); color: var(--foreground); }
-.wb-error-banner { display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-bottom: 1px solid color-mix(in srgb, var(--destructive) 40%, transparent); background: color-mix(in srgb, var(--destructive) 14%, var(--background)); color: var(--foreground); }
-.wb-notice { display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--primary) 10%, var(--background)); color: var(--muted-foreground); }
+/* issue#6-4：提示/错误条悬浮在内容之上（fixed），出现与消失不再挤压布局导致窗口上下跳动 */
+.wb-error-banner { position: fixed; top: 0; left: 0; right: 0; z-index: 60; display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-bottom: 1px solid color-mix(in srgb, var(--destructive) 40%, transparent); background: color-mix(in srgb, var(--destructive) 14%, var(--background)); box-shadow: 0 2px 8px color-mix(in srgb, var(--destructive) 25%, transparent); color: var(--foreground); }
+.wb-notice { position: fixed; top: 0; left: 0; right: 0; z-index: 60; display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--primary) 10%, var(--background)); backdrop-filter: blur(4px); box-shadow: 0 2px 8px color-mix(in srgb, var(--foreground) 12%, transparent); color: var(--muted-foreground); }
 
 /* ---- toolbar ----------------------------------------------------------- */
 .wb-toolbar { position: relative; z-index: 5; display: flex; height: 36px; min-height: 36px; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--border); padding: 0 8px; background: color-mix(in srgb, var(--background) 92%, transparent); }
