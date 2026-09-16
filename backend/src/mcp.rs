@@ -2387,6 +2387,7 @@ fn stored_connection_from_inline(connection: &Value) -> Result<StoredConnection,
         ("secretAccessKey", "secret_access_key"),
         ("secretId", "secret_id"),
         ("secretKey", "secret_key"),
+        ("securityToken", "security_token"),
         ("password", "password"),
         ("key", "key"),
     ] {
@@ -2425,13 +2426,14 @@ fn inline_connection_properties() -> Value {
     "protocol": { "type": "string",
         "description": "Storage protocol (required): local (alias of fs), fs, s3, oss, cos, webdav, ftp, sftp, smb, sftp-native, opendal-custom" },
     "root": { "type": "string", "description": "OpenDAL root prefix" },
-    "bucket": { "type": "string", "description": "Bucket (s3/oss)" },
+    "bucket": { "type": "string", "description": "Bucket (s3/oss/cos)" },
     "region": { "type": "string", "description": "Region (s3/oss)" },
-    "endpoint": { "type": "string", "description": "Endpoint URL (s3/oss)" },
+    "endpoint": { "type": "string", "description": "Endpoint URL (s3/oss/cos)" },
     "accessKeyId": { "type": "string", "description": "Access key id (s3/oss)" },
     "secretAccessKey": { "type": "string", "description": "Secret access key (s3/oss; stays in process memory only)" },
     "secretId": { "type": "string", "description": "Tencent Cloud COS secret id (stays in process memory only)" },
     "secretKey": { "type": "string", "description": "Tencent Cloud COS secret key (stays in process memory only)" },
+    "securityToken": { "type": "string", "description": "Tencent Cloud COS STS security token (stays in process memory only)" },
     "enableVirtualHostStyle": { "type": "boolean", "description": "Virtual-host style addressing (s3)" },
     "username": { "type": "string", "description": "Username (webdav/smb)" },
     "user": { "type": "string", "description": "User (ftp/sftp/sftp-native)" },
@@ -4621,11 +4623,13 @@ mod tests {
             "endpoint": "https://cos.ap-guangzhou.myqcloud.com",
             "secretId": "throwaway-secret-id",
             "secretKey": "throwaway-secret-key",
+            "securityToken": "throwaway-security-token",
         }))
         .unwrap();
         assert_eq!(cos.protocol, "cos");
         assert_eq!(cos.secret_id, "throwaway-secret-id");
         assert_eq!(cos.secret_key, "throwaway-secret-key");
+        assert_eq!(cos.security_token, "throwaway-security-token");
 
         let missing = stored_connection_from_inline(&json!({ "root": "/data" })).unwrap_err();
         assert!(missing.contains("protocol"), "{missing}");
@@ -4667,6 +4671,7 @@ mod tests {
             "secretAccessKey",
             "secretId",
             "secretKey",
+            "securityToken",
             "password",
             "key",
         ];
@@ -4744,6 +4749,9 @@ mod tests {
         ];
         let secret_map: &[(&str, &str)] = &[
             ("secret_access_key", "secretAccessKey"),
+            ("secret_id", "secretId"),
+            ("secret_key", "secretKey"),
+            ("security_token", "securityToken"),
             ("password", "password"),
             ("key", "key"),
         ];

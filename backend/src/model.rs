@@ -49,8 +49,8 @@ pub const PROTOCOLS: [&str; 10] = [
 ];
 
 /// A validated connection parsed from lifecycle params. Secret fields
-/// (`password`, `secret_access_key`, `secret_id`, `secret_key`) are kept in
-/// memory only.
+/// (`password`, `secret_access_key`, `secret_id`, `secret_key`,
+/// `security_token`) are kept in memory only.
 #[derive(Debug, Clone)]
 pub struct StoredConnection {
     pub id: String,
@@ -77,6 +77,8 @@ pub struct StoredConnection {
     pub secret_id: String,
     /// Secret (`connection_secrets.secret_key`).
     pub secret_key: String,
+    /// Optional STS session token (`connection_secrets.security_token`).
+    pub security_token: String,
     /// s3 only: address the bucket as `bucket.host` instead of a path-style
     /// URL (`external_config.enable_virtual_host_style`).
     pub enable_virtual_host_style: bool,
@@ -187,6 +189,7 @@ impl StoredConnection {
             secret_access_key: secret_string(connection_secrets, "secret_access_key"),
             secret_id: secret_string(connection_secrets, "secret_id"),
             secret_key: secret_string(connection_secrets, "secret_key"),
+            security_token: secret_string(connection_secrets, "security_token"),
             enable_virtual_host_style: bool_field(
                 external_config,
                 "enable_virtual_host_style",
@@ -585,7 +588,8 @@ mod tests {
                 },
                 "connection_secrets": {
                     "secret_id": "throwaway-secret-id",
-                    "secret_key": "throwaway-secret-key"
+                    "secret_key": "throwaway-secret-key",
+                    "security_token": "throwaway-security-token"
                 }
             }
         }))
@@ -593,6 +597,7 @@ mod tests {
         assert_eq!(connection.protocol, "cos");
         assert_eq!(connection.secret_id, "throwaway-secret-id");
         assert_eq!(connection.secret_key, "throwaway-secret-key");
+        assert_eq!(connection.security_token, "throwaway-security-token");
         assert_eq!(connection.secret_access_key, "");
     }
 
@@ -1015,14 +1020,14 @@ mod tests {
         // Protocol-gated field matrix: each protocol only surfaces its own
         // fields, global fields stay ungated.
         let expects: &[(&str, &[&str])] = &[
-            ("bucket", &["s3", "oss"]),
+            ("bucket", &["s3", "oss", "cos"]),
             ("region", &["s3"]),
             ("access_key_id", &["s3", "oss"]),
             ("secret_access_key", &["s3", "oss"]),
             ("enable_virtual_host_style", &["s3"]),
             (
                 "endpoint",
-                &["s3", "oss", "webdav", "ftp", "sftp", "smb", "sftp-native"],
+                &["s3", "oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native"],
             ),
             ("username", &["webdav", "smb"]),
             ("user", &["ftp", "sftp", "sftp-native"]),
@@ -1036,6 +1041,9 @@ mod tests {
             ("known_hosts_strategy", &["sftp", "sftp-native"]),
             ("service", &["opendal-custom"]),
             ("config", &["opendal-custom"]),
+            ("secret_id", &["cos"]),
+            ("secret_key", &["cos"]),
+            ("security_token", &["cos"]),
         ];
         for (name, protocols) in expects {
             let one_of: Vec<&str> = field(name)["visible_when"]["one_of"]
