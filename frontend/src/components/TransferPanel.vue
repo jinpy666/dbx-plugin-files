@@ -56,7 +56,9 @@ function speedMeta(job: TransferJob): string {
 }
 
 function timeLabel(job: TransferJob): string {
-  return formatTime(new Date(job.updatedAt).toISOString());
+  // issue#6-1b：历史时间优先用 sidecar 完成时刻（finishedAt，轮询不覆盖），
+  // 退回事件流写入的 updatedAt——两者都不随本机时钟漂移。
+  return formatTime(new Date(job.finishedAt ?? job.updatedAt).toISOString());
 }
 </script>
 

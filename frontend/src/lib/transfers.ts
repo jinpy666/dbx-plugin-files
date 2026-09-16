@@ -24,6 +24,10 @@ export interface TransferJob {
   bytesTotal?: number;
   error?: string;
   updatedAt: number;
+  /** 终态完成时刻（sidecar finishedAt，Unix 毫秒）。历史列表时间展示的权威值。 */
+  finishedAt?: number;
+  /** 任务开始时刻（sidecar startedAt，Unix 毫秒）。 */
+  startedAt?: number;
   /** 平滑传输速率（字节/秒）。仅由 tracker 的速率采样器在活动 job 上维护。 */
   rateBps?: number;
 }
@@ -116,6 +120,8 @@ export function applyList(jobs: Record<string, TransferJob>, payload: TransferLi
     const state = String(raw.state ?? raw.status ?? "queued") as TransferState;
     const kind = String(raw.kind ?? raw.direction ?? "upload") as TransferKind;
     const existing = jobs[jobId];
+    const finishedAt = raw.finishedAt === undefined ? undefined : Number(raw.finishedAt);
+    const startedAt = raw.startedAt === undefined ? undefined : Number(raw.startedAt);
     jobs[jobId] = {
       jobId,
       taskId: raw.taskId ? String(raw.taskId) : undefined,
@@ -134,7 +140,13 @@ export function applyList(jobs: Record<string, TransferJob>, payload: TransferLi
       bytesDone: raw.bytesDone === undefined ? undefined : Number(raw.bytesDone),
       bytesTotal: raw.bytesTotal === undefined ? undefined : Number(raw.bytesTotal),
       error: raw.error ? String(raw.error) : undefined,
-      updatedAt: Date.now(),
+      // issue#6-1b：历史任务时间用 sidecar 的 finishedAt/startedAt（真实完成/
+      // 开始时刻）。轮询兜底每 5s 全量刷新一次，若一律写 Date.now()，历史
+      // 任务的展示时间会持续跟着本机时钟走（用户报告的「时间和电脑时间一起变」）。
+      // 已有 job 保留事件流写入的 updatedAt，不被轮询覆盖。
+      updatedAt: existing?.updatedAt ?? finishedAt ?? startedAt ?? Date.now(),
+      finishedAt,
+      startedAt,
     };
   }
 }
