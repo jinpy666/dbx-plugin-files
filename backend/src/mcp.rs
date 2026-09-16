@@ -2346,8 +2346,8 @@ fn stored_connection_from_inline(connection: &Value) -> Result<StoredConnection,
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
-            "Missing protocol in connection (one of: local, fs, s3, oss, cos, webdav, ftp, \
-             sftp, smb, sftp-native, opendal-custom)"
+            "Missing protocol in connection (one of: local, fs, s3, gcs, azblob, obs, oss, cos, webdav, ftp, \
+             sftp, smb, sftp-native, opendal-custom, aliyun-drive, dropbox, gdrive, koofr, onedrive, pcloud, seafile, yandex-disk)"
                 .to_string()
         })?;
     let protocol = match protocol {
@@ -2364,6 +2364,9 @@ fn stored_connection_from_inline(connection: &Value) -> Result<StoredConnection,
         ("bucket", "bucket"),
         ("endpoint", "endpoint"),
         ("region", "region"),
+        ("container", "container"),
+        ("accountName", "account_name"),
+        ("scope", "scope"),
         ("accessKeyId", "access_key_id"),
         ("enableVirtualHostStyle", "enable_virtual_host_style"),
         ("username", "username"),
@@ -2377,6 +2380,10 @@ fn stored_connection_from_inline(connection: &Value) -> Result<StoredConnection,
         ("timeoutSecs", "timeout_secs"),
         ("service", "service"),
         ("config", "config"),
+        ("clientId", "client_id"),
+        ("driveType", "drive_type"),
+        ("email", "email"),
+        ("repoName", "repo_name"),
     ] {
         if let Some(value) = map.get(inline_key).filter(|value| !value.is_null()) {
             external.insert(config_key.to_string(), value.clone());
@@ -2385,11 +2392,16 @@ fn stored_connection_from_inline(connection: &Value) -> Result<StoredConnection,
     let mut secrets = serde_json::Map::new();
     for (inline_key, secret_key) in [
         ("secretAccessKey", "secret_access_key"),
+        ("credential", "credential"),
+        ("accountKey", "account_key"),
         ("secretId", "secret_id"),
         ("secretKey", "secret_key"),
         ("securityToken", "security_token"),
         ("password", "password"),
         ("key", "key"),
+        ("accessToken", "access_token"),
+        ("clientSecret", "client_secret"),
+        ("refreshToken", "refresh_token"),
     ] {
         if let Some(value) = map.get(inline_key).and_then(Value::as_str) {
             secrets.insert(secret_key.to_string(), json!(value));
@@ -2424,13 +2436,18 @@ fn stored_connection_from_inline(connection: &Value) -> Result<StoredConnection,
 fn inline_connection_properties() -> Value {
     json!({
     "protocol": { "type": "string",
-        "description": "Storage protocol (required): local (alias of fs), fs, s3, oss, cos, webdav, ftp, sftp, smb, sftp-native, opendal-custom" },
+        "description": "Storage protocol (required): local (alias of fs), fs, s3, gcs, azblob, obs, oss, cos, webdav, ftp, sftp, smb, sftp-native, opendal-custom, aliyun-drive, dropbox, gdrive, koofr, onedrive, pcloud, seafile, yandex-disk" },
     "root": { "type": "string", "description": "OpenDAL root prefix" },
-    "bucket": { "type": "string", "description": "Bucket (s3/oss/cos)" },
+    "bucket": { "type": "string", "description": "Bucket (s3/gcs/obs/oss/cos)" },
+    "container": { "type": "string", "description": "Azure Blob container (azblob)" },
+    "accountName": { "type": "string", "description": "Azure Storage account name (azblob)" },
+    "credential": { "type": "string", "description": "Base64 Google credential JSON (gcs; stays in process memory only)" },
+    "accountKey": { "type": "string", "description": "Azure Storage account key (stays in process memory only)" },
+    "scope": { "type": "string", "description": "Google OAuth scope (gcs)" },
     "region": { "type": "string", "description": "Region (s3/oss)" },
-    "endpoint": { "type": "string", "description": "Endpoint URL (s3/oss/cos)" },
-    "accessKeyId": { "type": "string", "description": "Access key id (s3/oss)" },
-    "secretAccessKey": { "type": "string", "description": "Secret access key (s3/oss; stays in process memory only)" },
+    "endpoint": { "type": "string", "description": "Endpoint URL (s3/gcs/azblob/obs/oss/cos)" },
+    "accessKeyId": { "type": "string", "description": "Access key id (s3/obs/oss)" },
+    "secretAccessKey": { "type": "string", "description": "Secret access key (s3/obs/oss; stays in process memory only)" },
     "secretId": { "type": "string", "description": "Tencent Cloud COS secret id (stays in process memory only)" },
     "secretKey": { "type": "string", "description": "Tencent Cloud COS secret key (stays in process memory only)" },
     "securityToken": { "type": "string", "description": "Tencent Cloud COS STS security token (stays in process memory only)" },
@@ -2444,6 +2461,13 @@ fn inline_connection_properties() -> Value {
     "domain": { "type": "string", "description": "Domain (smb)" },
     "service": { "type": "string", "description": "OpenDAL service name (opendal-custom)" },
     "config": { "type": "object", "description": "OpenDAL service config map (opendal-custom)" },
+    "accessToken": { "type": "string", "description": "OAuth access token (drive services; stays in process memory only)" },
+    "clientId": { "type": "string", "description": "OAuth client id (drive services)" },
+    "clientSecret": { "type": "string", "description": "OAuth client secret (drive services; stays in process memory only)" },
+    "refreshToken": { "type": "string", "description": "OAuth refresh token (drive services; stays in process memory only)" },
+    "driveType": { "type": "string", "description": "Alibaba Drive type (resource/share/backup)" },
+    "email": { "type": "string", "description": "Koofr account email" },
+    "repoName": { "type": "string", "description": "Seafile library name" },
     "readOnly": { "type": "boolean", "description": "Open read-only (write tools refused)" },
     "allowDelete": { "type": "boolean", "description": "Allow delete-class tools (default true; set false to refuse delete/purge)" },
     "lockToRoot": { "type": "boolean", "description": "Confine paths to the root prefix" },
@@ -4654,6 +4678,9 @@ mod tests {
             "bucket",
             "endpoint",
             "region",
+            "container",
+            "accountName",
+            "scope",
             "accessKeyId",
             "enableVirtualHostStyle",
             "username",
@@ -4667,13 +4694,22 @@ mod tests {
             "timeoutSecs",
             "service",
             "config",
+            "clientId",
+            "driveType",
+            "email",
+            "repoName",
             // secret-bound keys
             "secretAccessKey",
+            "credential",
+            "accountKey",
             "secretId",
             "secretKey",
             "securityToken",
             "password",
             "key",
+            "accessToken",
+            "clientSecret",
+            "refreshToken",
         ];
         for key in mapped {
             assert!(
@@ -4733,6 +4769,9 @@ mod tests {
             ("bucket", "bucket"),
             ("endpoint", "endpoint"),
             ("region", "region"),
+            ("container", "container"),
+            ("account_name", "accountName"),
+            ("scope", "scope"),
             ("access_key_id", "accessKeyId"),
             ("enable_virtual_host_style", "enableVirtualHostStyle"),
             ("username", "username"),
@@ -4746,14 +4785,23 @@ mod tests {
             ("timeout_secs", "timeoutSecs"),
             ("service", "service"),
             ("config", "config"),
+            ("client_id", "clientId"),
+            ("drive_type", "driveType"),
+            ("email", "email"),
+            ("repo_name", "repoName"),
         ];
         let secret_map: &[(&str, &str)] = &[
             ("secret_access_key", "secretAccessKey"),
+            ("credential", "credential"),
+            ("account_key", "accountKey"),
             ("secret_id", "secretId"),
             ("secret_key", "secretKey"),
             ("security_token", "securityToken"),
             ("password", "password"),
             ("key", "key"),
+            ("access_token", "accessToken"),
+            ("client_secret", "clientSecret"),
+            ("refresh_token", "refreshToken"),
         ];
         let mut covered: Vec<&str> = Vec::new();
         for field in fields {

@@ -1,6 +1,6 @@
 // OpenDAL 服务字段模板（纯 UI 糖，自 tiny-rdm rcloneConfig.js 改写）。
 // 后端零翻译：字段 key 即 OpenDAL Builder 配置键，直入 Builder map。
-// 快捷协议（fs/s3/webdav/ftp/sftp/smb）与 opendal-custom 透传的元数据都在这里，
+// 快捷协议（fs/s3/gcs/azblob/obs/oss/cos/webdav/ftp/sftp/smb）与 opendal-custom 透传的元数据都在这里，
 // UI 列表须与 sidecar 编译期 feature 白名单保持同步（见 docs/IMPL_PLAN §2）。
 
 export type ServiceFieldType = "text" | "password" | "boolean" | "select";
@@ -45,6 +45,46 @@ export const SERVICE_TEMPLATES: Record<string, ServiceTemplate> = {
       { key: "access_key_id", type: "text", required: true },
       { key: "secret_access_key", type: "password", required: true, secret: true },
       { key: "enable_virtual_host_style", type: "boolean" },
+    ],
+  },
+  gcs: {
+    id: "gcs",
+    kind: "quick",
+    fields: [
+      { key: "bucket", type: "text", required: true },
+      { key: "endpoint", type: "text", placeholder: "https://storage.googleapis.com" },
+      { key: "credential", type: "password", required: true, secret: true, placeholder: "base64-encoded service account JSON" },
+      { key: "scope", type: "text", placeholder: "https://www.googleapis.com/auth/devstorage.read_write" },
+    ],
+  },
+  azblob: {
+    id: "azblob",
+    kind: "quick",
+    fields: [
+      { key: "container", type: "text", required: true },
+      { key: "endpoint", type: "text", required: true, placeholder: "https://account.blob.core.windows.net" },
+      { key: "account_name", type: "text", required: true },
+      { key: "account_key", type: "password", required: true, secret: true },
+    ],
+  },
+  obs: {
+    id: "obs",
+    kind: "quick",
+    fields: [
+      { key: "bucket", type: "text", required: true },
+      { key: "endpoint", type: "text", required: true, placeholder: "https://obs.cn-north-4.myhuaweicloud.com" },
+      { key: "access_key_id", type: "text", required: true },
+      { key: "secret_access_key", type: "password", required: true, secret: true },
+    ],
+  },
+  oss: {
+    id: "oss",
+    kind: "quick",
+    fields: [
+      { key: "bucket", type: "text", required: true },
+      { key: "endpoint", type: "text", required: true, placeholder: "https://oss-cn-hangzhou.aliyuncs.com" },
+      { key: "access_key_id", type: "text", required: true },
+      { key: "secret_access_key", type: "password", required: true, secret: true },
     ],
   },
   cos: {
@@ -139,6 +179,17 @@ export const CUSTOM_SERVICES: ReadonlySet<string> = new Set([
   "oss",
   "obs",
   "cos",
+  // OpenDAL file-drive services. They share the same Operator interface and
+  // are exposed through opendal-custom until their provider-specific OAuth
+  // flows are integrated into the host connection picker.
+  "aliyun-drive",
+  "dropbox",
+  "gdrive",
+  "koofr",
+  "onedrive",
+  "pcloud",
+  "seafile",
+  "yandex-disk",
 ]);
 
 /** 各服务常用的配置键提示（JSON 编辑器的占位示例）。 */
@@ -152,6 +203,14 @@ export const CUSTOM_CONFIG_HINTS: Readonly<Record<string, string>> = {
   webdav: '{ "endpoint": "https://dav.example.com/dav", "username": "...", "password": "..." }',
   ftp: '{ "endpoint": "ftp.example.com:21" }',
   sftp: '{ "endpoint": "ssh://user@host:22", "key": "~/.ssh/id_ed25519" }',
+  "aliyun-drive": '{ "root": "/", "client_id": "...", "client_secret": "...", "refresh_token": "...", "drive_type": "resource" }',
+  dropbox: '{ "root": "/", "access_token": "..." }',
+  gdrive: '{ "root": "/", "access_token": "..." }',
+  koofr: '{ "endpoint": "https://api.koofr.net/", "email": "you@example.com", "password": "..." }',
+  onedrive: '{ "root": "/", "access_token": "..." }',
+  pcloud: '{ "endpoint": "https://api.pcloud.com", "username": "you@example.com", "password": "..." }',
+  seafile: '{ "endpoint": "https://files.example.com", "username": "you@example.com", "password": "...", "repo_name": "library" }',
+  "yandex-disk": '{ "root": "/", "access_token": "..." }',
 };
 
 export function quickProtocolIds(): string[] {
@@ -203,10 +262,9 @@ const SFTP_KNOWN_HOSTS: CustomFieldSpec = {
  * 已知 opendal-custom 服务的参数 schema（与 backend/Cargo.toml feature 白名单
  * 对齐；字段以 OpenDAL services 文档为准，只收常用键，其余键走 JSON 模式）。
  *
- * 服务范围（产品决策 2026-08-29）：只收 **文件存储**（fs/sftp/ftp/webdav）与
- * **云对象存储**（s3/gcs/azblob/oss/obs/cos）；db/cache/memory 类（redis、
- * memcached、memory、rocksdb…）不属于文件工作台场景，不进配置面（memory 仅
- * 保留为后端 smoke 测试后端，经 JSON 模式仍可用于开发调试）。
+ * 服务范围：只收 **文件存储**（fs/sftp/ftp/webdav）、**云对象存储**
+ * （s3/gcs/azblob/oss/obs/cos）与 OpenDAL 已提供的网盘服务；db/cache/memory
+ * 类（redis、memcached、memory、rocksdb…）不属于文件工作台场景，不进配置面。
  */
 export const CUSTOM_SERVICE_SCHEMAS: Readonly<Record<string, readonly CustomFieldSpec[]>> = {
   // root 留空 = 整个文件系统（sidecar 兜底为 "/"，与内置本地连接一致）。
@@ -264,6 +322,58 @@ export const CUSTOM_SERVICE_SCHEMAS: Readonly<Record<string, readonly CustomFiel
     { key: "secret_id", type: "password", required: true, secret: true },
     { key: "secret_key", type: "password", required: true, secret: true },
     { key: "security_token", type: "password", secret: true },
+  ],
+  "aliyun-drive": [
+    { key: "root", type: "text", placeholder: "/" },
+    { key: "access_token", type: "password", secret: true, placeholder: "short-lived token (or use refresh token)" },
+    { key: "client_id", type: "text", placeholder: "OAuth client id" },
+    { key: "client_secret", type: "password", secret: true },
+    { key: "refresh_token", type: "password", secret: true },
+    { key: "drive_type", type: "select", options: ["default", "backup", "resource"] },
+  ],
+  dropbox: [
+    { key: "root", type: "text", placeholder: "/" },
+    { key: "access_token", type: "password", secret: true, placeholder: "short-lived token (or use refresh token)" },
+    { key: "refresh_token", type: "password", secret: true },
+    { key: "client_id", type: "text" },
+    { key: "client_secret", type: "password", secret: true },
+  ],
+  gdrive: [
+    { key: "root", type: "text", placeholder: "/" },
+    { key: "access_token", type: "password", secret: true, placeholder: "short-lived token (or use refresh token)" },
+    { key: "refresh_token", type: "password", secret: true },
+    { key: "client_id", type: "text" },
+    { key: "client_secret", type: "password", secret: true },
+  ],
+  koofr: [
+    { key: "root", type: "text", placeholder: "/" },
+    { key: "endpoint", type: "text", required: true, security: "url", placeholder: "https://api.koofr.net/" },
+    { key: "email", type: "text", required: true },
+    { key: "password", type: "password", required: true, secret: true, placeholder: "Koofr application password" },
+  ],
+  onedrive: [
+    { key: "root", type: "text", placeholder: "/" },
+    { key: "access_token", type: "password", secret: true, placeholder: "short-lived token (or use refresh token)" },
+    { key: "refresh_token", type: "password", secret: true },
+    { key: "client_id", type: "text" },
+    { key: "client_secret", type: "password", secret: true },
+  ],
+  pcloud: [
+    { key: "root", type: "text", placeholder: "/" },
+    { key: "endpoint", type: "text", required: true, security: "url", placeholder: "https://api.pcloud.com" },
+    { key: "username", type: "text", required: true },
+    { key: "password", type: "password", required: true, secret: true },
+  ],
+  seafile: [
+    { key: "root", type: "text", placeholder: "/" },
+    { key: "endpoint", type: "text", required: true, security: "url", placeholder: "https://files.example.com" },
+    { key: "username", type: "text", required: true },
+    { key: "password", type: "password", required: true, secret: true },
+    { key: "repo_name", type: "text", required: true, placeholder: "library" },
+  ],
+  "yandex-disk": [
+    { key: "root", type: "text", placeholder: "/" },
+    { key: "access_token", type: "password", required: true, secret: true },
   ],
 };
 

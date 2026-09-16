@@ -83,7 +83,11 @@ describe("opendalServices", () => {
     for (const service of ["fs", "s3", "webdav", "ftp", "sftp", "gcs", "azblob", "oss", "obs", "cos"]) {
       expect(CUSTOM_SERVICES.has(service)).toBe(true);
     }
-    expect(quickProtocolIds()).toEqual(["fs", "s3", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native"]);
+    expect(quickProtocolIds()).toEqual(["fs", "s3", "gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native"]);
+    for (const service of ["aliyun-drive", "dropbox", "gdrive", "koofr", "onedrive", "pcloud", "seafile", "yandex-disk"]) {
+      expect(CUSTOM_SERVICES.has(service)).toBe(true);
+      expect(schemaForService(service)).toBeDefined();
+    }
   });
 
   it("maps sftp-native quick fields into an external config with secrets separated", () => {
@@ -162,6 +166,14 @@ describe("custom service schemas", () => {
     expect(requiredOf("oss")).toEqual(["bucket", "endpoint", "access_key_id", "access_key_secret"]);
     expect(requiredOf("obs")).toEqual(["bucket", "endpoint", "access_key_id", "secret_access_key"]);
     expect(requiredOf("cos")).toEqual(["bucket", "endpoint", "secret_id", "secret_key"]);
+    expect(requiredOf("aliyun-drive")).toEqual([]);
+    expect(requiredOf("dropbox")).toEqual([]);
+    expect(requiredOf("gdrive")).toEqual([]);
+    expect(requiredOf("koofr")).toEqual(["endpoint", "email", "password"]);
+    expect(requiredOf("onedrive")).toEqual([]);
+    expect(requiredOf("pcloud")).toEqual(["endpoint", "username", "password"]);
+    expect(requiredOf("seafile")).toEqual(["endpoint", "username", "password", "repo_name"]);
+    expect(requiredOf("yandex-disk")).toEqual(["access_token"]);
   });
 
   it("flags URL/host security classes on endpoint-like fields and secrets on credentials", () => {
@@ -178,6 +190,11 @@ describe("custom service schemas", () => {
     expect(specOf("oss", "access_key_secret").secret).toBe(true);
     expect(specOf("cos", "secret_id")).toMatchObject({ type: "password", required: true, secret: true });
     expect(specOf("cos", "secret_key")).toMatchObject({ type: "password", required: true, secret: true });
+    expect(specOf("dropbox", "access_token")).toMatchObject({ type: "password", secret: true });
+    expect(specOf("onedrive", "client_secret")).toMatchObject({ type: "password", secret: true });
+    expect(specOf("koofr", "endpoint").security).toBe("url");
+    expect(specOf("pcloud", "endpoint").security).toBe("url");
+    expect(specOf("seafile", "endpoint").security).toBe("url");
     expect(specOf("sftp", "known_hosts_strategy").options).toEqual(["Tolerate", "Strict", "Trust"]);
   });
 });

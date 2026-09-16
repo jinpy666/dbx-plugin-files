@@ -98,7 +98,19 @@ for (const [index, field] of fields.entries()) {
 // store (lifecycle `connection_secrets`, masked input) — never to the config
 // binding, which is persisted in plaintext alongside the connection record.
 // `password` inputs must always be secret-bound so the host masks them.
-const SECRET_FIELDS = new Set(["key", "password", "secret_access_key", "secret_id", "secret_key", "security_token"]);
+const SECRET_FIELDS = new Set([
+  "key",
+  "password",
+  "secret_access_key",
+  "secret_id",
+  "secret_key",
+  "security_token",
+  "credential",
+  "account_key",
+  "access_token",
+  "client_secret",
+  "refresh_token",
+]);
 for (const field of fields) {
   if (field.type === "password") {
     assert.equal(field.binding, "secret", `${field.key}: password input must bind to secret`);
@@ -136,16 +148,25 @@ for (const protocol of options("protocol")) {
     const current = state({ protocol, read_only });
     // Object storage (S3 / OSS): bucket+keys required; endpoint required for
     // OSS (no default endpoint) but optional for S3 (AWS default endpoint).
-    current.visible("endpoint", !["fs", "opendal-custom"].includes(protocol));
-    current.required("endpoint", ["oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native"].includes(protocol));
-    current.visible("bucket", ["s3", "oss", "cos"].includes(protocol));
-    current.required("bucket", ["s3", "oss", "cos"].includes(protocol));
+    current.visible("endpoint", !["fs", "opendal-custom", "aliyun-drive", "dropbox", "gdrive", "onedrive", "yandex-disk"].includes(protocol));
+    current.required("endpoint", ["gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native", "koofr", "pcloud", "seafile"].includes(protocol));
+    current.visible("bucket", ["s3", "gcs", "obs", "oss", "cos"].includes(protocol));
+    current.required("bucket", ["s3", "gcs", "obs", "oss", "cos"].includes(protocol));
+    current.visible("container", protocol === "azblob");
+    current.required("container", protocol === "azblob");
+    current.visible("account_name", protocol === "azblob");
+    current.required("account_name", protocol === "azblob");
+    current.visible("account_key", protocol === "azblob");
+    current.required("account_key", protocol === "azblob");
+    current.visible("credential", protocol === "gcs");
+    current.required("credential", protocol === "gcs");
+    current.visible("scope", protocol === "gcs");
     current.visible("region", protocol === "s3");
     current.visible("enable_virtual_host_style", protocol === "s3");
-    current.visible("access_key_id", ["s3", "oss"].includes(protocol));
-    current.required("access_key_id", ["s3", "oss"].includes(protocol));
-    current.visible("secret_access_key", ["s3", "oss"].includes(protocol));
-    current.required("secret_access_key", ["s3", "oss"].includes(protocol));
+    current.visible("access_key_id", ["s3", "obs", "oss"].includes(protocol));
+    current.required("access_key_id", ["s3", "obs", "oss"].includes(protocol));
+    current.visible("secret_access_key", ["s3", "obs", "oss"].includes(protocol));
+    current.required("secret_access_key", ["s3", "obs", "oss"].includes(protocol));
     current.visible("secret_id", protocol === "cos");
     current.required("secret_id", protocol === "cos");
     current.visible("secret_key", protocol === "cos");
@@ -157,13 +178,25 @@ for (const protocol of options("protocol")) {
     current.required("service", protocol === "opendal-custom");
     current.visible("config", protocol === "opendal-custom");
     // Remote service accounts, per protocol family.
-    current.visible("username", ["webdav", "smb"].includes(protocol));
+    current.visible("username", ["webdav", "smb", "pcloud", "seafile"].includes(protocol));
+    current.required("username", ["pcloud", "seafile"].includes(protocol));
     current.visible("user", ["ftp", "sftp", "sftp-native"].includes(protocol));
     current.visible("share", protocol === "smb");
     current.visible("domain", protocol === "smb");
-    current.visible("password", ["webdav", "ftp", "smb", "sftp-native"].includes(protocol));
+    current.visible("password", ["webdav", "ftp", "smb", "sftp-native", "koofr", "pcloud", "seafile"].includes(protocol));
+    current.required("password", ["koofr", "pcloud", "seafile"].includes(protocol));
     current.visible("key", ["sftp", "sftp-native"].includes(protocol));
     current.visible("known_hosts_strategy", ["sftp", "sftp-native"].includes(protocol));
+    current.visible("access_token", ["dropbox", "gdrive", "onedrive", "yandex-disk"].includes(protocol));
+    current.required("access_token", protocol === "yandex-disk");
+    current.visible("client_id", ["aliyun-drive", "dropbox", "gdrive", "onedrive"].includes(protocol));
+    current.visible("client_secret", ["aliyun-drive", "dropbox", "gdrive", "onedrive"].includes(protocol));
+    current.visible("refresh_token", ["aliyun-drive", "dropbox", "gdrive", "onedrive"].includes(protocol));
+    current.visible("drive_type", protocol === "aliyun-drive");
+    current.visible("email", protocol === "koofr");
+    current.required("email", protocol === "koofr");
+    current.visible("repo_name", protocol === "seafile");
+    current.required("repo_name", protocol === "seafile");
     // Read-only hides (never removes) the delete toggle.
     current.visible("allow_delete", !read_only);
     // Legacy via-DBX-SSH fields must not reappear in the form.

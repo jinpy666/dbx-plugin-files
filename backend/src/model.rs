@@ -35,9 +35,12 @@ pub const JSON_CHUNK_BYTES: usize = 1024 * 1024;
 /// fixed OpenDAL scheme (`smb` via the custom `engine::smb` adapter,
 /// `sftp-native` via the custom `engine::sftp_native` adapter); the
 /// generic pass-through is `opendal-custom`.
-pub const PROTOCOLS: [&str; 10] = [
+pub const PROTOCOLS: [&str; 21] = [
     "fs",
     "s3",
+    "gcs",
+    "azblob",
+    "obs",
     "oss",
     "cos",
     "webdav",
@@ -46,6 +49,14 @@ pub const PROTOCOLS: [&str; 10] = [
     "smb",
     "sftp-native",
     "opendal-custom",
+    "aliyun-drive",
+    "dropbox",
+    "gdrive",
+    "koofr",
+    "onedrive",
+    "pcloud",
+    "seafile",
+    "yandex-disk",
 ];
 
 /// A validated connection parsed from lifecycle params. Secret fields
@@ -67,6 +78,18 @@ pub struct StoredConnection {
     pub custom_config: Value,
     // --- s3 ---
     pub bucket: String,
+    // --- gcs / azblob ---
+    /// GCS service-account or external-account JSON, normally base64 encoded.
+    /// Secret (`connection_secrets.credential`).
+    pub credential: String,
+    /// Azure Blob container name (`external_config.container`).
+    pub container: String,
+    /// Azure Storage account name (`external_config.account_name`).
+    pub account_name: String,
+    /// Azure Storage account key. Secret (`connection_secrets.account_key`).
+    pub account_key: String,
+    /// Optional GCS OAuth scope (`external_config.scope`).
+    pub scope: String,
     pub endpoint: String,
     pub region: String,
     pub access_key_id: String,
@@ -79,6 +102,21 @@ pub struct StoredConnection {
     pub secret_key: String,
     /// Optional STS session token (`connection_secrets.security_token`).
     pub security_token: String,
+    // --- OAuth / drive services ---
+    /// OAuth access token for Dropbox/GDrive/OneDrive/Yandex Disk.
+    pub access_token: String,
+    /// OAuth refresh token for drive services.
+    pub refresh_token: String,
+    /// OAuth client identifier for Aliyun Drive/Dropbox/GDrive/OneDrive.
+    pub client_id: String,
+    /// Secret OAuth client credential.
+    pub client_secret: String,
+    /// Aliyun Drive storage type (resource/share/backup).
+    pub drive_type: String,
+    /// Koofr account email.
+    pub email: String,
+    /// Seafile library name.
+    pub repo_name: String,
     /// s3 only: address the bucket as `bucket.host` instead of a path-style
     /// URL (`external_config.enable_virtual_host_style`).
     pub enable_virtual_host_style: bool,
@@ -183,6 +221,11 @@ impl StoredConnection {
             service: optional_string(external_config, "service"),
             custom_config,
             bucket: optional_string(external_config, "bucket"),
+            credential: secret_string(connection_secrets, "credential"),
+            container: optional_string(external_config, "container"),
+            account_name: optional_string(external_config, "account_name"),
+            account_key: secret_string(connection_secrets, "account_key"),
+            scope: optional_string(external_config, "scope"),
             endpoint: optional_string(external_config, "endpoint"),
             region: optional_string(external_config, "region"),
             access_key_id: optional_string(external_config, "access_key_id"),
@@ -190,6 +233,13 @@ impl StoredConnection {
             secret_id: secret_string(connection_secrets, "secret_id"),
             secret_key: secret_string(connection_secrets, "secret_key"),
             security_token: secret_string(connection_secrets, "security_token"),
+            access_token: secret_string(connection_secrets, "access_token"),
+            refresh_token: secret_string(connection_secrets, "refresh_token"),
+            client_id: optional_string(external_config, "client_id"),
+            client_secret: secret_string(connection_secrets, "client_secret"),
+            drive_type: optional_string(external_config, "drive_type"),
+            email: optional_string(external_config, "email"),
+            repo_name: optional_string(external_config, "repo_name"),
             enable_virtual_host_style: bool_field(
                 external_config,
                 "enable_virtual_host_style",
@@ -1020,30 +1070,42 @@ mod tests {
         // Protocol-gated field matrix: each protocol only surfaces its own
         // fields, global fields stay ungated.
         let expects: &[(&str, &[&str])] = &[
-            ("bucket", &["s3", "oss", "cos"]),
+            ("bucket", &["s3", "gcs", "obs", "oss", "cos"]),
+            ("container", &["azblob"]),
+            ("account_name", &["azblob"]),
+            ("account_key", &["azblob"]),
+            ("credential", &["gcs"]),
+            ("scope", &["gcs"]),
             ("region", &["s3"]),
-            ("access_key_id", &["s3", "oss"]),
-            ("secret_access_key", &["s3", "oss"]),
+            ("access_key_id", &["s3", "obs", "oss"]),
+            ("secret_access_key", &["s3", "obs", "oss"]),
             ("enable_virtual_host_style", &["s3"]),
             (
                 "endpoint",
-                &["s3", "oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native"],
+                &["s3", "gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native", "koofr", "pcloud", "seafile"],
             ),
             ("secret_id", &["cos"]),
             ("secret_key", &["cos"]),
             ("security_token", &["cos"]),
-            ("username", &["webdav", "smb"]),
+            ("username", &["webdav", "smb", "pcloud", "seafile"]),
             ("user", &["ftp", "sftp", "sftp-native"]),
             ("share", &["smb"]),
             ("domain", &["smb"]),
             // password deliberately excludes `sftp`: the OpenDAL sftp service
             // is key-only (the backend never forwards a password), password
             // accounts belong to `sftp-native`.
-            ("password", &["webdav", "ftp", "smb", "sftp-native"]),
+            ("password", &["webdav", "ftp", "smb", "sftp-native", "koofr", "pcloud", "seafile"]),
             ("key", &["sftp", "sftp-native"]),
             ("known_hosts_strategy", &["sftp", "sftp-native"]),
             ("service", &["opendal-custom"]),
             ("config", &["opendal-custom"]),
+            ("access_token", &["dropbox", "gdrive", "onedrive", "yandex-disk"]),
+            ("client_id", &["aliyun-drive", "dropbox", "gdrive", "onedrive"]),
+            ("client_secret", &["aliyun-drive", "dropbox", "gdrive", "onedrive"]),
+            ("refresh_token", &["aliyun-drive", "dropbox", "gdrive", "onedrive"]),
+            ("drive_type", &["aliyun-drive"]),
+            ("email", &["koofr"]),
+            ("repo_name", &["seafile"]),
         ];
         for (name, protocols) in expects {
             let one_of: Vec<&str> = field(name)["visible_when"]["one_of"]
@@ -1123,9 +1185,13 @@ mod tests {
             "bucket",
             "access_key_id",
             "secret_access_key",
+            "credential",
+            "account_key",
             "secret_id",
             "secret_key",
             "service",
+            "email",
+            "repo_name",
         ];
         for key in conditionally_required {
             let item = field_of(key);
@@ -1147,6 +1213,31 @@ mod tests {
         let share = field_of("share");
         assert!(!required("share"));
         assert!(share.get("required_when").is_none());
+
+        for (name, expected) in [
+            ("username", &["pcloud", "seafile"][..]),
+            ("password", &["koofr", "pcloud", "seafile"][..]),
+            ("access_token", &["yandex-disk"][..]),
+        ] {
+            let item = field_of(name);
+            let visible: Vec<&str> = item["visible_when"]["one_of"]
+                .as_array()
+                .expect("visible_when.one_of")
+                .iter()
+                .map(|value| value.as_str().expect("visible protocol"))
+                .collect();
+            let conditional: Vec<&str> = item["required_when"]["one_of"]
+                .as_array()
+                .expect("required_when.one_of")
+                .iter()
+                .map(|value| value.as_str().expect("required protocol"))
+                .collect();
+            assert_eq!(conditional, expected, "required_when mismatch on '{name}'");
+            assert!(
+                conditional.iter().all(|protocol| visible.contains(protocol)),
+                "required_when for '{name}' must stay inside visible_when"
+            );
+        }
 
         // endpoint is conditionally required on a SUBSET of its visible
         // protocols: oss/webdav/ftp/sftp/smb/sftp-native need it (the OSS
@@ -1181,7 +1272,7 @@ mod tests {
                 .all(|value| endpoint_visible.contains(value)),
             "endpoint required_when must stay inside its visible_when"
         );
-        for required_protocol in ["oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native"] {
+        for required_protocol in ["gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native", "koofr", "pcloud", "seafile"] {
             assert!(
                 endpoint_required.contains(&required_protocol),
                 "endpoint must be conditionally required for '{required_protocol}'"

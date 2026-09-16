@@ -5,7 +5,7 @@
   "name": "Files Studio",
   "version": "0.1.59",
   "publisher": "jinpy",
-  "description": "A unified file workspace for local folders, S3-compatible storage, Tencent COS, WebDAV, FTP, SFTP, SMB/CIFS, and other OpenDAL services.",
+  "description": "A unified file workspace for local folders, S3-compatible storage, Azure Blob, Google Cloud Storage, Huawei OBS, Tencent COS, WebDAV, FTP, SFTP, SMB/CIFS, and other OpenDAL services.",
   "source": "https://github.com/jinpy666/dbx-plugin-files",
   "homepage": "https://github.com/jinpy666/dbx-plugin-files",
   "icon": "assets/plugin.svg",
@@ -36,7 +36,7 @@
       "label": "Storage",
       "icon": "assets/plugin.svg",
       "database_type": "storage",
-      "description": "Storage connection through Apache OpenDAL: local filesystem, S3/MinIO, Tencent COS, WebDAV, FTP, SFTP, or any compiled OpenDAL service.",
+      "description": "Storage connection through Apache OpenDAL: local filesystem, S3/MinIO, Azure Blob, Google Cloud Storage, Huawei OBS, Tencent COS, WebDAV, FTP, SFTP, or any compiled OpenDAL service.",
       "fields": [
         {
           "key": "display_name",
@@ -61,6 +61,18 @@
             {
               "label": "S3 / MinIO",
               "value": "s3"
+            },
+            {
+              "label": "Google Cloud Storage",
+              "value": "gcs"
+            },
+            {
+              "label": "Azure Blob Storage",
+              "value": "azblob"
+            },
+            {
+              "label": "Huawei OBS",
+              "value": "obs"
             },
             {
               "label": "Alibaba OSS",
@@ -93,6 +105,38 @@
             {
               "label": "OpenDAL custom service",
               "value": "opendal-custom"
+            },
+            {
+              "label": "Alibaba Drive",
+              "value": "aliyun-drive"
+            },
+            {
+              "label": "Dropbox",
+              "value": "dropbox"
+            },
+            {
+              "label": "Google Drive",
+              "value": "gdrive"
+            },
+            {
+              "label": "Koofr",
+              "value": "koofr"
+            },
+            {
+              "label": "OneDrive",
+              "value": "onedrive"
+            },
+            {
+              "label": "pCloud",
+              "value": "pcloud"
+            },
+            {
+              "label": "Seafile",
+              "value": "seafile"
+            },
+            {
+              "label": "Yandex Disk",
+              "value": "yandex-disk"
             }
           ]
         },
@@ -103,30 +147,42 @@
           "binding": "config",
           "default": "",
           "placeholder": "https://storage.example.com",
-          "description": "S3/OSS/COS/WebDAV: https://host (TLS) or http://host. FTP: ftp://host:21 or ftps://host:21 (explicit TLS; implicit TLS on 990 is unsupported). SFTP: ssh://user@host:22. SMB: host:445. Set the root separately.",
+          "description": "S3/GCS/Azure Blob/OBS/OSS/COS/WebDAV: https://host (TLS) or http://host. FTP: ftp://host:21 or ftps://host:21 (explicit TLS; implicit TLS on 990 is unsupported). SFTP: ssh://user@host:22. SMB: host:445. Set the root separately.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
               "s3",
+              "gcs",
+              "azblob",
+              "obs",
               "oss",
               "cos",
               "webdav",
               "ftp",
               "sftp",
               "smb",
-              "sftp-native"
+              "sftp-native",
+              "koofr",
+              "pcloud",
+              "seafile"
             ]
           },
           "required_when": {
             "field": "protocol",
             "one_of": [
               "oss",
+              "gcs",
+              "azblob",
+              "obs",
               "cos",
               "webdav",
               "ftp",
               "sftp",
               "smb",
-              "sftp-native"
+              "sftp-native",
+              "koofr",
+              "pcloud",
+              "seafile"
             ]
           }
         },
@@ -167,6 +223,141 @@
           }
         },
         {
+          "key": "access_token",
+          "label": "Access token",
+          "type": "password",
+          "binding": "secret",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "dropbox",
+              "gdrive",
+              "onedrive",
+              "yandex-disk"
+            ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
+              "yandex-disk"
+            ]
+          }
+        },
+        {
+          "key": "client_id",
+          "label": "OAuth client ID",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "aliyun-drive",
+              "dropbox",
+              "gdrive",
+              "onedrive"
+            ]
+          }
+        },
+        {
+          "key": "client_secret",
+          "label": "OAuth client secret",
+          "type": "password",
+          "binding": "secret",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "aliyun-drive",
+              "dropbox",
+              "gdrive",
+              "onedrive"
+            ]
+          }
+        },
+        {
+          "key": "refresh_token",
+          "label": "OAuth refresh token",
+          "type": "password",
+          "binding": "secret",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "aliyun-drive",
+              "dropbox",
+              "gdrive",
+              "onedrive"
+            ]
+          }
+        },
+        {
+          "key": "drive_type",
+          "label": "Drive type",
+          "type": "select",
+          "binding": "config",
+          "default": "resource",
+          "options": [
+            {
+              "label": "Resource drive",
+              "value": "resource"
+            },
+            {
+              "label": "Share drive",
+              "value": "share"
+            },
+            {
+              "label": "Backup drive",
+              "value": "backup"
+            }
+          ],
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "aliyun-drive"
+            ]
+          }
+        },
+        {
+          "key": "email",
+          "label": "Account email",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "koofr"
+            ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
+              "koofr"
+            ]
+          }
+        },
+        {
+          "key": "repo_name",
+          "label": "Library name",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "seafile"
+            ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
+              "seafile"
+            ]
+          }
+        },
+        {
           "key": "bucket",
           "label": "Bucket",
           "type": "text",
@@ -178,6 +369,8 @@
             "field": "protocol",
             "one_of": [
               "s3",
+              "gcs",
+              "obs",
               "oss",
               "cos"
             ]
@@ -186,8 +379,108 @@
             "field": "protocol",
             "one_of": [
               "s3",
+              "gcs",
+              "obs",
               "oss",
               "cos"
+            ]
+          }
+        },
+        {
+          "key": "container",
+          "label": "Container",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "placeholder": "my-container",
+          "description": "Azure Blob container name.",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "azblob"
+            ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
+              "azblob"
+            ]
+          }
+        },
+        {
+          "key": "account_name",
+          "label": "Account name",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "placeholder": "storageaccount",
+          "description": "Azure Storage account name.",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "azblob"
+            ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
+              "azblob"
+            ]
+          }
+        },
+        {
+          "key": "account_key",
+          "label": "Account key",
+          "type": "password",
+          "binding": "secret",
+          "default": "",
+          "description": "Azure Storage account key kept in the host secret binding.",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "azblob"
+            ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
+              "azblob"
+            ]
+          }
+        },
+        {
+          "key": "credential",
+          "label": "Credential JSON (base64)",
+          "type": "password",
+          "binding": "secret",
+          "default": "",
+          "placeholder": "base64-encoded service account JSON",
+          "description": "Google service-account or external-account credential, kept in the host secret binding.",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "gcs"
+            ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
+              "gcs"
+            ]
+          }
+        },
+        {
+          "key": "scope",
+          "label": "OAuth scope",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "placeholder": "https://www.googleapis.com/auth/devstorage.read_write",
+          "description": "Optional Google OAuth scope; leave empty for the OpenDAL default.",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "gcs"
             ]
           }
         },
@@ -227,11 +520,12 @@
           "binding": "config",
           "default": "",
           "placeholder": "my-access-key-id",
-          "description": "Access key ID for S3/OSS.",
+          "description": "Access key ID for S3/OBS/OSS.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
               "s3",
+              "obs",
               "oss"
             ]
           },
@@ -239,6 +533,7 @@
             "field": "protocol",
             "one_of": [
               "s3",
+              "obs",
               "oss"
             ]
           }
@@ -254,6 +549,7 @@
             "field": "protocol",
             "one_of": [
               "s3",
+              "obs",
               "oss"
             ]
           },
@@ -261,6 +557,7 @@
             "field": "protocol",
             "one_of": [
               "s3",
+              "obs",
               "oss"
             ]
           }
@@ -343,7 +640,16 @@
             "field": "protocol",
             "one_of": [
               "webdav",
-              "smb"
+              "smb",
+              "pcloud",
+              "seafile"
+            ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
+              "pcloud",
+              "seafile"
             ]
           }
         },
@@ -392,7 +698,18 @@
               "webdav",
               "ftp",
               "smb",
-              "sftp-native"
+              "sftp-native",
+              "koofr",
+              "pcloud",
+              "seafile"
+            ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
+              "koofr",
+              "pcloud",
+              "seafile"
             ]
           }
         },
@@ -521,6 +838,9 @@
               "options": {
                 "fs": "本地文件系统",
                 "s3": "S3 / MinIO",
+                "gcs": "Google Cloud Storage",
+                "azblob": "Azure Blob Storage",
+                "obs": "华为云 OBS",
                 "webdav": "WebDAV",
                 "ftp": "FTP",
                 "sftp": "SFTP",
@@ -528,7 +848,15 @@
                 "opendal-custom": "OpenDAL 自定义服务",
                 "sftp-native": "SFTP（原生）",
                 "oss": "阿里云 OSS",
-                "cos": "腾讯云 COS"
+                "cos": "腾讯云 COS",
+                "aliyun-drive": "阿里云盘",
+                "dropbox": "Dropbox",
+                "gdrive": "Google Drive",
+                "koofr": "Koofr",
+                "onedrive": "OneDrive",
+                "pcloud": "pCloud",
+                "seafile": "Seafile",
+                "yandex-disk": "Yandex Disk"
               }
             },
             "root": {
@@ -549,6 +877,30 @@
               "label": "服务配置（JSON）",
               "placeholder": "{ \"root\": \"/tmp\", \"bucket\": \"demo\" }",
               "description": "以 JSON 对象原样传入 OpenDAL Builder 键值，如 {\"root\":\"/tmp\",\"bucket\":\"demo\"}。"
+            },
+            "container": {
+              "label": "容器",
+              "placeholder": "my-container",
+              "description": "Azure Blob 容器名称。"
+            },
+            "account_name": {
+              "label": "账户名称",
+              "placeholder": "storageaccount",
+              "description": "Azure Storage 账户名称。"
+            },
+            "account_key": {
+              "label": "账户密钥",
+              "description": "Azure Storage 账户密钥由宿主 secret binding 保管。"
+            },
+            "credential": {
+              "label": "凭据 JSON（Base64）",
+              "placeholder": "Base64 编码的服务账户 JSON",
+              "description": "Google 服务账户或外部账户凭据，由宿主 secret binding 保管。"
+            },
+            "scope": {
+              "label": "OAuth 作用域",
+              "placeholder": "https://www.googleapis.com/auth/devstorage.read_write",
+              "description": "可选的 Google OAuth 作用域；留空使用 OpenDAL 默认值。"
             },
             "bucket": {
               "label": "存储桶",
@@ -621,6 +973,13 @@
                 "Trust": "信任任意（不安全）"
               }
             },
+            "access_token": { "label": "Access Token" },
+            "client_id": { "label": "OAuth 客户端 ID" },
+            "client_secret": { "label": "OAuth 客户端密钥" },
+            "refresh_token": { "label": "OAuth 刷新令牌" },
+            "drive_type": { "label": "云盘类型", "options": { "resource": "资源盘", "share": "共享盘", "backup": "备份盘" } },
+            "email": { "label": "账户邮箱" },
+            "repo_name": { "label": "资料库名称" },
             "read_only": {
               "label": "只读",
               "description": "拒绝该连接上的所有写操作。"
@@ -661,6 +1020,9 @@
               "options": {
                 "fs": "本機檔案系統",
                 "s3": "S3 / MinIO",
+                "gcs": "Google Cloud Storage",
+                "azblob": "Azure Blob Storage",
+                "obs": "華為雲 OBS",
                 "webdav": "WebDAV",
                 "ftp": "FTP",
                 "sftp": "SFTP",
@@ -668,7 +1030,15 @@
                 "opendal-custom": "OpenDAL 自訂服務",
                 "sftp-native": "SFTP（原生）",
                 "oss": "阿里雲 OSS",
-                "cos": "騰訊雲 COS"
+                "cos": "騰訊雲 COS",
+                "aliyun-drive": "阿里雲盤",
+                "dropbox": "Dropbox",
+                "gdrive": "Google Drive",
+                "koofr": "Koofr",
+                "onedrive": "OneDrive",
+                "pcloud": "pCloud",
+                "seafile": "Seafile",
+                "yandex-disk": "Yandex Disk"
               }
             },
             "root": {
@@ -689,6 +1059,30 @@
               "label": "服務設定（JSON）",
               "placeholder": "{ \"root\": \"/tmp\", \"bucket\": \"demo\" }",
               "description": "以 JSON 物件原樣傳入 OpenDAL Builder 鍵值，如 {\"root\":\"/tmp\",\"bucket\":\"demo\"}。"
+            },
+            "container": {
+              "label": "容器",
+              "placeholder": "my-container",
+              "description": "Azure Blob 容器名稱。"
+            },
+            "account_name": {
+              "label": "帳戶名稱",
+              "placeholder": "storageaccount",
+              "description": "Azure Storage 帳戶名稱。"
+            },
+            "account_key": {
+              "label": "帳戶金鑰",
+              "description": "Azure Storage 帳戶金鑰由宿主 secret binding 保管。"
+            },
+            "credential": {
+              "label": "憑證 JSON（Base64）",
+              "placeholder": "Base64 編碼的服務帳戶 JSON",
+              "description": "Google 服務帳戶或外部帳戶憑證，由宿主 secret binding 保管。"
+            },
+            "scope": {
+              "label": "OAuth 範圍",
+              "placeholder": "https://www.googleapis.com/auth/devstorage.read_write",
+              "description": "可選的 Google OAuth 範圍；留空使用 OpenDAL 預設值。"
             },
             "bucket": {
               "label": "儲存儲存桶",
@@ -761,6 +1155,13 @@
                 "Trust": "信任任意（不安全）"
               }
             },
+            "access_token": { "label": "Access Token" },
+            "client_id": { "label": "OAuth 用戶端 ID" },
+            "client_secret": { "label": "OAuth 用戶端密鑰" },
+            "refresh_token": { "label": "OAuth 更新權杖" },
+            "drive_type": { "label": "雲端硬碟類型", "options": { "resource": "資源硬碟", "share": "共用硬碟", "backup": "備份硬碟" } },
+            "email": { "label": "帳戶電子郵件" },
+            "repo_name": { "label": "資料庫名稱" },
             "read_only": {
               "label": "唯讀",
               "description": "拒絕該連線上的所有寫入操作。"
@@ -801,6 +1202,9 @@
               "options": {
                 "fs": "Local filesystem",
                 "s3": "S3 / MinIO",
+                "gcs": "Google Cloud Storage",
+                "azblob": "Azure Blob Storage",
+                "obs": "Huawei OBS",
                 "webdav": "WebDAV",
                 "ftp": "FTP",
                 "sftp": "SFTP",
@@ -808,7 +1212,15 @@
                 "opendal-custom": "OpenDAL custom service",
                 "sftp-native": "SFTP (native)",
                 "oss": "Alibaba OSS",
-                "cos": "Tencent COS"
+                "cos": "Tencent COS",
+                "aliyun-drive": "Alibaba Drive",
+                "dropbox": "Dropbox",
+                "gdrive": "Google Drive",
+                "koofr": "Koofr",
+                "onedrive": "OneDrive",
+                "pcloud": "pCloud",
+                "seafile": "Seafile",
+                "yandex-disk": "Yandex Disk"
               }
             },
             "root": {
@@ -829,6 +1241,30 @@
               "label": "Service config (JSON)",
               "placeholder": "{ \"root\": \"/tmp\", \"bucket\": \"demo\" }",
               "description": "JSON object passed verbatim as OpenDAL Builder key/values, e.g. {\"root\":\"/tmp\",\"bucket\":\"demo\"}."
+            },
+            "container": {
+              "label": "Container",
+              "placeholder": "my-container",
+              "description": "Azure Blob container name."
+            },
+            "account_name": {
+              "label": "Account name",
+              "placeholder": "storageaccount",
+              "description": "Azure Storage account name."
+            },
+            "account_key": {
+              "label": "Account key",
+              "description": "Azure Storage account key kept in the host secret binding."
+            },
+            "credential": {
+              "label": "Credential JSON (base64)",
+              "placeholder": "base64-encoded service account JSON",
+              "description": "Google service-account or external-account credential, kept in the host secret binding."
+            },
+            "scope": {
+              "label": "OAuth scope",
+              "placeholder": "https://www.googleapis.com/auth/devstorage.read_write",
+              "description": "Optional Google OAuth scope; leave empty for the OpenDAL default."
             },
             "bucket": {
               "label": "Bucket",
@@ -901,6 +1337,13 @@
                 "Trust": "Trust (any key, insecure)"
               }
             },
+            "access_token": { "label": "Access token" },
+            "client_id": { "label": "OAuth client ID" },
+            "client_secret": { "label": "OAuth client secret" },
+            "refresh_token": { "label": "OAuth refresh token" },
+            "drive_type": { "label": "Drive type", "options": { "resource": "Resource drive", "share": "Share drive", "backup": "Backup drive" } },
+            "email": { "label": "Account email" },
+            "repo_name": { "label": "Library name" },
             "read_only": {
               "label": "Read only",
               "description": "Reject every write operation on this connection."
@@ -941,6 +1384,9 @@
               "options": {
                 "fs": "Sistema de archivos local",
                 "s3": "S3 / MinIO",
+                "gcs": "Google Cloud Storage",
+                "azblob": "Azure Blob Storage",
+                "obs": "OBS de Huawei",
                 "webdav": "WebDAV",
                 "ftp": "FTP",
                 "sftp": "SFTP",
@@ -948,7 +1394,15 @@
                 "opendal-custom": "Servicio personalizado de OpenDAL",
                 "sftp-native": "SFTP (nativo)",
                 "oss": "OSS de Alibaba",
-                "cos": "COS de Tencent"
+                "cos": "COS de Tencent",
+                "aliyun-drive": "Alibaba Drive",
+                "dropbox": "Dropbox",
+                "gdrive": "Google Drive",
+                "koofr": "Koofr",
+                "onedrive": "OneDrive",
+                "pcloud": "pCloud",
+                "seafile": "Seafile",
+                "yandex-disk": "Yandex Disk"
               }
             },
             "root": {
@@ -969,6 +1423,30 @@
               "label": "Configuración del servicio (JSON)",
               "placeholder": "{ \"root\": \"/tmp\", \"bucket\": \"demo\" }",
               "description": "Objeto JSON que se pasa tal cual como claves/valores del Builder de OpenDAL, p. ej. {\"root\":\"/tmp\",\"bucket\":\"demo\"}."
+            },
+            "container": {
+              "label": "Contenedor",
+              "placeholder": "my-container",
+              "description": "Nombre del contenedor de Azure Blob."
+            },
+            "account_name": {
+              "label": "Nombre de cuenta",
+              "placeholder": "storageaccount",
+              "description": "Nombre de la cuenta de Azure Storage."
+            },
+            "account_key": {
+              "label": "Clave de cuenta",
+              "description": "La clave de Azure Storage se guarda en el binding secreto del host."
+            },
+            "credential": {
+              "label": "Credencial JSON (Base64)",
+              "placeholder": "JSON de cuenta de servicio codificado en Base64",
+              "description": "Credencial de cuenta de servicio o cuenta externa de Google, guardada en el binding secreto del host."
+            },
+            "scope": {
+              "label": "Ámbito OAuth",
+              "placeholder": "https://www.googleapis.com/auth/devstorage.read_write",
+              "description": "Ámbito OAuth de Google opcional; déjalo vacío para usar el valor predeterminado de OpenDAL."
             },
             "bucket": {
               "label": "Bucket",
@@ -1041,6 +1519,13 @@
                 "Trust": "Confiar (cualquier clave, inseguro)"
               }
             },
+            "access_token": { "label": "Token de acceso" },
+            "client_id": { "label": "ID de cliente OAuth" },
+            "client_secret": { "label": "Secreto de cliente OAuth" },
+            "refresh_token": { "label": "Token de actualización OAuth" },
+            "drive_type": { "label": "Tipo de unidad", "options": { "resource": "Unidad de recursos", "share": "Unidad compartida", "backup": "Unidad de respaldo" } },
+            "email": { "label": "Correo de la cuenta" },
+            "repo_name": { "label": "Nombre de biblioteca" },
             "read_only": {
               "label": "Solo lectura",
               "description": "Rechaza toda operación de escritura en esta conexión."
@@ -1081,6 +1566,9 @@
               "options": {
                 "fs": "Filesystem locale",
                 "s3": "S3 / MinIO",
+                "gcs": "Google Cloud Storage",
+                "azblob": "Azure Blob Storage",
+                "obs": "OBS di Huawei",
                 "webdav": "WebDAV",
                 "ftp": "FTP",
                 "sftp": "SFTP",
@@ -1088,7 +1576,15 @@
                 "opendal-custom": "Servizio OpenDAL personalizzato",
                 "sftp-native": "SFTP (nativo)",
                 "oss": "OSS di Alibaba",
-                "cos": "COS Tencent"
+                "cos": "COS Tencent",
+                "aliyun-drive": "Alibaba Drive",
+                "dropbox": "Dropbox",
+                "gdrive": "Google Drive",
+                "koofr": "Koofr",
+                "onedrive": "OneDrive",
+                "pcloud": "pCloud",
+                "seafile": "Seafile",
+                "yandex-disk": "Yandex Disk"
               }
             },
             "root": {
@@ -1109,6 +1605,30 @@
               "label": "Configurazione servizio (JSON)",
               "placeholder": "{ \"root\": \"/tmp\", \"bucket\": \"demo\" }",
               "description": "Oggetto JSON passato verbatim come chiavi/valori del Builder OpenDAL, es. {\"root\":\"/tmp\",\"bucket\":\"demo\"}."
+            },
+            "container": {
+              "label": "Contenitore",
+              "placeholder": "my-container",
+              "description": "Nome del contenitore Azure Blob."
+            },
+            "account_name": {
+              "label": "Nome account",
+              "placeholder": "storageaccount",
+              "description": "Nome dell'account Azure Storage."
+            },
+            "account_key": {
+              "label": "Chiave account",
+              "description": "La chiave Azure Storage viene conservata nel binding segreto dell'host."
+            },
+            "credential": {
+              "label": "Credenziale JSON (Base64)",
+              "placeholder": "JSON dell'account di servizio codificato in Base64",
+              "description": "Credenziale dell'account di servizio o esterno Google, conservata nel binding segreto dell'host."
+            },
+            "scope": {
+              "label": "Ambito OAuth",
+              "placeholder": "https://www.googleapis.com/auth/devstorage.read_write",
+              "description": "Ambito OAuth Google opzionale; lascia vuoto per usare il valore predefinito di OpenDAL."
             },
             "bucket": {
               "label": "Bucket",
@@ -1181,6 +1701,13 @@
                 "Trust": "Fiducia (qualsiasi chiave, non sicuro)"
               }
             },
+            "access_token": { "label": "Token di accesso" },
+            "client_id": { "label": "ID client OAuth" },
+            "client_secret": { "label": "Segreto client OAuth" },
+            "refresh_token": { "label": "Token di aggiornamento OAuth" },
+            "drive_type": { "label": "Tipo di drive", "options": { "resource": "Drive risorse", "share": "Drive condiviso", "backup": "Drive di backup" } },
+            "email": { "label": "Email account" },
+            "repo_name": { "label": "Nome libreria" },
             "read_only": {
               "label": "Sola lettura",
               "description": "Rifiuta ogni operazione di scrittura su questa connessione."
@@ -1221,6 +1748,9 @@
               "options": {
                 "fs": "ローカルファイルシステム",
                 "s3": "S3 / MinIO",
+                "gcs": "Google Cloud Storage",
+                "azblob": "Azure Blob Storage",
+                "obs": "Huawei OBS",
                 "webdav": "WebDAV",
                 "ftp": "FTP",
                 "sftp": "SFTP",
@@ -1228,7 +1758,15 @@
                 "opendal-custom": "OpenDAL カスタムサービス",
                 "sftp-native": "SFTP（ネイティブ）",
                 "oss": "Alibaba OSS",
-                "cos": "Tencent COS"
+                "cos": "Tencent COS",
+                "aliyun-drive": "Alibaba Drive",
+                "dropbox": "Dropbox",
+                "gdrive": "Google Drive",
+                "koofr": "Koofr",
+                "onedrive": "OneDrive",
+                "pcloud": "pCloud",
+                "seafile": "Seafile",
+                "yandex-disk": "Yandex Disk"
               }
             },
             "root": {
@@ -1249,6 +1787,30 @@
               "label": "サービス設定（JSON）",
               "placeholder": "{ \"root\": \"/tmp\", \"bucket\": \"demo\" }",
               "description": "OpenDAL Builder のキー/値としてそのまま渡す JSON オブジェクト（例: {\"root\":\"/tmp\",\"bucket\":\"demo\"}）。"
+            },
+            "container": {
+              "label": "コンテナー",
+              "placeholder": "my-container",
+              "description": "Azure Blob コンテナー名。"
+            },
+            "account_name": {
+              "label": "アカウント名",
+              "placeholder": "storageaccount",
+              "description": "Azure Storage アカウント名。"
+            },
+            "account_key": {
+              "label": "アカウントキー",
+              "description": "Azure Storage アカウントキーはホストの secret binding に保存されます。"
+            },
+            "credential": {
+              "label": "認証情報 JSON（Base64）",
+              "placeholder": "Base64 エンコードしたサービスアカウント JSON",
+              "description": "Google サービスアカウントまたは外部アカウントの認証情報。ホストの secret binding に保存されます。"
+            },
+            "scope": {
+              "label": "OAuth スコープ",
+              "placeholder": "https://www.googleapis.com/auth/devstorage.read_write",
+              "description": "任意の Google OAuth スコープ。空欄の場合は OpenDAL の既定値を使用します。"
             },
             "bucket": {
               "label": "バケット",
@@ -1321,6 +1883,13 @@
                 "Trust": "信頼（任意の鍵・非安全）"
               }
             },
+            "access_token": { "label": "アクセストークン" },
+            "client_id": { "label": "OAuth クライアント ID" },
+            "client_secret": { "label": "OAuth クライアントシークレット" },
+            "refresh_token": { "label": "OAuth リフレッシュトークン" },
+            "drive_type": { "label": "ドライブ種別", "options": { "resource": "リソースドライブ", "share": "共有ドライブ", "backup": "バックアップドライブ" } },
+            "email": { "label": "アカウントメール" },
+            "repo_name": { "label": "ライブラリ名" },
             "read_only": {
               "label": "読み取り専用",
               "description": "この接続でのすべての書き込み操作を拒否します。"
@@ -1361,6 +1930,9 @@
               "options": {
                 "fs": "Sistema de arquivos local",
                 "s3": "S3 / MinIO",
+                "gcs": "Google Cloud Storage",
+                "azblob": "Azure Blob Storage",
+                "obs": "OBS da Huawei",
                 "webdav": "WebDAV",
                 "ftp": "FTP",
                 "sftp": "SFTP",
@@ -1368,7 +1940,15 @@
                 "opendal-custom": "Serviço personalizado do OpenDAL",
                 "sftp-native": "SFTP (nativo)",
                 "oss": "OSS da Alibaba",
-                "cos": "COS da Tencent"
+                "cos": "COS da Tencent",
+                "aliyun-drive": "Alibaba Drive",
+                "dropbox": "Dropbox",
+                "gdrive": "Google Drive",
+                "koofr": "Koofr",
+                "onedrive": "OneDrive",
+                "pcloud": "pCloud",
+                "seafile": "Seafile",
+                "yandex-disk": "Yandex Disk"
               }
             },
             "root": {
@@ -1389,6 +1969,30 @@
               "label": "Configuração do serviço (JSON)",
               "placeholder": "{ \"root\": \"/tmp\", \"bucket\": \"demo\" }",
               "description": "Objeto JSON passado verbatim como chaves/valores do Builder do OpenDAL, ex.: {\"root\":\"/tmp\",\"bucket\":\"demo\"}."
+            },
+            "container": {
+              "label": "Contêiner",
+              "placeholder": "my-container",
+              "description": "Nome do contêiner do Azure Blob."
+            },
+            "account_name": {
+              "label": "Nome da conta",
+              "placeholder": "storageaccount",
+              "description": "Nome da conta do Azure Storage."
+            },
+            "account_key": {
+              "label": "Chave da conta",
+              "description": "A chave do Azure Storage fica no binding secreto do host."
+            },
+            "credential": {
+              "label": "Credencial JSON (Base64)",
+              "placeholder": "JSON da conta de serviço codificado em Base64",
+              "description": "Credencial de conta de serviço ou conta externa do Google, armazenada no binding secreto do host."
+            },
+            "scope": {
+              "label": "Escopo OAuth",
+              "placeholder": "https://www.googleapis.com/auth/devstorage.read_write",
+              "description": "Escopo OAuth do Google opcional; deixe vazio para usar o padrão do OpenDAL."
             },
             "bucket": {
               "label": "Bucket",
@@ -1461,6 +2065,13 @@
                 "Trust": "Confiar (qualquer chave, inseguro)"
               }
             },
+            "access_token": { "label": "Token de acesso" },
+            "client_id": { "label": "ID do cliente OAuth" },
+            "client_secret": { "label": "Segredo do cliente OAuth" },
+            "refresh_token": { "label": "Token de atualização OAuth" },
+            "drive_type": { "label": "Tipo de unidade", "options": { "resource": "Unidade de recursos", "share": "Unidade compartilhada", "backup": "Unidade de backup" } },
+            "email": { "label": "E-mail da conta" },
+            "repo_name": { "label": "Nome da biblioteca" },
             "read_only": {
               "label": "Somente leitura",
               "description": "Rejeita toda operação de gravação nesta conexão."

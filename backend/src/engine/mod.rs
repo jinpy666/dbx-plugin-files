@@ -212,7 +212,10 @@ impl Engine {
 /// - `sftp-native` likewise goes through `Operator::new` on the custom
 ///   [`sftp_native::SftpNativeBuilder`] (russh + russh-sftp; dual-stack
 ///   decision 2026-08-31).
-/// - Everything else funnels through `Operator::via_iter`:
+/// - Most services funnel through `Operator::via_iter`; the added drive
+///   services use their static Builder config path because a few of their
+///   URI parsers (Koofr/Seafile/pCloud) encode required values in the URI
+///   path instead of reading them from the option map.
 ///   - quick protocol (`fs`/`s3`/`oss`/`cos`/`webdav`/`ftp`/`sftp`): scheme is the
 ///     protocol name, kv assembled from the manifest-mapped OpenDAL keys
 ///     (doc §4 table).
@@ -241,8 +244,40 @@ pub fn build_operator(connection: &StoredConnection) -> Result<Operator, String>
         );
     }
     let (scheme, kv) = protocol_kv(connection)?;
-    Operator::via_iter(scheme, kv)
+    build_registered_operator(&scheme, kv)
         .map_err(|error| format!("Failed to build storage operator: {error}"))
+}
+
+/// Builds a registered OpenDAL service from the configuration map.
+///
+/// The static path is intentionally limited to the services exposed by the
+/// dynamic custom form. Their `Configurator::from_uri` implementations are
+/// not interchangeable with `Configurator::from_iter`: Koofr and Seafile,
+/// for example, derive required values from URI path segments. Calling the
+/// concrete `Builder::from_iter` avoids silently discarding valid form input.
+fn build_registered_operator(
+    scheme: &str,
+    kv: Vec<(String, String)>,
+) -> opendal::Result<Operator> {
+    match scheme {
+        "aliyun-drive" => Operator::from_iter::<opendal::services::AliyunDrive>(kv)
+            .map(|builder| builder.finish()),
+        "dropbox" => Operator::from_iter::<opendal::services::Dropbox>(kv)
+            .map(|builder| builder.finish()),
+        "gdrive" => Operator::from_iter::<opendal::services::Gdrive>(kv)
+            .map(|builder| builder.finish()),
+        "koofr" => Operator::from_iter::<opendal::services::Koofr>(kv)
+            .map(|builder| builder.finish()),
+        "onedrive" => Operator::from_iter::<opendal::services::Onedrive>(kv)
+            .map(|builder| builder.finish()),
+        "pcloud" => Operator::from_iter::<opendal::services::Pcloud>(kv)
+            .map(|builder| builder.finish()),
+        "seafile" => Operator::from_iter::<opendal::services::Seafile>(kv)
+            .map(|builder| builder.finish()),
+        "yandex-disk" => Operator::from_iter::<opendal::services::YandexDisk>(kv)
+            .map(|builder| builder.finish()),
+        _ => Operator::via_iter(scheme, kv),
+    }
 }
 
 /// Builds the native SFTP Operator via static dispatch on
@@ -336,6 +371,30 @@ pub fn protocol_kv(
             }
             "s3".to_string()
         }
+        "gcs" => {
+            push(&mut kv, "root", &connection.root);
+            push(&mut kv, "bucket", &connection.bucket);
+            push(&mut kv, "endpoint", &connection.endpoint);
+            push(&mut kv, "credential", &connection.credential);
+            push(&mut kv, "scope", &connection.scope);
+            "gcs".to_string()
+        }
+        "azblob" => {
+            push(&mut kv, "root", &connection.root);
+            push(&mut kv, "container", &connection.container);
+            push(&mut kv, "endpoint", &connection.endpoint);
+            push(&mut kv, "account_name", &connection.account_name);
+            push(&mut kv, "account_key", &connection.account_key);
+            "azblob".to_string()
+        }
+        "obs" => {
+            push(&mut kv, "root", &connection.root);
+            push(&mut kv, "bucket", &connection.bucket);
+            push(&mut kv, "endpoint", &connection.endpoint);
+            push(&mut kv, "access_key_id", &connection.access_key_id);
+            push(&mut kv, "secret_access_key", &connection.secret_access_key);
+            "obs".to_string()
+        }
         "oss" => {
             // Alibaba OSS (services-oss). Reuses the s3-shaped connection
             // fields; the secret maps to OpenDAL's `access_key_secret` key.
@@ -427,6 +486,57 @@ pub fn protocol_kv(
             );
             "sftp-native".to_string()
         }
+        "aliyun-drive" => {
+            push(&mut kv, "root", &connection.root);
+            push(&mut kv, "access_token", &connection.access_token);
+            push(&mut kv, "client_id", &connection.client_id);
+            push(&mut kv, "client_secret", &connection.client_secret);
+            push(&mut kv, "refresh_token", &connection.refresh_token);
+            push(&mut kv, "drive_type", &connection.drive_type);
+            "aliyun-drive".to_string()
+        }
+        "dropbox" | "gdrive" | "onedrive" => {
+            push(&mut kv, "root", &connection.root);
+            // OpenDAL requires exactly one auth mode. Prefer a supplied
+            // short-lived access token; otherwise pass the refresh-token
+            // flow and its client credentials. This also makes stale hidden
+            // values harmless when the protocol is switched in the form.
+            if !connection.access_token.is_empty() {
+                push(&mut kv, "access_token", &connection.access_token);
+            } else {
+                push(&mut kv, "refresh_token", &connection.refresh_token);
+                push(&mut kv, "client_id", &connection.client_id);
+                push(&mut kv, "client_secret", &connection.client_secret);
+            }
+            connection.protocol.clone()
+        }
+        "koofr" => {
+            push(&mut kv, "root", &connection.root);
+            push(&mut kv, "endpoint", &connection.endpoint);
+            push(&mut kv, "email", &connection.email);
+            push(&mut kv, "password", &connection.password);
+            "koofr".to_string()
+        }
+        "pcloud" => {
+            push(&mut kv, "root", &connection.root);
+            push(&mut kv, "endpoint", &connection.endpoint);
+            push(&mut kv, "username", &connection.username);
+            push(&mut kv, "password", &connection.password);
+            "pcloud".to_string()
+        }
+        "seafile" => {
+            push(&mut kv, "root", &connection.root);
+            push(&mut kv, "endpoint", &connection.endpoint);
+            push(&mut kv, "username", &connection.username);
+            push(&mut kv, "password", &connection.password);
+            push(&mut kv, "repo_name", &connection.repo_name);
+            "seafile".to_string()
+        }
+        "yandex-disk" => {
+            push(&mut kv, "root", &connection.root);
+            push(&mut kv, "access_token", &connection.access_token);
+            "yandex-disk".to_string()
+        }
         "opendal-custom" => {
             let service = connection.service.trim();
             if service.is_empty() {
@@ -481,7 +591,17 @@ fn kv_from_custom_config(connection: &StoredConnection, kv: &mut Vec<(String, St
 fn validate_endpoints(connection: &StoredConnection) -> Result<(), String> {
     let http_class = matches!(
         connection.protocol.as_str(),
-        "s3" | "oss" | "cos" | "webdav" | "opendal-custom"
+        "s3"
+        | "gcs"
+        | "azblob"
+        | "obs"
+        | "oss"
+        | "cos"
+        | "webdav"
+        | "koofr"
+        | "pcloud"
+        | "seafile"
+        | "opendal-custom"
     );
     if http_class && !connection.endpoint.is_empty() {
         check_http_scheme(&connection.endpoint)?;
@@ -528,7 +648,17 @@ fn validate_endpoints(connection: &StoredConnection) -> Result<(), String> {
 /// Schemes a service's `endpoint` may use; `None` = unknown service class.
 fn allowed_endpoint_schemes(service: &str) -> Option<&'static [&'static str]> {
     match service {
-        "s3" | "gcs" | "azblob" | "oss" | "obs" | "cos" | "webdav" | "memory" => {
+        "s3"
+        | "gcs"
+        | "azblob"
+        | "oss"
+        | "obs"
+        | "cos"
+        | "webdav"
+        | "koofr"
+        | "pcloud"
+        | "seafile"
+        | "memory" => {
             Some(&["http", "https"])
         }
         "ftp" => Some(&["ftp", "ftps"]),
@@ -657,9 +787,9 @@ mod tests {
 
     #[test]
     fn cloud_custom_service_operators_build_with_official_config_keys() {
-        // 文件/云存储范围（2026-08-29 产品决策）：obs/cos 必须能用 schema
-        // 收录的官方 builder 键真实构建 Operator（构建不联网；真实连通性由
-        // connection/test 在用户配置后验证）。memory 已移出配置面但后端仍可建。
+        // 文件/云存储范围：必须能用 schema 收录的官方 builder 键真实构建
+        // Operator（构建不联网；真实连通性由 connection/test 在用户配置后
+        // 验证）。memory 已移出配置面但后端仍可建。
         let mut custom = connection("opendal-custom");
 
         custom.service = "obs".to_string();
@@ -688,6 +818,94 @@ mod tests {
             "access_key_secret": "sk",
         });
         build_operator(&custom).expect("oss operator must build from schema keys");
+
+        let drive_cases = [
+            (
+                "aliyun-drive",
+                json!({
+                    "client_id": "id",
+                    "client_secret": "secret",
+                    "refresh_token": "refresh",
+                    "drive_type": "resource",
+                }),
+            ),
+            ("dropbox", json!({ "access_token": "token" })),
+            ("gdrive", json!({ "access_token": "token" })),
+            (
+                "koofr",
+                json!({
+                    "endpoint": "https://api.koofr.net/",
+                    "email": "user@example.com",
+                    "password": "application-password",
+                }),
+            ),
+            ("onedrive", json!({ "access_token": "token" })),
+            (
+                "pcloud",
+                json!({
+                    "endpoint": "https://api.pcloud.com",
+                    "username": "user@example.com",
+                    "password": "password",
+                }),
+            ),
+            (
+                "seafile",
+                json!({
+                    "endpoint": "https://files.example.com",
+                    "username": "user@example.com",
+                    "password": "password",
+                    "repo_name": "library",
+                }),
+            ),
+            ("yandex-disk", json!({ "access_token": "token" })),
+        ];
+        for (service, config) in drive_cases {
+            custom.service = service.to_string();
+            custom.custom_config = config;
+            build_operator(&custom).unwrap_or_else(|error| {
+                panic!("{service} operator must build from schema keys: {error}")
+            });
+        }
+    }
+
+    #[test]
+    fn drive_protocols_map_dynamic_form_fields_to_opendal_keys() {
+        let mut aliyun = connection("aliyun-drive");
+        aliyun.root = "/resource".into();
+        aliyun.access_token = "access".into();
+        aliyun.client_id = "client".into();
+        aliyun.client_secret = "client-secret".into();
+        aliyun.refresh_token = "refresh".into();
+        aliyun.drive_type = "resource".into();
+        let (scheme, kv) = protocol_kv(&aliyun).unwrap();
+        assert_eq!(scheme, "aliyun-drive");
+        let map: HashMap<String, String> = kv.into_iter().collect();
+        assert_eq!(map["root"], "/resource");
+        assert_eq!(map["client_id"], "client");
+        assert_eq!(map["client_secret"], "client-secret");
+        assert_eq!(map["refresh_token"], "refresh");
+        assert_eq!(map["drive_type"], "resource");
+
+        let mut koofr = connection("koofr");
+        koofr.endpoint = "https://api.koofr.net/".into();
+        koofr.email = "user@example.com".into();
+        koofr.password = "application-password".into();
+        let (scheme, kv) = protocol_kv(&koofr).unwrap();
+        assert_eq!(scheme, "koofr");
+        let map: HashMap<String, String> = kv.into_iter().collect();
+        assert_eq!(map["email"], "user@example.com");
+        assert_eq!(map["password"], "application-password");
+
+        let mut seafile = connection("seafile");
+        seafile.endpoint = "https://files.example.com".into();
+        seafile.username = "user@example.com".into();
+        seafile.password = "password".into();
+        seafile.repo_name = "library".into();
+        let (scheme, kv) = protocol_kv(&seafile).unwrap();
+        assert_eq!(scheme, "seafile");
+        let map: HashMap<String, String> = kv.into_iter().collect();
+        assert_eq!(map["username"], "user@example.com");
+        assert_eq!(map["repo_name"], "library");
     }
 
     #[test]

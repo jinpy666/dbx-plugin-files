@@ -684,6 +684,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-channel"
+version = "0.5.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98b0cc327b5bc766e7fda9c9260cc0fa81b43a8e240440422dff70788e3f9ef1"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-epoch"
+version = "0.9.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-utils"
 version = "0.8.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2053,6 +2071,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "moka"
+version = "0.12.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4293f18e7567a1caf3c584855554377025c65e0aa445344d04171f5ad63d19b9"
+dependencies = [
+ "crossbeam-channel",
+ "crossbeam-epoch",
+ "crossbeam-utils",
+ "equivalent",
+ "parking_lot",
+ "portable-atomic",
+ "smallvec",
+ "tagptr",
+ "uuid",
+]
+
+[[package]]
 name = "nix"
 version = "0.31.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2172,16 +2207,24 @@ dependencies = [
  "opendal-layer-logging",
  "opendal-layer-retry",
  "opendal-layer-timeout",
+ "opendal-service-aliyun-drive",
  "opendal-service-azblob",
  "opendal-service-cos",
+ "opendal-service-dropbox",
  "opendal-service-fs",
  "opendal-service-ftp",
  "opendal-service-gcs",
+ "opendal-service-gdrive",
+ "opendal-service-koofr",
  "opendal-service-obs",
+ "opendal-service-onedrive",
  "opendal-service-oss",
+ "opendal-service-pcloud",
  "opendal-service-s3",
+ "opendal-service-seafile",
  "opendal-service-sftp",
  "opendal-service-webdav",
+ "opendal-service-yandex-disk",
 ]
 
 [[package]]
@@ -2200,6 +2243,7 @@ dependencies = [
  "log",
  "md-5",
  "mea",
+ "moka",
  "percent-encoding",
  "quick-xml 0.39.4",
  "reqsign-core",
@@ -2256,6 +2300,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "opendal-service-aliyun-drive"
+version = "0.57.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d24985a08900516491180eb374eacb811baf64c80755bb4751852d6b35344804"
+dependencies = [
+ "bytes",
+ "http",
+ "log",
+ "mea",
+ "opendal-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "opendal-service-azblob"
 version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2301,6 +2360,20 @@ dependencies = [
  "reqsign-file-read-tokio",
  "reqsign-tencent-cos",
  "serde",
+]
+
+[[package]]
+name = "opendal-service-dropbox"
+version = "0.57.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "623315b05f4fc7a5bf6ffe345c42a860ad689011e9517da5ab2bb3bed0c291e1"
+dependencies = [
+ "bytes",
+ "http",
+ "mea",
+ "opendal-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2358,6 +2431,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "opendal-service-gdrive"
+version = "0.57.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "526926ce13da1bd128f05c48af703793817f5b711631ad692569837b32969896"
+dependencies = [
+ "bytes",
+ "http",
+ "log",
+ "mea",
+ "opendal-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "opendal-service-koofr"
+version = "0.57.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4b354c6238460a838c37b732d2f51546373afc3388d4fcf00555f90cbbf4ebd"
+dependencies = [
+ "bytes",
+ "http",
+ "log",
+ "mea",
+ "opendal-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "opendal-service-obs"
 version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2375,6 +2478,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "opendal-service-onedrive"
+version = "0.57.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "817bf55e1ff2894706df864cae50a3c79bb66161fc3a8e222053b53610d599b8"
+dependencies = [
+ "bytes",
+ "http",
+ "log",
+ "mea",
+ "opendal-core",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "opendal-service-oss"
 version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2389,6 +2508,20 @@ dependencies = [
  "reqsign-core",
  "reqsign-file-read-tokio",
  "serde",
+]
+
+[[package]]
+name = "opendal-service-pcloud"
+version = "0.57.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9905cd694b491d2c76addb1b70e46d17741549cc728f704982817151e39ee512"
+dependencies = [
+ "bytes",
+ "http",
+ "log",
+ "opendal-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2410,6 +2543,21 @@ dependencies = [
  "reqsign-file-read-tokio",
  "serde",
  "url",
+]
+
+[[package]]
+name = "opendal-service-seafile"
+version = "0.57.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4c6c7d701f6f12099ad72038920df92764bd970a6dd379006c09785484bd20c"
+dependencies = [
+ "bytes",
+ "http",
+ "log",
+ "mea",
+ "opendal-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2443,6 +2591,21 @@ dependencies = [
  "opendal-core",
  "quick-xml 0.39.4",
  "serde",
+]
+
+[[package]]
+name = "opendal-service-yandex-disk"
+version = "0.57.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1d99bf3235ac9b4801b73bd4d8099de0373d0b171082b6d5b90718a8c1a2c97"
+dependencies = [
+ "bytes",
+ "http",
+ "log",
+ "opendal-core",
+ "quick-xml 0.39.4",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -4176,6 +4339,12 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
+
+[[package]]
+name = "tagptr"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 
 [[package]]
 name = "tempfile"

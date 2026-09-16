@@ -145,7 +145,8 @@ fn sample_value(key: &str, protocol: &str) -> Value {
         "display_name" => json!("Matrix"),
         "protocol" => json!(protocol),
         "endpoint" => json!(match protocol {
-            "s3" | "oss" | "webdav" => "http://127.0.0.1:9000",
+            "s3" | "gcs" | "obs" | "oss" | "webdav" | "koofr" | "pcloud" | "seafile" => "http://127.0.0.1:9000",
+            "azblob" => "https://account.blob.core.windows.net",
             "cos" => "https://cos.ap-guangzhou.myqcloud.com",
             "ftp" => "ftp://127.0.0.1:2121",
             "sftp" | "sftp-native" => "127.0.0.1:22",
@@ -153,12 +154,27 @@ fn sample_value(key: &str, protocol: &str) -> Value {
             _ => "",
         }),
         "bucket" => json!("demo"),
+        "container" => json!("demo-container"),
+        "account_name" => json!("account"),
+        "account_key" => json!("YWNjb3VudC1rZXk="),
+        "credential" => json!("credential"),
+        "scope" => json!("https://www.googleapis.com/auth/devstorage.read_write"),
         "region" => json!("us-east-1"),
         "access_key_id" => json!("ak"),
         "secret_access_key" => json!("sk"),
         "secret_id" => json!("secret-id"),
         "secret_key" => json!("secret-key"),
         "security_token" => json!("security-token"),
+        "access_token" => json!("access-token"),
+        "client_id" => json!("client-id"),
+        "client_secret" => json!("client-secret"),
+        "refresh_token" => json!(match protocol {
+            "dropbox" | "gdrive" | "onedrive" => "",
+            _ => "refresh-token",
+        }),
+        "drive_type" => json!("resource"),
+        "email" => json!("alice@example.com"),
+        "repo_name" => json!("library"),
         "share" => json!("media"),
         "username" => json!("alice"),
         "user" => json!("bob"),
@@ -326,8 +342,16 @@ fn visible_field_left_empty_never_breaks_optional_builds() {
                     if cfg!(windows) && protocol == "sftp" {
                         continue; // protocol itself unavailable, hint asserted elsewhere
                     }
+                    // OAuth-backed services accept either an access token or
+                    // a refresh-token flow; the manifest cannot express this
+                    // cross-field OR requirement, so an empty one-of member
+                    // is expected to fail the backend validation.
+                    let oauth_one_of = matches!(
+                        (protocol.as_str(), field.key.as_str()),
+                        ("dropbox" | "gdrive" | "onedrive", "access_token" | "refresh_token")
+                    );
                     assert!(
-                        form_required,
+                        form_required || oauth_one_of,
                         "empty optional field must not break the build: {protocol}/{}: {error}",
                         field.key
                     );
@@ -361,6 +385,15 @@ fn stale_cross_protocol_values_never_leak_into_builder_kv() {
                 "enable_virtual_host_style",
             ],
         ),
+        ("gcs", &[
+            "root", "bucket", "endpoint", "credential", "scope",
+        ]),
+        ("azblob", &[
+            "root", "container", "endpoint", "account_name", "account_key",
+        ]),
+        ("obs", &[
+            "root", "bucket", "endpoint", "access_key_id", "secret_access_key",
+        ]),
         (
             "oss",
             &["root", "bucket", "endpoint", "access_key_id", "access_key_secret"],
@@ -512,7 +545,9 @@ fn custom_config_shapes_parse_and_build_or_explain() {
 #[test]
 fn whitespace_only_scalars_never_panic_the_builder() {
     for key in ["endpoint", "user", "username", "root", "bucket", "share"] {
-        for protocol in ["fs", "s3", "oss", "webdav", "ftp", "smb", "sftp-native"] {
+        for protocol in [
+            "fs", "s3", "gcs", "azblob", "obs", "oss", "webdav", "ftp", "smb", "sftp-native",
+        ] {
             let mut overrides = Map::new();
             overrides.insert(key.to_string(), json!("   "));
             let connection = parse(&lifecycle_params(protocol, &overrides));

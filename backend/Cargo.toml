@@ -27,7 +27,15 @@ opendal = { version = "0.57", features = [
     "services-oss",
     "services-obs",
     "services-cos",
+    "services-aliyun-drive",
+    "services-dropbox",
+    "services-gdrive",
+    "services-koofr",
+    "services-onedrive",
+    "services-pcloud",
+    "services-seafile",
     "services-memory",
+    "services-yandex-disk",
 ] }
 # Pure-Rust SMB2/3 client (F5-SMB): the OpenDAL service registry has no SMB
 # backend, so `engine/smb/` adapts this crate behind a custom

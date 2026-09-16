@@ -153,7 +153,7 @@ export function installMockHost() {
     const config = connection.external_config as Record<string, unknown> | undefined;
     const protocol = typeof config?.protocol === "string" ? config.protocol.trim() : "";
     if (!protocol) throw new Error("Missing protocol in external_config");
-    const protocols = ["fs", "s3", "oss", "webdav", "ftp", "sftp", "smb", "sftp-native", "opendal-custom"];
+    const protocols = ["fs", "s3", "gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native", "opendal-custom"];
     if (!protocols.includes(protocol)) throw new Error(`Unsupported protocol '${protocol}'; expected one of ${protocols.join(", ")}`);
     if (protocol === "opendal-custom") {
       let custom = config?.config ?? {};
