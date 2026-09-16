@@ -22,7 +22,7 @@ into a coherent, auditable, and automatable workflow.
 | --- | --- |
 | Move data between local and remote storage | Unified browse, copy, move, and directory sync with transfer jobs: progress, cancel, and history |
 | Inspect and organize files across providers | digest-paged browsing for large directories with sorting, stats, and quick paths, consistent across protocols |
-| Handle archives and sharing | zip compress/extract/inline browsing, presigned public links for S3 objects |
+| Handle archives and sharing | zip compress/extract/inline browsing and presigned public links for signature-capable object storage |
 | Constrain risky operations | Read-only mode, delete protection, root-path locking, and per-connection timeouts |
 | Automate repetitive work | MCP tools reuse connections, policies, and permission boundaries: digest→cursor paging, two-phase deletes |
 
@@ -43,7 +43,7 @@ into a coherent, auditable, and automatable workflow.
 - Large-file transfers with progress, cancellation, asynchronous jobs, and the DBX
   binary channel; transfer history is per-connection and clearable.
 - zip archives: compress, extract, and inline listing (paged archiveList); directory
-  synchronization (syncDir), presigned links, and root-path restrictions.
+  synchronization (syncDir), object-storage presigned links, and root-path restrictions.
 - Read-only mode, delete protection, Known Hosts policies, and per-connection timeouts.
 - Connection credentials managed by DBX host secret bindings rather than plugin configuration.
 - Simplified Chinese, Traditional Chinese, English, Spanish, Italian, Japanese,
@@ -71,7 +71,7 @@ See the [MCP usage guide](docs/MCP_USAGE.en.md) and the
 ## Security
 
 For production connections, use root-path locking and read-only mode where possible,
-and enable deletion only when required. Credentials for S3, OSS, WebDAV, FTP, SFTP,
+and enable deletion only when required. Credentials for S3, OSS, Tencent COS, WebDAV, FTP, SFTP,
 and SMB are managed by the host secret store; the plugin does not write keys,
 private keys, or connection exports to logs or local configuration.
 

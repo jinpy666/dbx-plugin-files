@@ -7,20 +7,20 @@ references media files that do not exist.
 
 ## One-line positioning
 
-`Files Studio: one file workspace for local folders, S3-compatible storage, and remote file services.`
+`Files Studio: one file workspace for local folders, S3-compatible storage, Alibaba Cloud OSS, Tencent Cloud COS, and remote file services.`
 
 ## Long-form copy
 
 `Files Studio is built for everyday file operations and cross-storage migration. Open one
 connection to browse, upload, download, copy, move, run transfer jobs, handle zip
 archives, and perform guarded deletes. The multi-protocol engine covers local fs,
-S3/MinIO, Alibaba Cloud OSS, WebDAV, FTP, SFTP (dual stack: keyfile and password
+S3/MinIO, Alibaba Cloud OSS, Tencent Cloud COS, WebDAV, FTP, SFTP (dual stack: keyfile and password
 auth), and SMB/CIFS. Credentials stay in host secret bindings, an MCP tool interface
 serves automation, and the UI ships in seven languages.`
 
 ## Three selling points
 
-- **One connection, many storages**: fs, S3, WebDAV, FTP, SFTP, and SMB share the
+- **One connection, many storages**: fs, S3, OSS, COS, WebDAV, FTP, SFTP, and SMB share the
   same browse-and-transfer experience — switching backends never changes your habits.
 - **From usable to trustworthy**: root-path locking, read-only mode, delete
   protection, and host secret bindings put risky operations inside explicit boundaries.
@@ -42,7 +42,7 @@ serves automation, and the UI ships in seven languages.`
 ## Usage boundaries
 
 This page describes plugin UI and offline-verifiable capabilities. Real
-S3/WebDAV/FTP/SFTP/SMB backends, the DBX.app host bridge, and platform installation
+S3/OSS/COS/WebDAV/FTP/SFTP/SMB backends, the DBX.app host bridge, and platform installation
 require the corresponding runtime environments; defer to CI, smoke results
 (container-based cases SKIP when the environment is absent), and release notes.
 On Windows the `sftp` quick protocol is unavailable — use `sftp-native`.
