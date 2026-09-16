@@ -1,5 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { loadUiPrefs, saveUiPrefs, UI_PREFS_KEY, type UiPrefs } from "./prefs";
+import { loadDownloadDir, loadUiPrefs, persistDownloadDir, saveUiPrefs, DOWNLOAD_DIR_KEY, UI_PREFS_KEY, type UiPrefs } from "./prefs";
+
+function brokenStorage(): Storage {
+  const unavailable = () => {
+    throw new Error("unavailable");
+  };
+  return {
+    get length(): number {
+      throw new Error("unavailable");
+    },
+    clear: unavailable,
+    getItem: unavailable,
+    key: unavailable,
+    removeItem: unavailable,
+    setItem: unavailable,
+  } as Storage;
+}
 
 function memoryStorage(initial: Record<string, string> = {}): Storage {
   const map = new Map(Object.entries(initial));
@@ -15,7 +31,13 @@ function memoryStorage(initial: Record<string, string> = {}): Storage {
   } as Storage;
 }
 
-const prefs: UiPrefs = { sort: { column: "size", direction: "desc" }, sideTab: "quick", sideCollapsed: true };
+const prefs: UiPrefs = {
+  sort: { column: "size", direction: "desc" },
+  leftSideTab: "quick",
+  rightSideTab: "tree",
+  leftSideCollapsed: true,
+  rightSideCollapsed: false,
+};
 
 describe("ui prefs", () => {
   it("round-trips prefs through storage", () => {
@@ -29,8 +51,10 @@ describe("ui prefs", () => {
   it("falls back to defaults for missing or corrupt data", () => {
     expect(loadUiPrefs(memoryStorage())).toEqual({
       sort: { column: "name", direction: "asc" },
-      sideTab: "tree",
-      sideCollapsed: false,
+      leftSideTab: "quick",
+      rightSideTab: "tree",
+      leftSideCollapsed: false,
+      rightSideCollapsed: false,
     });
     expect(loadUiPrefs(memoryStorage({ [UI_PREFS_KEY]: "{broken" })).sort.column).toBe("name");
   });
@@ -41,7 +65,8 @@ describe("ui prefs", () => {
     });
     const loaded = loadUiPrefs(storage);
     expect(loaded.sort.column).toBe("name");
-    expect(loaded.sideTab).toBe("tree");
+    expect(loaded.leftSideTab).toBe("quick");
+    expect(loaded.rightSideTab).toBe("tree");
     expect("rightTab" in loaded).toBe(false);
   });
 
@@ -50,5 +75,27 @@ describe("ui prefs", () => {
     const storage = memoryStorage({ [UI_PREFS_KEY]: '{"dualPane":true,"sort":{"column":"name","direction":"asc"}}' });
     const loaded = loadUiPrefs(storage);
     expect("dualPane" in loaded).toBe(false);
+  });
+});
+
+describe("download dir preference (对标 ssh downloadDir)", () => {
+  it("round-trips a trimmed directory through storage", () => {
+    const storage = memoryStorage();
+    persistDownloadDir("  /Users/me/Downloads  ", storage);
+    expect(storage.getItem(DOWNLOAD_DIR_KEY)).toBe("/Users/me/Downloads");
+    expect(loadDownloadDir(storage)).toBe("/Users/me/Downloads");
+  });
+
+  it("empty value clears the preference (back to default dir)", () => {
+    const storage = memoryStorage({ [DOWNLOAD_DIR_KEY]: "/old" });
+    persistDownloadDir("", storage);
+    expect(storage.getItem(DOWNLOAD_DIR_KEY)).toBeNull();
+    expect(loadDownloadDir(storage)).toBe("");
+  });
+
+  it("missing key and unavailable storage fall back to empty string", () => {
+    expect(loadDownloadDir(memoryStorage())).toBe("");
+    expect(loadDownloadDir(brokenStorage())).toBe("");
+    expect(() => persistDownloadDir("/x", brokenStorage())).not.toThrow();
   });
 });

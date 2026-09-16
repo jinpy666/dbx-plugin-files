@@ -9,6 +9,26 @@ export type TransferState = "queued" | "running" | "completed" | "failed" | "can
 
 export type TransferKind = "upload" | "download" | "copyDir" | "syncDir" | "copy" | "move" | "rename" | "extract" | "compress" | "delete";
 
+export interface TransferPathParts {
+  parent: string;
+  name: string;
+}
+
+/** 将记录路径拆成可突出的末级名称与可截断的父路径。 */
+export function splitTransferPath(path: string): TransferPathParts {
+  const value = path.trim();
+  const separator = value.lastIndexOf("/");
+  if (separator < 0) return { parent: "", name: value };
+  const name = value.slice(separator + 1) || "/";
+  const parent = separator === 0 ? "/" : value.slice(0, separator);
+  return { parent, name };
+}
+
+/** 移动/复制记录用短标题显示源、目标名称，避免整条长路径挤占标题。 */
+export function transferPathLabel(path: string): string {
+  return path.split(" → ").map((part) => splitTransferPath(part).name).join(" → ");
+}
+
 export interface TransferJob {
   jobId: string;
   taskId?: string;
@@ -24,12 +44,16 @@ export interface TransferJob {
   bytesTotal?: number;
   error?: string;
   updatedAt: number;
-  /** 终态完成时刻（sidecar finishedAt，Unix 毫秒）。历史列表时间展示的权威值。 */
+  /** 终态完成时刻（sidecar finishedAt，Unix 毫秒）。仅保留作兼容/诊断。 */
   finishedAt?: number;
   /** 任务开始时刻（sidecar startedAt，Unix 毫秒）。 */
   startedAt?: number;
+  /** 任务加入传输队列/登记时刻；历史排序和时间显示使用此字段。 */
+  createdAt?: number;
   /** 平滑传输速率（字节/秒）。仅由 tracker 的速率采样器在活动 job 上维护。 */
   rateBps?: number;
+  /** 本机落盘路径：saveToLocal 完成的下载才有；面板据此提供定位/打开。 */
+  localPath?: string;
 }
 
 export interface TransferProgressEvent {
@@ -48,6 +72,8 @@ export interface TransferProgressEvent {
   bytesDone?: number;
   bytesTotal?: number;
   error?: string;
+  /** saveToLocal 下载完成事件携带的本机落盘路径（files/download/finish 返回）。 */
+  localPath?: string;
 }
 
 export const ACTIVE_STATES: readonly TransferState[] = ["queued", "running"];
@@ -86,6 +112,8 @@ export function applyProgress(jobs: Record<string, TransferJob>, event: Transfer
         bytesDone: event.bytesDone ?? existing.bytesDone,
         bytesTotal: event.bytesTotal ?? existing.bytesTotal,
         error: event.error ?? existing.error,
+        // localPath 只在完成事件/轮询行里出现，事件缺省时不丢已有值。
+        localPath: event.localPath ?? existing.localPath,
         updatedAt: Date.now(),
       }
     : {
@@ -102,6 +130,8 @@ export function applyProgress(jobs: Record<string, TransferJob>, event: Transfer
         bytesDone: event.bytesDone,
         bytesTotal: event.bytesTotal,
         error: event.error,
+        localPath: event.localPath,
+        createdAt: Date.now(),
         updatedAt: Date.now(),
       };
   jobs[jobId] = next;
@@ -140,13 +170,14 @@ export function applyList(jobs: Record<string, TransferJob>, payload: TransferLi
       bytesDone: raw.bytesDone === undefined ? undefined : Number(raw.bytesDone),
       bytesTotal: raw.bytesTotal === undefined ? undefined : Number(raw.bytesTotal),
       error: raw.error ? String(raw.error) : undefined,
-      // issue#6-1b：历史任务时间用 sidecar 的 finishedAt/startedAt（真实完成/
-      // 开始时刻）。轮询兜底每 5s 全量刷新一次，若一律写 Date.now()，历史
-      // 任务的展示时间会持续跟着本机时钟走（用户报告的「时间和电脑时间一起变」）。
-      // 已有 job 保留事件流写入的 updatedAt，不被轮询覆盖。
+      // saveToLocal 完成的下载行携带本机落盘路径（reveal/open 的依据）。
+      localPath: raw.localPath ? String(raw.localPath) : undefined,
+      // 历史任务时间以加入/开始时刻为准；轮询不能用完成时刻覆盖首次登记时间。
+      // updatedAt 仍保留事件流的最近更新时间，用于活动任务状态。
       updatedAt: existing?.updatedAt ?? finishedAt ?? startedAt ?? Date.now(),
       finishedAt,
       startedAt,
+      createdAt: existing?.createdAt ?? startedAt ?? finishedAt ?? Date.now(),
     };
   }
 }
@@ -156,7 +187,10 @@ export function sortedJobs(jobs: Record<string, TransferJob>): TransferJob[] {
     const aActive = isActive(a.state) ? 0 : 1;
     const bActive = isActive(b.state) ? 0 : 1;
     if (aActive !== bActive) return aActive - bActive;
-    return b.updatedAt - a.updatedAt;
+    // 所有状态都按任务加入/登记时间排列；进度更新时间和完成时间不能改变历史顺序。
+    const aTime = a.createdAt ?? a.startedAt ?? a.updatedAt;
+    const bTime = b.createdAt ?? b.startedAt ?? b.updatedAt;
+    return bTime - aTime || b.updatedAt - a.updatedAt;
   });
 }
 
@@ -273,8 +307,9 @@ export function createTransferTracker() {
     },
     /** 乐观登记：start RPC 已返回但首个进度事件未到达前的占位。 */
     register(job: TransferJob) {
-      jobs[job.jobId] = job;
-      return job;
+      const registered = { ...job, createdAt: job.createdAt ?? job.updatedAt };
+      jobs[job.jobId] = registered;
+      return registered;
     },
     /** 清理本地完成态 job（历史）；活动 job 不受影响。 */
     clearFinished(): number {
@@ -287,6 +322,13 @@ export function createTransferTracker() {
         }
       }
       return removed;
+    },
+    /** 移除单个本地 job（files/transfers/delete 成功后的本地同步）。 */
+    remove(jobId: string): boolean {
+      if (!(jobId in jobs)) return false;
+      sampler.reset(jobId);
+      delete jobs[jobId];
+      return true;
     },
     activeList(): TransferJob[] {
       return sortedJobs(jobs).filter((job) => isActive(job.state));

@@ -51,6 +51,10 @@ pub struct TransferRecord {
     pub error: Option<String>,
     pub started_at: Option<u64>,
     pub finished_at: Option<u64>,
+    /// 本机落盘路径：仅 `saveToLocal` 完成的下载行携带。`files/local/reveal|open`
+    /// 以它做白名单校验（只允许打开本插件记录过的下载），旧历史文件缺省为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_path: Option<String>,
 }
 
 /// One audit log line (JSONL).
@@ -148,6 +152,24 @@ impl Store {
         let removed = records.len() - kept.len();
         self.write_json_atomic("transfers.json", &serde_json::to_value(kept).map_err(|error| error.to_string())?)
             .map(|_| removed)
+    }
+
+    /// Removes one persisted transfer record by `taskId` and returns whether
+    /// it existed. Backing store of `files/transfers/delete`（传输面板单条删除）；
+    /// active jobs never reach the disk, so no status filtering here.
+    pub fn delete_transfer(&self, task_id: &str) -> Result<bool, String> {
+        let records = self.load_transfers();
+        let kept: Vec<TransferRecord> = records
+            .iter()
+            .filter(|record| record.task_id != task_id)
+            .cloned()
+            .collect();
+        let removed = records.len() - kept.len();
+        if removed == 0 {
+            return Ok(false);
+        }
+        self.write_json_atomic("transfers.json", &serde_json::to_value(kept).map_err(|error| error.to_string())?)
+            .map(|_| true)
     }
 
     // -- audit.jsonl --------------------------------------------------------
@@ -414,6 +436,7 @@ mod tests {
                     error: None,
                     started_at: None,
                     finished_at: None,
+                    local_path: None,
                 })
                 .unwrap();
         }
@@ -441,6 +464,7 @@ mod tests {
                     error: None,
                     started_at: None,
                     finished_at: None,
+                    local_path: None,
                 })
                 .unwrap();
         }

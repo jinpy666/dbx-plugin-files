@@ -11,6 +11,7 @@ import {
   percentOf,
   progressBytes,
   sortedJobs,
+  splitTransferPath,
   type TransferJob,
 } from "./transfers";
 
@@ -28,6 +29,10 @@ function job(overrides: Partial<TransferJob>): TransferJob {
 }
 
 describe("transfers", () => {
+  it("splits a transfer path into parent and final name", () => {
+    expect(splitTransferPath("/var/lib/dbx/report.pdf")).toEqual({ parent: "/var/lib/dbx", name: "report.pdf" });
+  });
+
   it("omits an absent connection filter but preserves an explicitly supplied filter", async () => {
     const tracker = createTransferTracker();
     const calls = vi.fn();
@@ -102,6 +107,14 @@ describe("transfers", () => {
       running: job({ jobId: "running", state: "running", updatedAt: 1 }),
     };
     expect(sortedJobs(jobs).map((entry) => entry.jobId)).toEqual(["running", "done"]);
+  });
+
+  it("sorts history newest first by task creation time, not finishedAt", () => {
+    const jobs = {
+      older: job({ jobId: "older", state: "completed", createdAt: 100, finishedAt: 900 }),
+      newer: job({ jobId: "newer", state: "failed", createdAt: 200, finishedAt: 300 }),
+    };
+    expect(sortedJobs(jobs).map((entry) => entry.jobId)).toEqual(["newer", "older"]);
   });
 
   it("normalizes files/transfers/list payloads", () => {
@@ -299,5 +312,36 @@ describe("applyList historical timestamps (issue #6)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 本机落盘 localPath（对标 ssh 面板：下载完成后可定位/打开）
+// ---------------------------------------------------------------------------
+
+describe("localPath propagation", () => {
+  it("completion event carries localPath and later events keep it", () => {
+    const store = createTransferTracker();
+    store.onProgress({ jobId: "t1", taskId: "t1", kind: "download", state: "running", size: 100, transferred: 10 });
+    store.onProgress({ jobId: "t1", taskId: "t1", state: "completed", transferred: 100, localPath: "/Downloads/a.bin" });
+    expect(store.jobs.t1.localPath).toBe("/Downloads/a.bin");
+    // 迟到的轮询行不带 localPath 时不得清掉已有值。
+    store.onProgress({ jobId: "t1", taskId: "t1", state: "completed", transferred: 100 });
+    expect(store.jobs.t1.localPath).toBe("/Downloads/a.bin");
+  });
+
+  it("applyList hydrates localPath from persisted history rows", () => {
+    const jobs: Record<string, TransferJob> = {};
+    applyList(jobs, { jobs: [{ taskId: "h1", kind: "download", status: "completed", localPath: "/Downloads/old.bin" }] }, "conn");
+    expect(jobs.h1.localPath).toBe("/Downloads/old.bin");
+  });
+
+  it("tracker.remove drops exactly one job", () => {
+    const store = createTransferTracker();
+    store.register(job({ jobId: "a", state: "completed", updatedAt: 1 }));
+    store.register(job({ jobId: "b", state: "completed", updatedAt: 2 }));
+    expect(store.remove("a")).toBe(true);
+    expect(store.remove("a")).toBe(false);
+    expect(store.historyList().map((item) => item.jobId)).toEqual(["b"]);
   });
 });

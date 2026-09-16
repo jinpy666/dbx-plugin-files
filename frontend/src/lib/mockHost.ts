@@ -497,6 +497,23 @@ export function installMockHost() {
         if (!job) throw new Error(`Unknown jobId '${str("jobId")}'`);
         return { job, kind: job.taskId ? "transfer" : "dirJob" };
       }
+      case "files/transfers/delete": {
+        // 镜像 sidecar 语义：仅删除已结束记录，queued/running 拒绝；
+        // 未知 id 返回 removed: 0（前端按无变化处理）。
+        const key = str("taskId");
+        const job = jobs.get(key);
+        if (!job) return { removed: 0 };
+        const status = String((job as Record<string, unknown>).status ?? "");
+        if (status === "queued" || status === "running") throw new Error("Transfer is still in progress; cancel it first");
+        jobs.delete(key);
+        jobs.delete(`__cancel_${key}`);
+        timers.delete(key);
+        return { removed: 1 };
+      }
+      case "files/local/capabilities": {
+        // mock 模拟 web 宿主：无本机落盘，前端走宿主保存/浏览器兜底路径。
+        return { canSaveLocal: false, downloadsDir: "", platform: "web" };
+      }
       case "files/transfer/cancel": {
         if (typeof p.taskId !== "string") throw new Error("Invalid request parameters: taskId must be a string");
         const jobId = str("taskId");
@@ -641,7 +658,15 @@ export function installMockHost() {
         if (!slot && job?.kind === "upload" && ["completed", "failed", "canceled"].includes(String(job.status))) return { success: true };
         if (!slot) throw new Error("Upload task was not found");
         if (slot.received !== slot.size) throw new Error(`Upload is incomplete: ${slot.received}/${slot.size}`);
-        assertOk(slot.path);
+        try {
+          assertOk(slot.path);
+        } catch (cause) {
+          uploads.delete(str("taskId"));
+          const message = cause instanceof Error ? cause.message : String(cause);
+          jobs.set(str("taskId"), { ...job, status: "failed", error: message, transferredBytes: slot.received });
+          emit("files/transfer/progress", { taskId: str("taskId"), kind: "upload", connectionId: connectionIdOf(slot.connectionId), remotePath: slot.path, state: "failed", error: message, size: slot.size, transferred: slot.received, total: slot.size });
+          throw cause;
+        }
         // 按 start 记录的 connectionId 落树 + 写内容（此前写死远端树，
         // 双栏本地上传「成功即消失」；P2-13③ 同款收口）。
         const landed = slot.path.replace(/\/+$/, "") || "/";
@@ -789,6 +814,9 @@ export function installMockHost() {
       const event: DbxPluginEnvironmentEvent = { type: "env", ...next };
       eventListeners.forEach((listener) => listener(event));
       document.dispatchEvent(new CustomEvent("dbx-plugin-env", { detail: event }));
+    },
+    emitEvent(method: string, payload: Record<string, unknown>) {
+      emit(method, payload);
     },
   };
 }

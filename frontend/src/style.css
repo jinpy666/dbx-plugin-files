@@ -151,13 +151,24 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px
 .wb-progress-bar { height: 100%; border-radius: 999px; background: var(--primary); transition: width 160ms ease; }
 .wb-progress-bar.is-completed { background: var(--success); }
 .wb-progress-bar.is-failed, .wb-progress-bar.is-canceled { background: var(--destructive); }
-.wb-transfer-state { border-radius: 999px; padding: 0 6px; font-size: 10px; border: 1px solid var(--border); }
-.wb-transfer-state.is-running { color: var(--primary); border-color: color-mix(in srgb, var(--primary) 55%, transparent); }
-.wb-transfer-state.is-completed { color: var(--success); border-color: color-mix(in srgb, var(--success) 55%, transparent); }
-.wb-transfer-state.is-failed, .wb-transfer-state.is-canceled { color: var(--destructive); border-color: color-mix(in srgb, var(--destructive) 55%, transparent); }
+.wb-transfer-status-icon { width: 14px; height: 14px; flex: 0 0 14px; color: var(--muted-foreground); }
+.wb-transfer-status-icon.is-running { color: var(--primary); }
+.wb-transfer-status-icon.is-completed { color: var(--success); }
+.wb-transfer-status-icon.is-failed, .wb-transfer-status-icon.is-canceled { color: var(--destructive); }
 .wb-transfer-error { margin-top: 4px; color: var(--destructive); font-size: 11px; overflow-wrap: anywhere; }
 .wb-transfer-speed { color: var(--primary); font-variant-numeric: tabular-nums; }
 .wb-transfer-history-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.wb-transfer-savedir { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 11px; }
+.wb-transfer-savedir input { flex: 1 1 auto; min-width: 0; height: 24px; padding: 0 6px; font-size: 11px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--background); color: var(--foreground); }
+.wb-transfer-localpath { display: flex; flex-direction: column; gap: 1px; margin: 4px 0 0; min-width: 0; font-size: 11px; color: var(--muted-foreground); overflow: hidden; }
+.wb-transfer-path-parent { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.wb-transfer-path-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--foreground); font-weight: 500; }
+.wb-settings-panel { display: flex; flex-direction: column; gap: 12px; }
+.wb-settings-section { display: flex; flex-direction: column; gap: 6px; }
+.wb-settings-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.wb-settings-help, .wb-settings-default { margin: 0; color: var(--muted-foreground); font-size: 11px; overflow-wrap: anywhere; }
+.wb-settings-path-row { display: flex; align-items: center; gap: 6px; }
+.wb-settings-path-row input { flex: 1 1 auto; min-width: 0; height: 26px; padding: 0 7px; font-size: 11px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--background); color: var(--foreground); }
 
 /* ---- audit panel -------------------------------------------------------------- */
 .wb-audit-list { display: flex; flex-direction: column; gap: 4px; }

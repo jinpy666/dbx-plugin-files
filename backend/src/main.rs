@@ -10,6 +10,7 @@
 
 mod archive;
 mod engine;
+mod local_downloads;
 mod mcp;
 mod model;
 mod store;
@@ -579,15 +580,24 @@ impl Plugin {
                     &connection,
                     &operator,
                     &request.remote_path,
+                    request.save_to_local,
+                    request.download_dir.as_deref(),
                     emitter,
                 ))?;
                 Ok(json!({ "taskId": task_id, "size": size }))
             }
             "files/download/finish" => {
                 let request: model::TaskRequest = parse(params)?;
-                self.runtime
+                // saveToLocal 完成的下载在此改名落盘并带回 localPath（历史同
+                // 步记录）；web/docker 等本地落盘关闭时为 None。
+                let local_path = self
+                    .runtime
                     .block_on(self.transfers.finish_download(&request.task_id, emitter))?;
-                Ok(json!({ "success": true }))
+                let mut response = json!({ "success": true, "taskId": request.task_id });
+                if let Some(local_path) = local_path {
+                    response["localPath"] = json!(local_path);
+                }
+                Ok(response)
             }
 
             // ------------------------------------------------------------------
@@ -630,6 +640,56 @@ impl Plugin {
                     .runtime
                     .block_on(self.transfers.clear(&self.store, request.connection_id.as_deref()))?;
                 Ok(json!({ "cleared": cleared }))
+            }
+            "files/transfers/delete" => {
+                // 传输面板单条删除：按 taskId 移除已结束的记录（内存 + 持久化
+                // transfers.json）；活动任务拒绝，先取消再删。
+                let request: model::TaskRequest = parse(params)?;
+                let removed = self
+                    .runtime
+                    .block_on(self.transfers.delete_record(&self.store, &request.task_id))?;
+                Ok(json!({ "removed": removed }))
+            }
+            // 本机落盘能力探测：桌面端 sidecar 可直接把下载写进本机下载目录
+            // （完成后 localPath 进入传输历史，面板提供 reveal/open）；web/
+            // docker 模式探测失败或 canSaveLocal=false 时前端回退宿主
+            // fileTransfer 保存或浏览器 <a download>。
+            "files/local/capabilities" => {
+                let data_dir = Store::default_dir();
+                let downloads_dir = local_downloads::downloads_base_dir(
+                    None,
+                    |key| std::env::var_os(key),
+                    &data_dir,
+                );
+                Ok(json!({
+                    "canSaveLocal": local_downloads::can_save_local(|key| std::env::var_os(key)),
+                    "downloadsDir": downloads_dir.to_string_lossy(),
+                    "platform": local_downloads::platform_name(),
+                }))
+            }
+            // 在文件管理器中定位已完成的下载。只允许 reveal 传输历史里记录过
+            // 的 localPath，不能成为任意路径打开原语。
+            "files/local/reveal" => {
+                let path = params
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .ok_or("Missing path")?;
+                let history = self.store.load_transfers();
+                local_downloads::reveal_validated(&history, std::path::Path::new(path))?;
+                Ok(json!({ "success": true }))
+            }
+            // 在默认应用中打开已完成的本机下载；同样只允许打开传输历史中记录
+            // 过的路径，避免把这个按钮变成任意本机路径执行入口。
+            "files/local/open" => {
+                let path = params
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .ok_or("Missing path")?;
+                let history = self.store.load_transfers();
+                local_downloads::open_validated(&history, std::path::Path::new(path))?;
+                Ok(json!({ "success": true }))
             }
             "files/transfer/status" => {
                 let request: model::JobRequest = parse(params)?;

@@ -31,11 +31,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - run: python3 scripts/validate_repo.py
@@ -46,12 +46,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.24.0
       # setup-node 的 pnpm 缓存需要 pnpm 已在 PATH 中，故置于 pnpm/action-setup 之后
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: pnpm
@@ -73,7 +73,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install native dependencies
         # No keyring/dbus in this dependency tree; nasm builds aws-lc-sys from
         # source on Linux (pkg-config covers its transitive build probes).
@@ -95,7 +95,7 @@ jobs:
     timeout-minutes: 30
     needs: [validate, backend]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install native dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config nasm
       - uses: dtolnay/rust-toolchain@stable
@@ -145,14 +145,14 @@ jobs:
     env:
       SIDECAR_BINARY: backend/target/release/dbx-plugin-files${{ matrix.os == 'windows' && '.exe' || '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install native dependencies
         if: matrix.os == 'linux'
         run: sudo apt-get update && sudo apt-get install -y pkg-config nasm
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.24.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: pnpm
@@ -184,7 +184,7 @@ jobs:
           CARGO_TARGET_DIR: ${{ github.workspace }}/backend/target
           NO_COLOR: "1"
         run: dbx-plugin package .
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dbx-plugin-files-${{ matrix.target }}
           if-no-files-found: error
@@ -198,8 +198,8 @@ jobs:
     timeout-minutes: 15
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: dbx-plugin-files-*
           path: dist

@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Validate manifest and release tag
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
@@ -41,7 +41,7 @@ jobs:
           PY
       - name: Install native dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config nasm
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - uses: dtolnay/rust-toolchain@stable
@@ -84,11 +84,11 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install native dependencies
         if: matrix.os == 'linux'
         run: sudo apt-get update && sudo apt-get install -y pkg-config nasm
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - uses: dtolnay/rust-toolchain@stable
@@ -106,7 +106,7 @@ jobs:
           CARGO_TARGET_DIR: ${{ github.workspace }}/backend/target
           NO_COLOR: "1"
         run: dbx-plugin package .
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dbx-plugin-${{ matrix.target }}
           if-no-files-found: error
@@ -122,8 +122,8 @@ jobs:
     timeout-minutes: 15
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: dbx-plugin-*
           path: dist

@@ -338,6 +338,12 @@ pub struct UploadStartRequest {
 pub struct DownloadStartRequest {
     pub connection_id: String,
     pub remote_path: String,
+    /// 桌面端 sidecar 本机落盘（写入下载目录并随 finish 返回 localPath）。
+    #[serde(default)]
+    pub save_to_local: bool,
+    /// 工作台「保存到」偏好的目录覆盖；空/缺省用系统下载目录。
+    #[serde(default)]
+    pub download_dir: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
