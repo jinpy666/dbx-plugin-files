@@ -1015,15 +1015,17 @@ mod tests {
         // Protocol-gated field matrix: each protocol only surfaces its own
         // fields, global fields stay ungated.
         let expects: &[(&str, &[&str])] = &[
-            ("bucket", &["s3", "oss"]),
+            ("bucket", &["s3", "oss", "cos"]),
             ("region", &["s3"]),
             ("access_key_id", &["s3", "oss"]),
             ("secret_access_key", &["s3", "oss"]),
             ("enable_virtual_host_style", &["s3"]),
             (
                 "endpoint",
-                &["s3", "oss", "webdav", "ftp", "sftp", "smb", "sftp-native"],
+                &["s3", "oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native"],
             ),
+            ("secret_id", &["cos"]),
+            ("secret_key", &["cos"]),
             ("username", &["webdav", "smb"]),
             ("user", &["ftp", "sftp", "sftp-native"]),
             ("share", &["smb"]),
@@ -1111,7 +1113,14 @@ mod tests {
         assert!(required("display_name"));
         assert!(required("protocol"));
 
-        let conditionally_required = ["bucket", "access_key_id", "secret_access_key", "service"];
+        let conditionally_required = [
+            "bucket",
+            "access_key_id",
+            "secret_access_key",
+            "secret_id",
+            "secret_key",
+            "service",
+        ];
         for key in conditionally_required {
             let item = field_of(key);
             assert!(
@@ -1166,7 +1175,7 @@ mod tests {
                 .all(|value| endpoint_visible.contains(value)),
             "endpoint required_when must stay inside its visible_when"
         );
-        for required_protocol in ["oss", "webdav", "ftp", "sftp", "smb", "sftp-native"] {
+        for required_protocol in ["oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native"] {
             assert!(
                 endpoint_required.contains(&required_protocol),
                 "endpoint must be conditionally required for '{required_protocol}'"

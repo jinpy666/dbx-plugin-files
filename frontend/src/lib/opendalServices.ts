@@ -55,7 +55,7 @@ export const SERVICE_TEMPLATES: Record<string, ServiceTemplate> = {
     fields: [
       { key: "bucket", type: "text", required: true },
       { key: "endpoint", type: "text", placeholder: "https://cos.ap-guangzhou.myqcloud.com" },
-      { key: "secret_id", type: "text", required: true },
+      { key: "secret_id", type: "password", required: true, secret: true },
       { key: "secret_key", type: "password", required: true, secret: true },
     ],
   },

@@ -4744,6 +4744,8 @@ mod tests {
         ];
         let secret_map: &[(&str, &str)] = &[
             ("secret_access_key", "secretAccessKey"),
+            ("secret_id", "secretId"),
+            ("secret_key", "secretKey"),
             ("password", "password"),
             ("key", "key"),
         ];

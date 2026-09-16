@@ -98,7 +98,7 @@ for (const [index, field] of fields.entries()) {
 // store (lifecycle `connection_secrets`, masked input) — never to the config
 // binding, which is persisted in plaintext alongside the connection record.
 // `password` inputs must always be secret-bound so the host masks them.
-const SECRET_FIELDS = new Set(["key", "password", "secret_access_key"]);
+const SECRET_FIELDS = new Set(["key", "password", "secret_access_key", "secret_id", "secret_key"]);
 for (const field of fields) {
   if (field.type === "password") {
     assert.equal(field.binding, "secret", `${field.key}: password input must bind to secret`);
@@ -137,15 +137,19 @@ for (const protocol of options("protocol")) {
     // Object storage (S3 / OSS): bucket+keys required; endpoint required for
     // OSS (no default endpoint) but optional for S3 (AWS default endpoint).
     current.visible("endpoint", !["fs", "opendal-custom"].includes(protocol));
-    current.required("endpoint", ["oss", "webdav", "ftp", "sftp", "smb", "sftp-native"].includes(protocol));
-    current.visible("bucket", ["s3", "oss"].includes(protocol));
-    current.required("bucket", ["s3", "oss"].includes(protocol));
+    current.required("endpoint", ["oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native"].includes(protocol));
+    current.visible("bucket", ["s3", "oss", "cos"].includes(protocol));
+    current.required("bucket", ["s3", "oss", "cos"].includes(protocol));
     current.visible("region", protocol === "s3");
     current.visible("enable_virtual_host_style", protocol === "s3");
     current.visible("access_key_id", ["s3", "oss"].includes(protocol));
     current.required("access_key_id", ["s3", "oss"].includes(protocol));
     current.visible("secret_access_key", ["s3", "oss"].includes(protocol));
     current.required("secret_access_key", ["s3", "oss"].includes(protocol));
+    current.visible("secret_id", protocol === "cos");
+    current.required("secret_id", protocol === "cos");
+    current.visible("secret_key", protocol === "cos");
+    current.required("secret_key", protocol === "cos");
     // Custom OpenDAL service descriptor.
     current.visible("service", protocol === "opendal-custom");
     current.required("service", protocol === "opendal-custom");

@@ -124,6 +124,7 @@ fn sample_value(key: &str, protocol: &str) -> Value {
         "protocol" => json!(protocol),
         "endpoint" => json!(match protocol {
             "s3" | "oss" | "webdav" => "http://127.0.0.1:9000",
+            "cos" => "https://cos.ap-guangzhou.myqcloud.com",
             "ftp" => "ftp://127.0.0.1:2121",
             "sftp" | "sftp-native" => "127.0.0.1:22",
             "smb" => "nas.local:445",
@@ -133,6 +134,8 @@ fn sample_value(key: &str, protocol: &str) -> Value {
         "region" => json!("us-east-1"),
         "access_key_id" => json!("ak"),
         "secret_access_key" => json!("sk"),
+        "secret_id" => json!("secret-id"),
+        "secret_key" => json!("secret-key"),
         "share" => json!("media"),
         "username" => json!("alice"),
         "user" => json!("bob"),

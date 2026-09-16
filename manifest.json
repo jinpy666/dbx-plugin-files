@@ -268,8 +268,8 @@
         {
           "key": "secret_id",
           "label": "Secret ID",
-          "type": "text",
-          "binding": "config",
+          "type": "password",
+          "binding": "secret",
           "default": "",
           "visible_when": {
             "field": "protocol",
@@ -651,7 +651,8 @@
                 "smb": "SMB / CIFS",
                 "opendal-custom": "OpenDAL 自訂服務",
                 "sftp-native": "SFTP（原生）",
-                "oss": "阿里雲 OSS"
+                "oss": "阿里雲 OSS",
+                "cos": "騰訊雲 COS"
               }
             },
             "root": {
@@ -701,6 +702,12 @@
             "secret_access_key": {
               "label": "Secret Access Key",
               "description": "金鑰由宿主 secret binding 保管。"
+            },
+            "secret_id": {
+              "label": "Secret ID"
+            },
+            "secret_key": {
+              "label": "Secret Key"
             },
             "username": {
               "label": "使用者名稱",
@@ -781,7 +788,8 @@
                 "smb": "SMB / CIFS",
                 "opendal-custom": "OpenDAL custom service",
                 "sftp-native": "SFTP (native)",
-                "oss": "Alibaba OSS"
+                "oss": "Alibaba OSS",
+                "cos": "Tencent COS"
               }
             },
             "root": {
@@ -831,6 +839,12 @@
             "secret_access_key": {
               "label": "Secret access key",
               "description": "Secret key kept in the host secret binding."
+            },
+            "secret_id": {
+              "label": "Secret ID"
+            },
+            "secret_key": {
+              "label": "Secret key"
             },
             "username": {
               "label": "Username",
@@ -911,7 +925,8 @@
                 "smb": "SMB / CIFS",
                 "opendal-custom": "Servicio personalizado de OpenDAL",
                 "sftp-native": "SFTP (nativo)",
-                "oss": "OSS de Alibaba"
+                "oss": "OSS de Alibaba",
+                "cos": "Tencent COS"
               }
             },
             "root": {
@@ -961,6 +976,12 @@
             "secret_access_key": {
               "label": "Clave de acceso secreta",
               "description": "Clave secreta guardada en el secret binding del host."
+            },
+            "secret_id": {
+              "label": "Secret ID"
+            },
+            "secret_key": {
+              "label": "Secret key"
             },
             "username": {
               "label": "Usuario",
@@ -1041,7 +1062,8 @@
                 "smb": "SMB / CIFS",
                 "opendal-custom": "Servizio OpenDAL personalizzato",
                 "sftp-native": "SFTP (nativo)",
-                "oss": "OSS di Alibaba"
+                "oss": "OSS di Alibaba",
+                "cos": "Tencent COS"
               }
             },
             "root": {
@@ -1091,6 +1113,12 @@
             "secret_access_key": {
               "label": "Chiave di accesso segreta",
               "description": "Chiave segreta custodita nel secret binding dell'host."
+            },
+            "secret_id": {
+              "label": "Secret ID"
+            },
+            "secret_key": {
+              "label": "Secret key"
             },
             "username": {
               "label": "Nome utente",
@@ -1171,7 +1199,8 @@
                 "smb": "SMB / CIFS",
                 "opendal-custom": "OpenDAL カスタムサービス",
                 "sftp-native": "SFTP（ネイティブ）",
-                "oss": "Alibaba OSS"
+                "oss": "Alibaba OSS",
+                "cos": "Tencent COS"
               }
             },
             "root": {
@@ -1221,6 +1250,12 @@
             "secret_access_key": {
               "label": "シークレットアクセスキー",
               "description": "シークレットはホストの secret binding で保管されます。"
+            },
+            "secret_id": {
+              "label": "Secret ID"
+            },
+            "secret_key": {
+              "label": "Secret key"
             },
             "username": {
               "label": "ユーザー名",
@@ -1301,7 +1336,8 @@
                 "smb": "SMB / CIFS",
                 "opendal-custom": "Serviço personalizado do OpenDAL",
                 "sftp-native": "SFTP (nativo)",
-                "oss": "OSS da Alibaba"
+                "oss": "OSS da Alibaba",
+                "cos": "Tencent COS"
               }
             },
             "root": {
@@ -1351,6 +1387,12 @@
             "secret_access_key": {
               "label": "Chave de acesso secreta",
               "description": "Chave secreta mantida no secret binding do host."
+            },
+            "secret_id": {
+              "label": "Secret ID"
+            },
+            "secret_key": {
+              "label": "Secret key"
             },
             "username": {
               "label": "Nome de usuário",

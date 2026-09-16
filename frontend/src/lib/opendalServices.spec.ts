@@ -52,6 +52,11 @@ describe("opendalServices", () => {
     const template = templateFor("cos")!;
     expect(template.kind).toBe("quick");
     expect(template.fields.map((field) => field.key)).toEqual(["bucket", "endpoint", "secret_id", "secret_key"]);
+    expect(template.fields.find((field) => field.key === "secret_id")).toMatchObject({
+      type: "password",
+      required: true,
+      secret: true,
+    });
     expect(template.fields.find((field) => field.key === "secret_key")).toMatchObject({
       type: "password",
       required: true,
