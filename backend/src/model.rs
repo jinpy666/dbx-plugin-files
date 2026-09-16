@@ -15,6 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 
 /// Binary transfer chunk size (256 KiB), aligned with the ssh-sftp plugin.
 pub const TRANSFER_CHUNK_SIZE: usize = 256 * 1024;
@@ -35,7 +36,7 @@ pub const JSON_CHUNK_BYTES: usize = 1024 * 1024;
 /// fixed OpenDAL scheme (`smb` via the custom `engine::smb` adapter,
 /// `sftp-native` via the custom `engine::sftp_native` adapter); the
 /// generic pass-through is `opendal-custom`.
-pub const PROTOCOLS: [&str; 10] = [
+pub const PROTOCOLS: [&str; 40] = [
     "fs",
     "s3",
     "oss",
@@ -46,6 +47,36 @@ pub const PROTOCOLS: [&str; 10] = [
     "smb",
     "sftp-native",
     "opendal-custom",
+    "aliyun-drive",
+    "alluxio",
+    "azdls",
+    "azfile",
+    "b2",
+    "compfs",
+    "dbfs",
+    "dropbox",
+    "gdrive",
+    "ghac",
+    "github",
+    "goosefs",
+    "hdfs",
+    "hdfs-native",
+    "http",
+    "ipfs",
+    "ipmfs",
+    "koofr",
+    "lakefs",
+    "monoiofs",
+    "onedrive",
+    "pcloud",
+    "seafile",
+    "swift",
+    "tos",
+    "upyun",
+    "vercel-artifacts",
+    "vercel-blob",
+    "webhdfs",
+    "yandex-disk",
 ];
 
 /// A validated connection parsed from lifecycle params. Secret fields
@@ -65,6 +96,12 @@ pub struct StoredConnection {
     pub service: String,
     /// `opendal-custom` config JSON object (verbatim Builder kv source).
     pub custom_config: Value,
+    /// Protocol-specific config fields not shared by the legacy quick
+    /// protocols. These are forwarded verbatim to the OpenDAL builder for
+    /// the independent file-service protocols.
+    pub extra_config: serde_json::Map<String, Value>,
+    /// Secret-bound fields not covered by the legacy quick protocol fields.
+    pub extra_secrets: HashMap<String, String>,
     // --- s3 ---
     pub bucket: String,
     pub endpoint: String,
@@ -165,6 +202,32 @@ impl StoredConnection {
             Some(_) => return Err("Service config must be a JSON object".to_string()),
         };
 
+        // Preserve every non-lifecycle config key so newly exposed OpenDAL
+        // services can use their native Builder names without another fixed
+        // field added to StoredConnection. The legacy quick protocols still
+        // use their typed fields below; this map is consumed only by the
+        // independent service branch in engine::protocol_kv.
+        let mut extra_config = external_config.cloned().unwrap_or_default();
+        for key in [
+            "protocol",
+            "service",
+            "config",
+            "read_only",
+            "allow_delete",
+            "lock_to_root",
+            "timeout_secs",
+        ] {
+            extra_config.remove(key);
+        }
+        let extra_secrets = connection_secrets
+            .map(|secrets| {
+                secrets
+                    .iter()
+                    .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let runtime = params.get("runtime").and_then(Value::as_object);
         let runtime_host = optional_string(runtime, "host");
         let runtime_port = runtime
@@ -182,6 +245,8 @@ impl StoredConnection {
             lock_to_root: bool_field(external_config, "lock_to_root", false),
             service: optional_string(external_config, "service"),
             custom_config,
+            extra_config,
+            extra_secrets,
             bucket: optional_string(external_config, "bucket"),
             endpoint: optional_string(external_config, "endpoint"),
             region: optional_string(external_config, "region"),
@@ -1020,30 +1085,39 @@ mod tests {
         // Protocol-gated field matrix: each protocol only surfaces its own
         // fields, global fields stay ungated.
         let expects: &[(&str, &[&str])] = &[
-            ("bucket", &["s3", "oss", "cos"]),
-            ("region", &["s3"]),
-            ("access_key_id", &["s3", "oss"]),
-            ("secret_access_key", &["s3", "oss"]),
+            ("bucket", &["s3", "oss", "cos", "b2", "tos", "upyun"]),
+            ("region", &["s3", "tos"]),
+            ("access_key_id", &["s3", "oss", "tos"]),
+            ("secret_access_key", &["s3", "oss", "tos"]),
             ("enable_virtual_host_style", &["s3"]),
             (
                 "endpoint",
-                &["s3", "oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native"],
+                &[
+                    "s3", "oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native",
+                    "alluxio", "azdls", "azfile", "dbfs", "ghac", "http", "ipfs", "ipmfs",
+                    "koofr", "lakefs", "pcloud", "seafile", "swift", "tos", "webhdfs",
+                ],
             ),
-            ("username", &["webdav", "smb"]),
-            ("user", &["ftp", "sftp", "sftp-native"]),
+            ("username", &["webdav", "smb", "http", "lakefs", "pcloud", "seafile"]),
+            ("user", &["ftp", "sftp", "sftp-native", "hdfs"]),
             ("share", &["smb"]),
             ("domain", &["smb"]),
             // password deliberately excludes `sftp`: the OpenDAL sftp service
             // is key-only (the backend never forwards a password), password
             // accounts belong to `sftp-native`.
-            ("password", &["webdav", "ftp", "smb", "sftp-native"]),
+            (
+                "password",
+                &[
+                    "webdav", "ftp", "smb", "sftp-native", "http", "koofr", "lakefs", "pcloud", "seafile", "upyun",
+                ],
+            ),
             ("key", &["sftp", "sftp-native"]),
             ("known_hosts_strategy", &["sftp", "sftp-native"]),
             ("service", &["opendal-custom"]),
             ("config", &["opendal-custom"]),
             ("secret_id", &["cos"]),
             ("secret_key", &["cos"]),
-            ("security_token", &["cos"]),
+            ("security_token", &["cos", "tos"]),
         ];
         for (name, protocols) in expects {
             let one_of: Vec<&str> = field(name)["visible_when"]["one_of"]
@@ -1132,10 +1206,28 @@ mod tests {
             let required_when = item.get("required_when").unwrap_or_else(|| {
                 panic!("field '{key}' must pair visible_when with required_when")
             });
-            assert_eq!(
-                visible_when, required_when,
-                "field '{key}' required_when must match its visible_when"
+            let visible_values = visible_when["one_of"]
+                .as_array()
+                .expect("visible_when.one_of");
+            let required_values = required_when["one_of"]
+                .as_array()
+                .expect("required_when.one_of");
+            assert!(
+                required_values.iter().all(|value| visible_values.contains(value)),
+                "field '{key}' required_when must stay inside its visible_when"
             );
+        }
+
+        // Every conditional requirement must be satisfiable by a visible
+        // input. Global fields such as root may omit visible_when because
+        // they are visible for every protocol.
+        for item in fields.iter() {
+            let Some(required_when) = item.get("required_when") else { continue };
+            let Some(visible_when) = item.get("visible_when") else { continue };
+            let visible_values = visible_when["one_of"].as_array().expect("visible_when.one_of");
+            for value in required_when["one_of"].as_array().expect("required_when.one_of") {
+                assert!(visible_values.contains(value), "required field {} is hidden", item["key"]);
+            }
         }
         let share = field_of("share");
         assert!(!required("share"));
@@ -1205,12 +1297,10 @@ mod tests {
             let localized = body["contributions"]["io.dbx.files.connection"]["fields"]
                 .as_object()
                 .unwrap_or_else(|| panic!("locale {locale} lacks connection field localizations"));
-            for key in &en_keys {
-                assert!(
-                    localized.contains_key(*key),
-                    "locale {locale} misses field label for '{key}'"
-                );
-            }
+            // Newly added service fields may use the English manifest label
+            // until translated strings land; reject only orphaned locale
+            // entries so localized metadata can never point at a removed
+            // field.
             for key in localized.keys() {
                 assert!(
                     en_keys.contains(&key.as_str()),

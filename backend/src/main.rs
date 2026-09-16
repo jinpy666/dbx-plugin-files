@@ -8,6 +8,8 @@
 //! `operationId` falls back to a local uuid on Host API 1.0 (ssh-sftp
 //! main.rs:694 pattern).
 
+#![recursion_limit = "256"]
+
 mod archive;
 mod engine;
 mod local_downloads;

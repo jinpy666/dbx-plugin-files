@@ -83,7 +83,14 @@ describe("opendalServices", () => {
     for (const service of ["fs", "s3", "webdav", "ftp", "sftp", "gcs", "azblob", "oss", "obs", "cos"]) {
       expect(CUSTOM_SERVICES.has(service)).toBe(true);
     }
-    expect(quickProtocolIds()).toEqual(["fs", "s3", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native"]);
+    expect(quickProtocolIds()).toEqual([
+      "fs", "s3", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native",
+      "aliyun-drive", "alluxio", "azdls", "azfile", "b2", "compfs", "dbfs",
+      "dropbox", "gdrive", "ghac", "github", "goosefs", "hdfs", "hdfs-native",
+      "http", "ipfs", "ipmfs", "koofr", "lakefs", "monoiofs", "onedrive", "pcloud",
+      "seafile", "swift", "tos", "upyun", "vercel-artifacts", "vercel-blob", "webhdfs",
+      "yandex-disk",
+    ]);
   });
 
   it("maps sftp-native quick fields into an external config with secrets separated", () => {

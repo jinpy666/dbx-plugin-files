@@ -28,7 +28,7 @@ const COMMON_FIELDS: ServiceField[] = [
   { key: "allow_delete", type: "boolean" },
 ];
 
-export const SERVICE_TEMPLATES: Record<string, ServiceTemplate> = {
+const BASE_SERVICE_TEMPLATES: Record<string, ServiceTemplate> = {
   fs: {
     id: "fs",
     kind: "quick",
@@ -119,6 +119,141 @@ export const SERVICE_TEMPLATES: Record<string, ServiceTemplate> = {
       { key: "known_hosts_strategy", type: "select", options: ["Tolerate", "Strict", "Trust"] },
     ],
   },
+};
+
+/** Typed field definitions for the remaining OpenDAL file/object services. */
+const INDEPENDENT_SERVICE_FIELDS: Readonly<Record<string, readonly ServiceField[]>> = {
+  "aliyun-drive": [
+    { key: "root", type: "text", placeholder: "/" },
+    { key: "access_token", type: "password", secret: true },
+    { key: "client_id", type: "text" },
+    { key: "client_secret", type: "password", secret: true },
+    { key: "refresh_token", type: "password", secret: true },
+    { key: "drive_type", type: "select", options: ["resource", "backup"] },
+  ],
+  alluxio: [{ key: "endpoint", type: "text", required: true }, { key: "root", type: "text" }],
+  azdls: [
+    { key: "filesystem", type: "text", required: true },
+    { key: "endpoint", type: "text", required: true },
+    { key: "account_name", type: "text" },
+    { key: "account_key", type: "password", secret: true },
+    { key: "sas_token", type: "password", secret: true },
+    { key: "client_id", type: "text" },
+    { key: "client_secret", type: "password", secret: true },
+    { key: "tenant_id", type: "text" },
+    { key: "authority_host", type: "text" },
+    { key: "enable_hns", type: "boolean" },
+    { key: "root", type: "text" },
+  ],
+  azfile: [
+    { key: "share_name", type: "text", required: true },
+    { key: "endpoint", type: "text", required: true },
+    { key: "account_name", type: "text" },
+    { key: "account_key", type: "password", secret: true },
+    { key: "sas_token", type: "password", secret: true },
+    { key: "root", type: "text" },
+  ],
+  b2: [
+    { key: "bucket", type: "text", required: true },
+    { key: "bucket_id", type: "text", required: true },
+    { key: "application_key_id", type: "text", required: true },
+    { key: "application_key", type: "password", required: true, secret: true },
+    { key: "root", type: "text" },
+  ],
+  compfs: [{ key: "root", type: "text", required: true }],
+  dbfs: [{ key: "endpoint", type: "text", required: true }, { key: "token", type: "password", required: true, secret: true }, { key: "root", type: "text" }],
+  dropbox: [
+    { key: "access_token", type: "password", secret: true },
+    { key: "refresh_token", type: "password", secret: true },
+    { key: "client_id", type: "text" },
+    { key: "client_secret", type: "password", secret: true },
+    { key: "root", type: "text" },
+  ],
+  gdrive: [
+    { key: "access_token", type: "password", secret: true },
+    { key: "refresh_token", type: "password", secret: true },
+    { key: "client_id", type: "text" },
+    { key: "client_secret", type: "password", secret: true },
+    { key: "root", type: "text" },
+  ],
+  ghac: [{ key: "endpoint", type: "text", required: true }, { key: "runtime_token", type: "password", required: true, secret: true }, { key: "version", type: "text" }, { key: "root", type: "text" }],
+  github: [{ key: "owner", type: "text", required: true }, { key: "repo", type: "text", required: true }, { key: "token", type: "password", secret: true }, { key: "root", type: "text" }],
+  goosefs: [
+    { key: "master_addr", type: "text", required: true },
+    { key: "auth_username", type: "text" },
+    { key: "auth_type", type: "text" },
+    { key: "block_size", type: "text" },
+    { key: "chunk_size", type: "text" },
+    { key: "write_type", type: "text" },
+    { key: "root", type: "text" },
+  ],
+  hdfs: [
+    { key: "name_node", type: "text", required: true },
+    { key: "user", type: "text" },
+    { key: "kerberos_ticket_cache_path", type: "text" },
+    { key: "enable_append", type: "boolean" },
+    { key: "atomic_write_dir", type: "text" },
+    { key: "root", type: "text" },
+  ],
+  "hdfs-native": [
+    { key: "name_node", type: "text", required: true },
+    { key: "enable_append", type: "boolean" },
+    { key: "root", type: "text" },
+  ],
+  http: [{ key: "endpoint", type: "text", required: true }, { key: "username", type: "text" }, { key: "password", type: "password", secret: true }, { key: "token", type: "password", secret: true }, { key: "root", type: "text" }],
+  ipfs: [{ key: "endpoint", type: "text", required: true }, { key: "root", type: "text", required: true }],
+  ipmfs: [{ key: "endpoint", type: "text", required: true }, { key: "root", type: "text", required: true }],
+  koofr: [{ key: "endpoint", type: "text", required: true }, { key: "email", type: "text", required: true }, { key: "password", type: "password", required: true, secret: true }, { key: "root", type: "text" }],
+  lakefs: [{ key: "endpoint", type: "text", required: true }, { key: "repository", type: "text", required: true }, { key: "branch", type: "text" }, { key: "username", type: "text", required: true }, { key: "password", type: "password", required: true, secret: true }, { key: "root", type: "text" }],
+  monoiofs: [{ key: "root", type: "text", required: true }],
+  onedrive: [
+    { key: "access_token", type: "password", secret: true },
+    { key: "refresh_token", type: "password", secret: true },
+    { key: "client_id", type: "text" },
+    { key: "client_secret", type: "password", secret: true },
+    { key: "enable_versioning", type: "boolean" },
+    { key: "root", type: "text" },
+  ],
+  pcloud: [{ key: "endpoint", type: "text", required: true }, { key: "username", type: "text", required: true }, { key: "password", type: "password", required: true, secret: true }, { key: "root", type: "text" }],
+  seafile: [{ key: "endpoint", type: "text", required: true }, { key: "repo_name", type: "text", required: true }, { key: "username", type: "text", required: true }, { key: "password", type: "password", required: true, secret: true }, { key: "root", type: "text" }],
+  swift: [
+    { key: "endpoint", type: "text", required: true },
+    { key: "container", type: "text", required: true },
+    { key: "token", type: "password", secret: true },
+    { key: "temp_url_key", type: "password", secret: true },
+    { key: "temp_url_hash_algorithm", type: "text" },
+    { key: "root", type: "text" },
+  ],
+  tos: [
+    { key: "bucket", type: "text", required: true },
+    { key: "endpoint", type: "text" },
+    { key: "region", type: "text" },
+    { key: "access_key_id", type: "text" },
+    { key: "secret_access_key", type: "password", secret: true },
+    { key: "security_token", type: "password", secret: true },
+    { key: "disable_config_load", type: "boolean" },
+    { key: "skip_signature", type: "boolean" },
+    { key: "root", type: "text" },
+  ],
+  upyun: [{ key: "bucket", type: "text", required: true }, { key: "operator", type: "text", required: true }, { key: "password", type: "password", required: true, secret: true }, { key: "root", type: "text" }],
+  "vercel-artifacts": [{ key: "access_token", type: "password", secret: true }, { key: "endpoint", type: "text" }, { key: "team_id", type: "text" }, { key: "team_slug", type: "text" }],
+  "vercel-blob": [{ key: "token", type: "password", required: true, secret: true }, { key: "root", type: "text" }],
+  webhdfs: [
+    { key: "endpoint", type: "text", required: true },
+    { key: "user_name", type: "text" },
+    { key: "delegation", type: "password", secret: true },
+    { key: "disable_list_batch", type: "boolean" },
+    { key: "atomic_write_dir", type: "text" },
+    { key: "root", type: "text" },
+  ],
+  "yandex-disk": [{ key: "access_token", type: "password", required: true, secret: true }, { key: "root", type: "text" }],
+};
+
+export const SERVICE_TEMPLATES: Record<string, ServiceTemplate> = {
+  ...BASE_SERVICE_TEMPLATES,
+  ...Object.fromEntries(
+    Object.entries(INDEPENDENT_SERVICE_FIELDS).map(([id, fields]) => [id, { id, kind: "quick", fields: [...fields] }]),
+  ),
 };
 
 /**

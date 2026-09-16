@@ -39,6 +39,413 @@
       "description": "Storage connection through Apache OpenDAL: local filesystem, S3/MinIO, Tencent COS, WebDAV, FTP, SFTP, or any compiled OpenDAL service.",
       "fields": [
         {
+          "key": "access_token",
+          "label": "Access token",
+          "type": "password",
+          "binding": "secret",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": ["aliyun-drive", "dropbox", "gdrive", "onedrive", "yandex-disk"]
+          },
+          "required_when": { "field": "protocol", "one_of": ["yandex-disk"] }
+        },
+        {
+          "key": "client_id",
+          "label": "Client ID",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": ["aliyun-drive", "azdls", "dropbox", "gdrive", "onedrive"]
+          }
+        },
+        {
+          "key": "client_secret",
+          "label": "Client secret",
+          "type": "password",
+          "binding": "secret",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": ["aliyun-drive", "azdls", "dropbox", "gdrive", "onedrive"]
+          }
+        },
+        {
+          "key": "refresh_token",
+          "label": "Refresh token",
+          "type": "password",
+          "binding": "secret",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": ["aliyun-drive", "dropbox", "gdrive", "onedrive"]
+          }
+        },
+        {
+          "key": "drive_type",
+          "label": "Drive type",
+          "type": "text",
+          "binding": "config",
+          "default": "resource",
+          "visible_when": { "field": "protocol", "one_of": ["aliyun-drive"] }
+        },
+        {
+          "key": "filesystem",
+          "label": "Filesystem",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["azdls"] },
+          "required_when": { "field": "protocol", "one_of": ["azdls"] }
+        },
+        {
+          "key": "account_name",
+          "label": "Account name",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["azdls", "azfile"] }
+        },
+        {
+          "key": "account_key",
+          "label": "Account key",
+          "type": "password",
+          "binding": "secret",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["azdls", "azfile"] }
+        },
+        {
+          "key": "sas_token",
+          "label": "SAS token",
+          "type": "password",
+          "binding": "secret",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["azdls", "azfile"] }
+        },
+        {
+          "key": "tenant_id",
+          "label": "Tenant ID",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["azdls"] }
+        },
+        {
+          "key": "authority_host",
+          "label": "Authority host",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["azdls"] }
+        },
+        {
+          "key": "enable_hns",
+          "label": "Enable hierarchical namespace",
+          "type": "boolean",
+          "binding": "config",
+          "default": false,
+          "visible_when": { "field": "protocol", "one_of": ["azdls"] }
+        },
+        {
+          "key": "share_name",
+          "label": "Share name",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["azfile"] },
+          "required_when": { "field": "protocol", "one_of": ["azfile"] }
+        },
+        {
+          "key": "bucket_id",
+          "label": "Bucket ID",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["b2"] },
+          "required_when": { "field": "protocol", "one_of": ["b2"] }
+        },
+        {
+          "key": "application_key_id",
+          "label": "Application key ID",
+          "type": "text",
+          "binding": "config",
+  "default": "",
+  "visible_when": { "field": "protocol", "one_of": ["b2"] },
+  "required_when": { "field": "protocol", "one_of": ["b2"] }
+        },
+        {
+          "key": "application_key",
+          "label": "Application key",
+          "type": "password",
+          "binding": "secret",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["b2"] },
+          "required_when": { "field": "protocol", "one_of": ["b2"] }
+        },
+        {
+          "key": "token",
+          "label": "Access token",
+          "type": "password",
+          "binding": "secret",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["dbfs", "http", "swift", "vercel-blob"] },
+          "required_when": { "field": "protocol", "one_of": ["dbfs", "vercel-blob"] }
+        },
+        {
+          "key": "runtime_token",
+          "label": "Runtime token",
+          "type": "password",
+          "binding": "secret",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["ghac"] },
+          "required_when": { "field": "protocol", "one_of": ["ghac"] }
+        },
+        {
+          "key": "version",
+          "label": "Cache version",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["ghac"] }
+        },
+        {
+          "key": "owner",
+          "label": "Repository owner",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["github"] },
+          "required_when": { "field": "protocol", "one_of": ["github"] }
+        },
+        {
+          "key": "repo",
+          "label": "Repository",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["github"] },
+          "required_when": { "field": "protocol", "one_of": ["github"] }
+        },
+        {
+          "key": "master_addr",
+          "label": "Master address",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "placeholder": "host:19998",
+          "visible_when": { "field": "protocol", "one_of": ["goosefs"] },
+          "required_when": { "field": "protocol", "one_of": ["goosefs"] }
+        },
+        {
+          "key": "auth_username",
+          "label": "Auth username",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["goosefs"] }
+        },
+        {
+          "key": "auth_type",
+          "label": "Auth type",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["goosefs"] }
+        },
+        {
+          "key": "block_size",
+          "label": "Block size",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["goosefs"] }
+        },
+        {
+          "key": "chunk_size",
+          "label": "Chunk size",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["goosefs"] }
+        },
+        {
+          "key": "write_type",
+          "label": "Write type",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["goosefs"] }
+        },
+        {
+          "key": "name_node",
+          "label": "NameNode",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "placeholder": "hdfs://namenode:8020",
+          "visible_when": { "field": "protocol", "one_of": ["hdfs", "hdfs-native"] },
+          "required_when": { "field": "protocol", "one_of": ["hdfs", "hdfs-native"] }
+        },
+        {
+          "key": "kerberos_ticket_cache_path",
+          "label": "Kerberos ticket cache path",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["hdfs"] }
+        },
+        {
+          "key": "enable_append",
+          "label": "Enable append",
+          "type": "boolean",
+          "binding": "config",
+          "default": false,
+          "visible_when": { "field": "protocol", "one_of": ["hdfs", "hdfs-native"] }
+        },
+        {
+          "key": "atomic_write_dir",
+          "label": "Atomic write directory",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["hdfs", "webhdfs"] }
+        },
+        {
+          "key": "user_name",
+          "label": "WebHDFS user",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["webhdfs"] }
+        },
+        {
+          "key": "delegation",
+          "label": "Delegation token",
+          "type": "password",
+          "binding": "secret",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["webhdfs"] }
+        },
+        {
+          "key": "disable_list_batch",
+          "label": "Disable list batching",
+          "type": "boolean",
+          "binding": "config",
+          "default": false,
+          "visible_when": { "field": "protocol", "one_of": ["webhdfs"] }
+        },
+        {
+          "key": "email",
+          "label": "Email",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["koofr"] },
+          "required_when": { "field": "protocol", "one_of": ["koofr"] }
+        },
+        {
+          "key": "repository",
+          "label": "Repository",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["lakefs"] },
+          "required_when": { "field": "protocol", "one_of": ["lakefs"] }
+        },
+        {
+          "key": "branch",
+          "label": "Branch",
+          "type": "text",
+          "binding": "config",
+          "default": "main",
+          "visible_when": { "field": "protocol", "one_of": ["lakefs"] }
+        },
+        {
+          "key": "repo_name",
+          "label": "Library name",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["seafile"] },
+          "required_when": { "field": "protocol", "one_of": ["seafile"] }
+        },
+        {
+          "key": "enable_versioning",
+          "label": "Enable versioning",
+          "type": "boolean",
+          "binding": "config",
+          "default": false,
+          "visible_when": { "field": "protocol", "one_of": ["onedrive"] }
+        },
+        {
+          "key": "container",
+          "label": "Container",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["swift"] },
+          "required_when": { "field": "protocol", "one_of": ["swift"] }
+        },
+        {
+          "key": "temp_url_key",
+          "label": "Temp URL key",
+          "type": "password",
+          "binding": "secret",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["swift"] }
+        },
+        {
+          "key": "temp_url_hash_algorithm",
+          "label": "Temp URL hash algorithm",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["swift"] }
+        },
+        {
+          "key": "disable_config_load",
+          "label": "Disable config load",
+          "type": "boolean",
+          "binding": "config",
+          "default": false,
+          "visible_when": { "field": "protocol", "one_of": ["tos"] }
+        },
+        {
+          "key": "skip_signature",
+          "label": "Skip signature",
+          "type": "boolean",
+          "binding": "config",
+          "default": false,
+          "visible_when": { "field": "protocol", "one_of": ["tos"] }
+        },
+        {
+          "key": "operator",
+          "label": "Operator",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["upyun"] },
+          "required_when": { "field": "protocol", "one_of": ["upyun"] }
+        },
+        {
+          "key": "team_id",
+          "label": "Team ID",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["vercel-artifacts"] }
+        },
+        {
+          "key": "team_slug",
+          "label": "Team slug",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "visible_when": { "field": "protocol", "one_of": ["vercel-artifacts"] }
+        },
+        {
           "key": "display_name",
           "label": "Connection name",
           "type": "text",
@@ -93,6 +500,126 @@
             {
               "label": "OpenDAL custom service",
               "value": "opendal-custom"
+            },
+            {
+              "label": "Aliyun Drive",
+              "value": "aliyun-drive"
+            },
+            {
+              "label": "Alluxio",
+              "value": "alluxio"
+            },
+            {
+              "label": "Azure Data Lake Storage",
+              "value": "azdls"
+            },
+            {
+              "label": "Azure Files",
+              "value": "azfile"
+            },
+            {
+              "label": "Backblaze B2",
+              "value": "b2"
+            },
+            {
+              "label": "CompFS",
+              "value": "compfs"
+            },
+            {
+              "label": "Databricks DBFS",
+              "value": "dbfs"
+            },
+            {
+              "label": "Dropbox",
+              "value": "dropbox"
+            },
+            {
+              "label": "Google Drive",
+              "value": "gdrive"
+            },
+            {
+              "label": "GitHub Actions Cache",
+              "value": "ghac"
+            },
+            {
+              "label": "GitHub",
+              "value": "github"
+            },
+            {
+              "label": "GooseFS",
+              "value": "goosefs"
+            },
+            {
+              "label": "HDFS",
+              "value": "hdfs"
+            },
+            {
+              "label": "HDFS native",
+              "value": "hdfs-native"
+            },
+            {
+              "label": "HTTP",
+              "value": "http"
+            },
+            {
+              "label": "IPFS",
+              "value": "ipfs"
+            },
+            {
+              "label": "IPFS MFS",
+              "value": "ipmfs"
+            },
+            {
+              "label": "Koofr",
+              "value": "koofr"
+            },
+            {
+              "label": "lakeFS",
+              "value": "lakefs"
+            },
+            {
+              "label": "MonoioFS",
+              "value": "monoiofs"
+            },
+            {
+              "label": "OneDrive",
+              "value": "onedrive"
+            },
+            {
+              "label": "pCloud",
+              "value": "pcloud"
+            },
+            {
+              "label": "Seafile",
+              "value": "seafile"
+            },
+            {
+              "label": "OpenStack Swift",
+              "value": "swift"
+            },
+            {
+              "label": "Volcengine TOS",
+              "value": "tos"
+            },
+            {
+              "label": "Upyun",
+              "value": "upyun"
+            },
+            {
+              "label": "Vercel Artifacts",
+              "value": "vercel-artifacts"
+            },
+            {
+              "label": "Vercel Blob",
+              "value": "vercel-blob"
+            },
+            {
+              "label": "WebHDFS",
+              "value": "webhdfs"
+            },
+            {
+              "label": "Yandex Disk",
+              "value": "yandex-disk"
             }
           ]
         },
@@ -114,7 +641,22 @@
               "ftp",
               "sftp",
               "smb",
-              "sftp-native"
+              "sftp-native",
+              "alluxio",
+              "azdls",
+              "azfile",
+              "dbfs",
+              "ghac",
+              "http",
+              "ipfs",
+              "ipmfs",
+              "koofr",
+              "lakefs",
+              "pcloud",
+              "seafile",
+              "swift",
+              "tos",
+              "webhdfs"
             ]
           },
           "required_when": {
@@ -126,7 +668,21 @@
               "ftp",
               "sftp",
               "smb",
-              "sftp-native"
+      "sftp-native",
+      "alluxio",
+      "azdls",
+      "azfile",
+      "dbfs",
+              "ghac",
+              "http",
+              "ipfs",
+              "ipmfs",
+              "koofr",
+              "lakefs",
+              "pcloud",
+              "seafile",
+              "swift",
+              "webhdfs"
             ]
           }
         },
@@ -179,7 +735,10 @@
             "one_of": [
               "s3",
               "oss",
-              "cos"
+              "cos",
+              "b2",
+              "tos",
+              "upyun"
             ]
           },
           "required_when": {
@@ -187,7 +746,10 @@
             "one_of": [
               "s3",
               "oss",
-              "cos"
+              "cos",
+              "b2",
+              "tos",
+              "upyun"
             ]
           }
         },
@@ -202,7 +764,8 @@
           "visible_when": {
             "field": "protocol",
             "one_of": [
-              "s3"
+              "s3",
+              "tos"
             ]
           }
         },
@@ -232,7 +795,8 @@
             "field": "protocol",
             "one_of": [
               "s3",
-              "oss"
+              "oss",
+              "tos"
             ]
           },
           "required_when": {
@@ -254,7 +818,8 @@
             "field": "protocol",
             "one_of": [
               "s3",
-              "oss"
+              "oss",
+              "tos"
             ]
           },
           "required_when": {
@@ -312,7 +877,8 @@
           "visible_when": {
             "field": "protocol",
             "one_of": [
-              "cos"
+              "cos",
+              "tos"
             ]
           }
         },
@@ -343,8 +909,16 @@
             "field": "protocol",
             "one_of": [
               "webdav",
-              "smb"
+              "smb",
+              "http",
+              "lakefs",
+              "pcloud",
+              "seafile"
             ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": ["lakefs", "pcloud", "seafile"]
           }
         },
         {
@@ -360,7 +934,8 @@
             "one_of": [
               "ftp",
               "sftp",
-              "sftp-native"
+              "sftp-native",
+              "hdfs"
             ]
           }
         },
@@ -392,8 +967,18 @@
               "webdav",
               "ftp",
               "smb",
-              "sftp-native"
+              "sftp-native",
+              "http",
+              "koofr",
+              "lakefs",
+              "pcloud",
+              "seafile",
+              "upyun"
             ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": ["koofr", "lakefs", "pcloud", "seafile", "upyun"]
           }
         },
         {
@@ -448,7 +1033,11 @@
           "binding": "config",
           "default": "",
           "placeholder": "/srv/share or ~/data",
-          "description": "All operations are confined under this root when set."
+          "description": "All operations are confined under this root when set.",
+          "required_when": {
+            "field": "protocol",
+            "one_of": ["compfs", "ipfs", "ipmfs", "monoiofs"]
+          }
         },
         {
           "key": "lock_to_root",

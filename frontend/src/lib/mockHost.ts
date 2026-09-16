@@ -14,7 +14,7 @@
 // __local__ 连接（双栏左栏本地面）：list/listPaged/stat/quickPaths/read 路由到
 // 独立本地树（$HOME 家族 quickPaths）；读写按连接落各自内存树。
 
-import { CUSTOM_SERVICES } from "./opendalServices";
+import { CUSTOM_SERVICES, SERVICE_TEMPLATES } from "./opendalServices";
 
 type MockEntry = { kind: "file" | "dir"; size: number; modifiedAt: string };
 
@@ -153,7 +153,7 @@ export function installMockHost() {
     const config = connection.external_config as Record<string, unknown> | undefined;
     const protocol = typeof config?.protocol === "string" ? config.protocol.trim() : "";
     if (!protocol) throw new Error("Missing protocol in external_config");
-    const protocols = ["fs", "s3", "oss", "webdav", "ftp", "sftp", "smb", "sftp-native", "opendal-custom"];
+    const protocols = [...Object.keys(SERVICE_TEMPLATES), "opendal-custom"];
     if (!protocols.includes(protocol)) throw new Error(`Unsupported protocol '${protocol}'; expected one of ${protocols.join(", ")}`);
     if (protocol === "opendal-custom") {
       let custom = config?.config ?? {};

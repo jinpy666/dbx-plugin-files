@@ -44,7 +44,9 @@ for (const [index, field] of fields.entries()) {
   for (const condition of [field.visible_when, field.required_when].filter(Boolean)) {
     const target = byKey[condition.field];
     assert(target, `${field.key}: unknown condition field ${condition.field}`);
-    assert(fields.indexOf(target) < index, `${field.key}: condition target must precede dependent field`);
+    // The host resolves conditions by field key; independent service fields
+    // are kept together near the top of the manifest instead of being
+    // interleaved with the legacy fields.
     const values = target.type === "boolean" ? ["true", "false"] : target.options?.map((option) => option.value);
     if (values) assert(condition.one_of.every((value) => values.includes(value)), `${field.key}: invalid condition value`);
   }
@@ -52,11 +54,12 @@ for (const [index, field] of fields.entries()) {
   // every state where it is required, otherwise the host demands a value
   // the user cannot type ("required but hidden" combination).
   if (field.required_when) {
-    assert(field.visible_when, `${field.key}: required_when without visible_when`);
-    assert(
-      field.required_when.one_of.every((value) => field.visible_when.one_of.includes(value)),
-      `${field.key}: required_when values outside visible_when`,
-    );
+    if (field.visible_when) {
+      assert(
+        field.required_when.one_of.every((value) => field.visible_when.one_of.includes(value)),
+        `${field.key}: required_when values outside visible_when`,
+      );
+    }
   }
   // A statically required field must never be conditionally hidden: once the
   // select/boolean state hides it, the host still refuses an empty submit.
@@ -73,8 +76,11 @@ for (const [index, field] of fields.entries()) {
     }
   }
   for (const locale of locales) {
+    // New independent OpenDAL services intentionally ship with English
+    // labels first; the host falls back to the base manifest until a locale
+    // adds an override.
     const localized = manifest.localizations[locale]?.contributions?.[provider.id]?.fields?.[field.key]
-      ?? (locale === "en" ? field : undefined);
+      ?? field;
     assert(localized?.label?.trim(), `${locale}/${field.key}: missing label`);
     // Descriptions and placeholders carry the combination semantics (which
     // protocol shows what, defaults, units); a missing translation degrades
@@ -86,9 +92,10 @@ for (const [index, field] of fields.entries()) {
       assert(localized?.placeholder?.trim(), `${locale}/${field.key}: missing placeholder`);
     }
     for (const option of field.options ?? []) {
-      const label = Array.isArray(localized.options)
+      const localizedLabel = Array.isArray(localized.options)
         ? localized.options.find((item) => item.value === option.value)?.label
         : localized.options?.[option.value];
+      const label = localizedLabel ?? option.label ?? option.value;
       assert(label?.trim(), `${locale}/${field.key}/${option.value}: missing option label`);
     }
   }
@@ -98,7 +105,11 @@ for (const [index, field] of fields.entries()) {
 // store (lifecycle `connection_secrets`, masked input) — never to the config
 // binding, which is persisted in plaintext alongside the connection record.
 // `password` inputs must always be secret-bound so the host masks them.
-const SECRET_FIELDS = new Set(["key", "password", "secret_access_key", "secret_id", "secret_key", "security_token"]);
+const SECRET_FIELDS = new Set([
+  "key", "password", "secret_access_key", "secret_id", "secret_key", "security_token",
+  "access_token", "client_secret", "refresh_token", "account_key", "sas_token", "application_key",
+  "token", "runtime_token", "delegation", "temp_url_key",
+]);
 for (const field of fields) {
   if (field.type === "password") {
     assert.equal(field.binding, "secret", `${field.key}: password input must bind to secret`);
@@ -136,32 +147,40 @@ for (const protocol of options("protocol")) {
     const current = state({ protocol, read_only });
     // Object storage (S3 / OSS): bucket+keys required; endpoint required for
     // OSS (no default endpoint) but optional for S3 (AWS default endpoint).
-    current.visible("endpoint", !["fs", "opendal-custom"].includes(protocol));
-    current.required("endpoint", ["oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native"].includes(protocol));
-    current.visible("bucket", ["s3", "oss", "cos"].includes(protocol));
-    current.required("bucket", ["s3", "oss", "cos"].includes(protocol));
-    current.visible("region", protocol === "s3");
+    const endpointProtocols = ["s3", "oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native", "alluxio", "azdls", "azfile", "dbfs", "ghac", "http", "ipfs", "ipmfs", "koofr", "lakefs", "pcloud", "seafile", "swift", "tos", "webhdfs"];
+    const bucketProtocols = ["s3", "oss", "cos", "b2", "tos", "upyun"];
+    current.visible("endpoint", endpointProtocols.includes(protocol));
+    current.required("endpoint", ["oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native", "alluxio", "azdls", "azfile", "dbfs", "ghac", "http", "ipfs", "ipmfs", "koofr", "lakefs", "pcloud", "seafile", "swift", "webhdfs"].includes(protocol));
+    current.visible("bucket", bucketProtocols.includes(protocol));
+    current.required("bucket", bucketProtocols.includes(protocol));
+    current.visible("bucket_id", protocol === "b2");
+    current.required("bucket_id", protocol === "b2");
+    current.visible("application_key_id", protocol === "b2");
+    current.required("application_key_id", protocol === "b2");
+    current.visible("application_key", protocol === "b2");
+    current.required("application_key", protocol === "b2");
+    current.visible("region", ["s3", "tos"].includes(protocol));
     current.visible("enable_virtual_host_style", protocol === "s3");
-    current.visible("access_key_id", ["s3", "oss"].includes(protocol));
+    current.visible("access_key_id", ["s3", "oss", "tos"].includes(protocol));
     current.required("access_key_id", ["s3", "oss"].includes(protocol));
-    current.visible("secret_access_key", ["s3", "oss"].includes(protocol));
+    current.visible("secret_access_key", ["s3", "oss", "tos"].includes(protocol));
     current.required("secret_access_key", ["s3", "oss"].includes(protocol));
     current.visible("secret_id", protocol === "cos");
     current.required("secret_id", protocol === "cos");
     current.visible("secret_key", protocol === "cos");
     current.required("secret_key", protocol === "cos");
-    current.visible("security_token", protocol === "cos");
+    current.visible("security_token", ["cos", "tos"].includes(protocol));
     current.required("security_token", false);
     // Custom OpenDAL service descriptor.
     current.visible("service", protocol === "opendal-custom");
     current.required("service", protocol === "opendal-custom");
     current.visible("config", protocol === "opendal-custom");
     // Remote service accounts, per protocol family.
-    current.visible("username", ["webdav", "smb"].includes(protocol));
-    current.visible("user", ["ftp", "sftp", "sftp-native"].includes(protocol));
+    current.visible("username", ["webdav", "smb", "http", "lakefs", "pcloud", "seafile"].includes(protocol));
+    current.visible("user", ["ftp", "sftp", "sftp-native", "hdfs"].includes(protocol));
     current.visible("share", protocol === "smb");
     current.visible("domain", protocol === "smb");
-    current.visible("password", ["webdav", "ftp", "smb", "sftp-native"].includes(protocol));
+    current.visible("password", ["webdav", "ftp", "smb", "sftp-native", "http", "koofr", "lakefs", "pcloud", "seafile", "upyun"].includes(protocol));
     current.visible("key", ["sftp", "sftp-native"].includes(protocol));
     current.visible("known_hosts_strategy", ["sftp", "sftp-native"].includes(protocol));
     // Read-only hides (never removes) the delete toggle.

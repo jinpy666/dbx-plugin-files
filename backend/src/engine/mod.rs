@@ -241,8 +241,44 @@ pub fn build_operator(connection: &StoredConnection) -> Result<Operator, String>
         );
     }
     let (scheme, kv) = protocol_kv(connection)?;
-    Operator::via_iter(scheme, kv)
+    let base = independent_uri_base(connection, &scheme)?;
+    Operator::via_iter(base, kv)
         .map_err(|error| format!("Failed to build storage operator: {error}"))
+}
+
+/// A few OpenDAL services encode required identity fields in their URI path
+/// rather than accepting them exclusively as builder options. Keep the
+/// manifest fields as the source of truth, but provide that URI envelope when
+/// constructing the dynamic operator.
+fn independent_uri_base(connection: &StoredConnection, scheme: &str) -> Result<String, String> {
+    let value = |key: &str| {
+        connection
+            .extra_config
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+    };
+    let uri_component = |key: &str| {
+        let text = value(key);
+        if text.is_empty() {
+            return Err(format!("{scheme} requires '{key}'"));
+        }
+        if text.chars().any(|c| c == '/' || c == '?' || c == '#' || c.is_whitespace()) {
+            return Err(format!("{scheme} field '{key}' contains invalid URI characters"));
+        }
+        Ok(text.to_string())
+    };
+
+    match scheme {
+        "github" => Ok(format!(
+            "github://{}/{}",
+            uri_component("owner")?,
+            uri_component("repo")?
+        )),
+        "koofr" => Ok(format!("koofr:///{}/", uri_component("email")?)),
+        "lakefs" => Ok(format!("lakefs:///{}/", uri_component("repository")?)),
+        _ => Ok(scheme.to_string()),
+    }
 }
 
 /// Builds the native SFTP Operator via static dispatch on
@@ -442,6 +478,28 @@ pub fn protocol_kv(
             }
             kv_from_custom_config(connection, &mut kv);
             service.to_string()
+        }
+        other if crate::model::PROTOCOLS.contains(&other) => {
+            // Independent OpenDAL file services use their protocol name as
+            // the registry scheme. Their typed manifest fields are preserved
+            // in extra_config/extra_secrets and forwarded with the native
+            // Builder keys, so adding a service does not require another
+            // lossy StoredConnection field or a JSON custom-service wrapper.
+            for (key, value) in &connection.extra_config {
+                let text = match value {
+                    serde_json::Value::String(text) => text.clone(),
+                    other => other.to_string(),
+                };
+                if !text.is_empty() {
+                    kv.push((key.clone(), text));
+                }
+            }
+            for (key, value) in &connection.extra_secrets {
+                if !value.is_empty() {
+                    kv.push((key.clone(), value.clone()));
+                }
+            }
+            other.to_string()
         }
         other => return Err(format!("Unsupported protocol '{other}'")),
     };
