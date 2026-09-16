@@ -66,10 +66,10 @@ function onPicked(event: Event) {
       <button class="wb-toolbar-button" :title="t('download')" :disabled="!hasSelection || busy" @click="emit('download')"><Download /> {{ t("download") }}</button>
       <button class="wb-toolbar-button" :title="t('deleteSelected')" :disabled="!hasSelection || !canWrite || busy" @click="emit('delete')"><Trash2 /> {{ t("deleteSelected") }}</button>
       <span class="wb-toolbar-separator" aria-hidden="true" />
-      <button class="wb-icon-button wb-icon-neutral" :title="t('dualPane')" :class="{ 'is-active': dualPane }" @click="emit('toggle-dual-pane')"><Columns2 /></button>
-      <button class="wb-icon-button wb-icon-neutral" :title="t('transfers')" :class="{ 'is-active': dockOpen && dockTab === 'transfers' }" @click="emit('toggle-dock', 'transfers')"><Gauge /></button>
-      <button class="wb-icon-button wb-icon-neutral" :title="t('auditPanel')" :class="{ 'is-active': dockOpen && dockTab === 'audit' }" @click="emit('toggle-dock', 'audit')"><ScrollText /></button>
-      <button class="wb-icon-button wb-icon-neutral" :title="t('connectionPanel')" :class="{ 'is-active': dockOpen && dockTab === 'connection' }" @click="emit('toggle-dock', 'connection')"><Plug /></button>
+      <button class="wb-icon-button wb-icon-neutral" v-tip="t('dualPane')" :class="{ 'is-active': dualPane }" @click="emit('toggle-dual-pane')"><Columns2 /></button>
+      <button class="wb-icon-button wb-icon-neutral" v-tip="t('transfers')" :class="{ 'is-active': dockOpen && dockTab === 'transfers' }" @click="emit('toggle-dock', 'transfers')"><Gauge /></button>
+      <button class="wb-icon-button wb-icon-neutral" v-tip="t('auditPanel')" :class="{ 'is-active': dockOpen && dockTab === 'audit' }" @click="emit('toggle-dock', 'audit')"><ScrollText /></button>
+      <button class="wb-icon-button wb-icon-neutral" v-tip="t('connectionPanel')" :class="{ 'is-active': dockOpen && dockTab === 'connection' }" @click="emit('toggle-dock', 'connection')"><Plug /></button>
     </div>
   </header>
 </template>

@@ -1,6 +1,31 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { ArrowLeft, ArrowRight, Copy, ArrowUp, RefreshCw, Search, X } from "@lucide/vue";
+import {
+  Archive,
+  ArrowLeft,
+  ArrowRight,
+  ArrowRightLeft,
+  Copy,
+  ArrowUp,
+  Download,
+  Eye,
+  FileArchive,
+  FileOutput,
+  FilePlus,
+  FileText,
+  FolderInput,
+  FolderOpen,
+  FolderPlus,
+  FolderSymlink,
+  Link2,
+  PanelLeft,
+  PanelRight,
+  Pencil,
+  RefreshCw,
+  Search,
+  Trash2,
+  X,
+} from "@lucide/vue";
 import FileTable from "./components/FileTable.vue";
 import FileToolbar from "./components/FileToolbar.vue";
 import TransferPanel from "./components/TransferPanel.vue";
@@ -2032,8 +2057,8 @@ onBeforeUnmount(() => {
     <div v-if="error" class="wb-error-banner">
       <span :title="errorDetail">{{ errorText }}</span>
       <!-- R3-P2-10：文本字符 ↻/✕ 换 lucide 图标（对齐 P2-14 先例）。 -->
-      <button class="wb-icon-button wb-icon-neutral" :title="t('retry')" @click="retryAfterError"><RefreshCw /></button>
-      <button class="wb-icon-button wb-icon-neutral" :title="t('close')" @click="error = ''"><X /></button>
+      <button class="wb-icon-button wb-icon-neutral" v-tip="t('retry')" @click="retryAfterError"><RefreshCw /></button>
+      <button class="wb-icon-button wb-icon-neutral" v-tip="t('close')" @click="error = ''"><X /></button>
     </div>
     <div v-if="notice" class="wb-notice">{{ noticeText }}</div>
 
@@ -2259,52 +2284,56 @@ onBeforeUnmount(() => {
          R3-P2-8：role="menu"/menuitem 语义。 -->
     <div v-if="contextMenu" ref="menuEl" class="wb-context-menu" role="menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @click.stop>
       <template v-if="contextMenu.selection.length > 1">
-        <button role="menuitem" @click="menuAction('open')">{{ t("openDirectory") }}</button>
-        <button role="menuitem" @click="menuAction('downloadSelected')">{{ t("downloadSelected") }}</button>
+        <button role="menuitem" @click="menuAction('open')"><FolderOpen /> {{ t("openDirectory") }}</button>
+        <button role="menuitem" @click="menuAction('downloadSelected')"><Download /> {{ t("downloadSelected") }}</button>
         <!-- R3-P2-1：只读态「复制到目标栏」与 move 同受 canWrite 门禁（写发生在目标栏）。 -->
-        <button v-if="dualPane && canWrite" role="menuitem" @click="menuAction('copySelected')">{{ t("copyToTarget") }}</button>
-        <button v-if="dualPane && canWrite" role="menuitem" @click="menuAction('moveSelected')">{{ t("moveToTarget") }}</button>
-        <button v-if="canWrite" role="menuitem" @click="menuAction('compressSelected')">{{ t("compressSelected", { count: contextMenu.selection.length }) }}</button>
+        <button v-if="dualPane && canWrite" role="menuitem" @click="menuAction('copySelected')"><Copy /> {{ t("copyToTarget") }}</button>
+        <button v-if="dualPane && canWrite" role="menuitem" @click="menuAction('moveSelected')"><FolderInput /> {{ t("moveToTarget") }}</button>
+        <button v-if="canWrite" role="menuitem" @click="menuAction('compressSelected')"><FileArchive /> {{ t("compressSelected", { count: contextMenu.selection.length }) }}</button>
         <hr />
-        <button role="menuitem" class="is-danger" :disabled="!canWrite" @click="menuAction('deleteSelected')">{{ t("deleteSelected") }}</button>
+        <button role="menuitem" class="is-danger" :disabled="!canWrite" @click="menuAction('deleteSelected')"><Trash2 /> {{ t("deleteSelected") }}</button>
         <hr />
-        <button role="menuitem" @click="menuAction('copyPath')">{{ t("copyPath") }}</button>
+        <button role="menuitem" @click="menuAction('copyPath')"><Link2 /> {{ t("copyPath") }}</button>
       </template>
       <template v-else>
-        <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('open')">{{ t("openDirectory") }}</button>
-        <button v-if="contextMenu.entry.kind === 'file' && !isArchivePath(contextMenu.entry.path)" role="menuitem" @click="menuAction('preview')">{{ t("preview") }}</button>
-        <button v-if="contextMenu.entry.kind === 'file' && isArchivePath(contextMenu.entry.path)" role="menuitem" @click="menuAction('archiveContents')">{{ t("archiveContents") }}</button>
-        <button v-if="contextMenu.entry.kind === 'file'" role="menuitem" @click="menuAction('download')">{{ t("download") }}</button>
-        <button v-if="contextMenu.entry.kind === 'file' && isArchivePath(contextMenu.entry.path) && canWrite" role="menuitem" @click="menuAction('extract')">{{ t("extractTo") }}</button>
-        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('syncDir')">{{ t("transferKind.syncDir") }}…</button>
-        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('copyDir')">{{ t("transferKind.copyDir") }}…</button>
-        <button v-if="canWrite" role="menuitem" @click="menuAction('compress')">{{ t("compress") }}</button>
+        <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('open')"><FolderOpen /> {{ t("openDirectory") }}</button>
+        <button v-if="contextMenu.entry.kind === 'file' && !isArchivePath(contextMenu.entry.path)" role="menuitem" @click="menuAction('preview')"><Eye /> {{ t("preview") }}</button>
+        <button v-if="contextMenu.entry.kind === 'file' && isArchivePath(contextMenu.entry.path)" role="menuitem" @click="menuAction('archiveContents')"><Archive /> {{ t("archiveContents") }}</button>
+        <button v-if="contextMenu.entry.kind === 'file'" role="menuitem" @click="menuAction('download')"><Download /> {{ t("download") }}</button>
+        <button v-if="contextMenu.entry.kind === 'file' && isArchivePath(contextMenu.entry.path) && canWrite" role="menuitem" @click="menuAction('extract')"><FileOutput /> {{ t("extractTo") }}</button>
+        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('syncDir')"><ArrowRightLeft /> {{ t("transferKind.syncDir") }}…</button>
+        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('copyDir')"><FolderSymlink /> {{ t("transferKind.copyDir") }}…</button>
+        <button v-if="canWrite" role="menuitem" @click="menuAction('compress')"><FileArchive /> {{ t("compress") }}</button>
         <hr />
-        <button v-if="canWrite" role="menuitem" @click="menuAction('copy')">{{ t("transferKind.copy") }}…</button>
-        <button v-if="canWrite" role="menuitem" @click="menuAction('move')">{{ t("transferKind.move") }}…</button>
-        <button v-if="canWrite" role="menuitem" @click="menuAction('rename')">{{ t("rename") }}</button>
-        <button role="menuitem" class="is-danger" :disabled="!canWrite" @click="menuAction('delete')">{{ t("delete") }}</button>
+        <button v-if="canWrite" role="menuitem" @click="menuAction('copy')"><Copy /> {{ t("transferKind.copy") }}…</button>
+        <button v-if="canWrite" role="menuitem" @click="menuAction('move')"><FolderInput /> {{ t("transferKind.move") }}…</button>
+        <button v-if="canWrite" role="menuitem" @click="menuAction('rename')"><Pencil /> {{ t("rename") }}</button>
+        <button role="menuitem" class="is-danger" :disabled="!canWrite" @click="menuAction('delete')"><Trash2 /> {{ t("delete") }}</button>
         <hr />
-        <button role="menuitem" @click="menuAction('copyPath')">{{ t("copyPath") }}</button>
-        <button role="menuitem" @click="menuAction('copyName')">{{ t("copyName") }}</button>
+        <button role="menuitem" @click="menuAction('copyPath')"><Link2 /> {{ t("copyPath") }}</button>
+        <button role="menuitem" @click="menuAction('copyName')"><FileText /> {{ t("copyName") }}</button>
       </template>
     </div>
 
     <!-- 空白区右键菜单（P-FILES）：拦截浏览器默认菜单，给出新建/刷新动作 -->
     <div v-if="blankMenu" ref="menuEl" class="wb-context-menu" role="menu" :style="{ left: `${blankMenu.x}px`, top: `${blankMenu.y}px` }" @click.stop>
-      <button :disabled="!canWrite" role="menuitem" @click="blankMenuAction('newFolder')">{{ t("newFolder") }}</button>
-      <button :disabled="!canWrite" role="menuitem" @click="blankMenuAction('newFile')">{{ t("newFileTitle") }}</button>
+      <button :disabled="!canWrite" role="menuitem" @click="blankMenuAction('newFolder')"><FolderPlus /> {{ t("newFolder") }}</button>
+      <button :disabled="!canWrite" role="menuitem" @click="blankMenuAction('newFile')"><FilePlus /> {{ t("newFileTitle") }}</button>
       <hr />
-      <button role="menuitem" @click="blankMenuAction('refresh')">{{ t("refresh") }}</button>
+      <button role="menuitem" @click="blankMenuAction('refresh')"><RefreshCw /> {{ t("refresh") }}</button>
     </div>
 
     <!-- 侧栏右键菜单（P-FILES）：目录树/快捷目录行 → 打开 / 在另一栏打开 / 复制 -->
     <div v-if="sideMenu" ref="menuEl" class="wb-context-menu" role="menu" :style="{ left: `${sideMenu.x}px`, top: `${sideMenu.y}px` }" @click.stop>
-      <button role="menuitem" @click="sideMenuAction('open')">{{ t("openDirectory") }}</button>
-      <button v-if="dualPane" role="menuitem" @click="sideMenuAction('openOther')">{{ sideMenu.side === "left" ? t("openInRight") : t("openInLeft") }}</button>
+      <button role="menuitem" @click="sideMenuAction('open')"><FolderOpen /> {{ t("openDirectory") }}</button>
+      <button v-if="dualPane" role="menuitem" @click="sideMenuAction('openOther')">
+        <PanelRight v-if="sideMenu.side === 'left'" />
+        <PanelLeft v-else />
+        {{ sideMenu.side === "left" ? t("openInRight") : t("openInLeft") }}
+      </button>
       <hr />
-      <button role="menuitem" @click="sideMenuAction('copyPath')">{{ t("copyPath") }}</button>
-      <button role="menuitem" @click="sideMenuAction('copyName')">{{ t("copyName") }}</button>
+      <button role="menuitem" @click="sideMenuAction('copyPath')"><Link2 /> {{ t("copyPath") }}</button>
+      <button role="menuitem" @click="sideMenuAction('copyName')"><FileText /> {{ t("copyName") }}</button>
     </div>
 
     <ConfirmDialog

@@ -12,6 +12,7 @@ import FileTable from "../components/FileTable.vue";
 import { emitUiIntent, installMockHost } from "./mockHost";
 import { workbenchMessage } from "./i18n";
 import { readUiIntentEvent } from "../../../shared/frontend/uiIntent";
+import { vTip } from "./tooltip";
 
 let wrapper: VueWrapper | undefined;
 let invoke: ReturnType<typeof vi.spyOn>;
@@ -35,7 +36,7 @@ afterEach(() => {
 });
 
 function mountWorkbench() {
-  wrapper = mount(App, { attachTo: document.body });
+  wrapper = mount(App, { attachTo: document.body, global: { directives: { tip: vTip } } });
   return wrapper;
 }
 

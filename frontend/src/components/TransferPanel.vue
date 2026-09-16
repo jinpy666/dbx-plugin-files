@@ -67,7 +67,7 @@ function timeLabel(job: TransferJob): string {
       <div class="wb-transfer-title">
         <strong :title="label(job)">{{ label(job) }}</strong>
         <span class="wb-transfer-state" :class="`is-${job.state}`">{{ stateLabel(job) }}</span>
-        <button class="wb-icon-button wb-icon-danger" :title="t('cancelTransfer')" @click="emit('cancel', job.jobId)"><X /></button>
+        <button class="wb-icon-button wb-icon-danger" v-tip="t('cancelTransfer')" @click="emit('cancel', job.jobId)"><X /></button>
       </div>
       <div class="wb-transfer-meta">
         <span>{{ t(`transferKind.${job.kind}`) }}</span>
@@ -81,13 +81,13 @@ function timeLabel(job: TransferJob): string {
   <div v-if="history.length">
     <div class="wb-transfer-history-head" style="margin: 8px 0 6px">
       <span class="wb-muted">{{ t("history") }}</span>
-      <button class="wb-icon-button" :title="t('clearHistory')" @click="emit('clear-history')"><Trash2 /></button>
+      <button class="wb-icon-button" v-tip="t('clearHistory')" @click="emit('clear-history')"><Trash2 /></button>
     </div>
     <div v-for="job in history" :key="job.jobId" class="wb-transfer-item">
       <div class="wb-transfer-title">
         <strong :title="label(job)">{{ label(job) }}</strong>
         <span class="wb-transfer-state" :class="`is-${job.state}`">{{ stateLabel(job) }}</span>
-        <button v-if="canRetry(job)" class="wb-icon-button" :title="t('retryTransfer')" @click="emit('retry', job.jobId)"><RotateCw /></button>
+        <button v-if="canRetry(job)" class="wb-icon-button" v-tip="t('retryTransfer')" @click="emit('retry', job.jobId)"><RotateCw /></button>
       </div>
       <div class="wb-transfer-meta">
         <span>{{ t(`transferKind.${job.kind}`) }} · {{ timeLabel(job) }}</span>

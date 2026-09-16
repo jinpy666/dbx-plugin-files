@@ -58,13 +58,33 @@ for (const [index, field] of fields.entries()) {
       `${field.key}: required_when values outside visible_when`,
     );
   }
-  if (field.type === "select" && field.default !== undefined) {
-    assert(field.options.some((option) => option.value === field.default), `${field.key}: invalid default`);
+  // A statically required field must never be conditionally hidden: once the
+  // select/boolean state hides it, the host still refuses an empty submit.
+  if (field.required && field.visible_when) {
+    assert.fail(`${field.key}: statically required field must not carry visible_when`);
+  }
+  if (field.type === "select") {
+    // A duplicated option value renders as one indistinguishable entry and
+    // silently drops the other label from the dropdown.
+    const values = field.options.map((option) => option.value);
+    assert.equal(new Set(values).size, values.length, `${field.key}: duplicate option values`);
+    if (field.default !== undefined) {
+      assert(field.options.some((option) => option.value === field.default), `${field.key}: invalid default`);
+    }
   }
   for (const locale of locales) {
     const localized = manifest.localizations[locale]?.contributions?.[provider.id]?.fields?.[field.key]
       ?? (locale === "en" ? field : undefined);
     assert(localized?.label?.trim(), `${locale}/${field.key}: missing label`);
+    // Descriptions and placeholders carry the combination semantics (which
+    // protocol shows what, defaults, units); a missing translation degrades
+    // the form to English mid-sentence in that locale.
+    if (field.description) {
+      assert(localized?.description?.trim(), `${locale}/${field.key}: missing description`);
+    }
+    if (field.placeholder) {
+      assert(localized?.placeholder?.trim(), `${locale}/${field.key}: missing placeholder`);
+    }
     for (const option of field.options ?? []) {
       const label = Array.isArray(localized.options)
         ? localized.options.find((item) => item.value === option.value)?.label
@@ -72,6 +92,30 @@ for (const [index, field] of fields.entries()) {
       assert(label?.trim(), `${locale}/${field.key}/${option.value}: missing option label`);
     }
   }
+}
+
+// Secret-binding contract: credential fields must bind to the host's secret
+// store (lifecycle `connection_secrets`, masked input) — never to the config
+// binding, which is persisted in plaintext alongside the connection record.
+// `password` inputs must always be secret-bound so the host masks them.
+const SECRET_FIELDS = new Set(["key", "password", "secret_access_key"]);
+for (const field of fields) {
+  if (field.type === "password") {
+    assert.equal(field.binding, "secret", `${field.key}: password input must bind to secret`);
+  }
+  if (field.binding === "secret") {
+    assert(
+      field.type === "password" || field.type === "textarea",
+      `${field.key}: secret binding expects masked/multiline input, got ${field.type}`,
+    );
+    assert(
+      SECRET_FIELDS.has(field.key),
+      `${field.key}: new secret-bound field — update the SECRET_FIELDS contract deliberately`,
+    );
+  }
+}
+for (const key of SECRET_FIELDS) {
+  assert.equal(byKey[key].binding, "secret", `${key}: must stay secret-bound`);
 }
 
 const options = (key) => byKey[key].options.map((option) => option.value);
@@ -124,4 +168,4 @@ for (const protocol of options("protocol")) {
 
 assert.equal(byKey.key.binding, "secret");
 assert.equal(byKey.key.type, "textarea");
-console.log(`PASS Files connection form: ${scenarios} combinations; field ordering and seven-language labels/options`);
+console.log(`PASS Files connection form: ${scenarios} combinations; ordering, secret bindings, seven-language labels/descriptions/placeholders/options`);

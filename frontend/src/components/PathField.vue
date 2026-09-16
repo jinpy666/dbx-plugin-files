@@ -57,7 +57,7 @@ function onBlur() {
 
 <template>
   <div class="wb-path-field">
-    <button type="button" class="wb-icon-button wb-path-edit" :title="t('editPath')" @click="startEdit">
+    <button type="button" class="wb-icon-button wb-path-edit" v-tip="t('editPath')" @click="startEdit">
       <Folder aria-hidden="true" />
     </button>
     <Breadcrumbs v-if="!editing" :path="path" :max-visible="maxVisible ?? 3" @navigate="emit('navigate', $event)" />

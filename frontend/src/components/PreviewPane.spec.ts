@@ -1,9 +1,13 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it } from "vitest";
-import { mount, type VueWrapper } from "@vue/test-utils";
+import { mount, config, type VueWrapper } from "@vue/test-utils";
 import { bindApi } from "../lib/api";
 import PreviewPane from "./PreviewPane.vue";
 import { READ_MAX_BYTES } from "../lib/preview";
+import { vTip } from "../lib/tooltip";
+
+// 模板里的 v-tip（图标按钮提示）在测试挂载时同样需要指令注册。
+config.global.directives = { tip: vTip };
 
 const appearance: DbxPluginAppearance = {
   colorScheme: "dark",

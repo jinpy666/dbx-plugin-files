@@ -73,6 +73,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px
 :root[data-theme="dark"] .wb-icon-violet, :root[data-dbx-theme="dark"] .wb-icon-violet { color: #c4b5fd; }
 :root[data-theme="dark"] .wb-icon-blue, :root[data-dbx-theme="dark"] .wb-icon-blue { color: #93c5fd; }
 
+/* ---- v-tip 全局悬浮提示（宿主 webview 不渲染原生 title） -------------------- */
+.wb-global-tip { position: fixed; left: 0; top: 0; z-index: 50; max-width: 320px; border: 1px solid var(--border); border-radius: 4px; padding: 3px 8px; background: var(--popover); color: var(--foreground); font-size: 11px; line-height: 1.5; white-space: pre-line; overflow-wrap: anywhere; box-shadow: 0 4px 12px rgb(0 0 0 / 30%); pointer-events: none; opacity: 0; visibility: hidden; transition: opacity .12s ease; }
+.wb-global-tip.is-visible { opacity: 1; visibility: visible; }
+
 /* ---- path bar ----------------------------------------------------------- */
 .wb-path-toolbar { display: flex; flex: 1 1 auto; min-width: 0; align-items: center; gap: 4px; border: 1px solid var(--border); border-radius: var(--radius); padding: 1px 6px; background: color-mix(in srgb, var(--background) 60%, var(--muted)); }
 .wb-path-input { flex: 1 1 auto; min-width: 0; border: 0; background: transparent; color: inherit; padding: 2px 0; }
@@ -116,10 +120,19 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px
 .wb-file-footer { display: flex; align-items: center; gap: 10px; border-top: 1px solid var(--border); padding: 3px 10px; color: var(--muted-foreground); font-size: 11px; }
 
 /* ---- context menu --------------------------------------------------------- */
-.wb-context-menu { position: fixed; z-index: 40; min-width: 170px; border: 1px solid var(--border); border-radius: var(--radius); padding: 3px; background: var(--popover); box-shadow: 0 8px 22px rgb(0 0 0 / 35%); }
-.wb-context-menu button { display: flex; width: 100%; align-items: center; gap: 7px; border-radius: 4px; padding: 4px 8px; text-align: left; }
+/* 对齐 DBX 宿主右键菜单（globals.css cn-menu-translucent / context-menu 规格，
+   Issue #9）：不透光面、1px 细边、大半径柔影；深色为默认基底，浅色按主题覆盖。 */
+.wb-context-menu { position: fixed; z-index: 40; min-width: 170px; border: 1px solid rgb(255 255 255 / 12%); border-radius: 8px; padding: 4px; background: rgb(23 23 23); box-shadow: 0 12px 32px rgb(0 0 0 / 45%); }
+:root[data-theme="light"] .wb-context-menu { border-color: rgb(0 0 0 / 10%); background: #fff; box-shadow: 0 12px 32px rgb(0 0 0 / 12%); }
+.wb-context-menu button { display: flex; width: 100%; align-items: center; gap: 8px; border-radius: 6px; padding: 4px 8px; text-align: left; font-size: 13px; line-height: 20px; }
+.wb-context-menu svg { width: 16px; height: 16px; flex: 0 0 16px; color: var(--muted-foreground); }
+.wb-context-menu button:hover:not(:disabled) { background: rgb(255 255 255 / 12%); color: rgb(245 245 245); }
+.wb-context-menu button:hover:not(:disabled) svg { color: inherit; }
+:root[data-theme="light"] .wb-context-menu button:hover:not(:disabled) { background: rgb(23 23 23 / 8%); color: rgb(23 23 23); }
 .wb-context-menu button.is-danger { color: var(--destructive); }
-.wb-context-menu hr { border: 0; border-top: 1px solid var(--border); margin: 3px 0; }
+.wb-context-menu button.is-danger svg { color: inherit; }
+.wb-context-menu button.is-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--destructive) 10%, transparent); color: var(--destructive); }
+.wb-context-menu hr { border: 0; height: 1px; margin: 2px -4px; background: color-mix(in srgb, var(--foreground) 6%, transparent); }
 
 /* ---- right dock (transfer / audit panels) --------------------------------- */
 .wb-dock { display: flex; flex: 0 0 300px; min-width: 240px; max-width: 420px; flex-direction: column; border-left: 1px solid var(--border); min-height: 0; overflow: hidden; }

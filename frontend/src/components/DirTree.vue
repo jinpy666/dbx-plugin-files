@@ -29,7 +29,7 @@ const emit = defineEmits<{
       @click="emit('open', node)"
       @contextmenu.prevent.stop="emit('context', { node, x: $event.clientX, y: $event.clientY })"
     >
-      <button type="button" class="wb-tree-caret" @click.stop="emit('toggle', node)">
+      <button type="button" class="wb-tree-caret" v-tip="node.expanded ? t('treeCollapse') : t('treeExpand')" @click.stop="emit('toggle', node)">
         <span v-if="node.loading" class="wb-tree-spinner" />
         <ChevronDown v-else-if="node.expanded" />
         <ChevronRight v-else />

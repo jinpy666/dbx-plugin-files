@@ -10,6 +10,7 @@ import TransferPanel from "./components/TransferPanel.vue";
 import SideNavPanel from "./components/SideNavPanel.vue";
 import { installMockHost } from "./lib/mockHost";
 import { workbenchMessage } from "./lib/i18n";
+import { vTip } from "./lib/tooltip";
 import { saveUiPrefs } from "./lib/prefs";
 import { currentConnectionId, parentPath, joinPath, type FileEntry } from "./lib/api";
 
@@ -35,7 +36,7 @@ afterEach(() => {
 });
 
 function mountWorkbench() {
-  wrapper = mount(App, { attachTo: document.body });
+  wrapper = mount(App, { attachTo: document.body, global: { directives: { tip: vTip } } });
   return wrapper;
 }
 
@@ -52,7 +53,7 @@ function table(side: "left" | "right") {
 
 async function openDualPane() {
   const button = wrapper!.getComponent(FileToolbar).findAll("button")
-    .find((button) => button.attributes("title") === workbenchMessage("en", "dualPane"))!;
+    .find((button) => button.attributes("aria-label") === workbenchMessage("en", "dualPane"))!;
   await button.trigger("click");
   await settle();
 }
@@ -217,7 +218,7 @@ describe("round5 retry UI smoke", () => {
     await settle();
     expect(currentConnectionId()).toBe("other");
     const panel = await showTransfers();
-    await panel.get(`[title="${workbenchMessage("en", "retryTransfer")}"]`).trigger("click");
+    await panel.get(`[aria-label="${workbenchMessage("en", "retryTransfer")}"]`).trigger("click");
     await settle();
     const submissions = invoke.mock.calls.filter(([method]) => method === `files/${kind}`);
     expect(submissions).toHaveLength(2);
@@ -279,7 +280,7 @@ describe("round5 retry UI smoke", () => {
       return original<T>(method, params);
     });
     const panel = await showTransfers();
-    await panel.get(`[title="${workbenchMessage("en", "retryTransfer")}"]`).trigger("click");
+    await panel.get(`[aria-label="${workbenchMessage("en", "retryTransfer")}"]`).trigger("click");
     await settle();
     expect(invoke.mock.calls.some(([method]) => method === "files/list")).toBe(true);
     expect(table("left").props("entries").some((entry) => entry.path === "/failed-copy")).toBe(true);

@@ -1,8 +1,12 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from "vitest";
-import { mount } from "@vue/test-utils";
+import { mount, config } from "@vue/test-utils";
 import TransferPanel from "./TransferPanel.vue";
 import type { TransferJob } from "../lib/transfers";
+import { vTip } from "../lib/tooltip";
+
+// 模板里的 v-tip（图标按钮提示）在测试挂载时同样需要指令注册。
+config.global.directives = { tip: vTip };
 
 // R5-P2-3 回归：计数型 job（批量删除伪 job 的 transferred/size 实为文件个数）
 // 进度必须按「N/M 项」渲染，不得再走 formatBytes 把 10000 个文件显示成 9.8 KiB。

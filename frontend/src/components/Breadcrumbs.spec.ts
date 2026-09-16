@@ -1,7 +1,11 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from "vitest";
-import { mount } from "@vue/test-utils";
+import { mount, config } from "@vue/test-utils";
 import Breadcrumbs from "./Breadcrumbs.vue";
+import { vTip } from "../lib/tooltip";
+
+// 模板里的 v-tip（图标按钮提示）在测试挂载时同样需要指令注册。
+config.global.directives = { tip: vTip };
 
 /** 面包屑可视文本（含分隔符），用于断言无双斜杠形态。 */
 function visibleText(wrapper: ReturnType<typeof mount>): string {

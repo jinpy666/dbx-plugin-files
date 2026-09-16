@@ -58,7 +58,7 @@ props;
     <!-- P2-5：手动刷新钮——面板打开期间错过的写入不再要求切 tab 触发 watch -->
     <div class="wb-transfer-history-head" style="margin: 2px 0 6px">
       <span class="wb-muted">{{ t("auditPanel") }}</span>
-      <button class="wb-icon-button" :title="t('refresh')" :disabled="loading" @click="refresh">
+      <button class="wb-icon-button" v-tip="t('refresh')" :disabled="loading" @click="refresh">
         <RefreshCw :class="{ 'wb-spin': loading }" />
       </button>
     </div>

@@ -35,7 +35,7 @@ const items = computed(() => {
         v-if="'collapsed' in item"
         type="button"
         class="wb-crumb-ellipsis"
-        :title="path"
+        v-tip="path"
         @click.stop="expanded = true"
       >…</button>
       <button

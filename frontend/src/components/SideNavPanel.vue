@@ -75,17 +75,17 @@ function onTreeKeydown(event: KeyboardEvent) {
 <template>
   <div v-if="!collapsed" class="wb-side-panel">
     <div class="wb-side-tabs">
-      <button type="button" :class="{ 'is-active': tab === 'tree' }" :title="t('sideTree')" @click="emit('update:tab', 'tree')">
+      <button type="button" :class="{ 'is-active': tab === 'tree' }" v-tip="t('sideTree')" @click="emit('update:tab', 'tree')">
         <FolderTree />
       </button>
-      <button type="button" :class="{ 'is-active': tab === 'quick' }" :title="t('quickPathsTitle')" @click="emit('update:tab', 'quick')">
+      <button type="button" :class="{ 'is-active': tab === 'quick' }" v-tip="t('quickPathsTitle')" @click="emit('update:tab', 'quick')">
         <Star />
       </button>
       <span class="wb-side-spacer" />
-      <button v-if="tab === 'tree'" type="button" :title="t('refresh')" @click="emit('refresh-tree')">
+      <button v-if="tab === 'tree'" type="button" v-tip="t('refresh')" @click="emit('refresh-tree')">
         <RefreshCw />
       </button>
-      <button type="button" :title="t('sideCollapse')" @click="emit('update:collapsed', true)">
+      <button type="button" v-tip="t('sideCollapse')" @click="emit('update:collapsed', true)">
         <ChevronsLeft />
       </button>
     </div>
@@ -125,7 +125,7 @@ function onTreeKeydown(event: KeyboardEvent) {
     </div>
   </div>
   <div v-else class="wb-side-rail">
-    <button type="button" :title="t('sideExpand')" @click="emit('update:collapsed', false)">
+    <button type="button" v-tip="t('sideExpand')" @click="emit('update:collapsed', false)">
       <ChevronsRight />
     </button>
   </div>

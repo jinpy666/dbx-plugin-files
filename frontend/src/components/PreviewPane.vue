@@ -235,9 +235,9 @@ watch(
     <div class="wb-preview-header">
       <strong :title="path">{{ title }}</strong>
       <span class="wb-muted">{{ loading || mode === "image" || mode === "archive" ? "" : formatBytes(size) }}</span>
-      <button v-if="canEdit && !saving" class="wb-icon-button wb-icon-neutral" :title="t('edit')" @click="startEdit"><Pencil /></button>
-      <button class="wb-icon-button wb-icon-neutral" :title="t('download')" @click="emit('download', path)"><Download /></button>
-      <button class="wb-icon-button wb-icon-neutral" :title="t('close')" @click="emit('close')"><X /></button>
+      <button v-if="canEdit && !saving" class="wb-icon-button wb-icon-neutral" v-tip="t('edit')" @click="startEdit"><Pencil /></button>
+      <button class="wb-icon-button wb-icon-neutral" v-tip="t('download')" @click="emit('download', path)"><Download /></button>
+      <button class="wb-icon-button wb-icon-neutral" v-tip="t('close')" @click="emit('close')"><X /></button>
     </div>
     <div v-if="showEditbar" class="wb-preview-editbar">
       <template v-if="editing">
