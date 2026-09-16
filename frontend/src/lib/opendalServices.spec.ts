@@ -31,6 +31,34 @@ describe("opendalServices", () => {
     expect(config).not.toHaveProperty("enable_virtual_host_style", true);
   });
 
+  it("maps COS quick fields to official builder keys and marks secret_key as secret", () => {
+    const config = buildExternalConfig("cos", {
+      bucket: "demo-1250000000",
+      endpoint: "https://cos.ap-guangzhou.myqcloud.com",
+      secret_id: "secret-id",
+      secret_key: "secret-key",
+      // COS encodes the region in endpoint; generic S3 keys must not leak in.
+      access_key_id: "wrong-key-name",
+      region: "ap-guangzhou",
+    });
+    expect(config).toEqual({
+      protocol: "cos",
+      bucket: "demo-1250000000",
+      endpoint: "https://cos.ap-guangzhou.myqcloud.com",
+      secret_id: "secret-id",
+      secret_key: "secret-key",
+    });
+
+    const template = templateFor("cos")!;
+    expect(template.kind).toBe("quick");
+    expect(template.fields.map((field) => field.key)).toEqual(["bucket", "endpoint", "secret_id", "secret_key"]);
+    expect(template.fields.find((field) => field.key === "secret_key")).toMatchObject({
+      type: "password",
+      required: true,
+      secret: true,
+    });
+  });
+
   it("passes opendal-custom service and config JSON through", () => {
     const config = buildExternalConfig("opendal-custom", {
       service: "memory",
@@ -48,7 +76,7 @@ describe("opendalServices", () => {
     for (const service of ["fs", "s3", "webdav", "ftp", "sftp", "gcs", "azblob", "oss", "obs", "cos"]) {
       expect(CUSTOM_SERVICES.has(service)).toBe(true);
     }
-    expect(quickProtocolIds()).toEqual(["fs", "s3", "webdav", "ftp", "sftp", "smb", "sftp-native"]);
+    expect(quickProtocolIds()).toEqual(["fs", "s3", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native"]);
   });
 
   it("maps sftp-native quick fields into an external config with secrets separated", () => {
@@ -141,6 +169,7 @@ describe("custom service schemas", () => {
     expect(specOf("sftp", "endpoint").security).toBe("host");
     expect(specOf("s3", "secret_access_key").secret).toBe(true);
     expect(specOf("oss", "access_key_secret").secret).toBe(true);
+    expect(specOf("cos", "secret_key")).toMatchObject({ type: "password", secret: true });
     expect(specOf("sftp", "known_hosts_strategy").options).toEqual(["Tolerate", "Strict", "Trust"]);
   });
 });
