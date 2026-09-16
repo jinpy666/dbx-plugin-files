@@ -13,7 +13,7 @@ target platform and exact version before choosing.
 | --- | --- | --- | --- | --- |
 | Graphical browsing of remote storage | Built-in | — (CLI-first; third-party GUI wrappers exist) | Built-in (SFTP/SCP/FTP/WebDAV/S3) | Local disks only |
 | Local folders | Built-in | Built-in | Built-in | Built-in |
-| S3 and compatible object storage | Built-in | Built-in (~70 backends) | S3 | — (external tools) |
+| S3, Alibaba Cloud OSS, Tencent Cloud COS, and compatible object storage | Built-in | Built-in (~70 backends) | S3 | — (external tools) |
 | WebDAV / FTP | Built-in | Built-in | Built-in | Partial (version-dependent) |
 | SFTP | Dual stack (keyfile/password) | Built-in | Built-in | — (external tools) |
 | SMB/CIFS | Built-in (pure-Rust client) | — | — (relies on OS mounts) | Built-in (OS mounts) |
