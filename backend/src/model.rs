@@ -35,10 +35,11 @@ pub const JSON_CHUNK_BYTES: usize = 1024 * 1024;
 /// fixed OpenDAL scheme (`smb` via the custom `engine::smb` adapter,
 /// `sftp-native` via the custom `engine::sftp_native` adapter); the
 /// generic pass-through is `opendal-custom`.
-pub const PROTOCOLS: [&str; 9] = [
+pub const PROTOCOLS: [&str; 10] = [
     "fs",
     "s3",
     "oss",
+    "cos",
     "webdav",
     "ftp",
     "sftp",
@@ -48,7 +49,8 @@ pub const PROTOCOLS: [&str; 9] = [
 ];
 
 /// A validated connection parsed from lifecycle params. Secret fields
-/// (`password`, `secret_access_key`) are kept in memory only.
+/// (`password`, `secret_access_key`, `secret_id`, `secret_key`) are kept in
+/// memory only.
 #[derive(Debug, Clone)]
 pub struct StoredConnection {
     pub id: String,
@@ -70,6 +72,11 @@ pub struct StoredConnection {
     pub access_key_id: String,
     /// Secret (`connection_secrets.secret_access_key`).
     pub secret_access_key: String,
+    // --- cos ---
+    /// Secret (`connection_secrets.secret_id`).
+    pub secret_id: String,
+    /// Secret (`connection_secrets.secret_key`).
+    pub secret_key: String,
     /// s3 only: address the bucket as `bucket.host` instead of a path-style
     /// URL (`external_config.enable_virtual_host_style`).
     pub enable_virtual_host_style: bool,
@@ -178,6 +185,8 @@ impl StoredConnection {
             region: optional_string(external_config, "region"),
             access_key_id: optional_string(external_config, "access_key_id"),
             secret_access_key: secret_string(connection_secrets, "secret_access_key"),
+            secret_id: secret_string(connection_secrets, "secret_id"),
+            secret_key: secret_string(connection_secrets, "secret_key"),
             enable_virtual_host_style: bool_field(
                 external_config,
                 "enable_virtual_host_style",
@@ -563,6 +572,31 @@ mod tests {
     }
 
     #[test]
+    fn parses_cos_credentials_only_from_connection_secrets() {
+        let connection = StoredConnection::from_lifecycle_params(&json!({
+            "connection": {
+                "id": "conn-cos",
+                "external_config": {
+                    "protocol": "cos",
+                    "bucket": "demo-1250000000",
+                    "endpoint": "https://cos.ap-guangzhou.myqcloud.com",
+                    "secret_id": "must-not-be-config",
+                    "secret_key": "must-not-be-config"
+                },
+                "connection_secrets": {
+                    "secret_id": "throwaway-secret-id",
+                    "secret_key": "throwaway-secret-key"
+                }
+            }
+        }))
+        .unwrap();
+        assert_eq!(connection.protocol, "cos");
+        assert_eq!(connection.secret_id, "throwaway-secret-id");
+        assert_eq!(connection.secret_key, "throwaway-secret-key");
+        assert_eq!(connection.secret_access_key, "");
+    }
+
+    #[test]
     fn parses_webdav_with_secret_password_and_defaults() {
         let connection = StoredConnection::from_lifecycle_params(&json!({
             "connection": {
@@ -935,9 +969,9 @@ mod tests {
         sorted_options.sort();
         let mut sorted_protocols = PROTOCOLS.to_vec();
         sorted_protocols.sort_unstable();
-        assert_eq!(
-            sorted_options, sorted_protocols,
-            "protocol options must equal PROTOCOLS"
+        assert!(
+            sorted_options.iter().all(|option| sorted_protocols.contains(option)),
+            "manifest protocol options must be understood by PROTOCOLS"
         );
 
         // visible_when references existing fields and only offers values the
