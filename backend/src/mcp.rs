@@ -2332,7 +2332,8 @@ fn inline_pool_id(connection: &Value) -> String {
 /// tolerant lifecycle parser so backend validation stays single-sourced.
 /// Field names mirror the files connection form (see MCP.zh-CN.md「方式二」
 /// 凭据参数表): `protocol`/`root`/`bucket`/`endpoint`/`region`/
-/// `accessKeyId`/`secretAccessKey`/`username`/`user`/`password`/`key`/…
+/// `accessKeyId`/`secretAccessKey`/`secretId`/`secretKey`/`username`/
+/// `user`/`password`/`key`/…
 /// plus the convenience `protocol: "local"` (alias of `fs` for the "give me
 /// a root and go" path used by credential-free smoke runs).
 fn stored_connection_from_inline(connection: &Value) -> Result<StoredConnection, String> {
@@ -2345,8 +2346,8 @@ fn stored_connection_from_inline(connection: &Value) -> Result<StoredConnection,
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
-            "Missing protocol in connection (one of: local, fs, s3, oss, webdav, ftp, sftp, \
-             smb, sftp-native, opendal-custom)"
+            "Missing protocol in connection (one of: local, fs, s3, oss, cos, webdav, ftp, \
+             sftp, smb, sftp-native, opendal-custom)"
                 .to_string()
         })?;
     let protocol = match protocol {
@@ -2384,6 +2385,8 @@ fn stored_connection_from_inline(connection: &Value) -> Result<StoredConnection,
     let mut secrets = serde_json::Map::new();
     for (inline_key, secret_key) in [
         ("secretAccessKey", "secret_access_key"),
+        ("secretId", "secret_id"),
+        ("secretKey", "secret_key"),
         ("password", "password"),
         ("key", "key"),
     ] {
@@ -2420,13 +2423,15 @@ fn stored_connection_from_inline(connection: &Value) -> Result<StoredConnection,
 fn inline_connection_properties() -> Value {
     json!({
     "protocol": { "type": "string",
-        "description": "Storage protocol (required): local (alias of fs), fs, s3, oss, webdav, ftp, sftp, smb, sftp-native, opendal-custom" },
+        "description": "Storage protocol (required): local (alias of fs), fs, s3, oss, cos, webdav, ftp, sftp, smb, sftp-native, opendal-custom" },
     "root": { "type": "string", "description": "OpenDAL root prefix" },
     "bucket": { "type": "string", "description": "Bucket (s3/oss)" },
     "region": { "type": "string", "description": "Region (s3/oss)" },
     "endpoint": { "type": "string", "description": "Endpoint URL (s3/oss)" },
     "accessKeyId": { "type": "string", "description": "Access key id (s3/oss)" },
     "secretAccessKey": { "type": "string", "description": "Secret access key (s3/oss; stays in process memory only)" },
+    "secretId": { "type": "string", "description": "Tencent Cloud COS secret id (stays in process memory only)" },
+    "secretKey": { "type": "string", "description": "Tencent Cloud COS secret key (stays in process memory only)" },
     "enableVirtualHostStyle": { "type": "boolean", "description": "Virtual-host style addressing (s3)" },
     "username": { "type": "string", "description": "Username (webdav/smb)" },
     "user": { "type": "string", "description": "User (ftp/sftp/sftp-native)" },
@@ -3406,7 +3411,7 @@ fn is_valid_jsonrpc_id(id: &Value) -> bool {
 /// resolve: what failed (the bridge leg reason when a forward was attempted,
 /// `None` with the fallback switched off) plus the actionable ways out, named
 /// with files' own inline parameter fields (protocol/root/bucket/endpoint/
-/// region/accessKeyId/secretAccessKey — see MCP.zh-CN.md「方式二」).
+/// region/accessKeyId/secretAccessKey/secretId/secretKey — see MCP.zh-CN.md「方式二」).
 fn unknown_connection_guidance(connection_id: &str, bridge_reason: Option<&str>) -> String {
     let bridge = match bridge_reason {
         Some(reason) => format!("the DBX app bridge is unavailable ({reason})"),
@@ -4610,6 +4615,18 @@ mod tests {
         assert_eq!(s3.secret_access_key, "minioadmin");
         assert_eq!(s3.endpoint, "http://127.0.0.1:9000");
 
+        let cos = stored_connection_from_inline(&json!({
+            "protocol": "cos",
+            "bucket": "demo-1250000000",
+            "endpoint": "https://cos.ap-guangzhou.myqcloud.com",
+            "secretId": "throwaway-secret-id",
+            "secretKey": "throwaway-secret-key",
+        }))
+        .unwrap();
+        assert_eq!(cos.protocol, "cos");
+        assert_eq!(cos.secret_id, "throwaway-secret-id");
+        assert_eq!(cos.secret_key, "throwaway-secret-key");
+
         let missing = stored_connection_from_inline(&json!({ "root": "/data" })).unwrap_err();
         assert!(missing.contains("protocol"), "{missing}");
         let unknown = stored_connection_from_inline(&json!({ "protocol": "gopher" })).unwrap_err();
@@ -4648,6 +4665,8 @@ mod tests {
             "config",
             // secret-bound keys
             "secretAccessKey",
+            "secretId",
+            "secretKey",
             "password",
             "key",
         ];
