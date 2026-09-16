@@ -8,7 +8,7 @@ description = "DBX files plugin sidecar: Apache OpenDAL storage engine"
 [workspace]
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 dbx-plugin-sdk = "0.1.0"
 # opendal 0.58.x needs rustc >= 1.91 (edition 2024 workspace); the host
 # toolchain is pinned to 1.88.0, so we lock the newest compatible line (0.57,
