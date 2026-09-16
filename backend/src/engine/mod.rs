@@ -213,7 +213,7 @@ impl Engine {
 ///   [`sftp_native::SftpNativeBuilder`] (russh + russh-sftp; dual-stack
 ///   decision 2026-08-31).
 /// - Everything else funnels through `Operator::via_iter`:
-///   - quick protocol (`fs`/`s3`/`webdav`/`ftp`/`sftp`): scheme is the
+///   - quick protocol (`fs`/`s3`/`oss`/`cos`/`webdav`/`ftp`/`sftp`): scheme is the
 ///     protocol name, kv assembled from the manifest-mapped OpenDAL keys
 ///     (doc §4 table).
 ///   - `opendal-custom`: scheme is `service`, kv is the `config` JSON object
@@ -346,6 +346,17 @@ pub fn protocol_kv(
             push(&mut kv, "access_key_secret", &connection.secret_access_key);
             "oss".to_string()
         }
+        "cos" => {
+            // Tencent Cloud COS uses its own credential names. Keep both
+            // values in StoredConnection's secret-only fields and forward
+            // them directly to the OpenDAL services-cos builder.
+            push(&mut kv, "root", &connection.root);
+            push(&mut kv, "bucket", &connection.bucket);
+            push(&mut kv, "endpoint", &connection.endpoint);
+            push(&mut kv, "secret_id", &connection.secret_id);
+            push(&mut kv, "secret_key", &connection.secret_key);
+            "cos".to_string()
+        }
         "webdav" => {
             push(&mut kv, "root", &connection.root);
             push(&mut kv, "endpoint", &connection.endpoint);
@@ -469,7 +480,7 @@ fn kv_from_custom_config(connection: &StoredConnection, kv: &mut Vec<(String, St
 fn validate_endpoints(connection: &StoredConnection) -> Result<(), String> {
     let http_class = matches!(
         connection.protocol.as_str(),
-        "s3" | "oss" | "webdav" | "opendal-custom"
+        "s3" | "oss" | "cos" | "webdav" | "opendal-custom"
     );
     if http_class && !connection.endpoint.is_empty() {
         check_http_scheme(&connection.endpoint)?;
@@ -745,6 +756,37 @@ mod tests {
             1,
             "only root survives when everything else is empty"
         );
+    }
+
+    #[test]
+    fn quick_protocol_cos_maps_tencent_credentials_to_cos_keys() {
+        let mut cos = connection("cos");
+        cos.root = "/data".into();
+        cos.bucket = "demo-1250000000".into();
+        cos.endpoint = "https://cos.ap-guangzhou.myqcloud.com".into();
+        cos.secret_id = "throwaway-secret-id".into();
+        cos.secret_key = "throwaway-secret-key".into();
+
+        let (scheme, kv) = protocol_kv(&cos).unwrap();
+        assert_eq!(scheme, "cos");
+        let map: HashMap<String, String> = kv.into_iter().collect();
+        assert_eq!(map["root"], "/data");
+        assert_eq!(map["bucket"], "demo-1250000000");
+        assert_eq!(map["endpoint"], "https://cos.ap-guangzhou.myqcloud.com");
+        assert_eq!(map["secret_id"], "throwaway-secret-id");
+        assert_eq!(map["secret_key"], "throwaway-secret-key");
+        assert!(!map.contains_key("secret_access_key"));
+        assert!(!map.contains_key("access_key_id"));
+    }
+
+    #[test]
+    fn cos_endpoints_reject_non_http_schemes() {
+        let mut cos = connection("cos");
+        cos.endpoint = "file:///etc/passwd".into();
+        assert!(protocol_kv(&cos).is_err(), "file:// must be rejected for cos");
+
+        cos.endpoint = "https://cos.ap-guangzhou.myqcloud.com".into();
+        assert!(protocol_kv(&cos).is_ok());
     }
 
     #[test]
