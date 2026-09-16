@@ -642,6 +642,14 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
         emitter: &PluginEmitter,
     ) -> Result<(String, u64), String> {
         let (reader, size) = slot::open_download_reader(operator, remote_path).await?;
+        if save_to_local {
+            if let Some(download_dir) = download_dir
+                .map(str::trim)
+                .filter(|download_dir| !download_dir.is_empty())
+            {
+                crate::local_downloads::validate_download_dir(download_dir)?;
+            }
+        }
         let task_id = uuid::Uuid::new_v4().to_string();
         let now = store::unix_millis_now();
         let job = TransferJob {

@@ -7,6 +7,7 @@ const props = defineProps<{
   canSaveLocal: boolean;
   saveDir: string;
   defaultSaveDir: string;
+  downloadDirError?: string;
 }>();
 
 const emit = defineEmits<{
@@ -64,6 +65,7 @@ async function pickDirectory() {
           spellcheck="false"
           :placeholder="defaultSaveDir || t('saveToDefault')"
           :aria-label="t('downloadDirectory')"
+          :aria-invalid="Boolean(downloadDirError)"
           @change="onChange"
         />
         <button
@@ -83,6 +85,7 @@ async function pickDirectory() {
           @click="restoreDefault"
         ><RotateCcw /></button>
       </div>
+      <p v-if="downloadDirError" class="wb-settings-error" role="alert">{{ downloadDirError }}</p>
       <p v-if="canSaveLocal" class="wb-settings-default wb-mono">
         {{ draft ? draft : `${t("usingDefaultDirectory")}: ${defaultSaveDir || t("saveToDefault")}` }}
       </p>

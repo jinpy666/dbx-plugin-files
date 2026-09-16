@@ -76,7 +76,8 @@ export function saveUiPrefs(prefs: UiPrefs, storage?: Storage): void {
 
 // —— 下载保存目录（对标 ssh 插件 downloadDir 设置）——————————————
 // localStorage 持久化用户偏好的落盘目录；空值 = 跟随 sidecar 默认（系统下载
-// 目录）。目录字符串由用户手输（无系统目录选择器），下发前只做 trim。
+// 目录）。目录字符串由用户手输或系统目录选择器提供；sidecar 在保存和
+// 下载前校验。
 
 export const DOWNLOAD_DIR_KEY = "dbx-files.downloadDir";
 

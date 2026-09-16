@@ -12,7 +12,7 @@ function ensureHost() {
   window.dbxPlugin = (window.dbxPlugin ?? {}) as Window["dbxPlugin"];
 }
 
-function mountPanel(overrides: Partial<{ canSaveLocal: boolean; saveDir: string; defaultSaveDir: string }> = {}) {
+function mountPanel(overrides: Partial<{ canSaveLocal: boolean; saveDir: string; defaultSaveDir: string; downloadDirError: string }> = {}) {
   ensureHost();
   return mount(SettingsPanel, {
     props: {
@@ -49,6 +49,12 @@ describe("SettingsPanel download directory", () => {
     const wrapper = mountPanel({ canSaveLocal: false });
     expect(wrapper.find("input").exists()).toBe(false);
     expect(wrapper.text()).toContain("downloadDirectoryUnavailable");
+  });
+
+  it("shows a validation error for an invalid download directory", () => {
+    const wrapper = mountPanel({ downloadDirError: "Choose an existing absolute directory." });
+    expect(wrapper.get("input").attributes("aria-invalid")).toBe("true");
+    expect(wrapper.get("[role='alert']").text()).toContain("existing absolute directory");
   });
 
   it("does not show a directory picker when the host does not expose one", () => {
