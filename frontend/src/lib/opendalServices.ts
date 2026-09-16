@@ -47,6 +47,18 @@ export const SERVICE_TEMPLATES: Record<string, ServiceTemplate> = {
       { key: "enable_virtual_host_style", type: "boolean" },
     ],
   },
+  cos: {
+    id: "cos",
+    kind: "quick",
+    // COS endpoint includes the region (the COS builder has no separate
+    // region key); credentials use the official secret_id/secret_key names.
+    fields: [
+      { key: "bucket", type: "text", required: true },
+      { key: "endpoint", type: "text", placeholder: "https://cos.ap-guangzhou.myqcloud.com" },
+      { key: "secret_id", type: "text", required: true },
+      { key: "secret_key", type: "password", required: true, secret: true },
+    ],
+  },
   webdav: {
     id: "webdav",
     kind: "quick",
