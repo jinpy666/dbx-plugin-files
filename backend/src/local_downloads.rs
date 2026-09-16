@@ -61,10 +61,38 @@ pub fn platform_name() -> &'static str {
     }
 }
 
+/// Validates a user-supplied download directory without creating or modifying
+/// anything. Preferences must point at an existing absolute directory so a
+/// typo cannot silently create a folder relative to the sidecar's cwd.
+pub fn validate_download_dir(raw: &str) -> Result<PathBuf, String> {
+    let path = raw.trim();
+    if path.is_empty() {
+        return Err("Download directory path must not be empty".to_string());
+    }
+    if path
+        .chars()
+        .any(|character| character == '\0' || character.is_control())
+    {
+        return Err("Download directory path contains invalid control characters".to_string());
+    }
+
+    let directory = Path::new(path);
+    if !directory.is_absolute() {
+        return Err("Download directory path must be absolute".to_string());
+    }
+    let metadata = std::fs::metadata(directory)
+        .map_err(|error| format!("Download directory is not accessible: {error}"))?;
+    if !metadata.is_dir() {
+        return Err("Download directory path is not a directory".to_string());
+    }
+    Ok(directory.to_path_buf())
+}
+
 /// Base directory downloads land in: explicit `download_dir` override (the
 /// workbench save-path preference), then `DOWNLOAD_DIR_ENV`, then the user's
 /// Downloads folder (created on demand), then the home directory, then a
-/// folder under the plugin data dir so this never fails.
+/// folder under the plugin data dir so this never fails. Explicit preferences
+/// are validated by `validate_download_dir` before this helper is called.
 pub fn downloads_base_dir(
     download_dir: Option<&str>,
     lookup: impl Fn(&str) -> Option<OsString>,
@@ -326,6 +354,23 @@ mod tests {
             data_dir.path(),
         );
         assert_eq!(dir, downloads);
+    }
+
+    #[test]
+    fn validate_download_dir_requires_existing_absolute_directory() {
+        let parent = tempfile::tempdir().expect("tempdir");
+        let directory = parent.path().join("downloads");
+        std::fs::create_dir(&directory).expect("mkdir");
+        let valid = validate_download_dir(&format!("  {}  ", directory.display()))
+            .expect("existing directory should validate");
+        assert_eq!(valid, directory);
+
+        let file = parent.path().join("file.txt");
+        std::fs::write(&file, b"x").expect("write");
+        assert!(validate_download_dir(&file.to_string_lossy()).is_err());
+        assert!(validate_download_dir(&parent.path().join("missing").to_string_lossy()).is_err());
+        assert!(validate_download_dir("downloads").is_err());
+        assert!(validate_download_dir("/tmp/invalid\npath").is_err());
     }
 
     #[test]

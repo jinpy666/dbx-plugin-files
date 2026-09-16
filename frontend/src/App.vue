@@ -1853,9 +1853,27 @@ function probeLocalCapabilities() {
 
 /** 「保存到」偏好（localStorage），空串 = 跟随 sidecar 默认下载目录。 */
 const saveDirDraft = ref(loadDownloadDir());
-function onSaveDirChange(dir: string) {
-  persistDownloadDir(dir);
-  saveDirDraft.value = loadDownloadDir();
+const saveDirError = ref("");
+let saveDirValidationSerial = 0;
+async function onSaveDirChange(dir: string) {
+  const normalized = dir.trim();
+  const serial = ++saveDirValidationSerial;
+  if (!normalized) {
+    saveDirError.value = "";
+    persistDownloadDir("");
+    saveDirDraft.value = "";
+    return;
+  }
+  try {
+    await window.dbxPlugin.invoke("files/local/validate-directory", { path: normalized });
+    if (serial !== saveDirValidationSerial) return;
+    saveDirError.value = "";
+    persistDownloadDir(normalized);
+    saveDirDraft.value = loadDownloadDir();
+  } catch {
+    if (serial !== saveDirValidationSerial) return;
+    saveDirError.value = t("invalidDownloadDirectory");
+  }
 }
 
 // 在文件管理器中定位本机落盘的下载（sidecar 校验过该路径确为本插件记录）。
@@ -2157,7 +2175,8 @@ function onRightNavigate(target: string) {
   void loadRightDirectory(target).catch(() => undefined);
 }
 
-watch(dockTab, (tab) => {
+watch([dockOpen, dockTab], ([open, tab]) => {
+  if (!open || tab !== "settings") saveDirError.value = "";
   if (tab === "audit") auditRef.value?.refresh();
 });
 
@@ -2408,6 +2427,7 @@ onBeforeUnmount(() => {
             :can-save-local="canSaveLocal"
             :save-dir="saveDirDraft"
             :default-save-dir="localDownloadDir"
+            :download-dir-error="saveDirError"
             @save-dir="onSaveDirChange"
           />
           <div v-else style="display: flex; flex-direction: column; gap: 10px">

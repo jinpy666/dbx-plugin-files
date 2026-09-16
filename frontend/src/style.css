@@ -167,6 +167,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px
 .wb-settings-section { display: flex; flex-direction: column; gap: 6px; }
 .wb-settings-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .wb-settings-help, .wb-settings-default { margin: 0; color: var(--muted-foreground); font-size: 11px; overflow-wrap: anywhere; }
+.wb-settings-error { margin: 0; color: var(--destructive); font-size: 11px; overflow-wrap: anywhere; }
 .wb-settings-path-row { display: flex; align-items: center; gap: 6px; }
 .wb-settings-path-row input { flex: 1 1 auto; min-width: 0; height: 26px; padding: 0 7px; font-size: 11px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--background); color: var(--foreground); }
 

@@ -667,6 +667,17 @@ impl Plugin {
                     "platform": local_downloads::platform_name(),
                 }))
             }
+            // Validate a user-selected local download directory without
+            // creating it. The frontend uses this before persisting the
+            // preference; start_download repeats the check for stale prefs.
+            "files/local/validate-directory" => {
+                let path = params
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .ok_or("Missing path")?;
+                let path = local_downloads::validate_download_dir(path)?;
+                Ok(json!({ "valid": true, "path": path.to_string_lossy() }))
+            }
             // 在文件管理器中定位已完成的下载。只允许 reveal 传输历史里记录过
             // 的 localPath，不能成为任意路径打开原语。
             "files/local/reveal" => {
