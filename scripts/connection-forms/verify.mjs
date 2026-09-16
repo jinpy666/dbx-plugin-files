@@ -98,7 +98,7 @@ for (const [index, field] of fields.entries()) {
 // store (lifecycle `connection_secrets`, masked input) — never to the config
 // binding, which is persisted in plaintext alongside the connection record.
 // `password` inputs must always be secret-bound so the host masks them.
-const SECRET_FIELDS = new Set(["key", "password", "secret_access_key", "secret_id", "secret_key"]);
+const SECRET_FIELDS = new Set(["key", "password", "secret_access_key", "secret_id", "secret_key", "security_token"]);
 for (const field of fields) {
   if (field.type === "password") {
     assert.equal(field.binding, "secret", `${field.key}: password input must bind to secret`);
@@ -150,6 +150,8 @@ for (const protocol of options("protocol")) {
     current.required("secret_id", protocol === "cos");
     current.visible("secret_key", protocol === "cos");
     current.required("secret_key", protocol === "cos");
+    current.visible("security_token", protocol === "cos");
+    current.required("security_token", false);
     // Custom OpenDAL service descriptor.
     current.visible("service", protocol === "opendal-custom");
     current.required("service", protocol === "opendal-custom");

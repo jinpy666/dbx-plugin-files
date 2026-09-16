@@ -10,7 +10,7 @@ Files Studio（`io.dbx.files`）是统一的多后端文件工作台：本地文
 远程文件服务共用一套浏览、传输和管理体验，把"在多个存储之间来回搬文件"压缩成一个
 连贯、可审计、可自动化的工作流。
 
-> Files · Storage · Transfer：fs、S3、WebDAV、FTP、SFTP、SMB 和传输、归档、自动化
+> Files · Storage · Transfer：fs、S3、OSS、COS、WebDAV、FTP、SFTP、SMB 和传输、归档、自动化
 > 集中在一个 DBX 工作台面板中。
 
 ![Files Studio 功能演示](docs/media/dbx-files-demo.mp4)
@@ -34,7 +34,7 @@ Files Studio（`io.dbx.files`）是统一的多后端文件工作台：本地文
 ## 核心能力
 
 - 多协议引擎（Apache OpenDAL + 自研适配）：本地文件系统、S3/MinIO、阿里云 OSS、
-  WebDAV、FTP、SFTP、SMB/CIFS，以及 gcs/azblob/obs/cos 等其他已编译的 OpenDAL 服务。
+  腾讯云 COS、WebDAV、FTP、SFTP、SMB/CIFS，以及 gcs/azblob/obs 等其他已编译的 OpenDAL 服务。
 - SFTP 双栈：`sftp` 快捷协议（OpenDAL，keyfile 认证）与 `sftp-native`（russh，
   密码或 keyfile）并存；Windows 平台请使用 `sftp-native`。
 - 统一浏览、读取、上传、下载、复制、移动、重命名和删除操作。
@@ -64,7 +64,7 @@ backend/target/release/dbx-plugin-files --mcp
 
 ## 安全设计
 
-建议为生产连接启用根路径锁定和只读模式，并谨慎配置删除权限。S3、OSS、WebDAV、FTP、
+建议为生产连接启用根路径锁定和只读模式，并谨慎配置删除权限。S3、OSS、COS、WebDAV、FTP、
 SFTP 和 SMB 的凭据由宿主 secret binding 管理；插件不会把密钥、私钥或连接导出写入
 日志和本地配置。
 

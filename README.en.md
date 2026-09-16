@@ -11,7 +11,7 @@ local folders, object storage, and remote file services share one browsing,
 transfer, and administration experience, turning "moving files between storages"
 into a coherent, auditable, and automatable workflow.
 
-> Files · Storage · Transfer: fs, S3, WebDAV, FTP, SFTP, SMB plus transfers,
+> Files · Storage · Transfer: fs, S3, OSS, COS, WebDAV, FTP, SFTP, SMB plus transfers,
 > archives, and automation in a single DBX workbench panel.
 
 ![Files Studio walkthrough](docs/media/dbx-files-demo.mp4)
@@ -35,8 +35,8 @@ into a coherent, auditable, and automatable workflow.
 ## Highlights
 
 - Multi-protocol engine (Apache OpenDAL plus in-house adapters): local filesystems,
-  S3/MinIO, Alibaba Cloud OSS, WebDAV, FTP, SFTP, SMB/CIFS, and other compiled
-  OpenDAL services such as gcs/azblob/obs/cos.
+  S3/MinIO, Alibaba Cloud OSS, Tencent Cloud COS, WebDAV, FTP, SFTP, SMB/CIFS, and
+  other compiled OpenDAL services such as gcs/azblob/obs.
 - SFTP dual stack: the `sftp` quick protocol (OpenDAL, keyfile auth) and
   `sftp-native` (russh, password or keyfile) coexist; on Windows use `sftp-native`.
 - Consistent browse, read, upload, download, copy, move, rename, and delete operations.

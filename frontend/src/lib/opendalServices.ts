@@ -54,9 +54,10 @@ export const SERVICE_TEMPLATES: Record<string, ServiceTemplate> = {
     // region key); credentials use the official secret_id/secret_key names.
     fields: [
       { key: "bucket", type: "text", required: true },
-      { key: "endpoint", type: "text", placeholder: "https://cos.ap-guangzhou.myqcloud.com" },
+      { key: "endpoint", type: "text", required: true, placeholder: "https://cos.ap-guangzhou.myqcloud.com" },
       { key: "secret_id", type: "password", required: true, secret: true },
       { key: "secret_key", type: "password", required: true, secret: true },
+      { key: "security_token", type: "password", secret: true },
     ],
   },
   webdav: {
@@ -259,9 +260,10 @@ export const CUSTOM_SERVICE_SCHEMAS: Readonly<Record<string, readonly CustomFiel
   ],
   cos: [
     { key: "bucket", type: "text", required: true },
-    { key: "endpoint", type: "text", security: "url", placeholder: "https://cos.ap-guangzhou.myqcloud.com" },
-    { key: "secret_id", type: "text", required: true },
+    { key: "endpoint", type: "text", required: true, security: "url", placeholder: "https://cos.ap-guangzhou.myqcloud.com" },
+    { key: "secret_id", type: "password", required: true, secret: true },
     { key: "secret_key", type: "password", required: true, secret: true },
+    { key: "security_token", type: "password", secret: true },
   ],
 };
 
