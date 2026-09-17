@@ -185,14 +185,16 @@ impl Service for SftpNativeAccess {
         Ok(RpStat::new(builder.build()))
     }
 
-    /// Returns a lazily-dialed reader; every range opens a fresh positioned
-    /// handle (`pool.open_reader(path, offset)`) so no state survives reads.
+    /// Returns a lazily-dialed reader; the first range opens a positioned
+    /// handle through the pool and later ranges re-seek the cached handle
+    /// (see [`SftpHandle::read_exact_bounded`]).
     fn read(&self, _ctx: &OperationContext, path: &str, _args: OpRead) -> Result<Self::Reader> {
         let target = sftp_path(&self.root, path);
         Ok(SftpReader {
             handle: SftpHandle {
                 pool: self.pool.clone(),
                 path: target,
+                state: Arc::new(tokio::sync::Mutex::new(None)),
             },
         })
     }
@@ -291,23 +293,58 @@ fn unexpected_result(op: &str) -> Error {
     )
 }
 
-/// Shared coordinates for the reader and its derived streams: every range
-/// opens a fresh positioned handle via the pool, so nothing but the pool and
-/// the absolute wire path is shared.
+/// Shared coordinates for the reader and its derived streams: the pool, the
+/// absolute wire path, and a cached positioned read handle. Ranged reads
+/// serialize on the handle's tokio mutex — the seek/read calls run inside it,
+/// which is exactly the serialization the cache is for (audit #1).
 #[derive(Clone)]
 pub(super) struct SftpHandle {
     pool: Arc<SftpNativePool>,
     /// Absolute SFTP path (see [`sftp_path`]).
     path: String,
+    /// Cached read handle (audit #1): opened once at the first range offset,
+    /// then re-seeked per range instead of re-opened, so a chunked read pays
+    /// one wire round trip per chunk instead of open+seek+close (4-5 RTT).
+    /// `None` until the first read; clones share the slot.
+    state: Arc<tokio::sync::Mutex<Option<russh_sftp::client::fs::File>>>,
 }
 
 impl SftpHandle {
-    /// Reads up to `size` bytes at `offset` from a fresh positioned handle,
-    /// buffering up to `SFTP_READ_CHUNK` per wire round trip. EOF (0 bytes
-    /// read) closes the handle eagerly so the server-side handle does not
-    /// linger until the session drops.
+    /// Reads up to `size` bytes at `offset` through the cached positioned
+    /// handle: the first call opens at `offset`, later calls seek the cached
+    /// handle to `offset` (pool.rs seek precedent). A successful read never
+    /// closes the handle — it stays cached for the next range and is reaped
+    /// with the session. Any failure (open/seek/read) drops the cached
+    /// handle so the next call re-opens on a clean slate instead of serving
+    /// subsequent ranges from a dead or mispositioned file.
     async fn read_exact_bounded(&self, offset: u64, size: u64) -> Result<Buffer> {
-        let mut file = self.pool.open_reader(&self.path, offset).await?;
+        let mut guard = self.state.lock().await;
+        let outcome = self.read_via_cached_handle(&mut guard, offset, size).await;
+        if outcome.is_err() {
+            *guard = None;
+        }
+        outcome
+    }
+
+    /// Cache-or-seek + chunked drain against the guard's slot.
+    async fn read_via_cached_handle(
+        &self,
+        guard: &mut Option<russh_sftp::client::fs::File>,
+        offset: u64,
+        size: u64,
+    ) -> Result<Buffer> {
+        if guard.is_none() {
+            *guard = Some(self.pool.open_reader(&self.path, offset).await?);
+        } else {
+            use tokio::io::AsyncSeekExt as _;
+            guard
+                .as_mut()
+                .expect("handle cached above")
+                .seek(std::io::SeekFrom::Start(offset))
+                .await
+                .map_err(map_io_error)?;
+        }
+        let file = guard.as_mut().expect("handle opened above");
         let mut collected = Vec::new();
         loop {
             let want = (size - collected.len() as u64).min(SFTP_READ_CHUNK) as usize;
@@ -325,13 +362,14 @@ impl SftpHandle {
                 break;
             }
         }
-        shutdown_file(&mut file).await;
         Ok(Buffer::from(collected))
     }
 }
 
-/// Best-effort handle shutdown (flush + close on the wire). A server that
-/// already reaped the handle must not fail the read stream at EOF.
+/// Best-effort handle shutdown (flush + close on the wire). Only the
+/// streaming path closes its own handles this way — the ranged-read cache
+/// keeps its handle alive across calls. A server that already reaped the
+/// handle must not fail the read stream at EOF.
 async fn shutdown_file(file: &mut russh_sftp::client::fs::File) {
     use tokio::io::AsyncWriteExt as _;
     let _ = file.shutdown().await;
@@ -368,6 +406,10 @@ impl oio::Read for SftpReader {
 /// Chunked drain stream behind `oio::Read::open`: owns one positioned handle
 /// from the first chunk, serves the declared range (or EOF) in
 /// `SFTP_READ_CHUNK` windows, and shuts the handle down at the end.
+///
+/// Deliberately independent of the ranged-read handle cache: the stream has
+/// its own lifecycle (close at range end), so it opens through the pool
+/// directly and never touches `SftpHandle::state`.
 struct SftpStream {
     handle: SftpHandle,
     offset: u64,
@@ -669,6 +711,12 @@ impl oio::OneShotDelete for SftpDeleter {
 mod tests {
     use super::*;
 
+    /// Throwaway credential literal (repo fixture convention): never a real
+    /// secret, and never dialed — pool construction is pure config.
+    fn fixture(value: &str) -> String {
+        format!("fixture::{value}")
+    }
+
     #[test]
     fn sftp_paths_map_through_root_absolutely() {
         // The whole point of the red line: relative OpenDAL paths map onto
@@ -695,7 +743,9 @@ mod tests {
             host: "mft.local".into(),
             port: 22,
             user: "bob".into(),
-            credentials: super::super::pool::SftpNativeAuth::Password("secret".into()),
+            credentials: super::super::pool::SftpNativeAuth::Password(fixture(
+                "throwaway-password",
+            )),
             strategy: super::super::HostKeyStrategy::Trust,
             known_hosts_path: std::path::PathBuf::from("/dev/null"),
         });
@@ -704,5 +754,44 @@ mod tests {
             root: "/pub".to_string(),
         };
         assert_eq!(deleter.root, "/pub");
+    }
+
+    #[test]
+    fn sftp_handle_cache_shares_one_lazy_slot_across_clones() {
+        // Audit #1 guard: the positioned read handle lives in a shared slot
+        // so sequential ranges on one reader re-seek the cached handle
+        // instead of re-opening per range (4-5 RTT per chunk before). The
+        // slot starts empty — the handle opens lazily at the first offset.
+        // Drop-on-error and the wire-level seek/reuse need a live session;
+        // they are covered by construction + the real-machine run, so this
+        // stays a compile/state-level check.
+        let pool = SftpNativePool::new(super::super::pool::SftpNativeConnectParams {
+            host: "mft.local".into(),
+            port: 22,
+            user: "bob".into(),
+            credentials: super::super::pool::SftpNativeAuth::Password(fixture(
+                "throwaway-password",
+            )),
+            strategy: super::super::HostKeyStrategy::Trust,
+            known_hosts_path: std::path::PathBuf::from("/dev/null"),
+        });
+        let handle = SftpHandle {
+            pool,
+            path: "/pub/a.txt".into(),
+            state: Arc::new(tokio::sync::Mutex::new(None)),
+        };
+        let clone = handle.clone();
+        assert!(
+            Arc::ptr_eq(&handle.state, &clone.state),
+            "cloned handles must share the cached read-handle slot"
+        );
+        assert!(
+            handle
+                .state
+                .try_lock()
+                .map(|slot| slot.is_none())
+                .unwrap_or_default(),
+            "the read handle opens lazily on the first ranged read"
+        );
     }
 }
