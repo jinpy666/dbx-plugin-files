@@ -19,7 +19,7 @@ vi.mock("@file-viewer/vue3", () => ({
     },
   }),
 }));
-vi.mock("@file-viewer/preset-all", () => ({ default: preset, allRenderers: preset }));
+vi.mock("../lib/filesStudioRenderers", () => ({ filesStudioRenderers: preset }));
 
 import FileViewerPreview from "./FileViewerPreview.vue";
 

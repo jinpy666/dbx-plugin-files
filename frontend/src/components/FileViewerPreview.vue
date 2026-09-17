@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from "vue";
 import { FileViewer, type FileViewerOptions } from "@file-viewer/vue3";
-import allRenderers from "@file-viewer/preset-all";
+import { filesStudioRenderers } from "../lib/filesStudioRenderers";
 import "@file-viewer/vue3/dist/file-viewer3.css";
 
 export type FileViewerPreviewSource = Blob | File | string;
@@ -83,7 +83,7 @@ const viewerOptions = computed<FileViewerOptions>(() => ({
   ui: { surfaceBackground: "transparent" },
   ...(props.options ?? {}),
   rendererMode: props.options?.rendererMode ?? "replace",
-  preset: allRenderers,
+  preset: filesStudioRenderers,
 }));
 
 const viewerSize = computed(() => {

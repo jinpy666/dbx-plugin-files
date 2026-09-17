@@ -6,7 +6,7 @@ import { basicSetup } from "codemirror";
 import { EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { HighlightStyle, LanguageDescription, syntaxHighlighting } from "@codemirror/language";
-import { languages } from "@codemirror/language-data";
+import { editorLanguages } from "../lib/editorLanguages";
 import { tags } from "@lezer/highlight";
 // 语法高亮调色板来自 shared 公共层（唯一实现点），暗色为提亮后的 GitHub Dark 系。
 import { dbxSyntaxHighlight } from "../../../shared/frontend/editorTheme";
@@ -42,7 +42,7 @@ function previewTheme() {
 }
 
 async function extensions() {
-  const language = LanguageDescription.matchFilename(languages, props.fileName);
+  const language = LanguageDescription.matchFilename(editorLanguages, props.fileName);
   const support = language ? await language.load().catch(() => undefined) : undefined;
   return [
     basicSetup,
