@@ -8,6 +8,7 @@ import { vTip } from "../lib/tooltip";
 
 // 模板里的 v-tip（图标按钮提示）在测试挂载时同样需要指令注册。
 config.global.directives = { tip: vTip };
+config.global.stubs = { FileViewerPreview: true };
 
 const appearance: DbxPluginAppearance = {
   colorScheme: "dark",
@@ -115,7 +116,7 @@ it("announces bounded preview loading without stale size or truncation feedback"
   window.dbxPlugin = { decodeBase64: b64decode } as DbxPluginApi;
   wrapper = mount(PreviewPane, {
     props: { path: "/large.txt", canWrite: true, appearance, t: (key: string) => key },
-    global: { stubs: { TextPreview: true } },
+    global: { stubs: { TextPreview: true, FileViewerPreview: true } },
   });
   expect(wrapper.get('[role=status]').text()).toBe('loading');
   expect(wrapper.get('.wb-preview-body').attributes('aria-busy')).toBe('true');
@@ -131,4 +132,36 @@ it("announces bounded preview loading without stale size or truncation feedback"
   resolveRead({ dataBase64: 'aGk=', truncated: false, size: 2 });
   await flush();
   expect(wrapper.get('.wb-preview-body').attributes('aria-busy')).toBe('false');
+});
+
+// 两套方案：文本走 CodeMirror，Office/PDF 走 FileViewer，未知二进制回退 hex。
+it("routes strategies: text to CodeMirror, PDF to viewer, unknown binary to hex", async () => {
+  bindApi(async <T,>(method: string) => {
+    if (method === "files/archiveList") return { entries: [], total: 0 } as unknown as T;
+    return { dataBase64: b64encode(new TextEncoder().encode("hello")), truncated: false, size: 5 } as unknown as T;
+  }, null);
+  window.dbxPlugin = { decodeBase64: b64decode } as DbxPluginApi;
+
+  function b64encode(value: Uint8Array): string {
+    let binary = "";
+    for (const byte of value) binary += String.fromCharCode(byte);
+    return btoa(binary);
+  }
+
+  wrapper = mount(PreviewPane, {
+    props: { path: "/notes.txt", canWrite: true, appearance, t: (key: string) => key },
+  });
+  await flush();
+  expect(wrapper.find(".preview-editor").exists()).toBe(true);
+
+  await wrapper.setProps({ path: "/docs/report.pdf" });
+  await flush();
+  expect(wrapper.findComponent({ name: "FileViewerPreview" }).exists()).toBe(true);
+
+  // 不可打印占比高的未知扩展 → hex dump
+  const binary = new Uint8Array(64).fill(0x00);
+  bindApi(async <T,>() => ({ dataBase64: b64encode(binary), truncated: false, size: 64 }) as unknown as T, null);
+  await wrapper.setProps({ path: "/downloads/blob.weird" });
+  await flush();
+  expect(wrapper.find("pre.wb-hex").exists()).toBe(true);
 });

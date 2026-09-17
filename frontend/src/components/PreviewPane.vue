@@ -1,13 +1,13 @@
 <script setup lang="ts">
-// 预览与编辑（A-FILES ②）：files/read（≤2MiB base64）。
-// 文本可切换编辑（textarea）→ files/write（≤4MiB，超限引导走上传）；
-// 图片按扩展名 data URI；二进制类前 512B hex dump；truncated 提示 + 下载引导；
-// 压缩包列表需要后端 files/archiveList（见交接文档），先给占位说明。
+// 预览两套方案：文本/代码走 CodeMirror，图片走原生元素，归档走 files/archiveList，
+// 未知扩展走 text/hex 启发式；只有 Office/PDF/媒体/HTML/CSV 这类 CodeMirror
+// 无法渲染的格式交给 FileViewerPreview。读取仍受 files/read 的 2 MiB 上限约束。
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { Download, Pencil, X } from "@lucide/vue";
 import { baseName, call, errorMessage, formatBytes, isMethodMissing } from "../lib/api";
-import { isArchivePath } from "../lib/archive";
-import { canEditBytes, hexDump, imageMimeFor, READ_MAX_BYTES, WRITE_MAX_BYTES } from "../lib/preview";
+import { canEditBytes, hexDump, READ_MAX_BYTES, WRITE_MAX_BYTES } from "../lib/preview";
+import { resolvePreview, type PreviewResolution } from "../lib/previewResolver";
+import FileViewerPreview from "./FileViewerPreview.vue";
 import TextPreview from "./TextPreview.vue";
 
 const props = defineProps<{
@@ -26,7 +26,7 @@ const emit = defineEmits<{
   (event: "download", path: string): void;
 }>();
 
-type PreviewMode = "text" | "image" | "hex" | "binary" | "archive";
+type PreviewMode = "text" | "image" | "hex" | "archive" | "viewer";
 
 const loading = ref(false);
 const saving = ref(false);
@@ -40,29 +40,41 @@ const text = ref("");
 const draft = ref("");
 const dataUri = ref("");
 const hex = ref("");
+const sourceFile = ref<File | null>(null);
+const resolution = ref<PreviewResolution | null>(null);
 
 const t = (key: string, values?: Record<string, string | number>) => props.t(key, values);
+const title = computed(() => (props.path ? baseName(props.path) : ""));
+const canEdit = computed(() => Boolean(
+  resolution.value?.editable
+  && props.canWrite
+  && !truncated.value
+  && !loading.value
+  && !error.value
+  && mode.value === "text"
+  && !editing.value,
+));
+const showEditbar = computed(() => Boolean(
+  resolution.value?.editable
+  && props.canWrite
+  && !truncated.value
+  && !loading.value
+  && !error.value
+  && mode.value === "text",
+));
 
-// P1-4 焦点管理：预览弹窗打开后把焦点移入容器（键盘用户可直接 Tab 到头部
-// 控件，不再滞留背景列表）；进入编辑态后聚焦 CodeMirror（TextPreview 内部
-// 在编辑实例就绪时自聚焦，这里兜底调用其 focus）。
-// R5-P2-6 焦点归还：打开时记录 document.activeElement（触发行/按钮），组件
-// 卸载（弹层关闭）时归还——否则焦点落在 BODY，键盘用户须从页面顶部重新
-// Tab（与 ConfirmDialog 的 returnFocusTo 同方案）。
+// P1-4/R5-P2-6：打开时把焦点移入预览，卸载时归还触发元素。
 const previewEl = ref<HTMLElement>();
 const textPreviewRef = ref<InstanceType<typeof TextPreview>>();
-/** 打开前的 document.activeElement，卸载时归还焦点。 */
 let returnFocusTo: HTMLElement | null = null;
 
 onMounted(async () => {
-  // 此刻预览容器尚未取焦，activeElement 仍是触发元素
   returnFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   await nextTick();
   previewEl.value?.focus();
 });
 
 onUnmounted(() => {
-  // 触发元素可能已随列表刷新移出文档（isConnected=false）：聚焦游离节点无效且无意义
   if (returnFocusTo?.isConnected) returnFocusTo.focus();
   returnFocusTo = null;
 });
@@ -73,16 +85,9 @@ watch(editing, async (on) => {
   textPreviewRef.value?.focus();
 });
 
-/** 该栏显式连接：预览/编辑/压缩包列表都跟随预览条目所在的栏。 */
 function withConnection(params: Record<string, unknown>): Record<string, unknown> {
   return props.connectionId ? { ...params, connectionId: props.connectionId } : params;
 }
-
-const title = computed(() => (props.path ? baseName(props.path) : ""));
-/** truncated 时禁编辑：否则保存会把截断内容写回覆盖整个文件。 */
-const canEdit = computed(() => mode.value === "text" && props.canWrite && !truncated.value && !loading.value && !error.value && !editing.value);
-/** 编辑条：编辑态或可进入编辑态时显示。 */
-const showEditbar = computed(() => mode.value === "text" && props.canWrite && !truncated.value && !loading.value && !error.value);
 
 async function load() {
   if (!props.path) return;
@@ -93,20 +98,21 @@ async function load() {
   editError.value = "";
   dataUri.value = "";
   hex.value = "";
+  sourceFile.value = null;
+  resolution.value = resolvePreview(props.path);
   text.value = "";
   draft.value = "";
   size.value = 0;
   truncated.value = false;
   try {
-    if (isArchivePath(props.path)) {
-      // 压缩包内容列表：files/archiveList 分页渲染（B-ARCHIVE 遗留③收口）。
+    if (resolution.value.previewStrategy === "archive") {
+      // 压缩包内容列表：files/archiveList 分页渲染（B-ARCHIVE 既有链路）。
       mode.value = "archive";
       size.value = 0;
       truncated.value = false;
       await loadArchivePage(true);
       return;
     }
-    const mime = imageMimeFor(props.path);
     const result = await call<{ dataBase64: string; truncated?: boolean; size?: number }>("files/read", withConnection({
       path: props.path,
       maxBytes: READ_MAX_BYTES,
@@ -114,15 +120,23 @@ async function load() {
     const bytes = window.dbxPlugin.decodeBase64(result.dataBase64);
     truncated.value = Boolean(result.truncated);
     size.value = result.size ?? bytes.byteLength;
-    if (mime) {
+    if (resolution.value.previewStrategy === "image") {
       mode.value = "image";
-      dataUri.value = `data:${mime};base64,${result.dataBase64}`;
+      dataUri.value = `data:${resolution.value.mime};base64,${result.dataBase64}`;
       return;
     }
+    if (resolution.value.previewStrategy === "file-viewer") {
+      mode.value = "viewer";
+      const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+      sourceFile.value = new File([buffer], baseName(props.path), {
+        type: resolution.value.mime ?? "application/octet-stream",
+      });
+      return;
+    }
+    // 文本/代码与未知扩展：先按文本解码，不可打印占比高时回退 hex dump。
     const decoded = new TextDecoder().decode(bytes);
     const printable = decoded.replace(/[^\t\n\r\x20-\x7E\u00A0-\uFFFF]/g, "");
-    // 不可打印字符占比高时视为二进制 → 前 512B hex dump
-    if (decoded.length && 1 - printable.length / decoded.length > 0.08) {
+    if (resolution.value.previewStrategy === "hex" && decoded.length && 1 - printable.length / decoded.length > 0.08) {
       mode.value = "hex";
       hex.value = hexDump(bytes.subarray(0, 512));
       return;
@@ -137,10 +151,44 @@ async function load() {
   }
 }
 
+function handleViewerError(cause: unknown) {
+  error.value = errorMessage(cause);
+}
+
 function startEdit() {
+  if (!canEdit.value) return;
   draft.value = text.value;
   editError.value = "";
   editing.value = true;
+}
+
+function cancelEdit() {
+  draft.value = text.value;
+  editError.value = "";
+  editing.value = false;
+}
+
+async function saveEdit() {
+  if (!props.path || saving.value) return;
+  editError.value = "";
+  const bytes = new TextEncoder().encode(draft.value);
+  if (!canEditBytes(bytes.byteLength)) {
+    editError.value = t("editTooLarge", { size: formatBytes(WRITE_MAX_BYTES) });
+    return;
+  }
+  saving.value = true;
+  try {
+    await call("files/write", withConnection({ path: props.path, dataBase64: window.dbxPlugin.encodeBase64(bytes) }));
+    text.value = draft.value;
+    size.value = bytes.byteLength;
+    editing.value = false;
+    emit("saved", props.path);
+    await load();
+  } catch (cause) {
+    editError.value = isMethodMissing(cause) ? t("featureMissing", { method: "files/write" }) : errorMessage(cause);
+  } finally {
+    saving.value = false;
+  }
 }
 
 // --- 压缩包内容列表（files/archiveList 分页） ---
@@ -191,41 +239,11 @@ async function loadArchivePage(reset: boolean) {
   }
 }
 
-function cancelEdit() {
-  draft.value = text.value;
-  editError.value = "";
-  editing.value = false;
-}
-
-async function saveEdit() {
-  if (!props.path || saving.value) return;
-  editError.value = "";
-  const bytes = new TextEncoder().encode(draft.value);
-  if (!canEditBytes(bytes.byteLength)) {
-    editError.value = t("editTooLarge", { size: formatBytes(WRITE_MAX_BYTES) });
-    return;
-  }
-  saving.value = true;
-  try {
-    await call("files/write", withConnection({ path: props.path, dataBase64: window.dbxPlugin.encodeBase64(bytes) }));
-    text.value = draft.value;
-    size.value = bytes.byteLength;
-    editing.value = false;
-    emit("saved", props.path);
-    await load();
-  } catch (cause) {
-    editError.value = isMethodMissing(cause) ? t("featureMissing", { method: "files/write" }) : errorMessage(cause);
-  } finally {
-    saving.value = false;
-  }
-}
-
 watch(
   () => props.path,
   () => {
     if (props.path) void load();
   },
-  // 右栏 Tab 切换时组件随挂载即带 path：必须 immediate 首载
   { immediate: true },
 );
 </script>
@@ -234,7 +252,7 @@ watch(
   <div v-if="path" ref="previewEl" tabindex="-1" class="wb-preview">
     <div class="wb-preview-header">
       <strong :title="path">{{ title }}</strong>
-      <span class="wb-muted">{{ loading || mode === "image" || mode === "archive" ? "" : formatBytes(size) }}</span>
+      <span class="wb-muted">{{ loading || mode === "image" || mode === "archive" || mode === "viewer" ? "" : formatBytes(size) }}</span>
       <button v-if="canEdit && !saving" class="wb-icon-button wb-icon-neutral" v-tip="t('edit')" @click="startEdit"><Pencil /></button>
       <button class="wb-icon-button wb-icon-neutral" v-tip="t('download')" @click="emit('download', path)"><Download /></button>
       <button class="wb-icon-button wb-icon-neutral" v-tip="t('close')" @click="emit('close')"><X /></button>
@@ -254,7 +272,10 @@ watch(
           <span v-for="row in 8" :key="row" class="wb-skeleton" aria-hidden="true" :style="{ width: `${100 - (row % 3) * 12}%` }" />
         </div>
       </template>
-      <div v-else-if="error" class="wb-preview-notice">{{ t("previewLoadError", { error }) }}</div>
+      <div v-else-if="error" class="wb-preview-notice">
+        <div>{{ t("previewLoadError", { error }) }}</div>
+        <button class="wb-toolbar-button" @click="emit('download', path)"><Download /> {{ t("download") }}</button>
+      </div>
       <img v-else-if="mode === 'image'" :src="dataUri" :alt="title" />
       <!-- 文本预览/编辑：CodeMirror（与 ssh sftp 面板同方案）；key 保证
            进入/退出编辑都从 props.text 全新装载，取消编辑即回滚草稿。 -->
@@ -263,7 +284,7 @@ watch(
         ref="textPreviewRef"
         :key="editing ? 'edit' : 'read'"
         :text="text"
-        :file-name="path ?? ''"
+        :file-name="path"
         :appearance="appearance"
         :editable="editing"
         @change="draft = $event"
@@ -287,6 +308,15 @@ watch(
           </div>
         </template>
       </div>
+      <FileViewerPreview
+        v-else-if="mode === 'viewer' && sourceFile"
+        :source="sourceFile"
+        :file-name="title"
+        :mime="resolution?.mime ?? undefined"
+        :appearance="appearance"
+        class="wb-file-viewer-preview"
+        @error="handleViewerError"
+      />
       <div v-else class="wb-preview-notice">{{ t("previewUnsupported") }}</div>
     </div>
     <div v-if="truncated" class="wb-notice">

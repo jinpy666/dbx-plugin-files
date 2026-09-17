@@ -184,14 +184,18 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px
 .wb-preview-editbar { display: flex; align-items: center; justify-content: flex-end; gap: 6px; border-bottom: 1px solid var(--border); padding: 3px 8px; }
 .wb-preview-editbar .wb-preview-edit-error { flex: 1 1 auto; min-width: 0; color: var(--destructive); font-size: 11px; overflow-wrap: anywhere; }
 .wb-preview-editbar .wb-edit-save { background: var(--primary); color: var(--primary-foreground); border-radius: 4px; }
-.wb-preview-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.wb-preview-body { flex: 1 1 auto; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
 .wb-preview-body pre { margin: 0; padding: 10px 12px; font-family: var(--mono-font-family); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .wb-preview-body pre.wb-hex { white-space: pre; overflow-x: auto; line-height: 1.5; }
-.wb-preview-body img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.wb-preview-body img { max-width: 100%; max-height: 100%; object-fit: contain; margin: auto; }
 .wb-preview-body .wb-preview-notice { padding: 20px; text-align: center; color: var(--muted-foreground); }
-/* 文本预览/编辑器（CodeMirror，与 ssh sftp 面板同方案）：组件自带主题，
-   这里只管布局填充。 */
-.preview-editor { min-height: 0; flex: 1; overflow: hidden; }
+/* 文本预览/编辑器（CodeMirror，与 ssh sftp 面板同方案）：组件自带主题。
+   预览主体为 flex 纵向：编辑器与 viewer 容器弹性填满剩余高度并保底，
+   避免短文本时整块预览高度坍塌。 */
+.preview-editor { min-height: 0; overflow: hidden; }
+.wb-preview-body .preview-editor { flex: 1 1 auto; min-height: 220px; }
+.wb-preview-body .wb-file-viewer-preview { flex: 1 1 auto; min-height: 360px; }
+.wb-preview-body .wb-archive { flex: 1 1 auto; min-height: 200px; }
 
 .wb-preview-skeleton { display: flex; flex-direction: column; gap: 10px; padding: 14px; }
 .wb-preview-skeleton .wb-skeleton { height: 12px; }
@@ -275,7 +279,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px
 
 /* 文件概览弹窗：遮罩 + 居中面板（不再占用右栏 Tab）。 */
 .wb-preview-overlay { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 36px 44px; background: var(--overlay); }
-.wb-preview-overlay .wb-preview { flex: 0 1 auto; display: flex; flex-direction: column; width: min(860px, 100%); max-height: 100%; border: 1px solid var(--border); border-radius: var(--radius); background: var(--background); box-shadow: 0 18px 48px rgb(0 0 0 / 45%); }
+.wb-preview-overlay .wb-preview { flex: 0 1 auto; display: flex; flex-direction: column; width: min(860px, 100%); height: 100%; border: 1px solid var(--border); border-radius: var(--radius); background: var(--background); box-shadow: 0 18px 48px rgb(0 0 0 / 45%); }
 /* P1-4：容器承载 tabindex=-1 的程序化聚焦，不画焦点框（焦点可见性由弹层本身保证）。 */
 .wb-preview:focus { outline: none; }
 
