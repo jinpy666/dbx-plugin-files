@@ -51,15 +51,65 @@ const MTIME_TOLERANCE_MILLIS: u64 = 2_000;
 /// counts stay exact; only the path lists are truncated).
 const DRY_RUN_SAMPLE_CAP: usize = 50;
 
-/// Event sink for the directory-job runners. The SDK's `PluginEmitter` has no
-/// test-visible constructor, so the spawned traversal jobs take this enum:
-/// production wraps the host emitter, offline tests capture the payloads for
-/// assertions. All emissions stay best-effort either way.
+/// Event sink for the directory-job runners and the download pump. The SDK's
+/// `PluginEmitter` has no test-visible constructor, so the spawned jobs take
+/// this enum: production wraps the host emitter, offline tests capture the
+/// payloads for assertions. All emissions stay best-effort either way.
 #[derive(Clone)]
 enum EventSink {
     Host(PluginEmitter),
     #[cfg(test)]
-    Test(Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>),
+    Test(Arc<TestSink>),
+}
+
+/// Offline capture twin of [`EventSink::Test`]: records progress events and
+/// binary frames. The optional rendezvous gate lets a test pace the pump
+/// frame by frame — every binary push blocks until the test receives it (a
+/// dropped receiver makes the send fail immediately instead).
+#[cfg(test)]
+struct TestSink {
+    events: std::sync::Mutex<Vec<(String, serde_json::Value)>>,
+    frames: std::sync::Mutex<Vec<(String, Vec<u8>)>>,
+    gate: Option<std::sync::mpsc::SyncSender<Vec<u8>>>,
+}
+
+#[cfg(test)]
+impl TestSink {
+    fn shared() -> Arc<Self> {
+        Arc::new(Self {
+            events: std::sync::Mutex::new(Vec::new()),
+            frames: std::sync::Mutex::new(Vec::new()),
+            gate: None,
+        })
+    }
+
+    /// Paced variant: binary pushes rendezvous with the returned receiver so
+    /// a test can observe/cancel the pump mid-flight deterministically.
+    fn paced() -> (Arc<Self>, std::sync::mpsc::Receiver<Vec<u8>>) {
+        let (gate, rx) = std::sync::mpsc::sync_channel(0);
+        (
+            Arc::new(Self {
+                events: std::sync::Mutex::new(Vec::new()),
+                frames: std::sync::Mutex::new(Vec::new()),
+                gate: Some(gate),
+            }),
+            rx,
+        )
+    }
+
+    fn events(&self) -> Vec<(String, serde_json::Value)> {
+        self.events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn frame_count(&self) -> usize {
+        self.frames
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
 }
 
 impl EventSink {
@@ -69,10 +119,35 @@ impl EventSink {
                 let _ = emitter.event(method, params);
             }
             #[cfg(test)]
-            EventSink::Test(events) => events
+            EventSink::Test(test) => test
+                .events
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .push((method.to_string(), params)),
+        }
+    }
+
+    /// Binary-channel push (download pump → host). Best-effort like `emit`;
+    /// the error is surfaced so the pump can fail the job on a broken host
+    /// channel.
+    fn binary(&self, channel: &str, data: &[u8]) -> Result<(), String> {
+        match self {
+            EventSink::Host(emitter) => emitter
+                .binary(channel, data)
+                .map_err(|error| format!("{error:?}")),
+            #[cfg(test)]
+            EventSink::Test(test) => {
+                let payload = data.to_vec();
+                if let Some(gate) = &test.gate {
+                    // Rendezvous: block until the test receiver takes the frame.
+                    let _ = gate.send(payload.clone());
+                }
+                test.frames
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push((channel.to_string(), payload));
+                Ok(())
+            }
         }
     }
 }
@@ -217,9 +292,13 @@ struct UploadSlot {
     throttle: Throttle,
 }
 
-/// Download slot: cancellation is cooperative — the pump checks the flag
-/// between chunks (CancellationToken semantics via an atomic flag; no new
-/// crate dependency).
+/// Download slot: cancellation is cooperative — `cancel` only raises the
+/// flag and keeps the slot; the pump cleans the slot up itself when it
+/// observes the flag at the top of its loop (so no further frames reach the
+/// host after cancel, and the cleanup has a single owner while the pump is
+/// alive). `pump_done` tells `finish`/`cancel` an in-flight pump from an
+/// exited one (saveToLocal pumps stay alive until finish confirms).
+#[derive(Clone)]
 struct DownloadSlot {
     connection_id: String,
     remote_path: String,
@@ -229,6 +308,19 @@ struct DownloadSlot {
     /// saveToLocal 时的暂存文件（`<final>.part`）：pump 逐块追加，finish 时
     /// 原子改名为最终落盘路径（防碰撞命名在 finish 时决定，失败不占名字）。
     staging: Option<PathBuf>,
+    /// pump 退出前置位（正常移交路径在 downloads 锁内显式置位，其余退出
+    /// 路径由 [`PumpDoneGuard`] 兜底）：等待循环据此判断在途帧何时到齐。
+    pump_done: Arc<AtomicBool>,
+}
+
+/// Shared `pump_done` handle: `Drop` fires on every pump exit path (including
+/// early bails and panics), so the flag is always settled once the task ends.
+struct PumpDoneGuard(Arc<AtomicBool>);
+
+impl Drop for PumpDoneGuard {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
 }
 
 /// Progress throttle: emit when >= 200 ms elapsed OR >= 1% fraction changed;
@@ -299,7 +391,7 @@ impl Inner {
         task_id: &str,
         status: JobStatus,
         error: Option<String>,
-        emitter: &PluginEmitter,
+        sink: &EventSink,
     ) -> bool {
         let job = {
             let mut jobs = self.jobs.lock().await;
@@ -315,7 +407,7 @@ impl Inner {
             job.clone()
         };
         self.record_history(&job).await;
-        emit_job_progress(emitter, &job);
+        emit_job_progress(sink, &job);
         true
     }
 
@@ -487,7 +579,7 @@ impl JobTable {
                 throttle: Throttle::default(),
             },
         );
-        emit_job_progress(emitter, &job);
+        emit_job_progress(&EventSink::Host(emitter.clone()), &job);
         Ok(task_id)
     }
 
@@ -526,7 +618,12 @@ impl JobTable {
                 uploads.remove(task_id);
                 let detail = format!("Upload write failed: {error}");
                 self.inner
-                    .complete_job(task_id, JobStatus::Failed, Some(detail.clone()), emitter)
+                    .complete_job(
+                        task_id,
+                        JobStatus::Failed,
+                        Some(detail.clone()),
+                        &EventSink::Host(emitter.clone()),
+                    )
                     .await;
                 return Err(detail);
             }
@@ -623,7 +720,12 @@ impl JobTable {
                 slot.declared_size, slot.received
             );
             self.inner
-                .complete_job(task_id, JobStatus::Failed, Some(detail.clone()), emitter)
+                .complete_job(
+                    task_id,
+                    JobStatus::Failed,
+                    Some(detail.clone()),
+                    &EventSink::Host(emitter.clone()),
+                )
                 .await;
             return Err(detail);
         }
@@ -632,7 +734,12 @@ impl JobTable {
             Err(error) => {
                 let detail = format!("Failed to close upload writer: {error}");
                 self.inner
-                    .complete_job(task_id, JobStatus::Failed, Some(detail.clone()), emitter)
+                    .complete_job(
+                        task_id,
+                        JobStatus::Failed,
+                        Some(detail.clone()),
+                        &EventSink::Host(emitter.clone()),
+                    )
                     .await;
                 Err(detail)
             }
@@ -644,12 +751,22 @@ impl JobTable {
                         slot.declared_size
                     );
                     self.inner
-                        .complete_job(task_id, JobStatus::Failed, Some(detail.clone()), emitter)
+                        .complete_job(
+                            task_id,
+                            JobStatus::Failed,
+                            Some(detail.clone()),
+                            &EventSink::Host(emitter.clone()),
+                        )
                         .await;
                     return Err(detail);
                 }
                 self.inner
-                    .complete_job(task_id, JobStatus::Completed, None, emitter)
+                    .complete_job(
+                        task_id,
+                        JobStatus::Completed,
+                        None,
+                        &EventSink::Host(emitter.clone()),
+                    )
                     .await;
                 Ok(())
             }
@@ -738,6 +855,7 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
                 .map_err(|error| format!("Failed to create staging file: {error}"))?;
         }
         let cancel = Arc::new(AtomicBool::new(false));
+        let pump_done = Arc::new(AtomicBool::new(false));
         self.inner.downloads.lock().await.insert(
             task_id.clone(),
             DownloadSlot {
@@ -746,9 +864,10 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
                 size,
                 cancel: cancel.clone(),
                 staging: staging.clone(),
+                pump_done: pump_done.clone(),
             },
         );
-        emit_job_progress(emitter, &job);
+        emit_job_progress(&EventSink::Host(emitter.clone()), &job);
         tokio::spawn(download_pump(
             self.inner.clone(),
             task_id.clone(),
@@ -757,32 +876,131 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
             connection.id.clone(),
             cancel,
             staging,
-            emitter.clone(),
+            pump_done,
+            EventSink::Host(emitter.clone()),
         ));
         Ok((task_id, size))
     }
 
-    /// `files/download/finish` (§8.3): releases the reader and marks the job
-    /// completed. Safe to call twice (idempotent). With `saveToLocal`, the
-    /// staging `.part` file is renamed to its final (collision-free) name and
-    /// the resulting path is returned as `localPath` (also recorded into the
+    /// `files/download/finish` (§8.3): waits for the pump's in-flight frames
+    /// to land (same 250ms×40 stall window as `finish_upload`), then releases
+    /// the slot and marks the job completed. With `saveToLocal`, the staging
+    /// `.part` file is renamed to its final (collision-free) name and the
+    /// resulting path is returned as `localPath` (also recorded into the
     /// persisted history row via `complete_job` → `record_history`).
+    /// Settled (terminal) jobs replay their stored outcome instead of
+    /// silently re-completing — the download twin of the upload issue#6-3
+    /// semantics.
     pub async fn finish_download(
         &self,
         task_id: &str,
         emitter: &PluginEmitter,
     ) -> Result<Option<String>, String> {
-        let slot = self.inner.downloads.lock().await.remove(task_id);
-        let had_slot = slot.is_some();
-        let staging = slot.as_ref().and_then(|slot| slot.staging.clone());
-        let expected_size = slot.as_ref().map(|slot| slot.size);
+        self.finish_download_with_sink(task_id, &EventSink::Host(emitter.clone()))
+            .await
+    }
+
+    async fn finish_download_with_sink(
+        &self,
+        task_id: &str,
+        sink: &EventSink,
+    ) -> Result<Option<String>, String> {
+        let slot = {
+            let mut downloads = self.inner.downloads.lock().await;
+            let Some(slot) = downloads.get(task_id) else {
+                // 槽位已被收走：终态 finish 如实回放存储结果（Completed
+                // 幂等带出 localPath；Failed/Canceled 报错），而不是把一次
+                // 迟到的 finish 静默标成成功。
+                if let Some(job) = self.status(task_id).await? {
+                    if job.status.is_terminal() {
+                        return Self::download_finish_result(&job);
+                    }
+                }
+                if !self.inner.job_exists(task_id).await {
+                    return Err(format!("Download task '{task_id}' was not found"));
+                }
+                return Ok(None);
+            };
+            let staging = slot.staging.clone();
+            let expected = slot.size;
+            let cancel_flag = slot.cancel.clone();
+            let pump_done = slot.pump_done.clone();
+            // issue#3：对齐 finish_upload 的在途帧等待（issue#6-6，250ms×40
+            // 停滞判定）。宿主提前 finish 时 pump 可能还有帧未落盘/未推出：
+            // 字节数仍在前进就继续等，消除「Download ended short」误判。
+            let mut last = download_progress(&self.inner, task_id, staging.as_deref()).await;
+            let mut stall_ticks = 0u32;
+            while last < expected {
+                if stall_ticks >= UPLOAD_FINISH_STALL_TICKS
+                    || cancel_flag.load(Ordering::Acquire)
+                    || pump_done.load(Ordering::Acquire)
+                {
+                    break;
+                }
+                drop(downloads);
+                tokio::time::sleep(UPLOAD_FINISH_TICK).await;
+                downloads = self.inner.downloads.lock().await;
+                if downloads.get(task_id).is_none() {
+                    // pump 退出时收走了槽位 → 走下方终态回放。
+                    break;
+                }
+                let current = download_progress(&self.inner, task_id, staging.as_deref()).await;
+                if current == last {
+                    stall_ticks += 1;
+                } else {
+                    stall_ticks = 0;
+                    last = current;
+                }
+            }
+            if cancel_flag.load(Ordering::Acquire) {
+                // 取消的清理权在 pump（观察到 flag 时收走槽位 + 残留）；
+                // finish 这边只把取消结果带回去，顺带做幂等兜底清理。
+                downloads.remove(task_id);
+                if let Some(staging) = &staging {
+                    let _ = std::fs::remove_file(staging);
+                }
+                return Err("Download was canceled".to_string());
+            }
+            // 字节已等齐：再等 pump 退出（正常是亚毫秒级，上限一个停滞
+            // 窗口），保证改名不与 pump 仍打开的 staging 句柄竞争——
+            // Windows 上打开中的文件既不能改名也删不掉。
+            let mut grace_ticks = 0u32;
+            while !pump_done.load(Ordering::Acquire) && grace_ticks < UPLOAD_FINISH_STALL_TICKS {
+                drop(downloads);
+                tokio::time::sleep(UPLOAD_FINISH_TICK).await;
+                downloads = self.inner.downloads.lock().await;
+                grace_ticks += 1;
+            }
+            // 无 expect：等待期间取消 flag 可能刚落（pump 的取消清理会收走
+            // 槽位），缺失时走下方终态回放而不是 panic。
+            downloads.remove(task_id)
+        };
+        let Some(slot) = slot else {
+            // 槽位被 pump 收走 = job 已终态（pump_cleanup 先落终态再删槽）。
+            if let Some(job) = self.status(task_id).await? {
+                if job.status.is_terminal() {
+                    return Self::download_finish_result(&job);
+                }
+            }
+            return Err("Download was canceled".to_string());
+        };
+        // 等待期间 pump 可能已把 job 落到 Failed/Canceled（读失败、远端比
+        // stat 短、取消）：带出存储的错误而不是笼统的短读。
+        if let Some(job) = self.status(task_id).await? {
+            if job.status.is_terminal() {
+                if let Some(staging) = &slot.staging {
+                    let _ = std::fs::remove_file(staging);
+                }
+                return Self::download_finish_result(&job);
+            }
+        }
         let mut local_path = None;
-        if let Some(staging) = staging {
-            // saveToLocal：pump 已写完全部字节并保持 running，这里改名落
-            // 盘。暂存字节数必须与 start 时 stat 的 size 一致——短读（远
-            // 端文件比 stat 小）在这里判失败，不落半截文件进历史。
-            let promoted = Self::promote_staging(&staging, expected_size.unwrap_or(0));
-            match promoted {
+        if let Some(staging) = &slot.staging {
+            // saveToLocal：pump 已写完全部字节并退出，这里校验 + 原子改名落
+            // 盘。暂存字节数必须与 start 时 stat 的 size 一致——短读（远端
+            // 文件比 stat 小）在这里判失败，不落半截文件进历史。此刻 pump
+            // 句柄已关闭，Windows 上的残留删除不再被静默吞掉。
+            match Self::promote_staging(staging, slot.size) {
                 Ok(path) => {
                     if let Some(job) = self.inner.jobs.lock().await.get_mut(task_id) {
                         job.local_path = Some(path.clone());
@@ -790,22 +1008,32 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
                     local_path = Some(path);
                 }
                 Err(error) => {
-                    let _ = std::fs::remove_file(&staging);
+                    let _ = std::fs::remove_file(staging);
                     self.inner
-                        .complete_job(task_id, JobStatus::Failed, Some(error.clone()), emitter)
+                        .complete_job(task_id, JobStatus::Failed, Some(error.clone()), sink)
                         .await;
                     return Err(error);
                 }
             }
         }
-        let transitioned = self
-            .inner
-            .complete_job(task_id, JobStatus::Completed, None, emitter)
+        self.inner
+            .complete_job(task_id, JobStatus::Completed, None, sink)
             .await;
-        if !had_slot && !transitioned && !self.inner.job_exists(task_id).await {
-            return Err(format!("Download task '{task_id}' was not found"));
-        }
         Ok(local_path)
+    }
+
+    /// Terminal-replay twin of `terminal_finish_result` for downloads:
+    /// Completed finishes idempotently with the recorded `localPath`;
+    /// Failed/Canceled surface the stored outcome.
+    fn download_finish_result(job: &TransferJob) -> Result<Option<String>, String> {
+        match job.status {
+            JobStatus::Completed => Ok(job.local_path.clone()),
+            JobStatus::Canceled => Err("Download was canceled".to_string()),
+            _ => Err(job
+                .error
+                .clone()
+                .unwrap_or_else(|| "Download failed".to_string())),
+        }
     }
 
     /// Renames the finished `.part` staging file to its final collision-free
@@ -834,24 +1062,40 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
 
     /// `files/transfer/cancel` (§8.3): cancels a single-file job (`taskId`)
     /// or a directory job (id shared namespace permitted: try both tables).
-    /// Cancellation is cooperative: the pump/writer loop checks the cancel
-    /// flag between chunks; an upload being cancelled discards its writer.
+    /// Cancellation is cooperative: an upload's writer is aborted, while a
+    /// download only raises the pump's flag — the pump stops pushing frames
+    /// at its next loop-top check and cleans the slot up itself.
     pub async fn cancel(&self, task_id: &str, emitter: &PluginEmitter) -> Result<(), String> {
+        self.cancel_with_sink(task_id, &EventSink::Host(emitter.clone()))
+            .await
+    }
+
+    async fn cancel_with_sink(&self, task_id: &str, sink: &EventSink) -> Result<(), String> {
         // Upload: abort the writer and drop the slot.
         let upload = self.inner.uploads.lock().await.remove(task_id);
         if let Some(mut slot) = upload {
             let _ = slot.writer.abort().await;
             self.inner
-                .complete_job(task_id, JobStatus::Canceled, None, emitter)
+                .complete_job(task_id, JobStatus::Canceled, None, sink)
                 .await;
             return Ok(());
         }
-        // Download: flag the pump; it bails between chunks.
-        let download = self.inner.downloads.lock().await.remove(task_id);
+        // Download: raise the flag but keep the slot — issue#4：先删槽会让
+        // pump 与 finish 失去清理锚点，且取消后仍可能推帧。pump 在循环顶
+        // 观察到 flag 后自行收走槽位并清理残留；pump 已退出（saveToLocal
+        // 传完在等 finish）时 flag 无人再观察，由 cancel 直接收尾。两侧的
+        // 判定都在 downloads 锁上进行、清理操作全部幂等，重叠安全。
+        let download = self.inner.downloads.lock().await.get(task_id).cloned();
         if let Some(slot) = download {
             slot.cancel.store(true, Ordering::Release);
+            if slot.pump_done.load(Ordering::Acquire) {
+                self.inner.downloads.lock().await.remove(task_id);
+                if let Some(staging) = &slot.staging {
+                    let _ = std::fs::remove_file(staging);
+                }
+            }
             self.inner
-                .complete_job(task_id, JobStatus::Canceled, None, emitter)
+                .complete_job(task_id, JobStatus::Canceled, None, sink)
                 .await;
             return Ok(());
         }
@@ -860,7 +1104,7 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
         if let Some(flag) = control {
             flag.store(true, Ordering::Release);
             self.inner
-                .complete_dir_job(task_id, JobStatus::Canceled, None, &EventSink::Host(emitter.clone()))
+                .complete_dir_job(task_id, JobStatus::Canceled, None, sink)
                 .await;
             return Ok(());
         }
@@ -1442,7 +1686,11 @@ fn validate_dir_job_gates(target: &StoredConnection, sync: bool) -> Result<(), S
 
 /// Download pump (§8.3): pushes the whole file through the binary channel in
 /// `TRANSFER_CHUNK_SIZE` slices, FIFO per connection, capped by the global
-/// semaphore. Honors the cooperative cancel flag between chunks.
+/// semaphore. Honors the cooperative cancel flag between chunks; on cancel it
+/// stops pushing frames and cleans its own slot + `.part` residue up
+/// (issue#4: cancel keeps the slot, so the pump owns the cleanup while it
+/// lives). Failed exits keep the slot so `finish`/`cancel` can still report
+/// the stored outcome against it.
 #[allow(clippy::too_many_arguments)]
 async fn download_pump(
     inner: Arc<Inner>,
@@ -1452,8 +1700,13 @@ async fn download_pump(
     connection_id: String,
     cancel: Arc<AtomicBool>,
     staging: Option<PathBuf>,
-    emitter: PluginEmitter,
+    pump_done: Arc<AtomicBool>,
+    sink: EventSink,
 ) {
+    // Drop guard settles `pump_done` on every exit path (early bails, panics);
+    // the normal saveToLocal handoff sets it earlier, under the downloads
+    // lock, to race-free the cancel-side "pump already exited" check.
+    let _pump_done_guard = PumpDoneGuard(pump_done.clone());
     // Per-connection FIFO, then the global cap (§7). Every spawned job
     // acquires in this order, so the two-phase wait cannot cycle.
     let fifo = inner.conn_lock(&connection_id).clone();
@@ -1462,31 +1715,39 @@ async fn download_pump(
         return;
     };
     if cancel.load(Ordering::Acquire) {
-        if let Some(staging) = &staging {
-            let _ = std::fs::remove_file(staging);
-        }
-        inner
-            .complete_job(&task_id, JobStatus::Canceled, None, &emitter)
-            .await;
+        pump_cleanup(
+            &inner,
+            &task_id,
+            None,
+            &staging,
+            JobStatus::Canceled,
+            None,
+            &sink,
+            true,
+        )
+        .await;
         return;
     }
     inner.mark_running(&task_id).await;
-    emit_running(&emitter, &task_id);
+    emit_running(&sink, &task_id);
     let channel = format!("files/download/{task_id}");
     // saveToLocal：暂存文件在 start 时已预创建，这里以追加模式持有句柄；
     // 写盘失败等同传输失败（清暂存 + Failed），不静默丢块。
-    let mut sink = match &staging {
-        Some(staging) => match std::fs::OpenOptions::new().append(true).open(staging) {
+    let mut staging_file = match staging.as_deref() {
+        Some(path) => match std::fs::OpenOptions::new().append(true).open(path) {
             Ok(file) => Some(file),
             Err(error) => {
-                inner
-                    .complete_job(
-                        &task_id,
-                        JobStatus::Failed,
-                        Some(format!("Failed to open staging file: {error}")),
-                        &emitter,
-                    )
-                    .await;
+                pump_cleanup(
+                    &inner,
+                    &task_id,
+                    None,
+                    &staging,
+                    JobStatus::Failed,
+                    Some(format!("Failed to open staging file: {error}")),
+                    &sink,
+                    false,
+                )
+                .await;
                 return;
             }
         },
@@ -1496,12 +1757,17 @@ async fn download_pump(
     let mut throttle = Throttle::default();
     while offset < size {
         if cancel.load(Ordering::Acquire) {
-            if let Some(staging) = &staging {
-                let _ = std::fs::remove_file(staging);
-            }
-            inner
-                .complete_job(&task_id, JobStatus::Canceled, None, &emitter)
-                .await;
+            pump_cleanup(
+                &inner,
+                &task_id,
+                staging_file.take(),
+                &staging,
+                JobStatus::Canceled,
+                None,
+                &sink,
+                true,
+            )
+            .await;
             return;
         }
         match slot::read_chunk(
@@ -1512,38 +1778,51 @@ async fn download_pump(
         .await
         {
             Err(error) => {
-                if let Some(staging) = &staging {
-                    let _ = std::fs::remove_file(staging);
-                }
-                inner
-                    .complete_job(&task_id, JobStatus::Failed, Some(error), &emitter)
-                    .await;
+                pump_cleanup(
+                    &inner,
+                    &task_id,
+                    staging_file.take(),
+                    &staging,
+                    JobStatus::Failed,
+                    Some(error),
+                    &sink,
+                    false,
+                )
+                .await;
                 return;
             }
             Ok(bytes) if bytes.is_empty() => break, // backend file shorter than stat
             Ok(bytes) => {
-                if let Some(sink) = sink.as_mut() {
+                if let Some(file) = staging_file.as_mut() {
                     use std::io::Write;
-                    if let Err(error) = sink.write_all(&bytes) {
-                        if let Some(staging) = &staging {
-                            let _ = std::fs::remove_file(staging);
-                        }
-                        let detail = format!("Failed to write staging file: {error}");
-                        inner
-                            .complete_job(&task_id, JobStatus::Failed, Some(detail), &emitter)
-                            .await;
+                    if let Err(error) = file.write_all(&bytes) {
+                        pump_cleanup(
+                            &inner,
+                            &task_id,
+                            staging_file.take(),
+                            &staging,
+                            JobStatus::Failed,
+                            Some(format!("Failed to write staging file: {error}")),
+                            &sink,
+                            false,
+                        )
+                        .await;
                         return;
                     }
                 }
                 let payload = slot::frame(offset, &bytes);
-                if let Err(error) = emitter.binary(&channel, &payload) {
-                    if let Some(staging) = &staging {
-                        let _ = std::fs::remove_file(staging);
-                    }
-                    let detail = format!("Failed to push download frame: {error:?}");
-                    inner
-                        .complete_job(&task_id, JobStatus::Failed, Some(detail), &emitter)
-                        .await;
+                if let Err(error) = sink.binary(&channel, &payload) {
+                    pump_cleanup(
+                        &inner,
+                        &task_id,
+                        staging_file.take(),
+                        &staging,
+                        JobStatus::Failed,
+                        Some(format!("Failed to push download frame: {error}")),
+                        &sink,
+                        false,
+                    )
+                    .await;
                     return;
                 }
                 offset = offset.saturating_add(bytes.len() as u64);
@@ -1551,20 +1830,96 @@ async fn download_pump(
                     job.transferred_bytes = offset;
                 }
                 if throttle.should_emit(offset, Some(size)) {
-                    emit_running_at(&emitter, &task_id, offset, Some(size));
+                    emit_running_at(&sink, &task_id, offset, Some(size));
                 }
             }
         }
     }
     if staging.is_some() {
-        // saveToLocal：终态由 `finish_download` 在改名落盘后统一落（Completed
-        // + localPath 进历史）。这里保持 running——若前端从不调 finish，任务
-        // 以 running 留在面板，与「未确认完成」的真实语义一致。
+        // saveToLocal：正常路径把终态留给 `finish_download`（Completed +
+        // localPath 进历史，任务以 running 留在面板直到 finish 确认）。
+        // 但取消 flag 已置位、或 finish 已把 job 判到终态（停滞短读）时，
+        // pump 退出前自行收尾。判定与「置位 pump_done」在 downloads 锁上
+        // 与 cancel 的「pump 已退出」检查互斥——谁后拿锁谁收尾，操作幂等。
+        let clean_up = {
+            let mut downloads = inner.downloads.lock().await;
+            let cancel_seen = cancel.load(Ordering::Acquire);
+            if cancel_seen || inner.job_is_terminal(&task_id).await {
+                downloads.remove(&task_id);
+                true
+            } else {
+                // 先关句柄再置位：finish 看到 pump_done 后即会改名落盘，
+                // 句柄必须已经释放。
+                staging_file = None;
+                pump_done.store(true, Ordering::Release);
+                false
+            }
+        };
+        if clean_up {
+            pump_cleanup(
+                &inner,
+                &task_id,
+                staging_file.take(),
+                &staging,
+                JobStatus::Canceled,
+                None,
+                &sink,
+                false,
+            )
+            .await;
+        }
         return;
     }
     inner
-        .complete_job(&task_id, JobStatus::Completed, None, &emitter)
+        .complete_job(&task_id, JobStatus::Completed, None, &sink)
         .await;
+}
+
+/// Pump-side terminal cleanup (issue#3/#4): close the staging handle first
+/// (Windows can neither rename nor delete an open file), remove the `.part`
+/// residue, settle the job state and — for cancel exits — drop the slot. The
+/// job state lands before the slot removal so "slot gone" always implies a
+/// terminal job for `finish`/`cancel`; every step is idempotent, so
+/// overlapping with a concurrent `cancel`/`finish` cleanup is safe.
+#[allow(clippy::too_many_arguments)]
+async fn pump_cleanup(
+    inner: &Inner,
+    task_id: &str,
+    staging_handle: Option<std::fs::File>,
+    staging: &Option<PathBuf>,
+    status: JobStatus,
+    error: Option<String>,
+    sink: &EventSink,
+    clear_slot: bool,
+) {
+    drop(staging_handle);
+    if let Some(staging) = staging {
+        let _ = std::fs::remove_file(staging);
+    }
+    inner.complete_job(task_id, status, error, sink).await;
+    if clear_slot {
+        inner.downloads.lock().await.remove(task_id);
+    }
+}
+
+/// In-flight progress metric for the finish wait: saveToLocal counts staged
+/// bytes on disk; otherwise the job's `transferred_bytes`, which the pump
+/// bumps only after a frame was pushed to the host.
+async fn download_progress(
+    inner: &Inner,
+    task_id: &str,
+    staging: Option<&std::path::Path>,
+) -> u64 {
+    match staging {
+        Some(staging) => std::fs::metadata(staging).map(|meta| meta.len()).unwrap_or(0),
+        None => inner
+            .jobs
+            .lock()
+            .await
+            .get(task_id)
+            .map(|job| job.transferred_bytes)
+            .unwrap_or(0),
+    }
 }
 
 /// Remote path → display/download file name: last non-empty path segment
@@ -2438,7 +2793,7 @@ fn join_target(target_path: &str, relative: &str) -> String {
 /// `{taskId, transferred, total}` core plus size/state/kind context for the
 /// UI. Emission is best-effort; failures never fail the transfer. Payloads
 /// carry paths/ids only — never credentials.
-fn emit_job_progress(emitter: &PluginEmitter, job: &TransferJob) {
+fn emit_job_progress(sink: &EventSink, job: &TransferJob) {
     let mut event = progress_event(&job.task_id, job.transferred_bytes, job.total_bytes);
     if let Some(object) = event.as_object_mut() {
         object.insert("size".into(), serde_json::json!(job.total_bytes));
@@ -2456,10 +2811,10 @@ fn emit_job_progress(emitter: &PluginEmitter, job: &TransferJob) {
             object.insert("error".into(), serde_json::json!(error));
         }
     }
-    let _ = emitter.event("files/transfer/progress", event);
+    sink.emit("files/transfer/progress", event);
 }
 
-fn emit_running(emitter: &PluginEmitter, task_id: &str) {
+fn emit_running(sink: &EventSink, task_id: &str) {
     let mut event = progress_event(task_id, 0, None);
     if let Some(object) = event.as_object_mut() {
         object.insert(
@@ -2467,10 +2822,10 @@ fn emit_running(emitter: &PluginEmitter, task_id: &str) {
             serde_json::json!(JobStatus::Running.as_str()),
         );
     }
-    let _ = emitter.event("files/transfer/progress", event);
+    sink.emit("files/transfer/progress", event);
 }
 
-fn emit_running_at(emitter: &PluginEmitter, task_id: &str, transferred: u64, total: Option<u64>) {
+fn emit_running_at(sink: &EventSink, task_id: &str, transferred: u64, total: Option<u64>) {
     let mut event = progress_event(task_id, transferred, total);
     if let Some(object) = event.as_object_mut() {
         object.insert("size".into(), serde_json::json!(total));
@@ -2479,7 +2834,7 @@ fn emit_running_at(emitter: &PluginEmitter, task_id: &str, transferred: u64, tot
             serde_json::json!(JobStatus::Running.as_str()),
         );
     }
-    let _ = emitter.event("files/transfer/progress", event);
+    sink.emit("files/transfer/progress", event);
 }
 
 /// Directory-job progress payload (`filesDone, filesTotal, bytesDone,
@@ -3072,7 +3427,7 @@ mod tests {
             .lock()
             .await
             .insert(job_id.clone(), cancel.clone());
-        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let test_sink = TestSink::shared();
         run_dir_job(
             inner.clone(),
             job_id,
@@ -3087,15 +3442,11 @@ mod tests {
             dry_run,
             max_delete,
             cancel,
-            EventSink::Test(events.clone()),
+            EventSink::Test(test_sink.clone()),
         )
         .await;
         let job = inner.dir_jobs.lock().await.get("test-job").cloned().unwrap();
-        let captured = events
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        (job, captured)
+        (job, test_sink.events())
     }
 
     /// rclone 对齐：增量跳过的窗口语义——size 必须一致；双方都有 mtime 时
@@ -3352,6 +3703,281 @@ mod tests {
 
             // Unknown id reports zero removals.
             assert_eq!(table.delete_record(&store, "ghost").await.unwrap(), 0);
+        });
+    }
+
+    // -------------------------------------------------------------------------
+    // issue#3/#4 传输硬化：提前 finish 与取消语义（内存后端离线驱动 pump）。
+    // -------------------------------------------------------------------------
+
+    /// 离线脚手架：`start_download` 依赖宿主 `PluginEmitter`（无测试构造
+    /// 器），这里直接摆好 job/slot 表、预创建 staging，再由测试自行 spawn
+    /// [`download_pump`]。返回值依次：table、inner、taskId、cancel、
+    /// pump_done、staging 路径、source operator、临时目录（保活）。
+    async fn harness_download(
+        total: usize,
+    ) -> (
+        JobTable,
+        Arc<Inner>,
+        String,
+        Arc<AtomicBool>,
+        Arc<AtomicBool>,
+        PathBuf,
+        opendal::Operator,
+        tempfile::TempDir,
+    ) {
+        let source = memory_operator();
+        let payload = vec![0xA5u8; total];
+        source.write("blob.bin", payload).await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let staging = dir.path().join("blob.bin.part");
+        std::fs::File::create(&staging).unwrap();
+        let table = JobTable::new();
+        let inner = table.inner.clone();
+        let task_id = "t-download".to_string();
+        inner.jobs.lock().await.insert(
+            task_id.clone(),
+            TransferJob {
+                task_id: task_id.clone(),
+                connection_id: "c1".into(),
+                kind: TransferKind::Download,
+                remote_path: "/remote/blob.bin".into(),
+                total_bytes: Some(total as u64),
+                transferred_bytes: 0,
+                status: JobStatus::Queued,
+                error: None,
+                started_at: Some(1),
+                finished_at: None,
+                local_path: None,
+            },
+        );
+        let cancel = Arc::new(AtomicBool::new(false));
+        let pump_done = Arc::new(AtomicBool::new(false));
+        inner.downloads.lock().await.insert(
+            task_id.clone(),
+            DownloadSlot {
+                connection_id: "c1".into(),
+                remote_path: "/remote/blob.bin".into(),
+                size: total as u64,
+                cancel: cancel.clone(),
+                staging: Some(staging.clone()),
+                pump_done: pump_done.clone(),
+            },
+        );
+        (
+            table, inner, task_id, cancel, pump_done, staging, source, dir,
+        )
+    }
+
+    /// Spawns the pump exactly like `start_download` does.
+    #[allow(clippy::too_many_arguments)]
+    async fn spawn_pump(
+        inner: &Arc<Inner>,
+        source: &opendal::Operator,
+        task_id: &str,
+        total: u64,
+        cancel: Arc<AtomicBool>,
+        pump_done: Arc<AtomicBool>,
+        staging: PathBuf,
+        sink: EventSink,
+    ) -> tokio::task::JoinHandle<()> {
+        let (reader, size) = slot::open_download_reader(source, "blob.bin")
+            .await
+            .unwrap();
+        assert_eq!(size, total);
+        tokio::spawn(download_pump(
+            inner.clone(),
+            task_id.to_string(),
+            reader,
+            size,
+            "c1".into(),
+            cancel,
+            Some(staging),
+            pump_done,
+            sink,
+        ))
+    }
+
+    #[test]
+    fn download_finish_result_replays_terminal_states() {
+        let build = |status: JobStatus, error: Option<&str>, local: Option<&str>| TransferJob {
+            task_id: "t".into(),
+            connection_id: "c".into(),
+            kind: TransferKind::Download,
+            remote_path: "/x.bin".into(),
+            total_bytes: Some(100),
+            transferred_bytes: 100,
+            status,
+            error: error.map(String::from),
+            started_at: None,
+            finished_at: Some(1),
+            local_path: local.map(String::from),
+        };
+        assert_eq!(
+            JobTable::download_finish_result(&build(JobStatus::Completed, None, Some("/d/x.bin"))),
+            Ok(Some("/d/x.bin".to_string()))
+        );
+        assert_eq!(
+            JobTable::download_finish_result(&build(JobStatus::Canceled, None, None)),
+            Err("Download was canceled".to_string())
+        );
+        assert_eq!(
+            JobTable::download_finish_result(&build(JobStatus::Failed, Some("boom"), None)),
+            Err("boom".to_string())
+        );
+        assert_eq!(
+            JobTable::download_finish_result(&build(JobStatus::Failed, None, None)),
+            Err("Download failed".to_string())
+        );
+    }
+
+    /// issue#3：宿主提前 finish 不得误判短读——finish 与在途 pump 并发时
+    /// 等字节补齐（finish_upload 同款 250ms×40 停滞窗口）再校验/晋升
+    /// staging：落盘文件完整、job Completed、槽位收走。
+    #[test]
+    fn early_finish_waits_for_inflight_frames() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let chunk = crate::model::TRANSFER_CHUNK_SIZE as usize;
+            let total = 3 * chunk;
+            let (table, inner, task_id, cancel, pump_done, staging, source, dir) =
+                harness_download(total).await;
+            let (sink, gate_rx) = TestSink::paced();
+            let pump = spawn_pump(
+                &inner,
+                &source,
+                &task_id,
+                total as u64,
+                cancel,
+                pump_done.clone(),
+                staging.clone(),
+                EventSink::Test(sink.clone()),
+            )
+            .await;
+
+            // 第一帧收到时 chunk0 已落盘、pump 阻塞在下一帧的 rendezvous 上：
+            // 宿主此刻「提前」finish，staging 暂时短于 stat 的 size（pump 在
+            // 被放行前最多再落一盘块，故断言区间而非精确值）。
+            let first = gate_rx.recv_timeout(Duration::from_secs(5)).expect("first frame");
+            assert_eq!(first.len(), chunk + 8, "帧 = 8 字节 offset + chunk");
+            assert!(first[8..].iter().all(|byte| *byte == 0xA5));
+            let staged_now = std::fs::metadata(&staging).unwrap().len();
+            assert!(
+                staged_now >= chunk as u64 && staged_now < total as u64,
+                "pump 在途且 staging 尚未写满: {staged_now}"
+            );
+
+            // 排空剩余 2 帧的后台线程，让 pump 与 finish 并发推进。
+            let drainer = std::thread::spawn(move || {
+                for _ in 1..3 {
+                    gate_rx
+                        .recv_timeout(Duration::from_secs(5))
+                        .expect("remaining frame");
+                }
+            });
+            let local = table
+                .finish_download_with_sink(&task_id, &EventSink::Test(sink.clone()))
+                .await
+                .expect("提前 finish 不得误判在途传输为短读");
+            let promoted = local.expect("saveToLocal finish returns localPath");
+            assert_eq!(promoted, dir.path().join("blob.bin").to_string_lossy());
+            let saved = std::fs::read(&promoted).unwrap();
+            assert_eq!(saved.len(), total);
+            assert!(saved.iter().all(|byte| *byte == 0xA5), "落盘内容完整");
+            assert!(!staging.exists(), "staging 已改名");
+            assert!(
+                inner.downloads.lock().await.get(&task_id).is_none(),
+                "槽位被 finish 收走"
+            );
+            let job = inner.jobs.lock().await.get(&task_id).cloned().unwrap();
+            assert_eq!(job.status, JobStatus::Completed);
+            assert_eq!(job.local_path.as_deref(), Some(promoted.as_str()));
+
+            pump.await.unwrap();
+            drainer.join().unwrap();
+            assert!(pump_done.load(Ordering::Acquire), "pump 退出后置位");
+        });
+    }
+
+    /// issue#4：取消后 pump 停止向宿主推帧（至多再放行一帧已越过循环顶
+    /// 检查的在途帧），并自行收走槽位、删除 `.part` 残留、释放许可。
+    #[test]
+    fn cancel_stops_frame_pump_and_pump_cleans_up() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let chunk = crate::model::TRANSFER_CHUNK_SIZE as usize;
+            let total = 8 * chunk;
+            let (_table, inner, task_id, cancel, pump_done, staging, source, _dir) =
+                harness_download(total).await;
+            let (sink, gate_rx) = TestSink::paced();
+            let pump = spawn_pump(
+                &inner,
+                &source,
+                &task_id,
+                total as u64,
+                cancel.clone(),
+                pump_done,
+                staging.clone(),
+                EventSink::Test(sink.clone()),
+            )
+            .await;
+
+            gate_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("first frame");
+            cancel.store(true, Ordering::Release);
+
+            // 帧计数封顶：取消后至多再收一帧；之后通道静默（pump 退出）。
+            let mut drained = 1usize;
+            while gate_rx.recv_timeout(Duration::from_millis(500)).is_ok() {
+                drained += 1;
+                assert!(drained <= 2, "cancel 后不得继续推帧: {drained}");
+            }
+            pump.await.unwrap();
+
+            let frames = sink.frame_count();
+            assert!(frames <= 2, "取消后帧计数封顶: {frames}");
+            assert!(frames < total / chunk, "pump 停止推帧: {frames}");
+            assert!(!staging.exists(), "pump 删除 .part 残留");
+            assert!(
+                inner.downloads.lock().await.get(&task_id).is_none(),
+                "pump 收走槽位"
+            );
+            let job = inner.jobs.lock().await.get(&task_id).cloned().unwrap();
+            assert_eq!(job.status, JobStatus::Canceled, "pump 落取消终态");
+            assert_eq!(inner.semaphore.available_permits(), 3, "permit 已释放");
+        });
+    }
+
+    /// issue#4 补充面：pump 已退出（saveToLocal 传完在等 finish）时取消，
+    /// flag 无人再观察——由 cancel 直接收走槽位并清理残留。
+    #[test]
+    fn cancel_after_pump_exit_cleans_slot_and_residue() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let (table, inner, task_id, cancel, pump_done, staging, _source, _dir) =
+                harness_download(64).await;
+            // 模拟 pump 已传完退出：staging 写满、pump_done 置位、job running。
+            std::fs::write(&staging, b"0123456789").unwrap();
+            pump_done.store(true, Ordering::Release);
+            if let Some(job) = inner.jobs.lock().await.get_mut(&task_id) {
+                job.status = JobStatus::Running;
+                job.transferred_bytes = 64;
+            }
+
+            table
+                .cancel_with_sink(&task_id, &EventSink::Test(TestSink::shared()))
+                .await
+                .unwrap();
+
+            assert!(cancel.load(Ordering::Acquire), "flag 已置位");
+            assert!(
+                inner.downloads.lock().await.get(&task_id).is_none(),
+                "cancel 收走槽位"
+            );
+            assert!(!staging.exists(), "cancel 清理 .part 残留");
+            let job = inner.jobs.lock().await.get(&task_id).cloned().unwrap();
+            assert_eq!(job.status, JobStatus::Canceled);
         });
     }
 }
