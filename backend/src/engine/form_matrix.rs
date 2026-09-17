@@ -485,9 +485,12 @@ fn bucket_namespace_connections_build_for_every_namespace_protocol() {
             "namespace operator reports the underlying scheme for {protocol}"
         );
         let capability = operator.info().capability();
+        // copy follows the child service verbatim (all five namespace
+        // children advertise native copy): same-bucket copies run server-side
+        // and cross-bucket copies stream inside the namespace adapter.
         assert!(
-            !capability.copy,
-            "{protocol}: namespace copies degrade to the read→write job"
+            capability.copy,
+            "{protocol}: namespace copy follows the child's native copy"
         );
     }
 
