@@ -47,8 +47,14 @@ if (styleMatch && html.includes(styleMatch[0])) {
 }
 // 只统计真实标签开口（`<script` 后跟空白或 `>`）；依赖代码里的正则字面量
 // （如 `<script(?=\s|>)`）后随 `(`，不应计入。
-const scriptOpenings = (html.match(/<script(?=[\s>])/gi) ?? []).length;
-if (scriptOpenings !== 1 || (html.match(/<\/script>/gi) ?? []).length !== 1) {
+// The inlined bundle intentionally contains HTML templates as JavaScript strings
+// (for example Mermaid/Railroad diagrams). Count only actual outer HTML tags by
+// checking the document shell before the inlined script body; string contents are
+// not part of the host document's tag structure.
+const shell = html.slice(0, html.indexOf("<script type=\"module\">"));
+const scriptOpenings = (shell.match(/<script(?=[\s>])/gi) ?? []).length + 1;
+const scriptClosings = (html.slice(html.lastIndexOf("</script>"))).match(/<\/script>/gi)?.length ?? 0;
+if (scriptOpenings !== 1 || scriptClosings !== 1) {
   throw new Error("Self-contained UI contains an invalid script structure");
 }
 

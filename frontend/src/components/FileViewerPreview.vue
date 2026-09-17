@@ -2,6 +2,7 @@
 import { computed, onUnmounted, ref, watch } from "vue";
 import { FileViewer, type FileViewerOptions } from "@file-viewer/vue3";
 import allRenderers from "@file-viewer/preset-all";
+import "@file-viewer/vue3/dist/file-viewer3.css";
 
 export type FileViewerPreviewSource = Blob | File | string;
 
@@ -13,6 +14,8 @@ const props = withDefaults(
     fileName?: string;
     mime?: string;
     options?: FileViewerOptions;
+    /** 宿主外观：viewer 主题跟随插件配色方案（light/dark）。 */
+    appearance?: DbxPluginAppearance;
     class?: string;
     height?: string | number;
   }>(),
@@ -20,6 +23,7 @@ const props = withDefaults(
     fileName: undefined,
     mime: undefined,
     options: undefined,
+    appearance: undefined,
     class: undefined,
     height: undefined,
   },
@@ -69,7 +73,14 @@ watch(
 
 onUnmounted(revokeOwnedUrl);
 
+// 预览外壳（搜索/缩放/下载/打印工具栏）由宿主 PreviewPane 头部承担，默认关闭；
+// 主题跟随插件外观配色，surfaceBackground 透明让内容融入预览面板（消除自带
+// 底色与边框感）。调用方仍可通过 props.options 覆盖任意默认值。
 const viewerOptions = computed<FileViewerOptions>(() => ({
+  toolbar: false,
+  search: { enabled: false },
+  theme: props.appearance?.colorScheme === "light" ? "light" : "dark",
+  ui: { surfaceBackground: "transparent" },
   ...(props.options ?? {}),
   rendererMode: props.options?.rendererMode ?? "replace",
   preset: allRenderers,

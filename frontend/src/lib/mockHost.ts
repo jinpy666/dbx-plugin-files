@@ -70,6 +70,11 @@ export function installMockHost() {
     contents.set(path.replace(/\/+$/, ""), bytes);
     put(path, "file", bytes.byteLength);
   };
+  const putBase64 = (path: string, value: string) => {
+    const bytes = b64decode(value);
+    contents.set(path.replace(/\/+$/, ""), bytes);
+    put(path, "file", bytes.byteLength);
+  };
 
   put("/", "dir");
   put("/docs", "dir");
@@ -82,6 +87,29 @@ export function installMockHost() {
   put("/pictures", "dir");
   putText("/docs/readme.md", "# Files Studio\n\n双栏文件浏览（A-FILES）验证样例。\n\n- 左栏：源（当前连接）\n- 右栏：目标面板 / 预览\n\n编辑此文件并保存会走 files/write。\n");
   putText("/docs/notes.txt", "line 1\nline 2\nline 3\n");
+  putText("/docs/data.csv", "name,value\nalpha,1\nbeta,2\n");
+  putText("/docs/data.json", '{"format":"json","ok":true,"items":[1,2,3]}\n');
+  putText("/docs/page.html", "<!doctype html><html><body><h1>DBX Files HTML</h1><p>HTML fixture</p></body></html>\n");
+  putText("/docs/vector.svg", '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="120" height="60" fill="#2f6feb"/><text x="10" y="36" fill="white">DBX Files</text></svg>');
+  // 多编程语言样例（/code）：验证各语言在 CodeMirror 下的识别与编辑。
+  put("/code", "dir");
+  putText("/code/main.go", "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"DBX Files Go\")\n}\n");
+  putText("/code/server.php", "<?php\ndeclare(strict_types=1);\n\nfunction greet(string $name): string {\n    return \"Hello, {$name}\";\n}\n\necho greet('DBX Files');\n");
+  putText("/code/Program.cs", "using System;\n\nnamespace DbxFiles;\n\npublic static class Program {\n    public static void Main() {\n        Console.WriteLine(\"DBX Files C#\");\n    }\n}\n");
+  putText("/code/Main.kt", "fun main() {\n    val files = listOf(\"dbx\", \"files\")\n    println(\"DBX Files Kotlin: ${files.size}\")\n}\n");
+  putText("/code/App.swift", "import Foundation\n\nlet name = \"DBX Files\"\nprint(\"\\(name) Swift\")\n");
+  putText("/code/main.dart", "void main() {\n  final files = ['dbx', 'files'];\n  print('DBX Files Dart: ${files.length}');\n}\n");
+  putText("/code/hello.scala", "object Hello extends App {\n  println(\"DBX Files Scala\")\n}\n");
+  putText("/code/fib.hs", "fib :: Int -> Int\nfib 0 = 0\nfib 1 = 1\nfib n = fib (n - 1) + fib (n - 2)\n\nmain :: IO ()\nmain = print (fib 10)\n");
+  putText("/code/script.lua", "local function greet(name)\n  print(\"DBX Files \" .. name)\nend\n\ngreet(\"Lua\")\n");
+  putText("/code/tool.pl", "use strict;\nuse warnings;\n\nprint \"DBX Files Perl\\n\";\n");
+  putText("/code/deploy.ps1", "$name = 'DBX Files'\nWrite-Host \"Deploying $name (PowerShell)\"\n");
+  putText("/code/style.scss", "$accent: #2f6feb;\n\n.button {\n  border-color: $accent;\n  &:hover { opacity: .8; }\n}\n");
+  putText("/code/Job.groovy", "println 'DBX Files Groovy'\n");
+  putText("/code/schema.proto", "syntax = \"proto3\";\n\nmessage FileEntry {\n  string path = 1;\n  uint64 size = 2;\n}\n");
+  putText("/code/render.m", "#import <Foundation/Foundation.h>\n\n// DBX Files Objective-C sample\nNSLog(@\"hello\");\n");
+  putText("/code/migrate.sql", "-- DBX Files SQL sample\nCREATE TABLE files (\n  id INTEGER PRIMARY KEY,\n  path TEXT NOT NULL UNIQUE\n);\n");
+  putText("/code/site.conf", "# nginx-style conf sample\nserver {\n  listen 8080;\n  root /srv/dbx-files;\n}\n");
   {
     // 1x1 PNG（图片预览 / data URI）
     const png = window.atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");
@@ -97,11 +125,17 @@ export function installMockHost() {
     contents.set("/docs/data.bin", bytes);
     put("/docs/data.bin", "file", bytes.byteLength);
   }
-  put("/docs/report.pdf", "file", 5 * 1024 * 1024);
-  // 压缩包样例（占位预览 / 解压入口）
-  put("/backup.zip", "file", 128 * 1024);
-  put("/docs/site.tar.gz", "file", 64 * 1024);
-  put("/docs/dump.tar", "file", 96 * 1024);
+  // 最小有效 PDF，供 PDF renderer 验证真实解析链路。
+  putBase64("/docs/report.pdf", "JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCAzMDAgMTQ0XSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA0NCA+PgpzdHJlYW0KQlQgL0YxIDE4IFRmIDM2IDkwIFRkIChEQlggRmlsZXMgUERGKSBUaiBFVAplbmRzdHJlYW0KZW5kb2JqCjUgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDMzNCAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjQwNAolJUVPRgo=");
+  // 真实 ZIP/TAR.GZ 样例，解压内容可由 archive renderer 读取。
+  putBase64("/backup.zip", "UEsDBBQAAAAIAGN8MV3X+nOnEQAAAA8AAAAJAAAAaGVsbG8udHh080jNyclXSCvKz1WI8gzgAgBQSwMEFAAAAAgAY3wxXT49b8QTAAAAEQAAAAkAAABkYXRhLmpzb26rVkrLL8pNLFGyUqrKLFCq5QIAUEsBAhQDFAAAAAgAY3wxXdf6c6cRAAAADwAAAAkAAAAAAAAAAAAAAIABAAAAAGhlbGxvLnR4dFBLAQIUAxQAAAAIAGN8MV0+PW/EEwAAABEAAAAJAAAAAAAAAAAAAACAATgAAABkYXRhLmpzb25QSwUGAAAAAAIAAgBuAAAAcgAAAAAA");
+  putBase64("/docs/site.tar.gz", "H4sIACuYq2oC/+3UsQ6CMBDG8c48BQ9AmkpJnZ10Nk5uF61hKGKgEB/fymLCLsbw/y13ueWGy3e1D6HV8RnV95jEVdVUk3k1piw//TTfOmNVbtQChj5Kl1aqdTq875/furbJT7uj3p8zhRW5ShR96Uf10/zbef6tc+R/CXdpfDFKGHwm4VFLseEBAAAAAAAAAAAAAAAA/JMXZeO+DQAoAAA=");
+  putBase64("/docs/sample.docx", "UEsDBBQAAAAIAGN8MV3mdcR+0gAAAIsBAAATAAAAW0NvbnRlbnRfVHlwZXNdLnhtbH2QvVLDMAzHX8XnlasVGBh6SToAKzD0BXSOkvjw11luad++Sls6cIVR+n/8ZLebQ/BqT4Vdip1+NI3e9O32mImVKJE7Pdea1wBsZwrIJmWKooypBKwylgky2i+cCJ6a5hlsipViXdWlQ/ftK42481W9HWR9oRTyrNXLxbiwOo05e2exig77OPyirK4EI8mzh2eX+UEMGu4SFuVvwDX3Ic8ubiD1iaW+YxAXfKcywJDsLkjS/F9z5840js7SLb+05ZIsMbs4BW9uSkAXf+6H83f3J1BLAwQUAAAACABjfDFdXzOVUpUAAAAHAQAACwAAAF9yZWxzLy5yZWxzjc87DsIwDAbgq0Q+QJ0yMKCmXVi6Ii4QJW5T0TzkhNftycBAEQOjf//6LHfDw6/iRpyXGBS0jYSh70606lKD7JaURW2ErMCVkg6I2TjyOjcxUaibKbLXpY48Y9LmomfCnZR75E8DtqYYrQIebQvi/Ez0jx2naTF0jObqKZQfJ74aVdY8U1Fwj2zRvuOmsoB9h5sX+xdQSwMEFAAAAAgAY3wxXfUQxEqMAAAAtQAAABEAAAB3b3JkL2RvY3VtZW50LnhtbEXOwQ6CMAwG4FdZ9gAUPXhYYCRKvHrlimzCkm1d2in69jI8ePma9k+bNt07ePGyxA5jKw9VLTvdrMrg9Aw2ZrHFkdXayiXnpAB4WmwYucJk45Y9kMKYt5ZmWJFMIpwss4tz8HCs6xOE0UVZTt7RfEpNBSpk3Z8HcXXesuhvl6GBMivSbtr97cH/J/0FUEsBAhQDFAAAAAgAY3wxXeZ1xH7SAAAAiwEAABMAAAAAAAAAAAAAAIABAAAAAFtDb250ZW50X1R5cGVzXS54bWxQSwECFAMUAAAACABjfDFdXzOVUpUAAAAHAQAACwAAAAAAAAAAAAAAgAEDAQAAX3JlbHMvLnJlbHNQSwECFAMUAAAACABjfDFd9RDESowAAAC1AAAAEQAAAAAAAAAAAAAAgAHBAQAAd29yZC9kb2N1bWVudC54bWxQSwUGAAAAAAMAAwC5AAAAfAIAAAAA");
+  // XLSX 用 STORED（无压缩）ZIP 打包：viewer 内置 ZIP 解析器对部分 Deflate
+  // 头部解析失败（Unsupported ZIP Compression method NaN）。
+  putBase64("/docs/sample.xlsx", "UEsDBBQAAAAAAPqDMV1bma6uCwIAAAsCAAATAAAAW0NvbnRlbnRfVHlwZXNdLnhtbDw/eG1sIHZlcnNpb249IjEuMCI/PjxUeXBlcyB4bWxucz0iaHR0cDovL3NjaGVtYXMub3BlbnhtbGZvcm1hdHMub3JnL3BhY2thZ2UvMjAwNi9jb250ZW50LXR5cGVzIj48RGVmYXVsdCBFeHRlbnNpb249InJlbHMiIENvbnRlbnRUeXBlPSJhcHBsaWNhdGlvbi92bmQub3BlbnhtbGZvcm1hdHMtcGFja2FnZS5yZWxhdGlvbnNoaXBzK3htbCIvPjxEZWZhdWx0IEV4dGVuc2lvbj0ieG1sIiBDb250ZW50VHlwZT0iYXBwbGljYXRpb24veG1sIi8+PE92ZXJyaWRlIFBhcnROYW1lPSIveGwvd29ya2Jvb2sueG1sIiBDb250ZW50VHlwZT0iYXBwbGljYXRpb24vdm5kLm9wZW54bWxmb3JtYXRzLW9mZmljZWRvY3VtZW50LnNwcmVhZHNoZWV0bWwuc2hlZXQubWFpbit4bWwiLz48T3ZlcnJpZGUgUGFydE5hbWU9Ii94bC93b3Jrc2hlZXRzL3NoZWV0MS54bWwiIENvbnRlbnRUeXBlPSJhcHBsaWNhdGlvbi92bmQub3BlbnhtbGZvcm1hdHMtb2ZmaWNlZG9jdW1lbnQuc3ByZWFkc2hlZXRtbC53b3Jrc2hlZXQreG1sIi8+PC9UeXBlcz5QSwMEFAAAAAAA+oMxXUuDozoFAQAABQEAAAsAAABfcmVscy8ucmVsczw/eG1sIHZlcnNpb249IjEuMCI/PjxSZWxhdGlvbnNoaXBzIHhtbG5zPSJodHRwOi8vc2NoZW1hcy5vcGVueG1sZm9ybWF0cy5vcmcvcGFja2FnZS8yMDA2L3JlbGF0aW9uc2hpcHMiPjxSZWxhdGlvbnNoaXAgSWQ9InJJZDEiIFR5cGU9Imh0dHA6Ly9zY2hlbWFzLm9wZW54bWxmb3JtYXRzLm9yZy9vZmZpY2VEb2N1bWVudC8yMDA2L3JlbGF0aW9uc2hpcHMvb2ZmaWNlRG9jdW1lbnQiIFRhcmdldD0ieGwvd29ya2Jvb2sueG1sIi8+PC9SZWxhdGlvbnNoaXBzPlBLAwQUAAAAAAD6gzFdF1scxvkAAAD5AAAADwAAAHhsL3dvcmtib29rLnhtbDw/eG1sIHZlcnNpb249IjEuMCI/Pjx3b3JrYm9vayB4bWxucz0iaHR0cDovL3NjaGVtYXMub3BlbnhtbGZvcm1hdHMub3JnL3NwcmVhZHNoZWV0bWwvMjAwNi9tYWluIiB4bWxuczpyPSJodHRwOi8vc2NoZW1hcy5vcGVueG1sZm9ybWF0cy5vcmcvb2ZmaWNlRG9jdW1lbnQvMjAwNi9yZWxhdGlvbnNoaXBzIj48c2hlZXRzPjxzaGVldCBuYW1lPSJTaGVldDEiIHNoZWV0SWQ9IjEiIHI6aWQ9InJJZDEiLz48L3NoZWV0cz48L3dvcmtib29rPlBLAwQUAAAAAAD6gzFdbTbpdAYBAAAGAQAAGgAAAHhsL19yZWxzL3dvcmtib29rLnhtbC5yZWxzPD94bWwgdmVyc2lvbj0iMS4wIj8+PFJlbGF0aW9uc2hpcHMgeG1sbnM9Imh0dHA6Ly9zY2hlbWFzLm9wZW54bWxmb3JtYXRzLm9yZy9wYWNrYWdlLzIwMDYvcmVsYXRpb25zaGlwcyI+PFJlbGF0aW9uc2hpcCBJZD0icklkMSIgVHlwZT0iaHR0cDovL3NjaGVtYXMub3BlbnhtbGZvcm1hdHMub3JnL29mZmljZURvY3VtZW50LzIwMDYvcmVsYXRpb25zaGlwcy93b3Jrc2hlZXQiIFRhcmdldD0id29ya3NoZWV0cy9zaGVldDEueG1sIi8+PC9SZWxhdGlvbnNoaXBzPlBLAwQUAAAAAAD6gzFdnaCvky4BAAAuAQAAGAAAAHhsL3dvcmtzaGVldHMvc2hlZXQxLnhtbDw/eG1sIHZlcnNpb249IjEuMCI/Pjx3b3Jrc2hlZXQgeG1sbnM9Imh0dHA6Ly9zY2hlbWFzLm9wZW54bWxmb3JtYXRzLm9yZy9zcHJlYWRzaGVldG1sLzIwMDYvbWFpbiI+PHNoZWV0RGF0YT48cm93IHI9IjEiPjxjIHI9IkExIiB0PSJpbmxpbmVTdHIiPjxpcz48dD5EQlggRmlsZXMgWExTWDwvdD48L2lzPjwvYz48YyByPSJCMSI+PHY+NDI8L3Y+PC9jPjwvcm93Pjxyb3cgcj0iMiI+PGMgcj0iQTIiIHQ9ImlubGluZVN0ciI+PGlzPjx0PlN0b3JlZCBaSVA8L3Q+PC9pcz48L2M+PC9yb3c+PC9zaGVldERhdGE+PC93b3Jrc2hlZXQ+UEsBAhQDFAAAAAAA+oMxXVuZrq4LAgAACwIAABMAAAAAAAAAAAAAAIABAAAAAFtDb250ZW50X1R5cGVzXS54bWxQSwECFAMUAAAAAAD6gzFdS4OjOgUBAAAFAQAACwAAAAAAAAAAAAAAgAE8AgAAX3JlbHMvLnJlbHNQSwECFAMUAAAAAAD6gzFdF1scxvkAAAD5AAAADwAAAAAAAAAAAAAAgAFqAwAAeGwvd29ya2Jvb2sueG1sUEsBAhQDFAAAAAAA+oMxXW026XQGAQAABgEAABoAAAAAAAAAAAAAAIABkAQAAHhsL19yZWxzL3dvcmtib29rLnhtbC5yZWxzUEsBAhQDFAAAAAAA+oMxXZ2gr5MuAQAALgEAABgAAAAAAAAAAAAAAIABzgUAAHhsL3dvcmtzaGVldHMvc2hlZXQxLnhtbFBLBQYAAAAABQAFAEUBAAAyBwAAAAA=");
+  // RIFF/WAV header with a short silent PCM sample, enough for media renderer detection.
+  putBase64("/docs/silence.wav", "UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAESsAAABAAgAZGF0YQAAAAA=");
   for (let i = 0; i < 10_000; i += 1) put(`/10k/file-${String(i).padStart(5, "0")}.txt`, "file", 1024 + i);
 
   // ---- 本地树（内置 __local__ 连接，模拟真实 sidecar 的本地文件系统）----------

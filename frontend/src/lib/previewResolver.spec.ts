@@ -2,26 +2,26 @@ import { describe, expect, it } from "vitest";
 import { resolvePreview } from "./previewResolver";
 
 describe("resolvePreview", () => {
-  it("resolves images as read-only file-viewer previews", () => {
+  it("resolves images to the native image element", () => {
     expect(resolvePreview("/assets/Logo.PNG")).toEqual({
       extension: "png",
       mime: "image/png",
       kind: "image",
       editable: false,
-      previewStrategy: "file-viewer",
+      previewStrategy: "image",
       editorStrategy: null,
       fallback: false,
       fallbackReason: null,
     });
   });
 
-  it("resolves known text and code files as editable CodeMirror files", () => {
+  it("keeps known text and code on CodeMirror for preview and editing", () => {
     expect(resolvePreview("/src/main.TS")).toEqual({
       extension: "ts",
       mime: "text/typescript",
       kind: "text",
       editable: true,
-      previewStrategy: "file-viewer",
+      previewStrategy: "codemirror",
       editorStrategy: "codemirror",
       fallback: false,
       fallbackReason: null,
@@ -32,9 +32,42 @@ describe("resolvePreview", () => {
       mime: "text/markdown",
       kind: "text",
       editable: true,
+      previewStrategy: "codemirror",
       editorStrategy: "codemirror",
       fallback: false,
     });
+  });
+
+  it("recognizes a wide range of programming languages as editable text", () => {
+    for (const [path, extension] of [
+      ["/code/main.go", "go"],
+      ["/code/server.php", "php"],
+      ["/code/Program.cs", "cs"],
+      ["/code/Main.kt", "kt"],
+      ["/code/App.swift", "swift"],
+      ["/code/main.dart", "dart"],
+      ["/code/hello.scala", "scala"],
+      ["/code/fib.hs", "hs"],
+      ["/code/script.lua", "lua"],
+      ["/code/tool.pl", "pl"],
+      ["/code/deploy.ps1", "ps1"],
+      ["/code/Job.groovy", "groovy"],
+      ["/code/schema.proto", "proto"],
+      ["/code/render.m", "m"],
+      ["/code/style.scss", "scss"],
+      ["/code/fix.diff", "diff"],
+      ["/code/fix.patch", "patch"],
+      ["/code/site.conf", "conf"],
+    ] as const) {
+      const result = resolvePreview(path);
+      expect(result, path).toMatchObject({
+        extension,
+        kind: "text",
+        editable: true,
+        previewStrategy: "codemirror",
+        editorStrategy: "codemirror",
+      });
+    }
   });
 
   it("recognizes archives without making them editable", () => {
@@ -43,7 +76,7 @@ describe("resolvePreview", () => {
       mime: "application/gzip",
       kind: "archive",
       editable: false,
-      previewStrategy: "file-viewer",
+      previewStrategy: "archive",
       editorStrategy: null,
       fallback: false,
       fallbackReason: null,
@@ -54,13 +87,13 @@ describe("resolvePreview", () => {
       mime: "application/zip",
       kind: "archive",
       editable: false,
-      previewStrategy: "file-viewer",
+      previewStrategy: "archive",
       editorStrategy: null,
       fallback: false,
     });
   });
 
-  it("resolves Office documents and PDF as read-only file-viewer previews", () => {
+  it("delegates Office documents and PDF to the file viewer", () => {
     expect(resolvePreview("/docs/report.docx")).toMatchObject({
       extension: "docx",
       mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -81,7 +114,28 @@ describe("resolvePreview", () => {
     });
   });
 
-  it("resolves audio and video as read-only media", () => {
+  it("routes CSV/TSV to the viewer but keeps HTML on CodeMirror (dark-theme safe)", () => {
+    expect(resolvePreview("/data/data.csv")).toMatchObject({
+      extension: "csv",
+      kind: "text",
+      editable: false,
+      previewStrategy: "file-viewer",
+      editorStrategy: null,
+    });
+    expect(resolvePreview("/site/page.html")).toMatchObject({
+      extension: "html",
+      kind: "text",
+      editable: true,
+      previewStrategy: "codemirror",
+      editorStrategy: "codemirror",
+    });
+    expect(resolvePreview("/data/table.TSV")).toMatchObject({
+      extension: "tsv",
+      previewStrategy: "file-viewer",
+    });
+  });
+
+  it("resolves audio and video as viewer media", () => {
     expect(resolvePreview("/media/intro.mp4")).toMatchObject({
       extension: "mp4",
       mime: "video/mp4",
@@ -102,13 +156,13 @@ describe("resolvePreview", () => {
     });
   });
 
-  it("keeps unknown extensions on file-viewer with an explicit fallback marker", () => {
+  it("keeps unknown extensions on the text/hex heuristic with a fallback marker", () => {
     expect(resolvePreview("/downloads/archive.weird")).toEqual({
       extension: "weird",
       mime: null,
       kind: "unknown",
       editable: false,
-      previewStrategy: "file-viewer",
+      previewStrategy: "hex",
       editorStrategy: null,
       fallback: true,
       fallbackReason: "unknown-extension",
@@ -121,7 +175,7 @@ describe("resolvePreview", () => {
       mime: null,
       kind: "unknown",
       editable: false,
-      previewStrategy: "file-viewer",
+      previewStrategy: "hex",
       editorStrategy: null,
       fallback: true,
       fallbackReason: "unknown-extension",
@@ -133,10 +187,19 @@ describe("resolvePreview", () => {
     });
   });
 
+  it("splits rendering tiers across the expected strategies", () => {
+    expect(resolvePreview("/a.png").previewStrategy).toBe("image");
+    expect(resolvePreview("/a.ts").previewStrategy).toBe("codemirror");
+    expect(resolvePreview("/a.zip").previewStrategy).toBe("archive");
+    expect(resolvePreview("/a.pdf").previewStrategy).toBe("file-viewer");
+    expect(resolvePreview("/a.docx").previewStrategy).toBe("file-viewer");
+    expect(resolvePreview("/a.mp3").previewStrategy).toBe("file-viewer");
+    expect(resolvePreview("/a.bin").previewStrategy).toBe("hex");
+  });
+
   it("does not expose an editor strategy for read-only categories", () => {
-    for (const path of ["/a.png", "/a.pdf", "/a.mp3", "/a.zip", "/a.bin", "/a.docx"]) {
+    for (const path of ["/a.png", "/a.pdf", "/a.mp3", "/a.zip", "/a.bin", "/a.docx", "/a.csv"]) {
       const result = resolvePreview(path);
-      expect(result.previewStrategy).toBe("file-viewer");
       expect(result.editable).toBe(false);
       expect(result.editorStrategy).toBeNull();
     }

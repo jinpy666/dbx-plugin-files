@@ -1,7 +1,12 @@
 import { archiveKind } from "./archive";
 
 export type PreviewKind = "image" | "text" | "archive" | "office" | "pdf" | "media" | "unknown";
-export type PreviewStrategy = "file-viewer";
+/**
+ * Two-tier rendering split: text/code stay on CodeMirror, images on the native
+ * element, archives on files/archiveList, binary fallback on hex — only formats
+ * CodeMirror cannot render (Office/PDF/media/sandboxed HTML/CSV) go to file-viewer.
+ */
+export type PreviewStrategy = "codemirror" | "image" | "archive" | "hex" | "file-viewer";
 export type EditorStrategy = "codemirror" | null;
 export type PreviewFallbackReason = "unknown-extension" | null;
 
@@ -13,11 +18,11 @@ export interface PreviewResolution {
   kind: PreviewKind;
   /** Only known text/code extensions are editable. */
   editable: boolean;
-  /** Read-only previews are deliberately delegated to the host file viewer. */
+  /** Rendering tier chosen for this file; see PreviewStrategy. */
   previewStrategy: PreviewStrategy;
   /** The editor used when an editable text file enters edit mode. */
   editorStrategy: EditorStrategy;
-  /** Unknown formats may still be attempted by file-viewer. */
+  /** Unknown extensions keep the hex/text heuristic instead of the viewer. */
   fallback: boolean;
   fallbackReason: PreviewFallbackReason;
 }
@@ -26,6 +31,7 @@ type KnownPreview = {
   kind: Exclude<PreviewKind, "unknown" | "archive">;
   mime: string;
   editable?: boolean;
+  strategy?: Exclude<PreviewStrategy, "codemirror" | "archive" | "hex">;
 };
 
 const IMAGE_MIMES: Record<string, string> = {
@@ -41,32 +47,55 @@ const IMAGE_MIMES: Record<string, string> = {
 };
 
 const TEXT_MIMES: Record<string, string> = {
+  bat: "application/x-bat",
   c: "text/x-c",
   cc: "text/x-c++",
+  cmake: "text/x-cmake",
+  cmd: "application/x-bat",
+  conf: "text/plain",
   cpp: "text/x-c++",
+  cs: "text/x-csharp",
   css: "text/css",
-  csv: "text/csv",
+  dart: "application/dart",
+  diff: "text/x-diff",
+  go: "text/x-go",
+  groovy: "text/x-groovy",
   h: "text/x-c",
   hpp: "text/x-c++",
+  hs: "text/x-haskell",
   htm: "text/html",
   html: "text/html",
   ini: "text/plain",
   java: "text/x-java-source",
+  jl: "text/x-julia",
   js: "text/javascript",
   json: "application/json",
   jsx: "text/jsx",
+  kt: "text/x-kotlin",
+  kts: "text/x-kotlin",
   less: "text/less",
   log: "text/plain",
+  lua: "text/x-lua",
+  m: "text/x-objectivec",
   markdown: "text/markdown",
   md: "text/markdown",
   mjs: "text/javascript",
+  mm: "text/x-objectivec",
+  patch: "text/x-diff",
+  php: "application/x-httpd-php",
+  pl: "text/x-perl",
+  pm: "text/x-perl",
+  proto: "text/x-protobuf",
+  ps1: "application/x-powershell",
   py: "text/x-python",
   r: "text/x-r",
   rb: "text/x-ruby",
   rs: "text/x-rust",
+  scala: "text/x-scala",
   scss: "text/x-scss",
   sh: "application/x-sh",
   sql: "application/sql",
+  swift: "text/x-swift",
   text: "text/plain",
   toml: "application/toml",
   ts: "text/typescript",
@@ -77,6 +106,14 @@ const TEXT_MIMES: Record<string, string> = {
   yaml: "text/yaml",
   yml: "text/yaml",
   zsh: "application/x-sh",
+};
+
+/** Structured data formats whose viewer rendering beats plain text. HTML/HTM
+ * stay on CodeMirror: the viewer's HTML preview hardcodes a white iframe
+ * background that cannot follow the host dark theme. */
+const VIEWER_TEXT_MIMES: Record<string, string> = {
+  csv: "text/csv",
+  tsv: "text/tab-separated-values",
 };
 
 const OFFICE_MIMES: Record<string, string> = {
@@ -130,11 +167,12 @@ const ARCHIVE_MIMES: Record<string, string> = {
 };
 
 const KNOWN_PREVIEWS: Record<string, KnownPreview> = {
-  ...Object.fromEntries(Object.entries(IMAGE_MIMES).map(([extension, mime]) => [extension, { kind: "image", mime }])),
+  ...Object.fromEntries(Object.entries(IMAGE_MIMES).map(([extension, mime]) => [extension, { kind: "image", mime, strategy: "image" as const }])),
   ...Object.fromEntries(Object.entries(TEXT_MIMES).map(([extension, mime]) => [extension, { kind: "text", mime, editable: true }])),
-  ...Object.fromEntries(Object.entries(OFFICE_MIMES).map(([extension, mime]) => [extension, { kind: "office", mime }])),
-  ...Object.fromEntries(Object.entries(PDF_MIMES).map(([extension, mime]) => [extension, { kind: "pdf", mime }])),
-  ...Object.fromEntries(Object.entries(MEDIA_MIMES).map(([extension, mime]) => [extension, { kind: "media", mime }])),
+  ...Object.fromEntries(Object.entries(VIEWER_TEXT_MIMES).map(([extension, mime]) => [extension, { kind: "text", mime, strategy: "file-viewer" as const }])),
+  ...Object.fromEntries(Object.entries(OFFICE_MIMES).map(([extension, mime]) => [extension, { kind: "office", mime, strategy: "file-viewer" as const }])),
+  ...Object.fromEntries(Object.entries(PDF_MIMES).map(([extension, mime]) => [extension, { kind: "pdf", mime, strategy: "file-viewer" as const }])),
+  ...Object.fromEntries(Object.entries(MEDIA_MIMES).map(([extension, mime]) => [extension, { kind: "media", mime, strategy: "file-viewer" as const }])),
 };
 
 function extensionFor(path: string): string {
@@ -155,7 +193,9 @@ function unknownPreview(extension: string): PreviewResolution {
     mime: null,
     kind: "unknown",
     editable: false,
-    previewStrategy: "file-viewer",
+    // Unknown extensions keep the printable-ratio heuristic: readable text is
+    // shown as read-only text, everything else falls back to a hex dump.
+    previewStrategy: "hex",
     editorStrategy: null,
     fallback: true,
     fallbackReason: "unknown-extension",
@@ -165,9 +205,10 @@ function unknownPreview(extension: string): PreviewResolution {
 /**
  * Resolve a path into rendering and editing capabilities without importing a renderer.
  *
- * Every result is safe for a read-only file viewer. Only recognized text/code files
- * expose CodeMirror as an editing strategy; an unknown extension remains a viewer
- * fallback instead of being treated as editable text.
+ * Text/code preview and editing stay on CodeMirror; images use the native
+ * element; archives use files/archiveList; unknown extensions use the text/hex
+ * heuristic. Only formats CodeMirror cannot render (Office/PDF/media/sandboxed
+ * HTML/CSV) are delegated to the embedded file viewer.
  */
 export function resolvePreview(path: string): PreviewResolution {
   const extension = extensionFor(path);
@@ -178,7 +219,7 @@ export function resolvePreview(path: string): PreviewResolution {
       mime: ARCHIVE_MIMES[extension] ?? null,
       kind: "archive",
       editable: false,
-      previewStrategy: "file-viewer",
+      previewStrategy: "archive",
       editorStrategy: null,
       fallback: false,
       fallbackReason: null,
@@ -189,12 +230,13 @@ export function resolvePreview(path: string): PreviewResolution {
   if (!known) return unknownPreview(extension);
 
   const editable = known.editable === true;
+  const strategy: PreviewStrategy = known.strategy ?? (editable ? "codemirror" : "hex");
   return {
     extension,
     mime: known.mime,
     kind: known.kind,
     editable,
-    previewStrategy: "file-viewer",
+    previewStrategy: strategy,
     editorStrategy: editable ? "codemirror" : null,
     fallback: false,
     fallbackReason: null,

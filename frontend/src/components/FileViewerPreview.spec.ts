@@ -52,7 +52,42 @@ describe("FileViewerPreview", () => {
     expect(viewerProps.current?.filename).toBe("notes.txt");
     expect(viewerProps.current?.type).toBe("text/custom");
     expect(viewerProps.current?.size).toBe(blob.size);
-    expect(viewerProps.current?.options).toEqual({ locale: "zh-CN", rendererMode: "replace", preset });
+    expect(viewerProps.current?.options).toEqual({
+      toolbar: false,
+      search: { enabled: false },
+      theme: "dark",
+      ui: { surfaceBackground: "transparent" },
+      locale: "zh-CN",
+      rendererMode: "replace",
+      preset,
+    });
+  });
+
+  it("follows the host appearance color scheme and lets callers override", () => {
+    const light: DbxPluginAppearance = {
+      colorScheme: "light",
+      colors: {
+        background: "#ffffff",
+        foreground: "#111111",
+        muted: "#f5f5f5",
+        mutedForeground: "#666666",
+        accent: "#eeeeee",
+        accentForeground: "#111111",
+        border: "#dddddd",
+        destructive: "#ef4444",
+      },
+      terminal: { fontFamily: "mono", fontSize: 12 },
+    };
+    mountPreview("https://example.test/a.pdf", { appearance: light });
+    expect(viewerProps.current?.options).toMatchObject({ theme: "light" });
+
+    mountPreview("https://example.test/b.pdf", { options: { theme: "light" } });
+    expect(viewerProps.current?.options).toMatchObject({ theme: "light", toolbar: false });
+  });
+
+  it("lets callers override the default chrome options", () => {
+    mountPreview("https://example.test/report.pdf", { options: { toolbar: { download: true }, search: { enabled: true } } });
+    expect(viewerProps.current?.options).toMatchObject({ toolbar: { download: true }, search: { enabled: true } });
   });
 
   it("forwards external URLs without revoking them", async () => {
