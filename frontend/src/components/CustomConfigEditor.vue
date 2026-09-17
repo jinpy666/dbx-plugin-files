@@ -16,6 +16,7 @@ import {
   type FieldError,
 } from "../lib/opendalServices";
 import { callLifecycle, errorMessage } from "../lib/api";
+import { onTablistArrowKeys } from "../lib/a11y";
 import type { I18nText } from "../lib/i18n";
 
 const props = defineProps<{
@@ -178,10 +179,11 @@ async function test() {
       </select>
     </label>
 
-    <!-- Form/JSON 双 Tab：未知服务隐藏 Form Tab -->
-    <div v-if="formAvailable" class="wb-pane-tabs" role="tablist">
-      <button type="button" :class="{ 'is-active': mode === 'form' }" @click="switchMode('form')">{{ t("customFormTab") }}</button>
-      <button type="button" :class="{ 'is-active': mode === 'json' }" @click="switchMode('json')">{{ t("customJsonTab") }}</button>
+    <!-- Form/JSON 双 Tab：未知服务隐藏 Form Tab。审计#12：子元素补
+         role=tab/aria-selected + roving tabindex + ←→ 循环切换。 -->
+    <div v-if="formAvailable" class="wb-pane-tabs" role="tablist" @keydown="onTablistArrowKeys">
+      <button type="button" role="tab" :aria-selected="mode === 'form'" :tabindex="mode === 'form' ? 0 : -1" :class="{ 'is-active': mode === 'form' }" @click="switchMode('form')">{{ t("customFormTab") }}</button>
+      <button type="button" role="tab" :aria-selected="mode === 'json'" :tabindex="mode === 'json' ? 0 : -1" :class="{ 'is-active': mode === 'json' }" @click="switchMode('json')">{{ t("customJsonTab") }}</button>
     </div>
     <p v-if="switchError" class="wb-icon-danger" style="margin: 0; font-size: 11px">{{ switchError }}</p>
 

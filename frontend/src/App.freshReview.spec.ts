@@ -2,7 +2,7 @@
 // UI smoke：真实 App + FileTable + 确认弹层 + mock 桥，不触达真实文件或连接。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, type VueWrapper } from "@vue/test-utils";
-import { nextTick } from "vue";
+import { defineComponent, nextTick, ref, type Component } from "vue";
 import App from "./App.vue";
 import FileTable from "./components/FileTable.vue";
 import FileToolbar from "./components/FileToolbar.vue";
@@ -13,6 +13,24 @@ import { workbenchMessage } from "./lib/i18n";
 import { vTip } from "./lib/tooltip";
 import { saveUiPrefs } from "./lib/prefs";
 import { currentConnectionId, parentPath, joinPath, type FileEntry } from "./lib/api";
+
+// 审计#7：可编程的 PreviewPane 桩——真实组件的 isDirty 计算由 PreviewPane.spec
+// 覆盖，这里用 stub 驱动 App 层的关闭守卫接线（Esc → 丢弃确认 → 丢弃/保留）。
+const PreviewPaneStub = defineComponent({
+  props: {
+    path: { type: String, default: null },
+    canWrite: Boolean,
+    connectionId: { type: String, default: undefined },
+    t: { type: Function, required: true },
+  },
+  emits: ["close", "saved", "download"],
+  setup(_props, { expose }) {
+    const isDirty = ref(false);
+    expose({ isDirty });
+    return { isDirty };
+  },
+  template: `<div class="stub-preview"><button data-test="set-dirty" @click="isDirty = true">dirty</button><button data-test="stub-close" @click="$emit('close')">close</button></div>`,
+});
 
 let wrapper: VueWrapper | undefined;
 let host: NonNullable<ReturnType<typeof installMockHost>>;
@@ -41,8 +59,8 @@ afterEach(() => {
   Reflect.deleteProperty(window, "dbxPlugin");
 });
 
-function mountWorkbench() {
-  wrapper = mount(App, { attachTo: document.body, global: { directives: { tip: vTip } } });
+function mountWorkbench(stubs?: Record<string, boolean | Component>) {
+  wrapper = mount(App, { attachTo: document.body, global: { directives: { tip: vTip }, stubs } });
   return wrapper;
 }
 
@@ -595,5 +613,107 @@ describe("round5 current host context/environment UI smoke", () => {
     await settle();
     expect(wrapper!.getComponent(FileToolbar).props("canWrite")).toBe(false);
     expect(table("left").props("entries").map((entry) => entry.path)).toEqual(["/other.txt"]);
+  });
+});
+
+describe("audit medium round: os drop, menu keys, dock tabs, preview dialog", () => {
+  it("uploads OS files dropped on the target pane and redirects source-pane drops with a notice", async () => {
+    mountWorkbench();
+    await settle();
+    await openDualPane();
+    const invoke = vi.spyOn(window.dbxPlugin, "invoke");
+    const dropWith = (files: File[]) => {
+      const event = new Event("drop", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "dataTransfer", { value: { getData: () => "", items: [], files } });
+      return event;
+    };
+    wrapper!.get(".wb-pane-target").element.dispatchEvent(dropWith([new File(["A"], "os-drop.txt")]));
+    await settle();
+    expect(invoke.mock.calls.find(([method]) => method === "files/upload/start")?.[1]).toMatchObject({
+      remotePath: "/os-drop.txt", size: 1,
+    });
+    invoke.mockClear();
+    wrapper!.get(".wb-pane-source").element.dispatchEvent(dropWith([new File(["A"], "os-drop2.txt")]));
+    await nextTick();
+    expect(wrapper!.get(".wb-notice").text()).toBe(workbenchMessage("en", "dropToTargetPane"));
+  });
+
+  it("makes context menus keyboard reachable: first item focus, arrow navigation, Escape close", async () => {
+    mountWorkbench();
+    await settle();
+    table("left").vm.$emit("contextmenu", { entry: table("left").props("entries")[0], x: 10, y: 10 });
+    // 菜单 watch 内部还有一次 nextTick（钳位 + 聚焦首项），多轮 flush 等它跑完。
+    await settle();
+    const items = () => wrapper!.get(".wb-context-menu").findAll('[role="menuitem"]');
+    expect(items().length).toBeGreaterThan(2);
+    expect(document.activeElement).toBe(items()[0]!.element);
+    await items()[0]!.trigger("keydown", { key: "ArrowDown" });
+    expect(document.activeElement).toBe(items()[1]!.element);
+    await items()[1]!.trigger("keydown", { key: "ArrowUp" });
+    expect(document.activeElement).toBe(items()[0]!.element);
+    await items()[0]!.trigger("keydown", { key: "End" });
+    expect(document.activeElement).toBe(items().at(-1)!.element);
+    await items().at(-1)!.trigger("keydown", { key: "Escape" });
+    await nextTick();
+    expect(wrapper!.find(".wb-context-menu").exists()).toBe(false);
+  });
+
+  it("gives dock tabs tablist semantics with roving focus and arrow-key switching", async () => {
+    mountWorkbench();
+    await settle();
+    await showTransfers();
+    const tabs = () => wrapper!.get(".wb-dock-tabs").findAll('[role="tab"]');
+    expect(tabs()).toHaveLength(4);
+    expect(tabs()[0]!.attributes("aria-selected")).toBe("true");
+    expect(tabs()[1]!.attributes("aria-selected")).toBe("false");
+    expect(tabs()[1]!.attributes("tabindex")).toBe("-1");
+    await tabs()[0]!.trigger("keydown", { key: "ArrowRight" });
+    await nextTick();
+    expect(tabs()[1]!.attributes("aria-selected")).toBe("true");
+    expect(document.activeElement).toBe(tabs()[1]!.element);
+    await tabs()[1]!.trigger("keydown", { key: "ArrowLeft" });
+    await nextTick();
+    expect(tabs()[0]!.attributes("aria-selected")).toBe("true");
+    expect(document.activeElement).toBe(tabs()[0]!.element);
+  });
+
+  it("renders the preview as a modal dialog and confirms before discarding unsaved edits", async () => {
+    mountWorkbench({ PreviewPane: PreviewPaneStub });
+    await settle();
+    const entry = table("left").props("entries").find((item) => item.kind === "file")!;
+    table("left").vm.$emit("open", entry);
+    await settle();
+    const overlay = wrapper!.get(".wb-preview-overlay");
+    expect(overlay.attributes("role")).toBe("dialog");
+    expect(overlay.attributes("aria-modal")).toBe("true");
+    expect(overlay.attributes("aria-label")).toBe(entry.name);
+    // 焦点陷阱：末位按钮 Tab 回绕到首位（同 ConfirmDialog 实现）。
+    const overlayButtons = () => wrapper!.get(".wb-preview-overlay").findAll("button");
+    overlayButtons().at(-1)!.element.focus();
+    await overlayButtons().at(-1)!.trigger("keydown", { key: "Tab" });
+    expect(document.activeElement).toBe(overlayButtons()[0]!.element);
+    // 干净态 Esc 直接关闭。
+    await overlay.trigger("keydown", { key: "Escape" });
+    await nextTick();
+    expect(wrapper!.find(".wb-preview-overlay").exists()).toBe(false);
+    // 脏草稿（isDirty）Esc → 先弹丢弃确认，不静默丢稿。
+    table("left").vm.$emit("open", entry);
+    await settle();
+    await wrapper!.get("[data-test=set-dirty]").trigger("click");
+    await wrapper!.get(".wb-preview-overlay").trigger("keydown", { key: "Escape" });
+    await nextTick();
+    expect(wrapper!.find(".wb-preview-overlay").exists()).toBe(true);
+    const discardDialog = () => wrapper!.findAll(".wb-dialog").at(-1)!;
+    expect(discardDialog().text()).toContain(workbenchMessage("en", "previewDiscardTitle"));
+    // 「继续编辑」：确认层关闭，预览与草稿保留。
+    await discardDialog().get("footer button:first-child").trigger("click");
+    await nextTick();
+    expect(wrapper!.find(".wb-preview-overlay").exists()).toBe(true);
+    // 再 Esc → 「丢弃」：预览关闭。
+    await wrapper!.get(".wb-preview-overlay").trigger("keydown", { key: "Escape" });
+    await nextTick();
+    await discardDialog().get("footer button:last-child").trigger("click");
+    await nextTick();
+    expect(wrapper!.find(".wb-preview-overlay").exists()).toBe(false);
   });
 });

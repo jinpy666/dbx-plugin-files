@@ -246,6 +246,11 @@ watch(
   },
   { immediate: true },
 );
+
+// 审计#7：向外暴露未保存草稿状态——App 侧关闭预览（Esc/遮罩/关闭钮）时，
+// 编辑中且草稿已改动先弹丢弃确认，防止静默丢失 CodeMirror 编辑内容。
+const isDirty = computed(() => editing.value && draft.value !== text.value);
+defineExpose({ isDirty });
 </script>
 
 <template>
