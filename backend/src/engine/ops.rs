@@ -450,8 +450,8 @@ pub struct CopyOutcome {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CopyTransport {
-    /// Native server-side `op.copy` / `op.rename` (same connection,
-    /// capability supported).
+    /// Native server-side `op.copy` / `op.rename` (same Operator instance or
+    /// a config-equivalent backend, capability supported).
     Native,
     /// Degraded read→write loop executed as a transfer job.
     Job,
@@ -460,9 +460,10 @@ pub enum CopyTransport {
 /// `files/copy` (§8.2): `sourceConnectionId?`, `sourcePath`,
 /// `targetConnectionId?`, `targetPath` → `{success, transport, jobId?}`.
 ///
-/// Decision tree: same Operator instance + `full_capability().copy` → native
-/// `op.copy`; otherwise degrade to a streaming read→write copy executed
-/// inline and reported as `transport: "job"`.
+/// Decision tree: the engine's [`BackendIdentity`] verdict yields a shared
+/// namespace spelling ([`native_route`]) + `full_capability().copy` on the
+/// executing operator → native `op.copy`; otherwise degrade to a streaming
+/// read→write copy executed inline and reported as `transport: "job"`.
 ///
 /// Note on the degraded transport: the frozen op signatures carry no
 /// `JobTable`/`PluginEmitter`, so the transfer layer's registry is unreachable
@@ -475,18 +476,16 @@ pub async fn copy(
     target: &Operator,
     source_path: &str,
     target_path: &str,
+    identity: BackendIdentity,
 ) -> Result<CopyOutcome, String> {
-    if native_copy_available(source, target) {
-        source
-            .copy(source_path, target_path)
-            .await
-            .map_err(|error| {
-                format!("Failed to copy '{source_path}' to '{target_path}': {error}")
-            })?;
-        return Ok(CopyOutcome {
-            transport: CopyTransport::Native,
-            job_id: None,
-        });
+    if let Some(route) = native_route(source, target, source_path, target_path, identity) {
+        if route_executor(&route, source, target).info().capability().copy {
+            execute_native_copy(source, target, source_path, target_path, route).await?;
+            return Ok(CopyOutcome {
+                transport: CopyTransport::Native,
+                job_id: None,
+            });
+        }
     }
     inline_copy(source, target, source_path, target_path).await?;
     Ok(CopyOutcome {
@@ -495,29 +494,85 @@ pub async fn copy(
     })
 }
 
+/// Runs one server-side copy/rename along a [`NativeRoute`]. Legacy
+/// ([`NativeRoute::SameNamespace`]) behavior is untouched; a translated route
+/// additionally best-effort creates the parent of the translated endpoint on
+/// the executor (the same physical directory the stream transport would have
+/// created via the other operator's namespace) so filesystem-class backends
+/// don't fail on a missing parent — the copy itself still surfaces any real
+/// error.
+async fn execute_native_copy(
+    source: &Operator,
+    target: &Operator,
+    source_path: &str,
+    target_path: &str,
+    route: NativeRoute,
+) -> Result<(), String> {
+    match route {
+        NativeRoute::SameNamespace => source
+            .copy(source_path, target_path)
+            .await
+            .map(|_| ())
+            .map_err(|error| {
+                format!("Failed to copy '{source_path}' to '{target_path}': {error}")
+            }),
+        NativeRoute::TranslatedSource { to } => {
+            ensure_parent_best_effort(source, &to).await;
+            source
+                .copy(source_path, &to)
+                .await
+                .map(|_| ())
+                .map_err(|error| {
+                    format!("Failed to copy '{source_path}' to '{target_path}': {error}")
+                })
+        }
+        NativeRoute::TranslatedTarget { from } => {
+            ensure_parent_best_effort(target, target_path).await;
+            target
+                .copy(&from, target_path)
+                .await
+                .map(|_| ())
+                .map_err(|error| {
+                    format!("Failed to copy '{source_path}' to '{target_path}': {error}")
+                })
+        }
+    }
+}
+
+/// mkdir -p on the translated endpoint's parent; best-effort because the
+/// native copy that follows is the authoritative error surface.
+async fn ensure_parent_best_effort(executor: &Operator, path: &str) {
+    let parent = crate::engine::transfer::parent_dir(path.trim_matches('/'));
+    if !parent.is_empty() {
+        let _ = executor.create_dir(&format!("{parent}/")).await;
+    }
+}
+
 /// `files/move` (§8.2): params identical to [`copy`] → `{success, transport,
 /// jobId?}`.
 ///
-/// Same Operator instance + `full_capability().rename` → native `op.rename`;
-/// otherwise copy (native copy when available, else read→write) + source
-/// delete (delete only after the copy succeeded).
+/// Shared namespace spelling + `full_capability().rename` → native
+/// `op.rename`; otherwise copy (native copy when available, else read→write)
+/// + source delete (delete only after the copy succeeded).
 pub async fn move_path(
     source: &Operator,
     target: &Operator,
     source_path: &str,
     target_path: &str,
+    identity: BackendIdentity,
 ) -> Result<CopyOutcome, String> {
-    if native_move_available(source, target) {
-        source
-            .rename(source_path, target_path)
-            .await
-            .map_err(|error| {
-                format!("Failed to move '{source_path}' to '{target_path}': {error}")
-            })?;
-        return Ok(CopyOutcome {
-            transport: CopyTransport::Native,
-            job_id: None,
-        });
+    if let Some(route) = native_route(source, target, source_path, target_path, identity) {
+        if route_executor(&route, source, target)
+            .info()
+            .capability()
+            .rename
+        {
+            execute_native_move(source, target, source_path, target_path, route).await?;
+            return Ok(CopyOutcome {
+                transport: CopyTransport::Native,
+                job_id: None,
+            });
+        }
     }
     inline_copy(source, target, source_path, target_path).await?;
     // Delete only after the copy succeeded (doc §8.2 note).
@@ -534,6 +589,38 @@ pub async fn move_path(
         transport: CopyTransport::Job,
         job_id: None,
     })
+}
+
+/// [`execute_native_copy`] for moves: `rename` follows the same namespace
+/// mapping, and a translated rename never needs extra parent setup (rename
+/// keeps the source inode/marker placement on filesystem backends).
+async fn execute_native_move(
+    source: &Operator,
+    target: &Operator,
+    source_path: &str,
+    target_path: &str,
+    route: NativeRoute,
+) -> Result<(), String> {
+    match route {
+        NativeRoute::SameNamespace => {
+            source
+                .rename(source_path, target_path)
+                .await
+                .map_err(|error| {
+                    format!("Failed to move '{source_path}' to '{target_path}': {error}")
+                })
+        }
+        NativeRoute::TranslatedSource { to } => {
+            source.rename(source_path, &to).await.map_err(|error| {
+                format!("Failed to move '{source_path}' to '{target_path}': {error}")
+            })
+        }
+        NativeRoute::TranslatedTarget { from } => {
+            target.rename(&from, target_path).await.map_err(|error| {
+                format!("Failed to move '{source_path}' to '{target_path}': {error}")
+            })
+        }
+    }
 }
 
 /// `files/rename` (§8.2): `path`, `newPath` → `{success}`.
@@ -582,25 +669,159 @@ pub async fn rename(operator: &Operator, path: &str, new_path: &str) -> Result<(
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/// True when both operators wrap the same backend instance (an `Operator`
-/// clone shares the underlying `Arc<dyn AccessDyn>` accessor).
-fn same_instance(source: &Operator, target: &Operator) -> bool {
-    std::sync::Arc::ptr_eq(source.base_service(), target.base_service())
+/// Cross-connection backend identity verdict supplied by the engine
+/// ([`crate::engine::Engine::backend_identity`], fingerprint registry). The
+/// ops layer never re-derives credentials or config; it only consumes the
+/// verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendIdentity {
+    /// Both sides share one Operator instance — paths live in a single
+    /// namespace; the legacy decision path, byte-identical behavior.
+    SameInstance,
+    /// Different instances whose registered config fingerprints match (same
+    /// scheme + same credential-free Builder kv; `root` may differ) — rclone
+    /// `--server-side-across-configs`. Native copies additionally require the
+    /// root relation to be translatable (see [`native_route`]).
+    Equivalent,
+    /// Genuinely different backends — everything degrades to the stream
+    /// transport.
+    Distinct,
+}
+
+/// How a server-side copy/rename maps onto a single operator namespace.
+/// OpenDAL's `copy`/`rename` take both endpoints in ONE operator's
+/// coordinates, so a cross-root native copy needs the destination translated
+/// into the executor's namespace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativeRoute {
+    /// Same instance or same root: pass the paths through verbatim (legacy
+    /// behavior, no translation side effects).
+    SameNamespace,
+    /// Target path translated into the source operator's namespace; copy
+    /// executes on the source operator as `source.copy(source_path, to)`.
+    TranslatedSource { to: String },
+    /// Source path translated into the target operator's namespace; copy
+    /// executes on the target operator as `target.copy(from, target_path)`.
+    TranslatedTarget { from: String },
+}
+
+/// Physical namespace path of a backend-relative path. `info().root()` is
+/// absolute but NOT uniformly slash-normalized across services (object stores
+/// return `/dir/`, the fs service returns the bare configured root), so the
+/// trailing separator is enforced here before concatenation; a trailing `/`
+/// of a dir request is dropped (native dir-marker copies are not a flow —
+/// directory trees go through the dir-job layer).
+fn physical_path(root: &str, relative: &str) -> String {
+    let base = if root.ends_with('/') {
+        root.to_string()
+    } else {
+        format!("{root}/")
+    };
+    format!("{base}{}", relative.trim_matches('/'))
+}
+
+/// Segment-wise remainder of `path` (absolute physical) under `base_root`
+/// (normalized operator root). `None` when `path` escapes the base or is the
+/// base itself — a native copy has no single-namespace spelling then.
+fn path_remainder(path: &str, base_root: &str) -> Option<String> {
+    // The base keeps its leading slash; the trailing one is the boundary we
+    // require (so `/ab` does not strip under `/a`).
+    let base = base_root.trim_end_matches('/');
+    let rest = path.strip_prefix(base)?;
+    let rest = rest.strip_prefix('/')?;
+    if rest.is_empty() {
+        None
+    } else {
+        Some(rest.to_string())
+    }
+}
+
+/// §8.2 decision geometry shared by the single-file ops and the transfer
+/// layer's dir jobs: how (and whether) one server-side copy/rename between
+/// the two operators can be expressed. `None` → no native spelling exists
+/// (distinct backends, or roots neither nesting nor equal) → degrade to the
+/// streaming transport.
+pub fn native_route(
+    source: &Operator,
+    target: &Operator,
+    source_path: &str,
+    target_path: &str,
+    identity: BackendIdentity,
+) -> Option<NativeRoute> {
+    match identity {
+        BackendIdentity::Distinct => None,
+        BackendIdentity::SameInstance => Some(NativeRoute::SameNamespace),
+        BackendIdentity::Equivalent => {
+            let source_root = source.info().root();
+            let target_root = target.info().root();
+            if source_root == target_root {
+                return Some(NativeRoute::SameNamespace);
+            }
+            // Prefer the source operator (legacy executor). Nested roots
+            // translate; divergent roots have no single-namespace spelling.
+            if let Some(to) = path_remainder(&physical_path(&target_root, target_path), &source_root)
+            {
+                return Some(NativeRoute::TranslatedSource { to });
+            }
+            let from =
+                path_remainder(&physical_path(&source_root, source_path), &target_root)?;
+            Some(NativeRoute::TranslatedTarget { from })
+        }
+    }
+}
+
+/// The operator a [`NativeRoute`] executes on: the source, except when the
+/// translation went the other way ([`NativeRoute::TranslatedTarget`]).
+fn route_executor<'a>(
+    route: &NativeRoute,
+    source: &'a Operator,
+    target: &'a Operator,
+) -> &'a Operator {
+    match route {
+        NativeRoute::TranslatedTarget { .. } => target,
+        NativeRoute::SameNamespace | NativeRoute::TranslatedSource { .. } => source,
+    }
 }
 
 /// §8.2 decision predicate shared by `ops::copy` and the main.rs router:
-/// `files/copy` can run natively (server-side `op.copy`) only when both sides
-/// wrap the same backend instance and the backend advertises `copy`.
-pub fn native_copy_available(source: &Operator, target: &Operator) -> bool {
-    same_instance(source, target) && source.info().capability().copy
+/// `files/copy` can run natively (server-side `op.copy`) when the engine's
+/// identity verdict yields a shared-namespace spelling ([`native_route`]) and
+/// the executing backend advertises `copy`.
+pub fn native_copy_available(
+    source: &Operator,
+    target: &Operator,
+    source_path: &str,
+    target_path: &str,
+    identity: BackendIdentity,
+) -> bool {
+    match native_route(source, target, source_path, target_path, identity) {
+        None => false,
+        Some(route) => route_executor(&route, source, target)
+            .info()
+            .capability()
+            .copy,
+    }
 }
 
 /// §8.2 decision predicate shared by `ops::move_path` and the main.rs router:
-/// `files/move` can run as a native server-side `op.rename` only when both
-/// sides wrap the same backend instance and the backend advertises `rename`.
-pub fn native_move_available(source: &Operator, target: &Operator) -> bool {
-    same_instance(source, target) && source.info().capability().rename
+/// `files/move` can run as a native server-side `op.rename` under the same
+/// rules as [`native_copy_available`], against the `rename` capability.
+pub fn native_move_available(
+    source: &Operator,
+    target: &Operator,
+    source_path: &str,
+    target_path: &str,
+    identity: BackendIdentity,
+) -> bool {
+    match native_route(source, target, source_path, target_path, identity) {
+        None => false,
+        Some(route) => route_executor(&route, source, target)
+            .info()
+            .capability()
+            .rename,
+    }
 }
+
 
 /// Lists a directory (non-recursive) or the whole subtree (recursive),
 /// filtering the marker entry of the listed prefix itself. Paths inside the
@@ -989,6 +1210,7 @@ mod tests {
             &op,
             "alpha/bravo/hello.txt",
             "alpha/bravo/hello-copy.txt",
+            BackendIdentity::SameInstance,
         )
         .await
         .unwrap();
@@ -1003,6 +1225,7 @@ mod tests {
             &op,
             "alpha/bravo/hello-copy.txt",
             "alpha/bravo/moved.txt",
+            BackendIdentity::SameInstance,
         )
         .await
         .unwrap();
@@ -1057,9 +1280,25 @@ mod tests {
         .unwrap();
         op.write("f.txt", "native").await.unwrap();
 
-        let outcome = copy(&op, &op, "f.txt", "g.txt").await.unwrap();
+        let outcome = copy(
+            &op,
+            &op,
+            "f.txt",
+            "g.txt",
+            BackendIdentity::SameInstance,
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome.transport, CopyTransport::Native);
-        let outcome = move_path(&op, &op, "g.txt", "h.txt").await.unwrap();
+        let outcome = move_path(
+            &op,
+            &op,
+            "g.txt",
+            "h.txt",
+            BackendIdentity::SameInstance,
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome.transport, CopyTransport::Native);
         assert!(op.exists("h.txt").await.unwrap());
         assert!(!op.exists("g.txt").await.unwrap());
@@ -1076,7 +1315,17 @@ mod tests {
         let target = memory_operator();
         source.write("f.txt", "12345").await.unwrap();
 
-        let outcome = copy(&source, &target, "f.txt", "copy.txt").await.unwrap();
+        // Two memory instances: equal configs but per-Operator state, so the
+        // engine verdict is Distinct and the transport must stay streaming.
+        let outcome = copy(
+            &source,
+            &target,
+            "f.txt",
+            "copy.txt",
+            BackendIdentity::Distinct,
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome.transport, CopyTransport::Job);
         assert!(outcome.job_id.is_none(), "inline transport has no jobId yet");
         let data = target.read("copy.txt").await.unwrap();
@@ -1084,9 +1333,15 @@ mod tests {
 
         // move degrade: copy + source delete, nested target dir included.
         source.write("nested/f2.txt", "abcdef").await.unwrap();
-        let outcome = move_path(&source, &target, "nested/f2.txt", "dst/moved.txt")
-            .await
-            .unwrap();
+        let outcome = move_path(
+            &source,
+            &target,
+            "nested/f2.txt",
+            "dst/moved.txt",
+            BackendIdentity::Distinct,
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome.transport, CopyTransport::Job);
         assert_eq!(
             target.read("dst/moved.txt").await.unwrap().to_vec(),
@@ -1096,6 +1351,166 @@ mod tests {
             !source.exists("nested/f2.txt").await.unwrap(),
             "move deletes the source only after the copy succeeded"
         );
+    }
+
+    // -- config-equivalent cross-connection native copy (2026-09-17) --------
+
+    /// Two fs Operators over one tempdir root: config-equivalent (the fs kv
+    /// only carries `root`, which the fingerprint excludes) but distinct
+    /// instances — the "same account added twice" shape.
+    fn fs_operator(root: &std::path::Path) -> Operator {
+        Operator::via_iter(
+            "fs",
+            vec![("root".to_string(), root.to_string_lossy().to_string())],
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn equivalent_configs_native_copy_across_connections() {
+        let temp = tempfile::tempdir().unwrap();
+        // Same root twice → same namespace → verbatim native copy.
+        let source = fs_operator(temp.path());
+        let target = fs_operator(temp.path());
+        source.write("f.txt", "same").await.unwrap();
+
+        assert!(
+            native_copy_available(
+                &source,
+                &target,
+                "f.txt",
+                "g.txt",
+                BackendIdentity::Equivalent
+            ),
+            "fingerprint-equivalent instances with copy capability go native"
+        );
+        let outcome = copy(
+            &source,
+            &target,
+            "f.txt",
+            "g.txt",
+            BackendIdentity::Equivalent,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.transport, CopyTransport::Native);
+        assert_eq!(target.read("g.txt").await.unwrap().to_vec(), b"same");
+
+        // move joins the same rule (native rename).
+        let outcome = move_path(
+            &source,
+            &target,
+            "g.txt",
+            "moved.txt",
+            BackendIdentity::Equivalent,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.transport, CopyTransport::Native);
+        assert!(target.exists("moved.txt").await.unwrap());
+        assert!(!target.exists("g.txt").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn equivalent_configs_native_copy_translates_divergent_roots() {
+        let temp = tempfile::tempdir().unwrap();
+        // Target root nests under the source root: the destination translates
+        // into the source namespace (`target_root/target_path` is one and the
+        // same physical file in both coordinates).
+        let source = fs_operator(temp.path());
+        let nested = temp.path().join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let target = fs_operator(&nested);
+        source.write("f.txt", "cross").await.unwrap();
+
+        let outcome = copy(
+            &source,
+            &target,
+            "f.txt",
+            "f2.txt",
+            BackendIdentity::Equivalent,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.transport, CopyTransport::Native);
+        // The file landed in the TARGET's physical namespace, not merely
+        // beside the source under the source root.
+        assert_eq!(
+            std::fs::read(nested.join("f2.txt")).unwrap(),
+            b"cross",
+            "native copy must land in the target root"
+        );
+        assert!(!temp.path().join("f2.txt").exists(), "no stray copy at the source root");
+
+        // Reverse nesting direction: the copy executes on the target
+        // operator with the source translated instead.
+        let outcome = move_path(
+            &source,
+            &target,
+            "f.txt",
+            "f3.txt",
+            BackendIdentity::Equivalent,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.transport, CopyTransport::Native);
+        assert_eq!(std::fs::read(nested.join("f3.txt")).unwrap(), b"cross");
+        assert!(!temp.path().join("f.txt").exists(), "native move deleted the source");
+    }
+
+    #[tokio::test]
+    async fn equivalent_configs_with_divergent_roots_degrade_to_stream() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = fs_operator(&temp.path().join("a"));
+        let target = fs_operator(&temp.path().join("b"));
+        std::fs::create_dir_all(temp.path().join("a")).unwrap();
+        std::fs::create_dir_all(temp.path().join("b")).unwrap();
+        source.write("f.txt", "stream").await.unwrap();
+
+        // Roots neither equal nor nested: fingerprints still match (root is
+        // excluded), but no single-namespace copy spelling exists.
+        assert!(!native_copy_available(
+            &source,
+            &target,
+            "f.txt",
+            "g.txt",
+            BackendIdentity::Equivalent
+        ));
+        assert!(native_route(
+            &source,
+            &target,
+            "f.txt",
+            "g.txt",
+            BackendIdentity::Equivalent
+        )
+        .is_none());
+        let outcome = copy(
+            &source,
+            &target,
+            "f.txt",
+            "g.txt",
+            BackendIdentity::Equivalent,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.transport, CopyTransport::Job);
+        assert_eq!(target.read("g.txt").await.unwrap().to_vec(), b"stream");
+    }
+
+    #[test]
+    fn native_route_geometry_table() {
+        // Pure path math: physical root/relative joins + segment-safe strips.
+        // Object-store roots arrive `/dir/`-normalized; the fs service returns
+        // the bare root, so the join must enforce the trailing separator.
+        assert_eq!(physical_path("/a/", "x/y"), "/a/x/y");
+        assert_eq!(physical_path("/a", "x/y"), "/a/x/y");
+        assert_eq!(physical_path("/", "x"), "/x");
+        assert_eq!(path_remainder("/a/x/y", "/a/"), Some("x/y".to_string()));
+        assert_eq!(path_remainder("/a/x/y", "/a"), Some("x/y".to_string()));
+        assert_eq!(path_remainder("/a/x/y", "/"), Some("a/x/y".to_string()));
+        assert_eq!(path_remainder("/ab/x", "/a/"), None, "segment boundary required");
+        assert_eq!(path_remainder("/ab/x", "/a"), None, "segment boundary required");
+        assert_eq!(path_remainder("/a/", "/a/"), None, "base itself is not expressible");
     }
 
     #[tokio::test]

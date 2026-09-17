@@ -1325,6 +1325,7 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
         sync: bool,
         dry_run: bool,
         max_delete: Option<u64>,
+        identity: crate::engine::ops::BackendIdentity,
         emitter: &PluginEmitter,
     ) -> Result<String, String> {
         validate_dir_job_gates(target, sync)?;
@@ -1379,6 +1380,7 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
             false,
             dry_run,
             max_delete,
+            identity,
             cancel,
             sink,
         ));
@@ -1387,10 +1389,12 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
 
     /// X-A ③ (F-B handover) / P-FILES ②: degraded cross-path copy with an
     /// optional source delete, as a real async job. main.rs routes here when
-    /// the two sides are not the same Operator instance or the backend lacks
-    /// the native copy/rename capability; the call returns `{jobId}`
-    /// immediately and the streaming read→write work runs on the dir-job
-    /// table (progress events + `files/transfer/status` + `files/transfers/list`).
+    /// the engine's backend identity verdict rules out an inline native
+    /// single-op copy (distinct backends, or the backend lacks the native
+    /// copy/rename capability); the call returns `{jobId}` immediately and
+    /// the per-file work (server-side copies for config-equivalent instances,
+    /// streaming read→write otherwise) runs on the dir-job table (progress
+    /// events + `files/transfer/status` + `files/transfers/list`).
     /// `delete_source` implements the move semantics — the source is deleted
     /// only after the copy succeeded. `kind` records the triggering method
     /// (`copy`/`move`/`rename`) for the unified list view.
@@ -1405,6 +1409,7 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
         target_path: &str,
         delete_source: bool,
         kind: DirJobKind,
+        identity: crate::engine::ops::BackendIdentity,
         emitter: &PluginEmitter,
     ) -> Result<String, String> {
         // Target gates: read_only rejects the write; the delete side of a
@@ -1466,6 +1471,7 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
             delete_source,
             false,
             None,
+            identity,
             cancel,
             sink,
         ));
@@ -1962,6 +1968,7 @@ async fn run_dir_job(
     delete_source: bool,
     dry_run: bool,
     max_delete: Option<u64>,
+    identity: crate::engine::ops::BackendIdentity,
     cancel: Arc<AtomicBool>,
     sink: EventSink,
 ) {
@@ -2115,7 +2122,16 @@ async fn run_dir_job(
         return;
     }
 
-    let native_copy = source_connection_id == target_connection_id
+    // Same connection keeps the legacy rule verbatim; config-equivalent
+    // instances (same credential-free fingerprint, rclone
+    // `--server-side-across-configs`) join it — per-entry `native_route`
+    // below still filters root geometries that have no single-namespace
+    // spelling and streams those files instead.
+    let native_copy = (source_connection_id == target_connection_id
+        || matches!(
+            identity,
+            crate::engine::ops::BackendIdentity::Equivalent
+        ))
         && source_operator.info().capability().copy;
 
     // Ensure the target directory itself exists (mkdir -p semantics). Only
@@ -2166,11 +2182,32 @@ async fn run_dir_job(
             }
         }
         let outcome = if native_copy {
-            source_operator
-                .copy(&source_file, &target_file)
+            // Per-entry route: SameInstance/same-root copies stay verbatim on
+            // the source operator (legacy shape); config-equivalent cross
+            // root pairs translate the destination into the executor's
+            // namespace; geometries without a spelling (and Distinct
+            // backends) fall back to the streaming transport.
+            match crate::engine::ops::native_route(
+                &source_operator,
+                &target_operator,
+                &source_file,
+                &target_file,
+                identity,
+            ) {
+                Some(route) => native_dir_copy(
+                    &source_operator,
+                    &target_operator,
+                    &source_file,
+                    &target_file,
+                    route,
+                )
                 .await
-                .map(|_| ())
-                .map_err(|error| format!("Native copy of '{source_file}' failed: {error}"))
+                .map(|_| ()),
+                None => {
+                    stream_copy(&source_operator, &target_operator, &source_file, &target_file)
+                        .await
+                }
+            }
         } else {
             stream_copy(&source_operator, &target_operator, &source_file, &target_file).await
         };
@@ -2683,6 +2720,54 @@ async fn stream_copy(
         ));
     }
     Ok(())
+}
+
+/// One dir-job file via a server-side copy along the [`NativeRoute`] computed
+/// by `engine::ops::native_route`. Same-namespace routes stay verbatim on the
+/// source operator (legacy behavior); translated routes best-effort create
+/// the translated endpoint's parent on the executor (same physical directory
+/// the streaming path would have created through the other operator) before
+/// copying — the copy itself remains the authoritative error surface.
+async fn native_dir_copy(
+    source_operator: &opendal::Operator,
+    target_operator: &opendal::Operator,
+    source_file: &str,
+    target_file: &str,
+    route: crate::engine::ops::NativeRoute,
+) -> Result<(), String> {
+    match route {
+        crate::engine::ops::NativeRoute::SameNamespace => source_operator
+            .copy(source_file, target_file)
+            .await
+            .map(|_| ())
+            .map_err(|error| format!("Native copy of '{source_file}' failed: {error}")),
+        crate::engine::ops::NativeRoute::TranslatedSource { to } => {
+            ensure_native_parent(source_operator, &to).await;
+            source_operator
+                .copy(source_file, &to)
+                .await
+                .map(|_| ())
+                .map_err(|error| format!("Native copy of '{source_file}' failed: {error}"))
+        }
+        crate::engine::ops::NativeRoute::TranslatedTarget { from } => {
+            ensure_native_parent(target_operator, target_file).await;
+            target_operator
+                .copy(&from, target_file)
+                .await
+                .map(|_| ())
+                .map_err(|error| format!("Native copy of '{source_file}' failed: {error}"))
+        }
+    }
+}
+
+/// mkdir -p on a translated native-copy endpoint's parent; best-effort —
+/// object stores ignore it, filesystem backends need it, and a real failure
+/// resurfaces through the copy that follows.
+async fn ensure_native_parent(executor: &opendal::Operator, path: &str) {
+    let parent = slot::parent_dir(path.trim_matches('/'));
+    if !parent.is_empty() {
+        let _ = executor.create_dir(&format!("/{parent}/")).await;
+    }
 }
 
 /// rclone-aligned incremental comparison: sizes must match, and when both
@@ -3445,6 +3530,9 @@ mod tests {
             false,
             dry_run,
             max_delete,
+            // Distinct verdicts keep these streaming (memory instances are
+            // per-Operator state, never config-equivalent backends).
+            crate::engine::ops::BackendIdentity::Distinct,
             cancel,
             EventSink::Test(test_sink.clone()),
         )
@@ -3503,6 +3591,104 @@ mod tests {
                 target.read("/dst/same.txt").await.unwrap().to_vec(),
                 b"hello",
                 "unchanged file is left alone"
+            );
+        });
+    }
+
+    /// 配置等价跨连接（rclone `--server-side-across-configs`，2026-09-17）：
+    /// dir job 逐文件 server-side copy 的跨根平移——source 根包含 target 根
+    /// 时，目的地坐标平移进 source 命名空间，物理落点必须是 target 根下的
+    /// 同一文件；单文件 plan（relative 为空）同样成立。
+    #[test]
+    fn equivalent_config_dir_job_translates_cross_root_native_copies() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let mk = |root: &std::path::Path| {
+                opendal::Operator::via_iter(
+                    "fs",
+                    vec![("root".to_string(), root.to_string_lossy().to_string())],
+                )
+                .unwrap()
+            };
+            let source = mk(temp.path());
+            let nested = temp.path().join("nested");
+            std::fs::create_dir_all(&nested).unwrap();
+            let target = mk(&nested);
+            source.write("/src/a.txt", "aaa").await.unwrap();
+            source.write("/src/sub/b.txt", "bbb").await.unwrap();
+
+            // Drive run_dir_job directly: Equivalent verdict (same credential
+            // free fingerprint; fs roots differ but nest).
+            let inner = {
+                let table = JobTable::new();
+                table.inner.clone()
+            };
+            let job_id = "equiv-job".to_string();
+            inner.dir_jobs.lock().await.insert(
+                job_id.clone(),
+                DirJob {
+                    job_id: job_id.clone(),
+                    source_connection_id: "src-conn".into(),
+                    source_path: "/src".into(),
+                    target_connection_id: "tgt-conn".into(),
+                    target_path: "dir".into(),
+                    sync: false,
+                    delete_source: false,
+                    kind: DirJobKind::Copy,
+                    files_done: 0,
+                    files_total: None,
+                    bytes_done: 0,
+                    bytes_total: None,
+                    files_skipped: 0,
+                    bytes_skipped: 0,
+                    dry_run: false,
+                    max_delete: None,
+                    status: JobStatus::Queued,
+                    error: None,
+                    started_at: Some(1),
+                    finished_at: None,
+                },
+            );
+            let cancel = Arc::new(AtomicBool::new(false));
+            inner.dir_controls.lock().await.insert(job_id.clone(), cancel.clone());
+            let test_sink = TestSink::shared();
+            run_dir_job(
+                inner.clone(),
+                job_id,
+                source.clone(),
+                target.clone(),
+                "src-conn".into(),
+                "tgt-conn".into(),
+                "/src".into(),
+                "dir".into(),
+                false,
+                false,
+                false,
+                None,
+                crate::engine::ops::BackendIdentity::Equivalent,
+                cancel,
+                EventSink::Test(test_sink.clone()),
+            )
+            .await;
+
+            let job = inner.dir_jobs.lock().await.get("equiv-job").cloned().unwrap();
+            assert_eq!(job.status, JobStatus::Completed, "job error: {:?}", job.error);
+            assert_eq!(job.files_done, 2);
+            // The tree landed under the TARGET's physical namespace.
+            assert_eq!(target.read("/dir/a.txt").await.unwrap().to_vec(), b"aaa");
+            assert_eq!(
+                target.read("/dir/sub/b.txt").await.unwrap().to_vec(),
+                b"bbb"
+            );
+            assert_eq!(
+                std::fs::read(nested.join("dir/a.txt")).unwrap(),
+                b"aaa",
+                "physical landing must be the target root"
+            );
+            assert!(
+                !temp.path().join("dir").exists(),
+                "no stray copy beside the source under the source root"
             );
         });
     }

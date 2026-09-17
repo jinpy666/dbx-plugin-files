@@ -17,6 +17,10 @@
 #![allow(dead_code)]
 
 pub mod ops;
+// Credential-free config fingerprint per connection (2026-09-17): powers the
+// cross-connection server-side copy decision (rclone
+// `--server-side-across-configs`) without ever touching secret values.
+pub mod fingerprint;
 // F-C: streaming transfer primitives (Writer/Reader slots + dir traversal)
 // consumed by `crate::transfers`. One-line addition to the F-A module list.
 pub mod transfer;
@@ -46,11 +50,15 @@ use opendal::Operator;
 use crate::model::StoredConnection;
 
 /// One connected storage: the parsed lifecycle record (for read_only /
-/// allow_delete / lock_to_root gates and timeouts) plus its Operator.
+/// allow_delete / lock_to_root gates and timeouts) plus its Operator and its
+/// registration-time credential-free config fingerprint.
 #[derive(Clone)]
 pub struct OperatorEntry {
     pub connection: StoredConnection,
     pub operator: Operator,
+    /// See [`fingerprint::BackendFingerprint`]; compared in
+    /// [`Engine::backend_identity`]. Holds no credential values.
+    pub fingerprint: fingerprint::BackendFingerprint,
 }
 
 /// Reserved `connectionId` for the sidecar-local filesystem (dual-pane left
@@ -149,6 +157,7 @@ impl Engine {
         }
         // Build first so a bad config never evicts a good entry.
         let operator = build_operator(&connection)?;
+        let fingerprint = fingerprint::BackendFingerprint::from_connection(&connection)?;
         let mut table = self
             .connections
             .lock()
@@ -158,6 +167,7 @@ impl Engine {
             OperatorEntry {
                 connection,
                 operator,
+                fingerprint,
             },
         );
         Ok(())
@@ -185,6 +195,35 @@ impl Engine {
         Ok(self.entry(connection_id)?.connection)
     }
 
+    /// Cross-connection backend identity verdict for the server-side
+    /// copy/move decision (rclone `--server-side-across-configs`, 2026-09-17):
+    /// `SameInstance` when both ids resolve to one Operator (an `Operator`
+    /// clone shares its accessor `Arc` — the legacy fast path), `Equivalent`
+    /// when different instances carry the same credential-free config
+    /// fingerprint (same scheme + same normalized Builder kv; `root` and
+    /// every credential key are excluded, see `fingerprint`), else
+    /// `Distinct`. Never echoes config values.
+    pub fn backend_identity(
+        &self,
+        source_id: &str,
+        target_id: &str,
+    ) -> Result<ops::BackendIdentity, String> {
+        let source = self.entry(source_id)?;
+        let target = self.entry(target_id)?;
+        if std::sync::Arc::ptr_eq(source.operator.base_service(), target.operator.base_service()) {
+            return Ok(ops::BackendIdentity::SameInstance);
+        }
+        // `memory` keeps per-Operator in-process state: equal configs there
+        // are still different backends, so only eligible schemes may join.
+        if source.fingerprint.is_cross_instance_eligible()
+            && target.fingerprint.is_cross_instance_eligible()
+            && source.fingerprint == target.fingerprint
+        {
+            return Ok(ops::BackendIdentity::Equivalent);
+        }
+        Ok(ops::BackendIdentity::Distinct)
+    }
+
     fn entry(&self, connection_id: &str) -> Result<OperatorEntry, String> {
         if connection_id == LOCAL_CONNECTION_ID {
             // Pure config construction (no I/O); the fs Operator dials
@@ -192,6 +231,7 @@ impl Engine {
             let connection = local_connection();
             return Ok(OperatorEntry {
                 operator: build_operator(&connection)?,
+                fingerprint: fingerprint::BackendFingerprint::from_connection(&connection)?,
                 connection,
             });
         }
@@ -1169,6 +1209,79 @@ mod tests {
             engine.disconnect("c1").unwrap(); // idempotent
             assert!(engine.operator("c1").is_err());
         });
+    }
+
+    #[test]
+    fn backend_identity_matches_fingerprints_across_connection_ids() {
+        // 同一账号建两条连接（不同 id、同 kv、不同凭据值/根）→ 配置等价，
+        // server-side copy 决策放行；不同 bucket/endpoint → 不等价。
+        let engine = Engine::new();
+        let mut first = connection("s3");
+        first.bucket = "demo".into();
+        first.endpoint = "http://127.0.0.1:9000".into();
+        first.access_key_id = "minioadmin".into();
+        first.secret_access_key = fixture("one");
+        let mut second = first.clone();
+        second.id = "c2".into();
+        second.root = "/elsewhere".into();
+        second.secret_access_key = fixture("two");
+        let mut other_bucket = first.clone();
+        other_bucket.id = "c3".into();
+        other_bucket.bucket = "other".into();
+
+        engine.connect(first).unwrap();
+        engine.connect(second).unwrap();
+        engine.connect(other_bucket).unwrap();
+
+        use ops::BackendIdentity;
+        assert_eq!(
+            engine.backend_identity("c1", "c2").unwrap(),
+            BackendIdentity::Equivalent,
+            "same kv modulo root/secret values is config-equivalent"
+        );
+        assert_eq!(
+            engine.backend_identity("c1", "c3").unwrap(),
+            BackendIdentity::Distinct,
+            "a different bucket is a different backend"
+        );
+        assert_eq!(
+            engine.backend_identity("c1", "c1").unwrap(),
+            BackendIdentity::SameInstance,
+            "one id resolves to one Operator instance"
+        );
+        assert!(
+            engine.backend_identity("missing", "c1").is_err(),
+            "unknown ids surface the standard business error"
+        );
+
+        // memory stays Distinct even with identical configs: its storage is
+        // per-Operator in-process state, so config equality proves nothing.
+        let mut mem_a = connection("opendal-custom");
+        mem_a.id = "mem-a".into();
+        mem_a.service = "memory".into();
+        let mut mem_b = mem_a.clone();
+        mem_b.id = "mem-b".into();
+        engine.connect(mem_a).unwrap();
+        engine.connect(mem_b).unwrap();
+        assert_eq!(
+            engine.backend_identity("mem-a", "mem-b").unwrap(),
+            BackendIdentity::Distinct,
+            "stateful services never join the equivalence"
+        );
+    }
+
+    #[test]
+    fn local_connection_resolves_equivalent_to_itself() {
+        // 双栏本地盘：每次解析都现场构建 Operator（不同 Arc），但指纹相同
+        // 且根一致 —— 判 Equivalent 后走 SameNamespace 原生拷贝，行为与
+        // SameInstance 等价。
+        let engine = Engine::new();
+        assert_eq!(
+            engine
+                .backend_identity(LOCAL_CONNECTION_ID, LOCAL_CONNECTION_ID)
+                .unwrap(),
+            ops::BackendIdentity::Equivalent
+        );
     }
 
     #[test]

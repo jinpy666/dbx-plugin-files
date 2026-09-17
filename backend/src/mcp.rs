@@ -1006,6 +1006,7 @@ impl Mcp {
                             &new_path,
                             true,
                             DirJobKind::Rename,
+                            engine.backend_identity(&connection.id, &connection.id)?,
                             emitter,
                         )
                         .await?;
@@ -1111,6 +1112,7 @@ impl Mcp {
                         request.sync,
                         request.dry_run,
                         request.max_delete,
+                        engine.backend_identity(&request.source.id, &request.target.id)?,
                         emitter,
                     )
                     .await?;
