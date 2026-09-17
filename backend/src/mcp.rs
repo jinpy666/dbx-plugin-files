@@ -2438,7 +2438,7 @@ fn inline_connection_properties() -> Value {
     "protocol": { "type": "string",
         "description": "Storage protocol (required): local (alias of fs), fs, s3, gcs, azblob, obs, oss, cos, webdav, ftp, sftp, smb, sftp-native, opendal-custom, aliyun-drive, dropbox, gdrive, koofr, onedrive, pcloud, seafile, yandex-disk" },
     "root": { "type": "string", "description": "OpenDAL root prefix" },
-    "bucket": { "type": "string", "description": "Bucket (s3/gcs/obs/oss/cos)" },
+    "bucket": { "type": "string", "description": "Bucket (s3/gcs/obs/oss/cos); optional on s3/oss/obs/cos — leave empty to list all buckets at the connection root" },
     "container": { "type": "string", "description": "Azure Blob container (azblob)" },
     "accountName": { "type": "string", "description": "Azure Storage account name (azblob)" },
     "credential": { "type": "string", "description": "Base64 Google credential JSON (gcs; stays in process memory only)" },

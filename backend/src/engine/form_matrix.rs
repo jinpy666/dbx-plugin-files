@@ -464,6 +464,43 @@ fn fs_empty_root_defaults_to_filesystem_root() {
     build_operator(&connection).expect("fs operator builds with the defaulted root");
 }
 
+/// Bucket namespace (design 2026-09-17): an empty bucket/container on
+/// s3/oss/cos/obs/azblob must build the namespace operator offline and keep
+/// reporting the underlying scheme (so scheme-based assertions and
+/// capabilities stay uniform); gcs without a bucket keeps failing the build
+/// with a descriptive error (bucket stays form-required there).
+#[test]
+fn bucket_namespace_connections_build_for_every_namespace_protocol() {
+    for protocol in ["s3", "oss", "cos", "obs", "azblob"] {
+        let mut overrides = Map::new();
+        overrides.insert("bucket".to_string(), json!(""));
+        overrides.insert("container".to_string(), json!(""));
+        let connection = parse(&lifecycle_params(protocol, &overrides));
+        let operator = build_operator(&connection).unwrap_or_else(|error| {
+            panic!("bucket-less {protocol} must build the namespace operator: {error}")
+        });
+        assert_eq!(
+            operator.info().scheme(),
+            protocol,
+            "namespace operator reports the underlying scheme for {protocol}"
+        );
+        let capability = operator.info().full_capability();
+        assert!(
+            !capability.copy,
+            "{protocol}: namespace copies degrade to the read→write job"
+        );
+    }
+
+    let mut overrides = Map::new();
+    overrides.insert("bucket".to_string(), json!(""));
+    let gcs = parse(&lifecycle_params("gcs", &overrides));
+    let error = build_operator(&gcs).expect_err("gcs without a bucket must fail the build");
+    assert!(
+        error.trim().len() > 10,
+        "gcs bucket error must be descriptive: {error}"
+    );
+}
+
 /// Hostile scalar combinations must parse to sane defaults and never panic:
 /// the number input may reach us as 0, negative, fractional, string or
 /// overflow; timeouts fall back to 30s.

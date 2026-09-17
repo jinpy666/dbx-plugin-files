@@ -151,9 +151,13 @@ for (const protocol of options("protocol")) {
     current.visible("endpoint", !["fs", "opendal-custom", "aliyun-drive", "dropbox", "gdrive", "onedrive", "yandex-disk"].includes(protocol));
     current.required("endpoint", ["gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native", "koofr", "pcloud", "seafile"].includes(protocol));
     current.visible("bucket", ["s3", "gcs", "obs", "oss", "cos"].includes(protocol));
-    current.required("bucket", ["s3", "gcs", "obs", "oss", "cos"].includes(protocol));
+    // Bucket namespace (2026-09-17): s3/oss/cos/obs accept an empty bucket —
+    // the connection root then lists all buckets and the first path segment
+    // selects one. gcs stays required (its ListBuckets needs an OAuth token
+    // exchange; phase 2).
+    current.required("bucket", protocol === "gcs");
     current.visible("container", protocol === "azblob");
-    current.required("container", protocol === "azblob");
+    current.required("container", false);
     current.visible("account_name", protocol === "azblob");
     current.required("account_name", protocol === "azblob");
     current.visible("account_key", protocol === "azblob");

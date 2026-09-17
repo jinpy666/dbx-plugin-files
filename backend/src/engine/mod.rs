@@ -20,6 +20,10 @@ pub mod ops;
 // F-C: streaming transfer primitives (Writer/Reader slots + dir traversal)
 // consumed by `crate::transfers`. One-line addition to the F-A module list.
 pub mod transfer;
+// Bucket namespace (design 2026-09-17): bucket-less s3/oss/cos/obs/azblob
+// connections list buckets natively at `/` and select one via the first path
+// segment — the object-storage mirror of the SMB server-share namespace.
+pub mod bucket_ns;
 // F5-SMB: custom OpenDAL Access adapter for the `smb` quick protocol
 // (`smb2 =0.20.1` behind `opendal::raw::Access`; IMPL_PLAN_SMB §1/§2).
 pub mod smb;
@@ -107,7 +111,18 @@ impl Engine {
     /// A real root listing exercises negotiate + session + tree connect and
     /// is what the UI promises ("reachable and listable"); same false-positive
     /// lesson the sftp_native stat already encodes (real-machine run 2026-09).
+    ///
+    /// Bucket-namespace connections (bucket left empty) probe with a real
+    /// native bucket listing too: the namespace operator's `check()` would
+    /// only stat the virtual root and pass without ever dialing.
     pub async fn test(&self, connection: &StoredConnection) -> Result<(), String> {
+        if bucket_ns::namespace_mode(connection) {
+            let timeout = Duration::from_secs(connection.timeout_secs.max(1));
+            return bucket_ns::probe(connection, timeout)
+                .await
+                .map(|_| ())
+                .map_err(|error| format!("Storage check failed: {error}"));
+        }
         let operator = build_operator(connection)?;
         if connection.protocol == "smb" {
             return ops::list(&operator, "/", false)
@@ -226,6 +241,12 @@ impl Engine {
 /// passing e.g. `password` to sftp (which has no password option and uses
 /// key auth only) is harmless.
 pub fn build_operator(connection: &StoredConnection) -> Result<Operator, String> {
+    // Bucket-optional connections expose the bucket namespace (the root lists
+    // buckets); bucket-filled connections keep the untouched single-bucket
+    // pass-through below.
+    if bucket_ns::namespace_mode(connection) {
+        return build_bucket_namespace_operator(connection);
+    }
     if connection.protocol == "smb" {
         return build_smb_operator(connection);
     }
@@ -245,6 +266,25 @@ pub fn build_operator(connection: &StoredConnection) -> Result<Operator, String>
     }
     let (scheme, kv) = protocol_kv(connection)?;
     build_registered_operator(&scheme, kv)
+        .map_err(|error| format!("Failed to build storage operator: {error}"))
+}
+
+/// Builds the bucket-namespace Operator for a connection whose bucket was
+/// left empty: base kv comes straight from [`protocol_kv`] (the empty bucket
+/// is skipped there), the bucket key and the listing snapshot come from the
+/// connection record.
+fn build_bucket_namespace_operator(
+    connection: &StoredConnection,
+) -> Result<Operator, String> {
+    let (scheme, base_kv) = protocol_kv(connection)?;
+    let builder = bucket_ns::BucketNsBuilder::new()
+        .scheme(&scheme)
+        .bucket_key(bucket_ns::bucket_config_key(&connection.protocol))
+        .base_kv(base_kv)
+        .list_connection(connection)
+        .timeout(Duration::from_secs(connection.timeout_secs.max(1)));
+    Operator::new(builder)
+        .map(|builder| builder.finish())
         .map_err(|error| format!("Failed to build storage operator: {error}"))
 }
 

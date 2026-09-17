@@ -39,7 +39,9 @@ export const SERVICE_TEMPLATES: Record<string, ServiceTemplate> = {
     id: "s3",
     kind: "quick",
     fields: [
-      { key: "bucket", type: "text", required: true },
+      // Bucket optional (2026-09-17): empty bucket exposes the bucket
+      // namespace — the connection root lists all buckets sidecar-side.
+      { key: "bucket", type: "text", placeholder: "bucket (optional; blank lists all buckets)" },
       { key: "endpoint", type: "text", placeholder: "https://s3.amazonaws.com or MinIO endpoint" },
       { key: "region", type: "text", placeholder: "us-east-1" },
       { key: "access_key_id", type: "text", required: true },
@@ -61,7 +63,8 @@ export const SERVICE_TEMPLATES: Record<string, ServiceTemplate> = {
     id: "azblob",
     kind: "quick",
     fields: [
-      { key: "container", type: "text", required: true },
+      // Container optional: blank lists all containers (bucket namespace).
+      { key: "container", type: "text", placeholder: "container (optional; blank lists all containers)" },
       { key: "endpoint", type: "text", required: true, placeholder: "https://account.blob.core.windows.net" },
       { key: "account_name", type: "text", required: true },
       { key: "account_key", type: "password", required: true, secret: true },
@@ -71,7 +74,7 @@ export const SERVICE_TEMPLATES: Record<string, ServiceTemplate> = {
     id: "obs",
     kind: "quick",
     fields: [
-      { key: "bucket", type: "text", required: true },
+      { key: "bucket", type: "text", placeholder: "bucket (optional; blank lists all buckets)" },
       { key: "endpoint", type: "text", required: true, placeholder: "https://obs.cn-north-4.myhuaweicloud.com" },
       { key: "access_key_id", type: "text", required: true },
       { key: "secret_access_key", type: "password", required: true, secret: true },
@@ -81,7 +84,7 @@ export const SERVICE_TEMPLATES: Record<string, ServiceTemplate> = {
     id: "oss",
     kind: "quick",
     fields: [
-      { key: "bucket", type: "text", required: true },
+      { key: "bucket", type: "text", placeholder: "bucket (optional; blank lists all buckets)" },
       { key: "endpoint", type: "text", required: true, placeholder: "https://oss-cn-hangzhou.aliyuncs.com" },
       { key: "access_key_id", type: "text", required: true },
       { key: "secret_access_key", type: "password", required: true, secret: true },
@@ -93,7 +96,7 @@ export const SERVICE_TEMPLATES: Record<string, ServiceTemplate> = {
     // COS endpoint includes the region (the COS builder has no separate
     // region key); credentials use the official secret_id/secret_key names.
     fields: [
-      { key: "bucket", type: "text", required: true },
+      { key: "bucket", type: "text", placeholder: "bucket (optional; blank lists all buckets)" },
       { key: "endpoint", type: "text", required: true, placeholder: "https://cos.ap-guangzhou.myqcloud.com" },
       { key: "secret_id", type: "password", required: true, secret: true },
       { key: "secret_key", type: "password", required: true, secret: true },

@@ -852,12 +852,18 @@ name = "dbx-plugin-files"
 version = "0.1.59"
 dependencies = [
  "base64 0.23.1",
+ "chrono",
  "dbx-plugin-sdk",
+ "hmac 0.13.0",
  "opendal",
+ "quick-xml 0.39.4",
+ "reqwest",
  "russh",
  "russh-sftp",
  "serde",
  "serde_json",
+ "sha1",
+ "sha2 0.11.0",
  "smb2",
  "tempfile",
  "tokio",

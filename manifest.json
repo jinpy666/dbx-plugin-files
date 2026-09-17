@@ -363,8 +363,8 @@
           "type": "text",
           "binding": "config",
           "default": "",
-          "placeholder": "my-bucket",
-          "description": "Object storage bucket name.",
+          "placeholder": "my-bucket (leave empty to list all buckets)",
+          "description": "Object storage bucket name. Optional: leave empty to list all buckets at the connection root and switch between them.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
@@ -378,11 +378,7 @@
           "required_when": {
             "field": "protocol",
             "one_of": [
-              "s3",
-              "gcs",
-              "obs",
-              "oss",
-              "cos"
+              "gcs"
             ]
           }
         },
@@ -392,15 +388,9 @@
           "type": "text",
           "binding": "config",
           "default": "",
-          "placeholder": "my-container",
-          "description": "Azure Blob container name.",
+          "placeholder": "my-container (leave empty to list all containers)",
+          "description": "Azure Blob container name. Optional: leave empty to list all containers at the connection root and switch between them.",
           "visible_when": {
-            "field": "protocol",
-            "one_of": [
-              "azblob"
-            ]
-          },
-          "required_when": {
             "field": "protocol",
             "one_of": [
               "azblob"
@@ -880,8 +870,8 @@
             },
             "container": {
               "label": "容器",
-              "placeholder": "my-container",
-              "description": "Azure Blob 容器名称。"
+              "placeholder": "my-container（留空则列出全部容器）",
+              "description": "Azure Blob 容器名称。可选：留空时在连接根目录列出全部容器，可随时切换使用。"
             },
             "account_name": {
               "label": "账户名称",
@@ -904,8 +894,8 @@
             },
             "bucket": {
               "label": "存储桶",
-              "placeholder": "my-bucket",
-              "description": "对象存储桶名称。"
+              "placeholder": "my-bucket（留空则列出全部存储桶）",
+              "description": "对象存储桶名称。可选：留空时在连接根目录列出全部存储桶，可随时切换使用。"
             },
             "endpoint": {
               "label": "端点",
@@ -1062,8 +1052,8 @@
             },
             "container": {
               "label": "容器",
-              "placeholder": "my-container",
-              "description": "Azure Blob 容器名稱。"
+              "placeholder": "my-container（留空則列出全部容器）",
+              "description": "Azure Blob 容器名稱。可選：留空時在連線根目錄列出全部容器，可隨時切換使用。"
             },
             "account_name": {
               "label": "帳戶名稱",
@@ -1085,9 +1075,9 @@
               "description": "可選的 Google OAuth 範圍；留空使用 OpenDAL 預設值。"
             },
             "bucket": {
-              "label": "儲存儲存桶",
-              "placeholder": "my-bucket",
-              "description": "物件儲存儲存桶名稱。"
+              "label": "儲存桶",
+              "placeholder": "my-bucket（留空則列出全部儲存桶）",
+              "description": "物件儲存桶名稱。可選：留空時在連線根目錄列出全部儲存桶，可隨時切換使用。"
             },
             "endpoint": {
               "label": "端點",
@@ -1244,8 +1234,8 @@
             },
             "container": {
               "label": "Container",
-              "placeholder": "my-container",
-              "description": "Azure Blob container name."
+              "placeholder": "my-container (leave empty to list all containers)",
+              "description": "Azure Blob container name. Optional: leave empty to list all containers at the connection root and switch between them."
             },
             "account_name": {
               "label": "Account name",
@@ -1268,8 +1258,8 @@
             },
             "bucket": {
               "label": "Bucket",
-              "placeholder": "my-bucket",
-              "description": "Object storage bucket name."
+              "placeholder": "my-bucket (leave empty to list all buckets)",
+              "description": "Object storage bucket name. Optional: leave empty to list all buckets at the connection root and switch between them."
             },
             "endpoint": {
               "label": "Endpoint",
@@ -1426,8 +1416,8 @@
             },
             "container": {
               "label": "Contenedor",
-              "placeholder": "my-container",
-              "description": "Nombre del contenedor de Azure Blob."
+              "placeholder": "my-container (vacío para enumerar todos los contenedores)",
+              "description": "Nombre del contenedor de Azure Blob. Opcional: si se deja vacío, la raíz de la conexión enumera todos los contenedores y permite cambiar entre ellos."
             },
             "account_name": {
               "label": "Nombre de cuenta",
@@ -1450,8 +1440,8 @@
             },
             "bucket": {
               "label": "Bucket",
-              "placeholder": "my-bucket",
-              "description": "Nombre del bucket de almacenamiento de objetos."
+              "placeholder": "my-bucket (vacío para enumerar todos los buckets)",
+              "description": "Nombre del bucket de almacenamiento de objetos. Opcional: si se deja vacío, la raíz de la conexión enumera todos los buckets y permite cambiar entre ellos."
             },
             "endpoint": {
               "label": "Endpoint",
@@ -1608,8 +1598,8 @@
             },
             "container": {
               "label": "Contenitore",
-              "placeholder": "my-container",
-              "description": "Nome del contenitore Azure Blob."
+              "placeholder": "my-container (vuoto per elencare tutti i contenitori)",
+              "description": "Nome del contenitore Azure Blob. Facoltativo: se vuoto, la radice della connessione elenca tutti i contenitori tra cui passare."
             },
             "account_name": {
               "label": "Nome account",
@@ -1632,8 +1622,8 @@
             },
             "bucket": {
               "label": "Bucket",
-              "placeholder": "my-bucket",
-              "description": "Nome del bucket di object storage."
+              "placeholder": "my-bucket (vuoto per elencare tutti i bucket)",
+              "description": "Nome del bucket di object storage. Facoltativo: se vuoto, la radice della connessione elenca tutti i bucket tra cui passare."
             },
             "endpoint": {
               "label": "Endpoint",
@@ -1790,8 +1780,8 @@
             },
             "container": {
               "label": "コンテナー",
-              "placeholder": "my-container",
-              "description": "Azure Blob コンテナー名。"
+              "placeholder": "コンテナー（空欄で全コンテナーを一覧）",
+              "description": "Azure Blob コンテナー名。省略可：空欄の場合、接続ルートに全コンテナーを一覧表示し、切り替えて使用できます。"
             },
             "account_name": {
               "label": "アカウント名",
@@ -1814,8 +1804,8 @@
             },
             "bucket": {
               "label": "バケット",
-              "placeholder": "my-bucket",
-              "description": "オブジェクトストレージのバケット名。"
+              "placeholder": "バケット（空欄で全バケットを一覧）",
+              "description": "オブジェクトストレージのバケット名。省略可：空欄の場合、接続ルートに全バケットを一覧表示し、切り替えて使用できます。"
             },
             "endpoint": {
               "label": "エンドポイント",
@@ -1972,8 +1962,8 @@
             },
             "container": {
               "label": "Contêiner",
-              "placeholder": "my-container",
-              "description": "Nome do contêiner do Azure Blob."
+              "placeholder": "my-container (vazio para listar todos os contêineres)",
+              "description": "Nome do contêiner do Azure Blob. Opcional: deixe vazio para listar todos os contêineres na raiz da conexão e alternar entre eles."
             },
             "account_name": {
               "label": "Nome da conta",
@@ -1996,8 +1986,8 @@
             },
             "bucket": {
               "label": "Bucket",
-              "placeholder": "my-bucket",
-              "description": "Nome do bucket de armazenamento de objetos."
+              "placeholder": "my-bucket (vazio para listar todos os buckets)",
+              "description": "Nome do bucket de armazenamento de objetos. Opcional: deixe vazio para listar todos os buckets na raiz da conexão e alternar entre eles."
             },
             "endpoint": {
               "label": "Endpoint",

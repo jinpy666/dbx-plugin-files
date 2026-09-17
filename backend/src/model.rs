@@ -1188,7 +1188,6 @@ mod tests {
         assert!(required("protocol"));
 
         let conditionally_required = [
-            "bucket",
             "access_key_id",
             "secret_access_key",
             "credential",
@@ -1216,6 +1215,41 @@ mod tests {
                 "field '{key}' required_when must match its visible_when"
             );
         }
+        // bucket is conditionally required on a SUBSET of its visible
+        // protocols (bucket namespace, design 2026-09-17): gcs stays
+        // required because its ListBuckets needs a service-account JWT →
+        // OAuth token exchange (phase 2); s3/oss/cos/obs accept an empty
+        // bucket — the connection root then lists all buckets and the first
+        // path segment selects one. The required scope must stay inside the
+        // visible scope (host evaluates required_when independently).
+        let bucket = field_of("bucket");
+        let bucket_visible: Vec<&str> = bucket["visible_when"]["one_of"]
+            .as_array()
+            .expect("bucket visible_when.one_of")
+            .iter()
+            .map(|value| value.as_str().expect("visible protocol"))
+            .collect();
+        let bucket_required: Vec<&str> = bucket["required_when"]["one_of"]
+            .as_array()
+            .expect("bucket required_when.one_of")
+            .iter()
+            .map(|value| value.as_str().expect("required protocol"))
+            .collect();
+        assert_eq!(bucket_required, ["gcs"], "bucket stays required for gcs only");
+        assert!(
+            bucket_required
+                .iter()
+                .all(|protocol| bucket_visible.contains(protocol)),
+            "bucket required_when must stay inside visible_when"
+        );
+        // container follows the same namespace contract: optional for
+        // azblob, whose account-level endpoint lists all containers.
+        let container = field_of("container");
+        assert!(!required("container"));
+        assert!(
+            container.get("required_when").is_none(),
+            "container must stay optional (namespace mode lists all containers)"
+        );
         let share = field_of("share");
         assert!(!required("share"));
         assert!(share.get("required_when").is_none());

@@ -137,6 +137,23 @@ describe("opendalServices", () => {
     expect(template.fields.filter((field) => field.required).map((field) => field.key)).toEqual(["endpoint"]);
     expect(template.fields.find((field) => field.key === "password")?.secret).toBe(true);
   });
+
+  it("keeps bucket/container optional on namespace protocols and required on gcs", () => {
+    // Bucket namespace (2026-09-17): s3/oss/cos/obs/azblob accept an empty
+    // bucket — the sidecar lists all buckets at the connection root. The
+    // custom-JSON schemas keep OpenDAL's native required semantics above.
+    const requiredKeys = (protocol: string) =>
+      templateFor(protocol)!.fields.filter((field) => field.required).map((field) => field.key);
+    for (const protocol of ["s3", "oss", "obs", "cos"]) {
+      expect(requiredKeys(protocol).includes("bucket")).toBe(false);
+    }
+    expect(requiredKeys("azblob").includes("container")).toBe(false);
+    expect(requiredKeys("gcs").includes("bucket")).toBe(true);
+    for (const protocol of ["s3", "oss", "obs", "cos"]) {
+      const bucket = templateFor(protocol)!.fields.find((field) => field.key === "bucket")!;
+      expect(bucket.placeholder).toContain("lists all buckets");
+    }
+  });
 });
 
 describe("custom service schemas", () => {

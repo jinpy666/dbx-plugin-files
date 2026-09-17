@@ -42,6 +42,19 @@ opendal = { version = "0.57", features = [
 # `opendal::raw::Access`. Exact pin — upgrades go through the SMB regression
 # checklist (docs/IMPL_PLAN_SMB.zh-CN.md §0.2/§4).
 smb2 = "=0.20.1"
+# Bucket namespace (design 2026-09-17): native ListBuckets for bucket-less
+# s3/oss/cos/obs/azblob connections (`engine/bucket_ns/list.rs`) — OpenDAL
+# services require a bucket and expose no bucket enumeration. Versions unify
+# with crates already in the opendal feature graph: reqwest rides the same
+# `rustls` (aws-lc-rs) TLS feature opendal enables, and the RustCrypto set is
+# the digest-0.11 line (hmac 0.13 / sha1 0.11 / sha2 0.11) already in the
+# lock; chrono only formats request timestamps (no clock features pulled).
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+hmac = "0.13"
+sha1 = "0.11"
+sha2 = "0.11"
+quick-xml = "0.39"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 # sftp-native（双栈决策 2026-08-31）：OpenDAL 0.57 的 sftp service 只支持
 # keyfile 认证（无 password 配置项），密码型账号（企业 MFT 常态）接不进来。
 # `engine/sftp_native/` 用 russh + russh-sftp（ssh 插件同款栈）自研
