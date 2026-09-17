@@ -64,6 +64,7 @@ import { applyTreeChildren, createTreeRoot, markTreeStale, type DirTreeNode } fr
 import { normalizeQuickPaths, type QuickPath } from "./lib/quickPaths";
 import { isNarrowViewport } from "./lib/responsive";
 import { resolveUploadTarget, type UploadTarget } from "./lib/uploadTarget";
+import { MENU_ITEM_SELECTOR, onMenuArrowKeys, onTablistArrowKeys, trapTabKey } from "./lib/a11y";
 import { isNotFoundMessage, isTransportFailure } from "./lib/friendlyError";
 import { createNavGuard } from "./lib/navGuard";
 import { resolveToolbarTarget } from "./lib/toolbarTarget";
@@ -271,6 +272,23 @@ const sideMenu = ref<{ x: number; y: number; side: PaneSide; path: string; name:
 // 三个右键菜单互斥，共用同一模板 ref；渲染后按视口钳位，
 // 避免右键屏幕边缘时菜单溢出被裁。
 const menuEl = ref<HTMLElement>();
+// 审计#8：右键菜单键盘可达——打开聚焦首项，↑↓/Home/End 在项间移动（Enter
+// 由 menuitem 按钮原生触发），Esc 关闭并归还焦点到触发元素；鼠标行为不变。
+let menuReturnFocus: HTMLElement | null = null;
+
+function captureMenuOrigin() {
+  menuReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+}
+
+/** Esc 关闭菜单并归还焦点；点击关闭路径（点击菜单项/空白处）不动焦点。 */
+function closeMenusRestoreFocus() {
+  contextMenu.value = undefined;
+  blankMenu.value = undefined;
+  sideMenu.value = undefined;
+  menuReturnFocus?.focus();
+  menuReturnFocus = null;
+}
+
 watch([contextMenu, blankMenu, sideMenu], async () => {
   await nextTick();
   const element = menuEl.value;
@@ -279,6 +297,8 @@ watch([contextMenu, blankMenu, sideMenu], async () => {
   const rect = element.getBoundingClientRect();
   if (rect.right > window.innerWidth - 8) current.x = Math.max(8, window.innerWidth - rect.width - 8);
   if (rect.bottom > window.innerHeight - 8) current.y = Math.max(8, window.innerHeight - rect.height - 8);
+  // 审计#8：菜单渲染完成后聚焦首个可用项（禁用项跳过），键盘即可继续操作。
+  element.querySelector<HTMLElement>(MENU_ITEM_SELECTOR)?.focus();
 });
 
 /** 该栏当前所在目录（新建文件夹/新建文件落点）。 */
@@ -471,6 +491,7 @@ function sortRouted(side: PaneSide, column: SortColumn) {
 }
 function openContextMenu(side: PaneSide, payload: { entry: FileEntry; x: number; y: number }) {
   markActiveSide(side);
+  captureMenuOrigin();
   contextMenu.value = { ...payload, side, selection: [...(side === "left" ? selection.value : rightSelection.value)] };
 }
 function openBlank(side: PaneSide, payload: { x: number; y: number }) {
@@ -915,6 +936,28 @@ function openPreview(target: string, side: PaneSide = "left") {
   // 弹窗期间两侧栏保持各自连接面可继续导航。
   previewPath.value = target;
   previewConnectionId.value = sideConnectionId(side) ?? connectionId.value;
+}
+
+// 审计#7：预览弹窗 dialog 化——Esc/遮罩/关闭钮此前会静默丢弃 CodeMirror
+// 未保存草稿。关闭统一走 closePreview：脏草稿（editing 且内容已改）先弹
+// 丢弃确认，确认后才真正关闭；干净态维持原直关行为。
+const previewRef = ref<InstanceType<typeof PreviewPane>>();
+const previewDiscardOpen = ref(false);
+const previewOverlayEl = ref<HTMLElement>();
+const previewTitle = computed(() => (previewPath.value ? baseName(previewPath.value) : ""));
+
+function closePreview() {
+  if (previewRef.value?.isDirty) {
+    previewDiscardOpen.value = true;
+    return;
+  }
+  previewPath.value = null;
+}
+
+/** 焦点陷阱：Tab 在预览内循环（同 ConfirmDialog 实现）；defaultPrevented
+ * （CodeMirror 已消费 Tab 缩进）时由 a11y 层跳过，不与编辑器键位冲突。 */
+function onPreviewTabKeydown(event: KeyboardEvent) {
+  trapTabKey(event, previewOverlayEl.value);
 }
 
 async function openEntry(entry: FileEntry, side: PaneSide = "left") {
@@ -1479,22 +1522,61 @@ async function executePaneTransfer(from: PaneSide, move: boolean, list: FileEntr
 
 // ---- drag & drop（A-FILES ①）---------------------------------------------------
 
+/**
+ * 审计#16：OS 拖入的文件列表（DataTransfer.files）。优先走 items 映射——
+ * 目录条目 getAsFile() 返回 null，天然剔除（目录暂不支持递归上传）；items
+ * 无文件条目时（个别环境/测试桩）回退 files 列表。文件名取 file.name、
+ * size 取 file.size，内容经既有上传泵（file.slice → binary 帧）分片上传。
+ */
+function osDroppedFiles(event: DragEvent): File[] {
+  const transfer = event.dataTransfer;
+  if (!transfer) return [];
+  const items = transfer.items;
+  let sawFileItem = false;
+  const files: File[] = [];
+  for (let index = 0; index < (items?.length ?? 0); index += 1) {
+    const item = items?.[index];
+    if (item?.kind !== "file") continue;
+    sawFileItem = true;
+    const file = item.getAsFile();
+    if (file) files.push(file);
+  }
+  if (sawFileItem) return files;
+  return Array.from(transfer.files ?? []);
+}
+
 function onDropTo(side: PaneSide, event: DragEvent) {
   dragOverSide.value = null;
   // R5-P2-5：拖放目标即用户当前关注侧，记账活动栏（此前拖拽是 activeSide
   // 唯一漏网入口——拖放后点工具栏「新建文件夹」会落错栏）。
   markActiveSide(side);
   const raw = event.dataTransfer?.getData("application/x-dbx-files");
-  if (!raw) return;
-  let payload: { paneId?: string; paths?: string[] };
-  try {
-    payload = JSON.parse(raw);
-  } catch {
+  if (raw) {
+    let payload: { paneId?: string; paths?: string[] };
+    try {
+      payload = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    const from = payload.paneId === "left" ? "left" : payload.paneId === "right" ? "right" : null;
+    if (!from || from === side || !payload.paths?.length) return;
+    void transferBetween(from, false, pickSideEntries(from, payload.paths));
     return;
   }
-  const from = payload.paneId === "left" ? "left" : payload.paneId === "right" ? "right" : null;
-  if (!from || from === side || !payload.paths?.length) return;
-  void transferBetween(from, false, pickSideEntries(from, payload.paths));
+  // 审计#16：OS 文件拖入此前被静默忽略。上传恒落目标侧（双栏右栏；单栏为
+  // 当前连接当前目录，同 P1-5「上传=传向远端」语义），复用既有 onUpload
+  // 上传泵逐文件上传；双栏时拖到源侧（左栏）给出「请拖到目标侧」提示。
+  const files = osDroppedFiles(event);
+  if (!files.length) return;
+  if (dualPane.value && side !== "right") {
+    showNotice(t("dropToTargetPane"));
+    return;
+  }
+  if (!canWrite.value) {
+    showNotice(t("readOnly"));
+    return;
+  }
+  void onUpload(files);
 }
 
 // ---- transfers ---------------------------------------------------------------
@@ -1975,6 +2057,7 @@ function menuAction(action: MenuAction) {
 
 /** 空白区右键：弹插件菜单前先关掉其它菜单（三菜单互斥）。 */
 function openBlankMenu(side: PaneSide, payload: { x: number; y: number }) {
+  captureMenuOrigin();
   contextMenu.value = undefined;
   sideMenu.value = undefined;
   blankMenu.value = { ...payload, side };
@@ -1995,6 +2078,7 @@ function blankMenuAction(action: "newFolder" | "newFile" | "refresh") {
 
 /** 侧栏（目录树/快捷目录）行右键：打开 / 在另一栏打开 / 复制路径、文件名。 */
 function openSideMenu(side: PaneSide, payload: { path: string; name: string; x: number; y: number }) {
+  captureMenuOrigin();
   contextMenu.value = undefined;
   blankMenu.value = undefined;
   sideMenu.value = { ...payload, side };
@@ -2155,8 +2239,13 @@ function onContextClick() {
 
 function onDocumentKeydown(event: KeyboardEvent) {
   if (event.key !== "Escape") return;
+  // 审计#7：脏草稿确认弹层先收（保留预览与草稿），再按一次才触发关闭确认。
+  if (previewDiscardOpen.value) {
+    previewDiscardOpen.value = false;
+    return;
+  }
   if (previewPath.value) {
-    previewPath.value = null;
+    closePreview();
     return;
   }
   if (confirmOpen.value) {
@@ -2167,9 +2256,7 @@ function onDocumentKeydown(event: KeyboardEvent) {
     transferHistoryConfirmOpen.value = false;
     return;
   }
-  contextMenu.value = undefined;
-  blankMenu.value = undefined;
-  sideMenu.value = undefined;
+  closeMenusRestoreFocus();
 }
 
 function onToolbarNavigate(target: string) {
@@ -2411,11 +2498,12 @@ onBeforeUnmount(() => {
       </section>
 
       <aside v-if="dockOpen" class="wb-dock">
-        <div class="wb-dock-tabs" @contextmenu.prevent>
-          <button :class="{ 'is-active': dockTab === 'transfers' }" @click="dockTab = 'transfers'">{{ t("transferPanel") }}</button>
-          <button :class="{ 'is-active': dockTab === 'audit' }" @click="dockTab = 'audit'">{{ t("auditPanel") }}</button>
-          <button :class="{ 'is-active': dockTab === 'connection' }" @click="dockTab = 'connection'">{{ t("connectionPanel") }}</button>
-          <button :class="{ 'is-active': dockTab === 'settings' }" @click="dockTab = 'settings'">{{ t("settingsPanel") }}</button>
+        <!-- 审计#12：页签补 tablist/tab 语义 + roving tabindex + ←→ 循环切换。 -->
+        <div class="wb-dock-tabs" role="tablist" @contextmenu.prevent @keydown="onTablistArrowKeys">
+          <button role="tab" :aria-selected="dockTab === 'transfers'" :tabindex="dockTab === 'transfers' ? 0 : -1" :class="{ 'is-active': dockTab === 'transfers' }" @click="dockTab = 'transfers'">{{ t("transferPanel") }}</button>
+          <button role="tab" :aria-selected="dockTab === 'audit'" :tabindex="dockTab === 'audit' ? 0 : -1" :class="{ 'is-active': dockTab === 'audit' }" @click="dockTab = 'audit'">{{ t("auditPanel") }}</button>
+          <button role="tab" :aria-selected="dockTab === 'connection'" :tabindex="dockTab === 'connection' ? 0 : -1" :class="{ 'is-active': dockTab === 'connection' }" @click="dockTab = 'connection'">{{ t("connectionPanel") }}</button>
+          <button role="tab" :aria-selected="dockTab === 'settings'" :tabindex="dockTab === 'settings' ? 0 : -1" :class="{ 'is-active': dockTab === 'settings' }" @click="dockTab = 'settings'">{{ t("settingsPanel") }}</button>
         </div>
         <div class="wb-dock-body">
           <TransferPanel
@@ -2455,15 +2543,26 @@ onBeforeUnmount(() => {
       </aside>
     </div>
 
-    <!-- 文件概览弹窗：来自任一栏的预览/压缩包列表；遮罩点击 / Esc / 关闭按钮均可关闭 -->
-    <div v-if="previewPath" class="wb-preview-overlay" @click.self="previewPath = null">
+    <!-- 文件概览弹窗：来自任一栏的预览/压缩包列表；遮罩点击 / Esc / 关闭按钮均可关闭。
+         审计#7：dialog 语义 + aria-modal + Tab 焦点陷阱；脏草稿关闭先确认。 -->
+    <div
+      v-if="previewPath"
+      ref="previewOverlayEl"
+      class="wb-preview-overlay"
+      role="dialog"
+      aria-modal="true"
+      :aria-label="previewTitle"
+      @click.self="closePreview"
+      @keydown="onPreviewTabKeydown"
+    >
       <PreviewPane
+        ref="previewRef"
         :path="previewPath"
         :can-write="canWrite"
         :appearance="appearance"
         :connection-id="previewConnectionId"
         :t="t"
-        @close="previewPath = null"
+        @close="closePreview"
         @saved="onPreviewSaved"
         @download="onPreviewDownload"
       />
@@ -2471,7 +2570,7 @@ onBeforeUnmount(() => {
 
     <!-- 统一右键菜单（A-FILES ④b）：源栏/目标栏共用；多选时切批量动作面。
          R3-P2-8：role="menu"/menuitem 语义。 -->
-    <div v-if="contextMenu" ref="menuEl" class="wb-context-menu" role="menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @click.stop>
+    <div v-if="contextMenu" ref="menuEl" class="wb-context-menu" role="menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @click.stop @keydown="onMenuArrowKeys">
       <template v-if="contextMenu.selection.length > 1">
         <button role="menuitem" @click="menuAction('open')"><FolderOpen /> {{ t("openDirectory") }}</button>
         <button role="menuitem" @click="menuAction('downloadSelected')"><Download /> {{ t("downloadSelected") }}</button>
@@ -2505,7 +2604,7 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 空白区右键菜单（P-FILES）：拦截浏览器默认菜单，给出新建/刷新动作 -->
-    <div v-if="blankMenu" ref="menuEl" class="wb-context-menu" role="menu" :style="{ left: `${blankMenu.x}px`, top: `${blankMenu.y}px` }" @click.stop>
+    <div v-if="blankMenu" ref="menuEl" class="wb-context-menu" role="menu" :style="{ left: `${blankMenu.x}px`, top: `${blankMenu.y}px` }" @click.stop @keydown="onMenuArrowKeys">
       <button :disabled="!canWrite" role="menuitem" @click="blankMenuAction('newFolder')"><FolderPlus /> {{ t("newFolder") }}</button>
       <button :disabled="!canWrite" role="menuitem" @click="blankMenuAction('newFile')"><FilePlus /> {{ t("newFileTitle") }}</button>
       <hr />
@@ -2513,7 +2612,7 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 侧栏右键菜单（P-FILES）：目录树/快捷目录行 → 打开 / 在另一栏打开 / 复制 -->
-    <div v-if="sideMenu" ref="menuEl" class="wb-context-menu" role="menu" :style="{ left: `${sideMenu.x}px`, top: `${sideMenu.y}px` }" @click.stop>
+    <div v-if="sideMenu" ref="menuEl" class="wb-context-menu" role="menu" :style="{ left: `${sideMenu.x}px`, top: `${sideMenu.y}px` }" @click.stop @keydown="onMenuArrowKeys">
       <button role="menuitem" @click="sideMenuAction('open')"><FolderOpen /> {{ t("openDirectory") }}</button>
       <button v-if="dualPane" role="menuitem" @click="sideMenuAction('openOther')">
         <PanelRight v-if="sideMenu.side === 'left'" />
@@ -2556,6 +2655,19 @@ onBeforeUnmount(() => {
       :cancel-label="t('cancel')"
       @confirm="transferHistoryConfirmOpen = false; clearTransferHistory()"
       @cancel="transferHistoryConfirmOpen = false"
+    />
+
+    <!-- 审计#7：脏草稿关闭确认——danger 态首焦点落「继续编辑」（安全项），
+         Enter 不会一步丢稿。 -->
+    <ConfirmDialog
+      :open="previewDiscardOpen"
+      :title="t('previewDiscardTitle')"
+      :body="t('previewDiscardBody')"
+      :danger="true"
+      :confirm-label="t('discard')"
+      :cancel-label="t('keepEditing')"
+      @confirm="previewDiscardOpen = false; previewPath = null"
+      @cancel="previewDiscardOpen = false"
     />
   </main>
 </template>

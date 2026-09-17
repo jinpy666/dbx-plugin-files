@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it } from "vitest";
 import { mount, config, type VueWrapper } from "@vue/test-utils";
+import { defineComponent } from "vue";
 import { bindApi } from "../lib/api";
 import PreviewPane from "./PreviewPane.vue";
 import { READ_MAX_BYTES } from "../lib/preview";
@@ -9,6 +10,17 @@ import { vTip } from "../lib/tooltip";
 // 模板里的 v-tip（图标按钮提示）在测试挂载时同样需要指令注册。
 config.global.directives = { tip: vTip };
 config.global.stubs = { FileViewerPreview: true };
+
+// 审计#7：替代 CodeMirror 的 TextPreview 桩——点击按钮即模拟草稿改动
+// （emit change），expose focus 供编辑态聚焦链路调用。
+const TextPreviewStub = defineComponent({
+  props: { text: { type: String, default: "" }, editable: Boolean },
+  emits: ["change"],
+  setup(_props, { expose }) {
+    expose({ focus: () => undefined });
+  },
+  template: `<div class="stub-text"><button data-test="type" @click="$emit('change', text + '!')" /></div>`,
+});
 
 const appearance: DbxPluginAppearance = {
   colorScheme: "dark",
@@ -132,6 +144,32 @@ it("announces bounded preview loading without stale size or truncation feedback"
   resolveRead({ dataBase64: 'aGk=', truncated: false, size: 2 });
   await flush();
   expect(wrapper.get('.wb-preview-body').attributes('aria-busy')).toBe('false');
+});
+
+// 审计#7：向外暴露 isDirty（editing 且草稿已改动），App 侧关闭预览前据此
+// 弹丢弃确认，防止静默丢失 CodeMirror 编辑内容。
+it("exposes unsaved-draft state as isDirty for the close guard", async () => {
+  bindApi(async <T,>() => ({ dataBase64: "aGVsbG8=", truncated: false, size: 5 } as unknown as T), null);
+  window.dbxPlugin = { decodeBase64: b64decode } as DbxPluginApi;
+  wrapper = mount(PreviewPane, {
+    props: { path: "/notes.txt", canWrite: true, appearance, t: (key: string) => key },
+    global: { stubs: { TextPreview: TextPreviewStub } },
+  });
+  await flush();
+  const dirty = () => (wrapper!.findComponent(PreviewPane).vm as unknown as { isDirty: boolean }).isDirty;
+  expect(dirty()).toBe(false);
+  // 进入编辑（铅笔为首按钮）但草稿未改动：仍不算脏。
+  await wrapper.get(".wb-preview-header button").trigger("click");
+  await flush();
+  expect(dirty()).toBe(false);
+  // 草稿改动 → isDirty。
+  await wrapper.get(".stub-text [data-test=type]").trigger("click");
+  await flush();
+  expect(dirty()).toBe(true);
+  // 取消编辑回滚草稿 → isDirty 复位。
+  await wrapper.findAll(".wb-preview-editbar button")[0]!.trigger("click");
+  await flush();
+  expect(dirty()).toBe(false);
 });
 
 // 两套方案：文本走 CodeMirror，Office/PDF 走 FileViewer，未知二进制回退 hex。
