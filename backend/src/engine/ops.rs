@@ -10,7 +10,7 @@
 //!   deletes too; `Gate::ensure_deletable_path` mirrors it); the frozen op
 //!   signatures carry no `Gate`, so the ops layer re-checks only what it can
 //!   derive from the Operator itself (purge root guard, capability probes);
-//! - OpenDAL 0.57 notes: recursive delete is `delete_with(path).recursive(true)`
+//! - OpenDAL 0.59 notes: recursive delete is `delete_with(path).recursive(true)`
 //!   (`remove_all` is deprecated), `create_dir` needs a trailing `/`,
 //!   capability probing uses `op.info().capability()`, and listing uses
 //!   `list_with(path).recursive(true)` (the `Lister` stream needs a
@@ -235,7 +235,7 @@ fn fs_quick_path_candidates(home: &str) -> Vec<(&'static str, String)> {
 /// `files/capabilities` (§8.1): no params → `{scheme, list, write, read, stat,
 /// delete, createDir, copy, rename, presign}`.
 ///
-/// Projects `op.info().capability()` (0.57: `Capability` has `bool`
+/// Projects `op.info().capability()` (0.59: `Capability` has `bool`
 /// fields per op). The scheme string comes from `op.info().scheme()`.
 ///
 /// Note: `main.rs` currently carries an inline copy of this projection (the
@@ -362,7 +362,7 @@ pub async fn write(operator: &Operator, path: &str, data: Vec<u8>) -> Result<(),
 /// `files/mkdir` (§8.2): `path` → `{success}`.
 ///
 /// `op.create_dir` with mkdir -p semantics; the path must end with `/`
-/// (OpenDAL 0.57 NotADirectory trap) — normalized here, not at call sites.
+/// (OpenDAL 0.59 NotADirectory trap) — normalized here, not at call sites.
 pub async fn mkdir(operator: &Operator, path: &str) -> Result<(), String> {
     let trimmed = path.trim().trim_matches('/');
     if trimmed.is_empty() {

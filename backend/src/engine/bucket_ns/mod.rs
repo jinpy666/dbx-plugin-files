@@ -525,12 +525,21 @@ struct NsReader {
 
 impl NsReader {
     /// Object size for unbounded windows, resolved once via the child stat.
+    /// A poisoned lock is recovered by keeping the (unobservable) cached
+    /// value — the size cache is advisory and the stat result is stable.
     async fn total(&self) -> Result<u64> {
-        if let Some(total) = *self.total.lock().expect("size cache not poisoned") {
+        let cached = *self
+            .total
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(total) = cached {
             return Ok(total);
         }
         let total = self.child.stat(&self.path).await?.content_length();
-        *self.total.lock().expect("size cache not poisoned") = Some(total);
+        *self
+            .total
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(total);
         Ok(total)
     }
 
@@ -601,13 +610,20 @@ struct NsStream {
 
 impl oio::ReadStream for NsStream {
     async fn read(&mut self) -> Result<Buffer> {
-        // Resolve the size cache without holding the std mutex across awaits.
-        let cached = *self.total.lock().expect("size cache not poisoned");
+        // Resolve the size cache without holding the std mutex across awaits
+        // (poison recovery, same shape as transfers' conn_lock).
+        let cached = *self
+            .total
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let total = match cached {
             Some(total) => Some(total),
             None => {
                 let total = self.child.stat(&self.path).await?.content_length();
-                *self.total.lock().expect("size cache not poisoned") = Some(total);
+                *self
+                    .total
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(total);
                 Some(total)
             }
         };

@@ -19,7 +19,9 @@ mod transfers;
 #[cfg(test)]
 mod bench;
 
+use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 // Underscore import: only the trait's methods are needed, and the name
@@ -47,6 +49,32 @@ struct Plugin {
 }
 
 impl Plugin {
+    /// Runs one request future on the worker pool under the connection's
+    /// wall-clock budget (audit #2): `tokio::time::timeout` with the same
+    /// value logic as `Engine::timeout` — the connection's `timeout_secs`
+    /// floored at 1s, or [`DEFAULT_REQUEST_TIMEOUT_SECS`] when the call site
+    /// has no connection record (in-memory transfer queries, task-scoped
+    /// finish/cancel). Without the wrapper, hung requests pin worker threads
+    /// forever and a few of them wedge the whole sidecar; now the caller
+    /// gets a readable timeout error instead of a silent hang.
+    fn block_on_timed<T, E, F>(&self, connection: Option<&StoredConnection>, future: F) -> Result<T, String>
+    where
+        E: std::fmt::Display,
+        F: Future<Output = Result<T, E>>,
+    {
+        let timeout = request_timeout(connection);
+        match self.runtime.block_on(tokio::time::timeout(timeout, future)) {
+            Ok(Ok(value)) => Ok(value),
+            // Engine errors (String or opendal::Error) flatten to the sidecar's
+            // String business-error channel, exactly as the bare `?` did.
+            Ok(Err(error)) => Err(error.to_string()),
+            Err(_elapsed) => Err(format!(
+                "request timed out after {}s",
+                timeout.as_secs()
+            )),
+        }
+    }
+
     fn new() -> Result<Self, String> {
         let data_dir = Store::default_dir();
         std::fs::create_dir_all(&data_dir).map_err(|error| {
@@ -125,40 +153,43 @@ impl Plugin {
             // ------------------------------------------------------------------
             "files/list" => {
                 let request: model::ListRequest = parse(params)?;
+                let connection = self.engine.connection(&request.connection_id)?;
                 let operator = self.engine.operator(&request.connection_id)?;
-                let entries = self.runtime.block_on(engine::ops::list(
-                    &operator,
-                    &request.path,
-                    request.recurse,
-                ))?;
+                let entries = self.block_on_timed(
+                    Some(&connection),
+                    engine::ops::list(&operator, &request.path, request.recurse),
+                )?;
                 Ok(json!({ "entries": entries }))
             }
             "files/listPaged" => {
                 let request: model::ListPagedRequest = parse(params)?;
+                let connection = self.engine.connection(&request.connection_id)?;
                 let operator = self.engine.operator(&request.connection_id)?;
-                let (entries, total) = self.runtime.block_on(engine::ops::list_paged(
-                    &operator,
-                    &request.path,
-                    request.page,
-                    request.page_size,
-                ))?;
+                let (entries, total) = self.block_on_timed(
+                    Some(&connection),
+                    engine::ops::list_paged(
+                        &operator,
+                        &request.path,
+                        request.page,
+                        request.page_size,
+                    ),
+                )?;
                 Ok(json!({ "entries": entries, "total": total }))
             }
             "files/stat" => {
                 let request: model::PathRequest = parse(params)?;
+                let connection = self.engine.connection(&request.connection_id)?;
                 let operator = self.engine.operator(&request.connection_id)?;
-                let entry = self
-                    .runtime
-                    .block_on(engine::ops::stat(&operator, &request.path))?;
+                let entry =
+                    self.block_on_timed(Some(&connection), engine::ops::stat(&operator, &request.path))?;
                 Ok(json!({ "entry": entry }))
             }
             "files/quickPaths" => {
                 let connection_id = connection_id_param(&params)?.to_string();
                 let operator = self.engine.operator(&connection_id)?;
                 let connection = self.engine.connection(&connection_id)?;
-                let payload = self
-                    .runtime
-                    .block_on(engine::ops::quick_paths(&operator, &connection))?;
+                let payload =
+                    self.block_on_timed(Some(&connection), engine::ops::quick_paths(&operator, &connection))?;
                 Ok(payload)
             }
             "files/capabilities" => {
@@ -180,21 +211,21 @@ impl Plugin {
             }
             "files/size" => {
                 let request: model::PathRequest = parse(params)?;
+                let connection = self.engine.connection(&request.connection_id)?;
                 let operator = self.engine.operator(&request.connection_id)?;
-                let (count, bytes) = self
-                    .runtime
-                    .block_on(engine::ops::size(&operator, &request.path))?;
+                let (count, bytes) =
+                    self.block_on_timed(Some(&connection), engine::ops::size(&operator, &request.path))?;
                 Ok(json!({ "count": count, "bytes": bytes }))
             }
             "files/publicLink" => {
                 let request: model::PublicLinkRequest = parse(params)?;
+                let connection = self.engine.connection(&request.connection_id)?;
                 let operator = self.engine.operator(&request.connection_id)?;
                 let expire_secs = request.expire_secs.unwrap_or(3600).max(1);
-                let url = self.runtime.block_on(engine::ops::public_link(
-                    &operator,
-                    &request.path,
-                    expire_secs,
-                ))?;
+                let url = self.block_on_timed(
+                    Some(&connection),
+                    engine::ops::public_link(&operator, &request.path, expire_secs),
+                )?;
                 Ok(json!({ "url": url }))
             }
 
@@ -203,16 +234,16 @@ impl Plugin {
             // ------------------------------------------------------------------
             "files/read" => {
                 let request: model::ReadRequest = parse(params)?;
+                let connection = self.engine.connection(&request.connection_id)?;
                 let operator = self.engine.operator(&request.connection_id)?;
                 let max_bytes = request
                     .max_bytes
                     .unwrap_or(256 * 1024)
                     .clamp(1, model::MAX_PREVIEW_BYTES as u64) as usize;
-                let (data, truncated) = self.runtime.block_on(engine::ops::read(
-                    &operator,
-                    &request.path,
-                    max_bytes,
-                ))?;
+                let (data, truncated) = self.block_on_timed(
+                    Some(&connection),
+                    engine::ops::read(&operator, &request.path, max_bytes),
+                )?;
                 Ok(json!({
                     "dataBase64": BASE64_STANDARD.encode(data),
                     "truncated": truncated
@@ -233,8 +264,10 @@ impl Plugin {
                         model::MAX_INLINE_WRITE_BYTES
                     ));
                 }
-                self.runtime
-                    .block_on(engine::ops::write(&operator, &request.path, data))?;
+                self.block_on_timed(
+                    Some(&connection),
+                    engine::ops::write(&operator, &request.path, data),
+                )?;
                 Ok(json!({ "success": true }))
             }
             "files/mkdir" => {
@@ -242,8 +275,10 @@ impl Plugin {
                 let connection = self.engine.connection(&request.connection_id)?;
                 ensure_writable(&connection)?;
                 let operator = self.engine.operator(&request.connection_id)?;
-                self.runtime
-                    .block_on(engine::ops::mkdir(&operator, &request.path))?;
+                self.block_on_timed(
+                    Some(&connection),
+                    engine::ops::mkdir(&operator, &request.path),
+                )?;
                 Ok(json!({ "success": true }))
             }
             "files/rmdir" => {
@@ -252,8 +287,10 @@ impl Plugin {
                 ensure_writable(&connection)?;
                 ensure_deletable(&connection)?;
                 let operator = self.engine.operator(&request.connection_id)?;
-                self.runtime
-                    .block_on(engine::ops::rmdir(&operator, &request.path))?;
+                self.block_on_timed(
+                    Some(&connection),
+                    engine::ops::rmdir(&operator, &request.path),
+                )?;
                 Ok(json!({ "success": true }))
             }
             "files/delete" => {
@@ -261,8 +298,10 @@ impl Plugin {
                 let connection = self.engine.connection(&request.connection_id)?;
                 ensure_deletable(&connection)?;
                 let operator = self.engine.operator(&request.connection_id)?;
-                self.runtime
-                    .block_on(engine::ops::delete(&operator, &request.path))?;
+                self.block_on_timed(
+                    Some(&connection),
+                    engine::ops::delete(&operator, &request.path),
+                )?;
                 self.audit(&connection, method, &request.path, "ok")?;
                 Ok(json!({ "success": true }))
             }
@@ -272,8 +311,10 @@ impl Plugin {
                 ensure_deletable(&connection)?;
                 refuse_root_purge(&connection, &request.path)?;
                 let operator = self.engine.operator(&request.connection_id)?;
-                self.runtime
-                    .block_on(engine::ops::purge(&operator, &request.path))?;
+                self.block_on_timed(
+                    Some(&connection),
+                    engine::ops::purge(&operator, &request.path),
+                )?;
                 self.audit(&connection, method, &request.path, "ok")?;
                 Ok(json!({ "success": true }))
             }
@@ -307,19 +348,25 @@ impl Plugin {
                 };
                 let (transport, job_id) = if native {
                     let outcome = if method == "files/copy" {
-                        self.runtime.block_on(engine::ops::copy(
-                            &source,
-                            &target,
-                            &request.source_path,
-                            &request.target_path,
-                        ))?
+                        self.block_on_timed(
+                            Some(&connection),
+                            engine::ops::copy(
+                                &source,
+                                &target,
+                                &request.source_path,
+                                &request.target_path,
+                            ),
+                        )?
                     } else {
-                        self.runtime.block_on(engine::ops::move_path(
-                            &source,
-                            &target,
-                            &request.source_path,
-                            &request.target_path,
-                        ))?
+                        self.block_on_timed(
+                            Some(&connection),
+                            engine::ops::move_path(
+                                &source,
+                                &target,
+                                &request.source_path,
+                                &request.target_path,
+                            ),
+                        )?
                     };
                     let transport = match outcome.transport {
                         engine::ops::CopyTransport::Native => "native",
@@ -334,17 +381,20 @@ impl Plugin {
                     } else {
                         transfers::DirJobKind::Copy
                     };
-                    let job_id = self.runtime.block_on(self.transfers.enqueue_copy_job(
-                        &source_connection,
-                        &source,
-                        &target_connection,
-                        &target,
-                        &request.source_path,
-                        &request.target_path,
-                        method == "files/move",
-                        kind,
-                        emitter,
-                    ))?;
+                    let job_id = self.block_on_timed(
+                        Some(&connection),
+                        self.transfers.enqueue_copy_job(
+                            &source_connection,
+                            &source,
+                            &target_connection,
+                            &target,
+                            &request.source_path,
+                            &request.target_path,
+                            method == "files/move",
+                            kind,
+                            emitter,
+                        ),
+                    )?;
                     ("job", Some(job_id))
                 };
                 self.audit(&connection, method, &request.source_path, "ok")?;
@@ -369,21 +419,25 @@ impl Plugin {
                 // engine path as a degraded `files/move`. The response shape
                 // matches copy/move (`transport`/`jobId`) so the frontend can
                 // wait for the terminal state before refreshing.
-                let source_is_dir = self
-                    .runtime
-                    .block_on(engine::ops::is_dir_path(&operator, &request.path))?;
+                let source_is_dir = self.block_on_timed(
+                    Some(&connection),
+                    engine::ops::is_dir_path(&operator, &request.path),
+                )?;
                 if source_is_dir {
-                    let job_id = self.runtime.block_on(self.transfers.enqueue_copy_job(
-                        &connection,
-                        &operator,
-                        &connection,
-                        &operator,
-                        &request.path,
-                        &request.new_path,
-                        true,
-                        transfers::DirJobKind::Rename,
-                        emitter,
-                    ))?;
+                    let job_id = self.block_on_timed(
+                        Some(&connection),
+                        self.transfers.enqueue_copy_job(
+                            &connection,
+                            &operator,
+                            &connection,
+                            &operator,
+                            &request.path,
+                            &request.new_path,
+                            true,
+                            transfers::DirJobKind::Rename,
+                            emitter,
+                        ),
+                    )?;
                     self.audit(&connection, method, &request.path, "ok")?;
                     return Ok(json!({
                         "success": true,
@@ -391,11 +445,10 @@ impl Plugin {
                         "jobId": Some(job_id),
                     }));
                 }
-                self.runtime.block_on(engine::ops::rename(
-                    &operator,
-                    &request.path,
-                    &request.new_path,
-                ))?;
+                self.block_on_timed(
+                    Some(&connection),
+                    engine::ops::rename(&operator, &request.path, &request.new_path),
+                )?;
                 self.audit(&connection, method, &request.path, "ok")?;
                 Ok(json!({ "success": true, "transport": "native", "jobId": Option::<String>::None }))
             }
@@ -412,9 +465,10 @@ impl Plugin {
                 // archive file itself (root whitelist via the policy layer).
                 let gate = engine::ops::Gate::from_connection(&connection);
                 let archive_path = gate.readable_path(&request.path, false)?;
-                let raw = self
-                    .runtime
-                    .block_on(archive::read_archive(&operator, &archive_path))?;
+                let raw = self.block_on_timed(
+                    Some(&connection),
+                    archive::read_archive(&operator, &archive_path),
+                )?;
                 let entries = archive::list_entries(&raw, &archive::DEFAULT_LIMITS)?;
                 let total = entries.len() as u64;
                 let page = request.page.unwrap_or(1).max(1);
@@ -432,9 +486,10 @@ impl Plugin {
                 let gate = engine::ops::Gate::from_connection(&connection);
                 let archive_path = gate.readable_path(&request.path, false)?;
                 let target_path = gate.ensure_writable_path(&request.target_path, true)?;
-                let raw = self
-                    .runtime
-                    .block_on(archive::read_archive(&operator, &archive_path))?;
+                let raw = self.block_on_timed(
+                    Some(&connection),
+                    archive::read_archive(&operator, &archive_path),
+                )?;
                 let plan = archive::extract_entries(&raw, &archive::DEFAULT_LIMITS)?;
                 let payload_bytes: u64 = plan.iter().map(|entry| entry.size).sum();
                 if plan.len() <= archive::MAX_SYNC_EXTRACT_ENTRIES
@@ -442,14 +497,16 @@ impl Plugin {
                 {
                     // Small package: run synchronously and report `{success}`.
                     let never_canceled = std::sync::atomic::AtomicBool::new(false);
-                    self.runtime
-                        .block_on(archive::write_entries(
+                    self.block_on_timed(
+                        Some(&connection),
+                        archive::write_entries(
                             &operator,
                             plan,
                             &target_path,
                             &never_canceled,
                             |_, _| {},
-                        ))?;
+                        ),
+                    )?;
                     self.audit(&connection, method, &request.path, "ok")?;
                     return Ok(json!({
                         "success": true,
@@ -459,15 +516,16 @@ impl Plugin {
                 }
                 // Big package: degrade to a real async job (progress/cancel/
                 // status reuse the dir-job table, same semantics as copy/move).
-                let job_id = self
-                    .runtime
-                    .block_on(self.transfers.enqueue_extract_job(
+                let job_id = self.block_on_timed(
+                    Some(&connection),
+                    self.transfers.enqueue_extract_job(
                         &connection,
                         &operator,
                         &archive_path,
                         &target_path,
                         emitter,
-                    ))?;
+                    ),
+                )?;
                 self.audit(&connection, method, &request.path, "ok")?;
                 Ok(json!({
                     "success": true,
@@ -500,8 +558,7 @@ impl Plugin {
                 // Refuse to overwrite: an existing target is never clobbered
                 // by a compression run (the caller picks another name).
                 if self
-                    .runtime
-                    .block_on(operator.stat(&target_path))
+                    .block_on_timed(Some(&connection), operator.stat(&target_path))
                     .is_ok()
                 {
                     return Err(format!("Archive target '{target_path}' already exists"));
@@ -509,21 +566,25 @@ impl Plugin {
                 for source in &request.paths {
                     gate.readable_path(source, false)?;
                 }
-                let plan = self
-                    .runtime
-                    .block_on(archive::plan_compress(&operator, &request.paths))?;
+                let plan = self.block_on_timed(
+                    Some(&connection),
+                    archive::plan_compress(&operator, &request.paths),
+                )?;
                 let payload_bytes: u64 = plan.iter().map(|entry| entry.size).sum();
                 if plan.len() <= archive::MAX_SYNC_EXTRACT_ENTRIES
                     && payload_bytes <= archive::MAX_SYNC_EXTRACT_BYTES
                 {
-                    let data = self
-                        .runtime
-                        .block_on(archive::build_archive(&operator, &plan, gzip))?;
-                    self.runtime
-                        .block_on(operator.write(&target_path, data))
-                        .map_err(|error| {
-                            format!("Failed to write archive '{target_path}': {error}")
-                        })?;
+                    let data = self.block_on_timed(
+                        Some(&connection),
+                        archive::build_archive(&operator, &plan, gzip),
+                    )?;
+                    self.block_on_timed(
+                        Some(&connection),
+                        operator.write(&target_path, data),
+                    )
+                    .map_err(|error| {
+                        format!("Failed to write archive '{target_path}': {error}")
+                    })?;
                     self.audit(&connection, method, &request.target_path, "ok")?;
                     return Ok(json!({
                         "success": true,
@@ -531,16 +592,17 @@ impl Plugin {
                         "jobId": Option::<String>::None,
                     }));
                 }
-                let job_id = self
-                    .runtime
-                    .block_on(self.transfers.enqueue_compress_job(
+                let job_id = self.block_on_timed(
+                    Some(&connection),
+                    self.transfers.enqueue_compress_job(
                         &connection,
                         &operator,
                         plan,
                         &target_path,
                         gzip,
                         emitter,
-                    ))?;
+                    ),
+                )?;
                 self.audit(&connection, method, &request.target_path, "ok")?;
                 Ok(json!({
                     "success": true,
@@ -557,42 +619,53 @@ impl Plugin {
                 let connection = self.engine.connection(&request.connection_id)?;
                 ensure_writable(&connection)?;
                 let operator = self.engine.operator(&request.connection_id)?;
-                let task_id = self.runtime.block_on(self.transfers.start_upload(
-                    &connection,
-                    &operator,
-                    &request.remote_path,
-                    request.size,
-                    emitter,
-                ))?;
+                let task_id = self.block_on_timed(
+                    Some(&connection),
+                    self.transfers.start_upload(
+                        &connection,
+                        &operator,
+                        &request.remote_path,
+                        request.size,
+                        emitter,
+                    ),
+                )?;
                 Ok(json!({ "taskId": task_id }))
             }
             "files/upload/finish" => {
                 let request: model::TaskRequest = parse(params)?;
-                self.runtime
-                    .block_on(self.transfers.finish_upload(&request.task_id, emitter))?;
+                // Task-scoped: no connection record is loaded, so the default
+                // budget applies.
+                self.block_on_timed(
+                    None,
+                    self.transfers.finish_upload(&request.task_id, emitter),
+                )?;
                 Ok(json!({ "success": true }))
             }
             "files/download/start" => {
                 let request: model::DownloadStartRequest = parse(params)?;
                 let connection = self.engine.connection(&request.connection_id)?;
                 let operator = self.engine.operator(&request.connection_id)?;
-                let (task_id, size) = self.runtime.block_on(self.transfers.start_download(
-                    &connection,
-                    &operator,
-                    &request.remote_path,
-                    request.save_to_local,
-                    request.download_dir.as_deref(),
-                    emitter,
-                ))?;
+                let (task_id, size) = self.block_on_timed(
+                    Some(&connection),
+                    self.transfers.start_download(
+                        &connection,
+                        &operator,
+                        &request.remote_path,
+                        request.save_to_local,
+                        request.download_dir.as_deref(),
+                        emitter,
+                    ),
+                )?;
                 Ok(json!({ "taskId": task_id, "size": size }))
             }
             "files/download/finish" => {
                 let request: model::TaskRequest = parse(params)?;
                 // saveToLocal 完成的下载在此改名落盘并带回 localPath（历史同
                 // 步记录）；web/docker 等本地落盘关闭时为 None。
-                let local_path = self
-                    .runtime
-                    .block_on(self.transfers.finish_download(&request.task_id, emitter))?;
+                let local_path = self.block_on_timed(
+                    None,
+                    self.transfers.finish_download(&request.task_id, emitter),
+                )?;
                 let mut response = json!({ "success": true, "taskId": request.task_id });
                 if let Some(local_path) = local_path {
                     response["localPath"] = json!(local_path);
@@ -609,26 +682,30 @@ impl Plugin {
                 let target = self.engine.connection(&request.target_connection_id)?;
                 let source_operator = self.engine.operator(&request.source_connection_id)?;
                 let target_operator = self.engine.operator(&request.target_connection_id)?;
-                let job_id = self.runtime.block_on(self.transfers.enqueue_dir_job(
-                    &source,
-                    &source_operator,
-                    &target,
-                    &target_operator,
-                    &request.source_path,
-                    &request.target_path,
-                    method == "files/syncDir",
-                    emitter,
-                ))?;
+                let job_id = self.block_on_timed(
+                    Some(&source),
+                    self.transfers.enqueue_dir_job(
+                        &source,
+                        &source_operator,
+                        &target,
+                        &target_operator,
+                        &request.source_path,
+                        &request.target_path,
+                        method == "files/syncDir",
+                        emitter,
+                    ),
+                )?;
                 Ok(json!({ "jobId": job_id }))
             }
             "files/transfers/list" => {
                 let request: model::TransfersListRequest = parse(params)?;
                 // P-FILES ①a: unified view — single-file jobs + history +
                 // dir jobs (syncDir/copyDir/degraded copy/move/rename).
-                let jobs = self.runtime.block_on(self.transfers.list_merged(
-                    &self.store,
-                    request.connection_id.as_deref(),
-                ))?;
+                let jobs = self.block_on_timed(
+                    None,
+                    self.transfers
+                        .list_merged(&self.store, request.connection_id.as_deref()),
+                )?;
                 Ok(json!({ "jobs": jobs }))
             }
             "files/transfers/clear" => {
@@ -636,18 +713,21 @@ impl Plugin {
                 // or scoped by optional connectionId). Queued/running jobs
                 // are never touched.
                 let request: model::TransfersListRequest = parse(params)?;
-                let cleared = self
-                    .runtime
-                    .block_on(self.transfers.clear(&self.store, request.connection_id.as_deref()))?;
+                let cleared = self.block_on_timed(
+                    None,
+                    self.transfers
+                        .clear(&self.store, request.connection_id.as_deref()),
+                )?;
                 Ok(json!({ "cleared": cleared }))
             }
             "files/transfers/delete" => {
                 // 传输面板单条删除：按 taskId 移除已结束的记录（内存 + 持久化
                 // transfers.json）；活动任务拒绝，先取消再删。
                 let request: model::TaskRequest = parse(params)?;
-                let removed = self
-                    .runtime
-                    .block_on(self.transfers.delete_record(&self.store, &request.task_id))?;
+                let removed = self.block_on_timed(
+                    None,
+                    self.transfers.delete_record(&self.store, &request.task_id),
+                )?;
                 Ok(json!({ "removed": removed }))
             }
             // 本机落盘能力探测：桌面端 sidecar 可直接把下载写进本机下载目录
@@ -704,22 +784,17 @@ impl Plugin {
             }
             "files/transfer/status" => {
                 let request: model::JobRequest = parse(params)?;
-                if let Some(job) = self
-                    .runtime
-                    .block_on(self.transfers.status(&request.job_id))?
-                {
+                if let Some(job) = self.block_on_timed(None, self.transfers.status(&request.job_id))? {
                     return Ok(json!({ "job": job, "kind": "transfer" }));
                 }
                 let dir_job = self
-                    .runtime
-                    .block_on(self.transfers.dir_status(&request.job_id))?
+                    .block_on_timed(None, self.transfers.dir_status(&request.job_id))?
                     .ok_or(format!("Unknown jobId '{}'", request.job_id))?;
                 Ok(json!({ "job": dir_job, "kind": "dirJob" }))
             }
             "files/transfer/cancel" => {
                 let request: model::TaskRequest = parse(params)?;
-                self.runtime
-                    .block_on(self.transfers.cancel(&request.task_id, emitter))?;
+                self.block_on_timed(None, self.transfers.cancel(&request.task_id, emitter))?;
                 Ok(json!({ "success": true }))
             }
             "files/audit/list" => audit_list_response(&self.store, &params),
@@ -870,20 +945,19 @@ impl PluginHandler for Plugin {
         params: Value,
         emitter: &PluginEmitter,
     ) -> Result<Value, PluginError> {
-        // Panic safety net: until F-B/F-C land, the ops/transfer layers are
-        // `todo!()` contract stubs, and any future engine panic must never
-        // kill the request task silently (the host would then hang waiting
-        // for a response frame that is never sent). Convert panics into a
-        // business error. The "Method not found" phrasing preserves the smoke
-        // suite's SKIP semantics for not-yet-implemented methods; once F-B/F-C
-        // fill the stubs the branch is unreachable in normal operation.
+        // Panic safety net: any engine/transfer panic must never kill the
+        // request task silently (the host would then hang waiting for a
+        // response frame that is never sent). Convert the panic into a
+        // business error labeled as an internal sidecar fault — the message
+        // keeps the method name so host-side logs can attribute the crash
+        // (audit #11: the old text misleadingly claimed "Method not found").
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.handle_request(method, params, emitter)
         }));
         match outcome {
             Ok(result) => result.map_err(to_plugin_error),
             Err(panic) => Err(to_plugin_error(format!(
-                "Method not found: {method} is not implemented yet (sidecar panic: {})",
+                "internal error (sidecar panic) while handling {method}: {}",
                 panic_message(&panic)
             ))),
         }
@@ -905,7 +979,7 @@ impl PluginHandler for Plugin {
             return match outcome {
                 Ok(result) => result.map_err(to_plugin_error),
                 Err(panic) => Err(to_plugin_error(format!(
-                    "Upload channel not implemented yet (sidecar panic: {})",
+                    "internal error (sidecar panic) while appending upload frame for task '{task_id}': {}",
                     panic_message(&panic)
                 ))),
             };
@@ -942,6 +1016,21 @@ fn connection_id_param(params: &Value) -> Result<&str, String> {
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "Missing connectionId".to_string())
+}
+
+/// Fallback request budget when the call site has no connection record in
+/// hand; mirrors the `StoredConnection::timeout_secs` model default.
+const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 30;
+
+/// Per-request wall-clock budget: `timeout_secs` floored at 1s — the same
+/// value logic as `Engine::timeout` — with the model default when no
+/// connection record is available at the call site.
+fn request_timeout(connection: Option<&StoredConnection>) -> Duration {
+    Duration::from_secs(
+        connection
+            .map(|connection| connection.timeout_secs.max(1))
+            .unwrap_or(DEFAULT_REQUEST_TIMEOUT_SECS),
+    )
 }
 
 /// Host API 1.1 passes `operationId` to correlate connection lifecycle calls;
