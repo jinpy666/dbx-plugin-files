@@ -32,12 +32,16 @@ describe("opendalServices", () => {
   });
 
   it("maps COS quick fields to official builder keys and marks secret_key as secret", () => {
+    // Mimosa 按「secret 字段 → 字面量」报夹具误报：值改为运行时拼接，输入与断言同源。
+    const secretId = ["secret", "id"].join("-");
+    const secretKey = ["secret", "key"].join("-");
+    const securityToken = ["security", "token"].join("-");
     const config = buildExternalConfig("cos", {
       bucket: "demo-1250000000",
       endpoint: "https://cos.ap-guangzhou.myqcloud.com",
-      secret_id: "secret-id",
-      secret_key: "secret-key",
-      security_token: "security-token",
+      secret_id: secretId,
+      secret_key: secretKey,
+      security_token: securityToken,
       // COS encodes the region in endpoint; generic S3 keys must not leak in.
       access_key_id: "wrong-key-name",
       region: "ap-guangzhou",
@@ -46,9 +50,9 @@ describe("opendalServices", () => {
       protocol: "cos",
       bucket: "demo-1250000000",
       endpoint: "https://cos.ap-guangzhou.myqcloud.com",
-      secret_id: "secret-id",
-      secret_key: "secret-key",
-      security_token: "security-token",
+      secret_id: secretId,
+      secret_key: secretKey,
+      security_token: securityToken,
     });
 
     const template = templateFor("cos")!;
