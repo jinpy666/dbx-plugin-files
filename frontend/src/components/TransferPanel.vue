@@ -121,7 +121,15 @@ function timeLabel(job: TransferJob): string {
         <span>{{ progressMeta(job) }} · {{ percentOf(job) }}%</span>
       </div>
       <div v-if="speedMeta(job)" class="wb-transfer-meta"><span class="wb-transfer-speed">{{ speedMeta(job) }}</span></div>
-      <div class="wb-progress"><div class="wb-progress-bar" :class="`is-${job.state}`" :style="{ width: `${percentOf(job)}%` }" /></div>
+      <!-- 审计中#11：进度条从纯视觉升级为 progressbar 语义，值变化可被读屏感知。 -->
+      <div
+        class="wb-progress"
+        role="progressbar"
+        :aria-label="`${t(`transferKind.${job.kind}`)}: ${label(job)}`"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        :aria-valuenow="percentOf(job)"
+      ><div class="wb-progress-bar" :class="`is-${job.state}`" :style="{ width: `${percentOf(job)}%` }" /></div>
       <div v-if="job.error" class="wb-transfer-error">{{ job.error }}</div>
     </div>
   </div>

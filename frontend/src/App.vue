@@ -568,7 +568,9 @@ function showError(cause: unknown, side: PaneSide | "global" = "global") {
       error.value = { kind: "failure", detail: message, friendlyRaw: message };
     }
   }
-  errorTimer = window.setTimeout(() => (error.value = ""), 3000);
+  // 审计快赢#1：错误横幅 3s 自动消失来不及读完，延长到 8s；role=alert 保证
+  // 屏幕阅读器即时播报（横幅条件渲染，插入即触发播报）。
+  errorTimer = window.setTimeout(() => (error.value = ""), 8000);
 }
 
 /** 错误横幅上的重试（④ UI 三态：错误可恢复）。P2-4：按出错栏位重放——
@@ -1810,7 +1812,9 @@ async function cancelTransfer(jobId: string) {
   void tracker.refresh(invokeAdapter);
 }
 
-/** 清理传输历史（P-FILES ⑥）：sidecar 清持久化历史 + 内存完成态 job，本地同步清。 */
+/** 清理传输历史（P-FILES ⑥）：sidecar 清持久化历史 + 内存完成态 job，本地同步清。
+ * 审计中#15：清空不可恢复，接入 ConfirmDialog 二次确认（transferHistoryConfirmOpen）。 */
+const transferHistoryConfirmOpen = ref(false);
 async function clearTransferHistory() {
   try {
     await call("files/transfers/clear", {});
@@ -2159,6 +2163,10 @@ function onDocumentKeydown(event: KeyboardEvent) {
     closeConfirm();
     return;
   }
+  if (transferHistoryConfirmOpen.value) {
+    transferHistoryConfirmOpen.value = false;
+    return;
+  }
   contextMenu.value = undefined;
   blankMenu.value = undefined;
   sideMenu.value = undefined;
@@ -2212,13 +2220,13 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="wb-workbench">
-    <div v-if="error" class="wb-error-banner">
+    <div v-if="error" class="wb-error-banner" role="alert">
       <span :title="errorDetail">{{ errorText }}</span>
       <!-- R3-P2-10：文本字符 ↻/✕ 换 lucide 图标（对齐 P2-14 先例）。 -->
       <button class="wb-icon-button wb-icon-neutral" v-tip="t('retry')" @click="retryAfterError"><RefreshCw /></button>
       <button class="wb-icon-button wb-icon-neutral" v-tip="t('close')" @click="error = ''"><X /></button>
     </div>
-    <div v-if="notice" class="wb-notice">{{ noticeText }}</div>
+    <div v-if="notice" class="wb-notice" role="status">{{ noticeText }}</div>
 
     <FileToolbar
       :can-write="canWrite"
@@ -2245,7 +2253,7 @@ onBeforeUnmount(() => {
       <section class="wb-pane wb-pane-source" @dragover.prevent @dragenter="dragOverSide = 'left'" @dragleave="dragOverSide = dragOverSide === 'left' ? null : dragOverSide" @drop.prevent="onDropTo('left', $event)">
         <!-- pane 顶条：双栏时放左栏连接选择（与右栏顶条等高对齐）；单栏时整行隐藏 -->
         <div v-if="dualPane" class="wb-pane-topbar">
-          <select v-model="leftConnectionId" class="wb-target-connection" :title="t('sourceConnection')" @change="onLeftConnectionChange">
+          <select v-model="leftConnectionId" class="wb-target-connection" :aria-label="t('sourceConnection')" @change="onLeftConnectionChange">
             <option v-for="item in leftConnections" :key="item.id" :value="item.id">{{ item.name }}</option>
           </select>
         </div>
@@ -2268,8 +2276,8 @@ onBeforeUnmount(() => {
           />
           <div class="wb-pane-main">
             <div class="wb-pane-header">
-              <button class="wb-icon-button wb-icon-neutral" :title="t('up')" :disabled="!path || path === '/'" @click="onToolbarNavigate(parentPath(path))"><ArrowUp /></button>
-              <button class="wb-icon-button wb-icon-neutral" :title="t('refresh')" :disabled="loading" @click="markActiveSide('left'); refreshDirectory()"><RefreshCw :class="{ 'wb-spin': loading }" /></button>
+              <button class="wb-icon-button wb-icon-neutral" v-tip="t('up')" :disabled="!path || path === '/'" @click="onToolbarNavigate(parentPath(path))"><ArrowUp /></button>
+              <button class="wb-icon-button wb-icon-neutral" v-tip="t('refresh')" :disabled="loading" @click="markActiveSide('left'); refreshDirectory()"><RefreshCw :class="{ 'wb-spin': loading }" /></button>
               <div class="wb-path-toolbar">
                 <PathField :path="path" :t="t" @navigate="onToolbarNavigate" />
                 <span class="wb-search-box">
@@ -2278,6 +2286,7 @@ onBeforeUnmount(() => {
                     :value="searchQuery"
                     class="wb-search-input"
                     :placeholder="t('searchPlaceholder')"
+                    :aria-label="t('searchLabel')"
                     type="search"
                     spellcheck="false"
                     @input="searchQuery = ($event.target as HTMLInputElement).value"
@@ -2315,11 +2324,11 @@ onBeforeUnmount(() => {
       <!-- 双栏桥：跨栏 copy/move 按钮（A-FILES ①）。R3-P2-1：copy 与 move 的写
            都发生在目标栏，同受 canWrite 门禁（只读态「复制到目标/源栏」禁用）。 -->
       <div v-if="dualPane" class="wb-pane-bridge">
-        <button class="wb-icon-button wb-icon-neutral" :title="t('copyToTarget')" :disabled="!selection.length || !canWrite" @click="transferBetween('left', false)"><Copy /></button>
-        <button class="wb-icon-button wb-icon-neutral" :title="t('moveToTarget')" :disabled="!selection.length || !canWrite" @click="transferBetween('left', true)"><ArrowRight /></button>
+        <button class="wb-icon-button wb-icon-neutral" v-tip="t('copyToTarget')" :disabled="!selection.length || !canWrite" @click="transferBetween('left', false)"><Copy /></button>
+        <button class="wb-icon-button wb-icon-neutral" v-tip="t('moveToTarget')" :disabled="!selection.length || !canWrite" @click="transferBetween('left', true)"><ArrowRight /></button>
         <span class="wb-toolbar-separator" />
-        <button class="wb-icon-button wb-icon-neutral" :title="t('copyToSource')" :disabled="!rightSelection.length || !canWrite" @click="transferBetween('right', false)"><Copy class="wb-flip-h" /></button>
-        <button class="wb-icon-button wb-icon-neutral" :title="t('moveToSource')" :disabled="!rightSelection.length || !canWrite" @click="transferBetween('right', true)"><ArrowLeft /></button>
+        <button class="wb-icon-button wb-icon-neutral" v-tip="t('copyToSource')" :disabled="!rightSelection.length || !canWrite" @click="transferBetween('right', false)"><Copy class="wb-flip-h" /></button>
+        <button class="wb-icon-button wb-icon-neutral" v-tip="t('moveToSource')" :disabled="!rightSelection.length || !canWrite" @click="transferBetween('right', true)"><ArrowLeft /></button>
       </div>
 
       <!-- 目标栏（右栏）：目标连接浏览（文件概览已改为弹窗，不占右栏 Tab） -->
@@ -2333,7 +2342,7 @@ onBeforeUnmount(() => {
       >
         <!-- P2-11：无可切换连接时整个 topbar 不渲染（v-if 提到容器级），不再留 28px 空条 -->
         <div v-if="targetConnections.length" class="wb-pane-topbar">
-          <select v-model="targetConnectionId" class="wb-target-connection" :title="t('targetConnection')" @change="markActiveSide('right'); loadRightDirectory(rightPath)">
+          <select v-model="targetConnectionId" class="wb-target-connection" :aria-label="t('targetConnection')" @change="markActiveSide('right'); loadRightDirectory(rightPath)">
             <option value="">{{ t("sameConnection") }}</option>
             <option v-for="item in targetConnections" :key="item.id" :value="item.id">{{ item.name }}</option>
           </select>
@@ -2356,8 +2365,8 @@ onBeforeUnmount(() => {
           />
           <div class="wb-pane-main">
             <div class="wb-pane-header">
-              <button class="wb-icon-button wb-icon-neutral" :title="t('up')" :disabled="!rightPath || rightPath === '/'" @click="onRightNavigate(parentPath(rightPath))"><ArrowUp /></button>
-              <button class="wb-icon-button wb-icon-neutral" :title="t('refresh')" :disabled="rightLoading" @click="markActiveSide('right'); refreshRightDirectory()"><RefreshCw :class="{ 'wb-spin': rightLoading }" /></button>
+              <button class="wb-icon-button wb-icon-neutral" v-tip="t('up')" :disabled="!rightPath || rightPath === '/'" @click="onRightNavigate(parentPath(rightPath))"><ArrowUp /></button>
+              <button class="wb-icon-button wb-icon-neutral" v-tip="t('refresh')" :disabled="rightLoading" @click="markActiveSide('right'); refreshRightDirectory()"><RefreshCw :class="{ 'wb-spin': rightLoading }" /></button>
               <div class="wb-path-toolbar">
                 <PathField :path="rightPath" :t="t" @navigate="onRightNavigate" />
                 <span class="wb-search-box">
@@ -2366,6 +2375,7 @@ onBeforeUnmount(() => {
                     :value="rightSearchQuery"
                     class="wb-search-input"
                     :placeholder="t('searchPlaceholder')"
+                    :aria-label="t('searchLabel')"
                     type="search"
                     spellcheck="false"
                     @input="rightSearchQuery = ($event.target as HTMLInputElement).value"
@@ -2414,7 +2424,7 @@ onBeforeUnmount(() => {
             :t="t"
             :retryable-ids="retryableTransferIds"
             @cancel="cancelTransfer"
-            @clear-history="clearTransferHistory"
+            @clear-history="transferHistoryConfirmOpen = true"
             @retry="retryTransfer"
             @delete="deleteTransferRecord"
             @reveal="revealTransferTarget"
@@ -2533,8 +2543,19 @@ onBeforeUnmount(() => {
         <span v-else-if="confirmKind === 'newFile'">{{ t("newFilePlaceholder") }}</span>
         <span v-else-if="confirmKind === 'rename'">{{ t("renameTitle") }}</span>
         <span v-else>{{ t("pathPlaceholder") }}</span>
-        <input v-model="confirmDraft" spellcheck="false" @keydown.enter.prevent="onConfirm" />
+        <input v-model="confirmDraft" spellcheck="false" @keydown.enter.prevent="!confirmDanger && onConfirm()" />
       </label>
     </ConfirmDialog>
+
+    <!-- 审计中#15：清空传输历史二次确认（危险度低于删文件，无需 danger 态）。 -->
+    <ConfirmDialog
+      :open="transferHistoryConfirmOpen"
+      :title="t('clearHistoryTitle')"
+      :body="t('clearHistoryBody')"
+      :confirm-label="t('clearHistory')"
+      :cancel-label="t('cancel')"
+      @confirm="transferHistoryConfirmOpen = false; clearTransferHistory()"
+      @cancel="transferHistoryConfirmOpen = false"
+    />
   </main>
 </template>

@@ -467,7 +467,7 @@ describe("round5 current host context/environment UI smoke", () => {
     expect(invoke.mock.calls.some(([method]) => method === "files/upload/finish")).toBe(true);
     expect(wrapper!.get(".wb-error-banner").text()).toContain(workbenchMessage("en", "errPermission"));
     expect(wrapper!.find(".wb-notice").exists()).toBe(false);
-    await vi.advanceTimersByTimeAsync(3001);
+    await vi.advanceTimersByTimeAsync(8001);
     await nextTick();
     expect(wrapper!.find(".wb-error-banner").exists()).toBe(false);
   });

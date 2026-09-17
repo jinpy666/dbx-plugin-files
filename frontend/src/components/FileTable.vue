@@ -188,13 +188,13 @@ function onDragStart(entry: FileEntry, event: DragEvent) {
   <!-- R3-P2-8：表头 role=row/columnheader + aria-sort（排序方向对屏幕阅读器可感知）。 -->
   <div class="wb-file-header" role="row" @contextmenu.prevent.stop="emit('blank-context', { x: $event.clientX, y: $event.clientY })">
     <span class="wb-col-name" role="columnheader" :aria-sort="sort.column === 'name' ? (sort.direction === 'asc' ? 'ascending' : 'descending') : undefined">
-      <button type="button" @click="emit('sort', 'name')">{{ t("colName") }}{{ sort.column === "name" ? (sort.direction === "asc" ? " ↑" : " ↓") : "" }}</button>
+      <button type="button" @click="emit('sort', 'name')">{{ t("colName") }}<span v-if="sort.column === 'name'" aria-hidden="true">{{ sort.direction === "asc" ? " ↑" : " ↓" }}</span></button>
     </span>
     <span class="wb-numeric" style="width: 90px" role="columnheader" :aria-sort="sort.column === 'size' ? (sort.direction === 'asc' ? 'ascending' : 'descending') : undefined">
-      <button type="button" @click="emit('sort', 'size')">{{ t("colSize") }}{{ sort.column === "size" ? (sort.direction === "asc" ? " ↑" : " ↓") : "" }}</button>
+      <button type="button" @click="emit('sort', 'size')">{{ t("colSize") }}<span v-if="sort.column === 'size'" aria-hidden="true">{{ sort.direction === "asc" ? " ↑" : " ↓" }}</span></button>
     </span>
     <span style="width: 130px" role="columnheader" :aria-sort="sort.column === 'modified' ? (sort.direction === 'asc' ? 'ascending' : 'descending') : undefined">
-      <button type="button" @click="emit('sort', 'modified')">{{ t("colModified") }}{{ sort.column === "modified" ? (sort.direction === "asc" ? " ↑" : " ↓") : "" }}</button>
+      <button type="button" @click="emit('sort', 'modified')">{{ t("colModified") }}<span v-if="sort.column === 'modified'" aria-hidden="true">{{ sort.direction === "asc" ? " ↑" : " ↓" }}</span></button>
     </span>
   </div>
   <!-- R3-P2-8：滚动容器 role=listbox + aria-label，行 role=option + aria-selected。 -->

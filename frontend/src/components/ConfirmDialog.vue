@@ -42,8 +42,15 @@ watch(
       const root = dialogEl.value;
       if (!root) return;
       const input = root.querySelector<HTMLInputElement>("input, textarea");
-      (input ?? root.querySelector<HTMLElement>(".wb-dialog-cancel"))?.focus();
+      // 审计中#9：danger 确认（syncDir/copyDir 等）首焦点不落输入框——输入框
+      // 聚焦 + Enter 会一步触发危险动作；改落取消钮（安全项），输入需先 Tab。
+      if (props.danger) {
+        (root.querySelector<HTMLElement>(".wb-dialog-cancel") ?? input)?.focus();
+        return;
+      }
+      input?.focus();
       input?.select();
+      if (!input) root.querySelector<HTMLElement>(".wb-dialog-cancel")?.focus();
       return;
     }
     returnFocusTo?.focus();

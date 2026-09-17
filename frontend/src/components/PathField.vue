@@ -67,6 +67,7 @@ function onBlur() {
       v-model="draft"
       class="wb-path-input"
       :placeholder="t('pathPlaceholder')"
+      :aria-label="t('pathInputLabel')"
       spellcheck="false"
       @keydown.enter.prevent="submit"
       @keydown.esc.prevent="cancel"

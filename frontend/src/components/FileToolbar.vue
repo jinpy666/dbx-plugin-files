@@ -60,11 +60,12 @@ function onPicked(event: Event) {
       <span class="wb-session-pill" :class="`session-${connState}`"><span class="wb-session-dot" aria-hidden="true" />{{ t(`sessionStatus.${connState}`) }}</span>
     </div>
     <div class="wb-toolbar-actions">
-      <button class="wb-toolbar-button" :title="t('newFolder')" :disabled="!canWrite || busy" @click="emit('new-folder')"><FolderPlus /> {{ t("newFolder") }}</button>
-      <button class="wb-toolbar-button" :title="t('upload')" :disabled="!canWrite || busy" @click="pickFiles"><Upload /> {{ t("upload") }}</button>
+      <!-- 审计中#13：文字按钮统一 v-tip（宿主 webview 不渲染原生 title）。 -->
+      <button class="wb-toolbar-button" v-tip="t('newFolder')" :disabled="!canWrite || busy" @click="emit('new-folder')"><FolderPlus /> {{ t("newFolder") }}</button>
+      <button class="wb-toolbar-button" v-tip="t('upload')" :disabled="!canWrite || busy" @click="pickFiles"><Upload /> {{ t("upload") }}</button>
       <input ref="fileInput" type="file" multiple class="hidden" @change="onPicked" />
-      <button class="wb-toolbar-button" :title="t('download')" :disabled="!hasSelection || busy" @click="emit('download')"><Download /> {{ t("download") }}</button>
-      <button class="wb-toolbar-button" :title="t('deleteSelected')" :disabled="!hasSelection || !canWrite || busy" @click="emit('delete')"><Trash2 /> {{ t("deleteSelected") }}</button>
+      <button class="wb-toolbar-button" v-tip="t('download')" :disabled="!hasSelection || busy" @click="emit('download')"><Download /> {{ t("download") }}</button>
+      <button class="wb-toolbar-button" v-tip="t('deleteSelected')" :disabled="!hasSelection || !canWrite || busy" @click="emit('delete')"><Trash2 /> {{ t("deleteSelected") }}</button>
       <span class="wb-toolbar-separator" aria-hidden="true" />
       <button class="wb-icon-button wb-icon-neutral" v-tip="t('dualPane')" :class="{ 'is-active': dualPane }" @click="emit('toggle-dual-pane')"><Columns2 /></button>
       <button class="wb-icon-button wb-icon-neutral" v-tip="t('transfers')" :class="{ 'is-active': dockOpen && dockTab === 'transfers' }" @click="emit('toggle-dock', 'transfers')"><Gauge /></button>
