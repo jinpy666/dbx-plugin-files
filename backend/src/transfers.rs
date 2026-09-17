@@ -42,6 +42,41 @@ use crate::store::{self, Store};
 const UPLOAD_FINISH_TICK: Duration = Duration::from_millis(250);
 const UPLOAD_FINISH_STALL_TICKS: u32 = 40;
 
+/// rclone-aligned modification window: a target file whose mtime differs from
+/// the source by at most ±2s (and whose size matches) counts as unchanged and
+/// is skipped by the incremental sync/copy.
+const MTIME_TOLERANCE_MILLIS: u64 = 2_000;
+
+/// Cap on the per-path samples carried by the dry-run summary event (the
+/// counts stay exact; only the path lists are truncated).
+const DRY_RUN_SAMPLE_CAP: usize = 50;
+
+/// Event sink for the directory-job runners. The SDK's `PluginEmitter` has no
+/// test-visible constructor, so the spawned traversal jobs take this enum:
+/// production wraps the host emitter, offline tests capture the payloads for
+/// assertions. All emissions stay best-effort either way.
+#[derive(Clone)]
+enum EventSink {
+    Host(PluginEmitter),
+    #[cfg(test)]
+    Test(Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>),
+}
+
+impl EventSink {
+    fn emit(&self, method: &str, params: serde_json::Value) {
+        match self {
+            EventSink::Host(emitter) => {
+                let _ = emitter.event(method, params);
+            }
+            #[cfg(test)]
+            EventSink::Test(events) => events
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((method.to_string(), params)),
+        }
+    }
+}
+
 /// Direction of a transfer job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -152,6 +187,16 @@ pub struct DirJob {
     pub files_total: Option<u64>,
     pub bytes_done: u64,
     pub bytes_total: Option<u64>,
+    /// Incremental-skip statistics: plan entries whose target copy matched on
+    /// size (+ mtime within the rclone ±2s window) and was therefore skipped.
+    pub files_skipped: u64,
+    pub bytes_skipped: u64,
+    /// rclone `--dry-run` alignment: plan and compare only, no writes/deletes.
+    pub dry_run: bool,
+    /// rclone `--max-delete` alignment: the sync mirror phase fails when more
+    /// than this many target files would be deleted (`None` = unlimited).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_delete: Option<u64>,
     pub status: JobStatus,
     pub error: Option<String>,
     pub started_at: Option<u64>,
@@ -280,7 +325,7 @@ impl Inner {
         job_id: &str,
         status: JobStatus,
         error: Option<String>,
-        emitter: &PluginEmitter,
+        sink: &EventSink,
     ) -> bool {
         let job = {
             let mut dir_jobs = self.dir_jobs.lock().await;
@@ -296,7 +341,7 @@ impl Inner {
             job.clone()
         };
         self.dir_controls.lock().await.remove(job_id);
-        emit_dir_progress(emitter, &job);
+        emit_dir_progress(sink, &job);
         true
     }
 
@@ -815,7 +860,7 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
         if let Some(flag) = control {
             flag.store(true, Ordering::Release);
             self.inner
-                .complete_dir_job(task_id, JobStatus::Canceled, None, emitter)
+                .complete_dir_job(task_id, JobStatus::Canceled, None, &EventSink::Host(emitter.clone()))
                 .await;
             return Ok(());
         }
@@ -1020,6 +1065,11 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
     /// `files/syncDir` / `files/copyDir` (§8.4): enqueues the traversal job
     /// and returns `{jobId}` immediately. `sync = true` deletes target extras
     /// (rclone-sync semantics; refuse when the target disallows delete).
+    /// `dry_run` (rclone `--dry-run`) plans and compares only — no writes or
+    /// deletes, one summary event, then the job completes. `max_delete`
+    /// (rclone `--max-delete`) aborts the sync mirror phase when more target
+    /// files than the limit would be deleted (`None` = unlimited).
+    #[allow(clippy::too_many_arguments)]
     pub async fn enqueue_dir_job(
         &self,
         source: &StoredConnection,
@@ -1029,6 +1079,8 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
         source_path: &str,
         target_path: &str,
         sync: bool,
+        dry_run: bool,
+        max_delete: Option<u64>,
         emitter: &PluginEmitter,
     ) -> Result<String, String> {
         validate_dir_job_gates(target, sync)?;
@@ -1038,15 +1090,19 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
             job_id: job_id.clone(),
             source_connection_id: source.id.clone(),
             source_path: source_path.to_string(),
-        target_connection_id: target.id.clone(),
-        target_path: target_path.to_string(),
-        sync,
-        delete_source: false,
-        kind: if sync { DirJobKind::SyncDir } else { DirJobKind::CopyDir },
+            target_connection_id: target.id.clone(),
+            target_path: target_path.to_string(),
+            sync,
+            delete_source: false,
+            kind: if sync { DirJobKind::SyncDir } else { DirJobKind::CopyDir },
             files_done: 0,
             files_total: None,
             bytes_done: 0,
             bytes_total: None,
+            files_skipped: 0,
+            bytes_skipped: 0,
+            dry_run,
+            max_delete,
             status: JobStatus::Queued,
             error: None,
             started_at: Some(now),
@@ -1063,7 +1119,8 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
             .lock()
             .await
             .insert(job_id.clone(), cancel.clone());
-        emit_dir_progress(emitter, &job);
+        let sink = EventSink::Host(emitter.clone());
+        emit_dir_progress(&sink, &job);
         tokio::spawn(run_dir_job(
             self.inner.clone(),
             job_id.clone(),
@@ -1076,8 +1133,10 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
             sync,
             // syncDir/copyDir never delete their source.
             false,
+            dry_run,
+            max_delete,
             cancel,
-            emitter.clone(),
+            sink,
         ));
         Ok(job_id)
     }
@@ -1128,6 +1187,10 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
             files_total: None,
             bytes_done: 0,
             bytes_total: None,
+            files_skipped: 0,
+            bytes_skipped: 0,
+            dry_run: false,
+            max_delete: None,
             status: JobStatus::Queued,
             error: None,
             started_at: Some(now),
@@ -1144,7 +1207,8 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
             .lock()
             .await
             .insert(job_id.clone(), cancel.clone());
-        emit_dir_progress(emitter, &job);
+        let sink = EventSink::Host(emitter.clone());
+        emit_dir_progress(&sink, &job);
         tokio::spawn(run_dir_job(
             self.inner.clone(),
             job_id.clone(),
@@ -1156,8 +1220,10 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
             target_path.to_string(),
             false,
             delete_source,
+            false,
+            None,
             cancel,
-            emitter.clone(),
+            sink,
         ));
         Ok(job_id)
     }
@@ -1196,6 +1262,10 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
             files_total: None,
             bytes_done: 0,
             bytes_total: None,
+            files_skipped: 0,
+            bytes_skipped: 0,
+            dry_run: false,
+            max_delete: None,
             status: JobStatus::Queued,
             error: None,
             started_at: Some(now),
@@ -1212,7 +1282,8 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
             .lock()
             .await
             .insert(job_id.clone(), cancel.clone());
-        emit_dir_progress(emitter, &job);
+        let sink = EventSink::Host(emitter.clone());
+        emit_dir_progress(&sink, &job);
         tokio::spawn(run_extract_job(
             self.inner.clone(),
             job_id.clone(),
@@ -1221,7 +1292,7 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
             archive_path.to_string(),
             target_path.to_string(),
             cancel,
-            emitter.clone(),
+            sink,
         ));
         Ok(job_id)
     }
@@ -1261,6 +1332,10 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
             files_total: None,
             bytes_done: 0,
             bytes_total: None,
+            files_skipped: 0,
+            bytes_skipped: 0,
+            dry_run: false,
+            max_delete: None,
             status: JobStatus::Queued,
             error: None,
             started_at: Some(now),
@@ -1277,7 +1352,8 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
             .lock()
             .await
             .insert(job_id.clone(), cancel.clone());
-        emit_dir_progress(emitter, &job);
+        let sink = EventSink::Host(emitter.clone());
+        emit_dir_progress(&sink, &job);
         tokio::spawn(run_compress_job(
             self.inner.clone(),
             job_id.clone(),
@@ -1287,7 +1363,7 @@ fn terminal_finish_result(job: &TransferJob) -> Result<(), String> {
             target_path.to_string(),
             gzip,
             cancel,
-            emitter.clone(),
+            sink,
         ));
         Ok(job_id)
     }
@@ -1501,12 +1577,22 @@ fn remote_file_name(remote_path: &str) -> &str {
 }
 
 /// syncDir/copyDir traversal (§7) and the X-A degraded copy/move job (§8.2):
-/// source walk (directory subtree, or the single file itself) → per-file
-/// native copy (same connection + capability) or streamed read→write →
-/// throttled `{filesDone, filesTotal, bytesDone, bytesTotal}` progress;
-/// `sync` deletes target extras (extra files; emptied directories are left in
-/// place); `delete_source` (degraded move) removes the source only after the
-/// copy succeeded.
+/// source walk (directory subtree, or the single file itself), then
+/// incremental skip of unchanged target files (size + mtime within the rclone
+/// ±2s window; recorded in the skipped counters), then per-file native copy
+/// (same connection and copy capability) or streamed read→write with a
+/// post-copy size re-check, with throttled `{filesDone, filesTotal, bytesDone,
+/// bytesTotal}` progress. `sync` deletes target extras (rclone-sync
+/// semantics, gated by `max_delete` and followed by a deepest-first sweep of
+/// now-empty target directory markers); `delete_source` (degraded move)
+/// removes the source only after the copy succeeded. `dry_run` (rclone
+/// `--dry-run`) stops after the plan/compare and emits one summary event
+/// without writing or deleting.
+/// Files and directory markers of one walked target tree: relative path →
+/// (size, mtime millis) plus the marker paths (trailing-slash spelling
+/// preserved, as the backend reports them).
+type TargetSnapshot = (HashMap<String, (u64, Option<u64>)>, Vec<String>);
+
 #[allow(clippy::too_many_arguments)]
 async fn run_dir_job(
     inner: Arc<Inner>,
@@ -1519,8 +1605,10 @@ async fn run_dir_job(
     target_path: String,
     sync: bool,
     delete_source: bool,
+    dry_run: bool,
+    max_delete: Option<u64>,
     cancel: Arc<AtomicBool>,
-    emitter: PluginEmitter,
+    sink: EventSink,
 ) {
     // Per-connection FIFO in sorted id order (deterministic order → no lock
     // cycles), held for the whole traversal, then the global cap.
@@ -1540,7 +1628,7 @@ async fn run_dir_job(
     };
     if cancel.load(Ordering::Acquire) {
         inner
-            .complete_dir_job(&job_id, JobStatus::Canceled, None, &emitter)
+            .complete_dir_job(&job_id, JobStatus::Canceled, None, &sink)
             .await;
         return;
     }
@@ -1549,53 +1637,124 @@ async fn run_dir_job(
             job.status = JobStatus::Running;
         }
     }
-    emit_dir_running(&emitter, &job_id);
+    emit_dir_running(&sink, &job_id);
 
-    // Walk the source once so filesTotal/bytesTotal are known upfront. A
-    // single-file source (degraded `files/copy`/`files/move` with a file
-    // path) plans one entry whose relative part is empty — `join_target`
-    // then maps it onto the target path verbatim (cp semantics).
+    // Walk the source once (with mtimes for the skip compare) so the plan is
+    // known upfront. A single-file source (degraded `files/copy`/`files/move`
+    // with a file path) plans one entry whose relative part is empty —
+    // `join_target` then maps it onto the target path verbatim (cp
+    // semantics). Single-file plans never hit the skip compare (the target
+    // snapshot below is only built for directory sources), preserving the
+    // exact move semantics.
     let source_is_dir = match crate::engine::ops::is_dir_path(&source_operator, &source_path).await
     {
         Ok(flag) => flag,
         Err(error) => {
             inner
-                .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &emitter)
+                .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &sink)
                 .await;
             return;
         }
     };
-    let plan: Vec<slot::WalkedFile> = if source_is_dir {
-        match slot::walk_files(&source_operator, &source_path).await {
+    let plan: Vec<slot::WalkedFileMeta> = if source_is_dir {
+        match slot::walk_file_metas(&source_operator, &source_path).await {
             Ok(files) => files,
             Err(error) => {
                 inner
-                    .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &emitter)
+                    .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &sink)
                     .await;
                 return;
             }
         }
     } else {
         match source_operator.stat(&source_path).await {
-            Ok(metadata) => vec![(String::new(), metadata.content_length())],
+            Ok(metadata) => vec![(String::new(), metadata.content_length(), None)],
             Err(error) => {
                 let error = format!("Failed to stat '{source_path}': {error}");
                 inner
-                    .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &emitter)
+                    .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &sink)
                     .await;
                 return;
             }
         }
     };
-    let bytes_total: u64 = plan.iter().map(|(_, size)| size).sum();
+
+    // Target snapshot (size + mtime per file, plus the directory markers) for
+    // the incremental skip. Read access to the target connection is enough;
+    // backends without mtime support degrade the compare to size-only.
+    let (target_index, mut target_dirs): TargetSnapshot = if source_is_dir {
+        match slot::walk_tree(&target_operator, &target_path).await {
+            Ok((files, dirs)) => (
+                files
+                    .into_iter()
+                    .map(|(path, size, mtime)| (path, (size, mtime)))
+                    .collect(),
+                dirs,
+            ),
+            Err(error) => {
+                inner
+                    .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &sink)
+                    .await;
+                return;
+            }
+        }
+    } else {
+        (HashMap::new(), Vec::new())
+    };
+
+    // Partition the plan into unchanged (skipped) and to-copy entries.
+    let mut to_copy: Vec<&slot::WalkedFileMeta> = Vec::new();
+    let mut skipped_files = 0u64;
+    let mut skipped_bytes = 0u64;
+    for entry in &plan {
+        match target_index.get(&entry.0) {
+            Some((target_size, target_mtime))
+                if file_unchanged(entry.1, entry.2, *target_size, *target_mtime) =>
+            {
+                skipped_files += 1;
+                skipped_bytes += entry.1;
+            }
+            _ => to_copy.push(entry),
+        }
+    }
+
+    let bytes_total: u64 = to_copy.iter().map(|(_, size, _)| size).sum();
     {
         let mut dir_jobs = inner.dir_jobs.lock().await;
         if let Some(job) = dir_jobs.get_mut(&job_id) {
-            job.files_total = Some(plan.len() as u64);
+            job.files_total = Some(to_copy.len() as u64);
             job.bytes_total = Some(bytes_total);
+            job.files_skipped = skipped_files;
+            job.bytes_skipped = skipped_bytes;
         }
     }
-    emit_dir_running(&emitter, &job_id);
+    emit_dir_running(&sink, &job_id);
+
+    // Dry run: plan + compare only — no mkdir, no copies, no deletions. One
+    // summary event on the existing progress channel, then Completed.
+    if dry_run {
+        let deletions: Vec<String> = if sync {
+            let source_set: HashSet<&String> = plan.iter().map(|(path, _, _)| path).collect();
+            target_index
+                .keys()
+                .filter(|relative| !source_set.contains(*relative))
+                .map(|relative| join_target(&target_path, relative))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        inner
+            .complete_dir_job(&job_id, JobStatus::Completed, None, &sink)
+            .await;
+        let job = inner.dir_jobs.lock().await.get(&job_id).cloned();
+        if let Some(job) = job {
+            sink.emit(
+                "files/transfer/progress",
+                build_dry_run_summary(&job, &to_copy, &deletions),
+            );
+        }
+        return;
+    }
 
     let native_copy = source_connection_id == target_connection_id
         && source_operator.info().capability().copy;
@@ -1612,7 +1771,7 @@ async fn run_dir_job(
             .map_err(|error| format!("Failed to create target dir '{target_base}': {error}"))
         {
             inner
-                .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &emitter)
+                .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &sink)
                 .await;
             return;
         }
@@ -1623,10 +1782,10 @@ async fn run_dir_job(
     let mut bytes_done = 0u64;
     let mut created_dirs: HashSet<String> = HashSet::new();
 
-    for (relative, size) in &plan {
+    for (relative, size, _) in to_copy.iter().copied() {
         if cancel.load(Ordering::Acquire) {
             inner
-                .complete_dir_job(&job_id, JobStatus::Canceled, None, &emitter)
+                .complete_dir_job(&job_id, JobStatus::Canceled, None, &sink)
                 .await;
             return;
         }
@@ -1642,7 +1801,7 @@ async fn run_dir_job(
                 .map_err(|error| format!("Failed to create dir '{parent}': {error}"))
             {
                 inner
-                    .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &emitter)
+                    .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &sink)
                     .await;
                 return;
             }
@@ -1659,7 +1818,7 @@ async fn run_dir_job(
         match outcome {
             Err(error) => {
                 inner
-                    .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &emitter)
+                    .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &sink)
                     .await;
                 return;
             }
@@ -1675,7 +1834,7 @@ async fn run_dir_job(
                 }
                 if throttle.should_emit(bytes_done, Some(bytes_total)) {
                     if let Some(job) = inner.dir_jobs.lock().await.get(&job_id).cloned() {
-                        emit_dir_progress(&emitter, &job);
+                        emit_dir_progress(&sink, &job);
                     }
                 }
             }
@@ -1686,7 +1845,7 @@ async fn run_dir_job(
     if delete_source {
         if cancel.load(Ordering::Acquire) {
             inner
-                .complete_dir_job(&job_id, JobStatus::Canceled, None, &emitter)
+                .complete_dir_job(&job_id, JobStatus::Canceled, None, &sink)
                 .await;
             return;
         }
@@ -1723,48 +1882,91 @@ async fn run_dir_job(
         };
         if let Err(error) = outcome {
             inner
-                .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &emitter)
+                .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &sink)
                 .await;
             return;
         }
     }
 
-    // syncDir: delete target extras (rclone-sync semantics).
+    // syncDir: delete target extras (rclone-sync semantics). The extras come
+    // from the snapshot taken before the copies; files this job wrote are all
+    // in the plan, so the snapshot stays authoritative.
     if sync {
-        let target_files = match slot::walk_files(&target_operator, &target_path).await {
-            Ok(files) => files,
-            Err(error) => {
+        let source_set: HashSet<&String> = plan.iter().map(|(path, _, _)| path).collect();
+        let extras: Vec<String> = target_index
+            .keys()
+            .filter(|relative| !source_set.contains(*relative))
+            .cloned()
+            .collect();
+        // rclone `--max-delete`: abort before touching anything when more
+        // target files would be deleted than the limit allows.
+        if let Some(limit) = max_delete {
+            if extras.len() as u64 > limit {
+                let error = format!(
+                    "Sync aborted: {} target files would be deleted, exceeding maxDelete ({limit}); raise maxDelete or inspect with a dry run",
+                    extras.len()
+                );
                 inner
-                    .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &emitter)
+                    .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &sink)
                     .await;
                 return;
             }
-        };
-        let source_set: HashSet<&String> = plan.iter().map(|(path, _)| path).collect();
-        for (relative, _) in target_files {
-            if source_set.contains(&relative) {
-                continue;
-            }
+        }
+        for relative in &extras {
             if cancel.load(Ordering::Acquire) {
                 inner
-                    .complete_dir_job(&job_id, JobStatus::Canceled, None, &emitter)
+                    .complete_dir_job(&job_id, JobStatus::Canceled, None, &sink)
                     .await;
                 return;
             }
-            let extra = join_target(&target_path, &relative);
+            let extra = join_target(&target_path, relative);
             if let Err(error) = target_operator.delete(&extra).await.map_err(|error| {
                 format!("Failed to delete extra target file '{extra}': {error}")
             }) {
                 inner
-                    .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &emitter)
+                    .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &sink)
                     .await;
                 return;
+            }
+        }
+
+        // Sweep now-empty target directory markers deepest-first (the mirror
+        // deletions above can leave them behind). Only markers without any
+        // surviving file underneath are tried; a failing backend stops the
+        // sweep silently — markers are cosmetic and best-effort everywhere.
+        target_dirs.sort_by(|a, b| {
+            b.matches('/').count().cmp(&a.matches('/').count()).then_with(|| a.cmp(b))
+        });
+        for dir in &target_dirs {
+            let prefix = if dir.ends_with('/') {
+                dir.clone()
+            } else {
+                format!("{dir}/")
+            };
+            let still_has_files = plan.iter().any(|(path, _, _)| path.starts_with(&prefix));
+            if still_has_files {
+                continue;
+            }
+            if cancel.load(Ordering::Acquire) {
+                inner
+                    .complete_dir_job(&job_id, JobStatus::Canceled, None, &sink)
+                    .await;
+                return;
+            }
+            let marker = join_target(&target_path, dir);
+            let removed = target_operator.delete(&marker).await.is_ok()
+                || {
+                    let trimmed = marker.trim_end_matches('/');
+                    !trimmed.is_empty() && target_operator.delete(trimmed).await.is_ok()
+                };
+            if !removed {
+                break;
             }
         }
     }
 
     inner
-        .complete_dir_job(&job_id, JobStatus::Completed, None, &emitter)
+        .complete_dir_job(&job_id, JobStatus::Completed, None, &sink)
         .await;
 }
 
@@ -1781,7 +1983,7 @@ async fn run_extract_job(
     archive_path: String,
     target_path: String,
     cancel: Arc<AtomicBool>,
-    emitter: PluginEmitter,
+    sink: EventSink,
 ) {
     let fifo = inner.conn_lock(&connection_id).clone();
     let _fifo_guard = fifo.lock().await;
@@ -1790,7 +1992,7 @@ async fn run_extract_job(
     };
     if cancel.load(Ordering::Acquire) {
         inner
-            .complete_dir_job(&job_id, JobStatus::Canceled, None, &emitter)
+            .complete_dir_job(&job_id, JobStatus::Canceled, None, &sink)
             .await;
         return;
     }
@@ -1799,7 +2001,7 @@ async fn run_extract_job(
             job.status = JobStatus::Running;
         }
     }
-    emit_dir_running(&emitter, &job_id);
+    emit_dir_running(&sink, &job_id);
 
     // Read + plan once so filesTotal/bytesTotal are known upfront; a parse
     // failure (corrupt archive, zip, zip-slip entry) fails the job.
@@ -1813,7 +2015,7 @@ async fn run_extract_job(
         Ok(plan) => plan,
         Err(error) => {
             inner
-                .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &emitter)
+                .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &sink)
                 .await;
             return;
         }
@@ -1826,7 +2028,7 @@ async fn run_extract_job(
             job.bytes_total = Some(bytes_total);
         }
     }
-    emit_dir_running(&emitter, &job_id);
+    emit_dir_running(&sink, &job_id);
 
     // Per-entry write loop (mirrors run_dir_job): short table locks between
     // entries so `files/transfer/status` stays responsive, throttled progress
@@ -1839,7 +2041,7 @@ async fn run_extract_job(
             .map_err(|error| format!("Failed to create target directory '{base}': {error}"))
         {
             inner
-                .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &emitter)
+                .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &sink)
                 .await;
             return;
         }
@@ -1851,7 +2053,7 @@ async fn run_extract_job(
     for entry in &plan {
         if cancel.load(Ordering::Acquire) {
             inner
-                .complete_dir_job(&job_id, JobStatus::Canceled, None, &emitter)
+                .complete_dir_job(&job_id, JobStatus::Canceled, None, &sink)
                 .await;
             return;
         }
@@ -1873,7 +2075,7 @@ async fn run_extract_job(
                 })
             {
                 inner
-                    .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &emitter)
+                    .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &sink)
                     .await;
                 return;
             }
@@ -1884,7 +2086,7 @@ async fn run_extract_job(
             .map_err(|error| format!("Failed to write extracted file '{target_file}': {error}"))
         {
             inner
-                .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &emitter)
+                .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &sink)
                 .await;
             return;
         }
@@ -1899,18 +2101,18 @@ async fn run_extract_job(
         }
         if throttle.should_emit(bytes_done, Some(bytes_total)) {
             if let Some(job) = inner.dir_jobs.lock().await.get(&job_id).cloned() {
-                emit_dir_progress(&emitter, &job);
+                emit_dir_progress(&sink, &job);
             }
         }
     }
     if cancel.load(Ordering::Acquire) {
         inner
-            .complete_dir_job(&job_id, JobStatus::Canceled, None, &emitter)
+            .complete_dir_job(&job_id, JobStatus::Canceled, None, &sink)
             .await;
         return;
     }
     inner
-        .complete_dir_job(&job_id, JobStatus::Completed, None, &emitter)
+        .complete_dir_job(&job_id, JobStatus::Completed, None, &sink)
         .await;
 }
 
@@ -1928,7 +2130,7 @@ async fn run_compress_job(
     target_path: String,
     gzip: bool,
     cancel: Arc<AtomicBool>,
-    emitter: PluginEmitter,
+    sink: EventSink,
 ) {
     let fifo = inner.conn_lock(&connection_id).clone();
     let _fifo_guard = fifo.lock().await;
@@ -1937,7 +2139,7 @@ async fn run_compress_job(
     };
     if cancel.load(Ordering::Acquire) {
         inner
-            .complete_dir_job(&job_id, JobStatus::Canceled, None, &emitter)
+            .complete_dir_job(&job_id, JobStatus::Canceled, None, &sink)
             .await;
         return;
     }
@@ -1946,7 +2148,7 @@ async fn run_compress_job(
             job.status = JobStatus::Running;
         }
     }
-    emit_dir_running(&emitter, &job_id);
+    emit_dir_running(&sink, &job_id);
 
     let bytes_total: u64 = plan.iter().map(|entry| entry.size).sum();
     {
@@ -1956,7 +2158,7 @@ async fn run_compress_job(
             job.bytes_total = Some(bytes_total);
         }
     }
-    emit_dir_running(&emitter, &job_id);
+    emit_dir_running(&sink, &job_id);
 
     let mut throttle = Throttle::default();
     let mut files_done = 0u64;
@@ -2032,7 +2234,7 @@ async fn run_compress_job(
             }
             if throttle.should_emit(bytes_done, Some(bytes_total)) {
                 if let Some(job) = inner.dir_jobs.lock().await.get(&job_id).cloned() {
-                    emit_dir_progress(&emitter, &job);
+                    emit_dir_progress(&sink, &job);
                 }
             }
         }
@@ -2059,28 +2261,33 @@ async fn run_compress_job(
     match outcome {
         Ok(()) if cancel.load(Ordering::Acquire) => {
             inner
-                .complete_dir_job(&job_id, JobStatus::Canceled, None, &emitter)
+                .complete_dir_job(&job_id, JobStatus::Canceled, None, &sink)
                 .await;
         }
         Ok(()) => {
             inner
-                .complete_dir_job(&job_id, JobStatus::Completed, None, &emitter)
+                .complete_dir_job(&job_id, JobStatus::Completed, None, &sink)
                 .await;
         }
         Err(_) if cancel.load(Ordering::Acquire) => {
             inner
-                .complete_dir_job(&job_id, JobStatus::Canceled, None, &emitter)
+                .complete_dir_job(&job_id, JobStatus::Canceled, None, &sink)
                 .await;
         }
         Err(error) => {
             inner
-                .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &emitter)
+                .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &sink)
                 .await;
         }
     }
 }
 
-/// Streams one file `source → target` in `TRANSFER_CHUNK_SIZE` slices.
+/// Streams one file `source → target` in `TRANSFER_CHUNK_SIZE` slices. The
+/// target writer uses the tuned upload primitives (`chunk(4MiB).concurrent(4)`
+/// via [`slot::open_upload_writer`], same as the host-driven upload path), and
+/// after close the target size is stat'ed again: a mismatch against the
+/// stat'ed source size is a hard error (rclone-aligned correctness guard —
+/// backends that silently truncate or drop chunks must not pass as copies).
 async fn stream_copy(
     source_operator: &opendal::Operator,
     target_operator: &opendal::Operator,
@@ -2088,10 +2295,7 @@ async fn stream_copy(
     target_path: &str,
 ) -> Result<(), String> {
     let (reader, size) = slot::open_download_reader(source_operator, source_path).await?;
-    let mut writer = target_operator
-        .writer(target_path)
-        .await
-        .map_err(|error| format!("Failed to open writer for '{target_path}': {error}"))?;
+    let mut writer = slot::open_upload_writer(target_operator, target_path).await?;
     let mut offset = 0u64;
     while offset < size {
         let end = offset.saturating_add(TRANSFER_CHUNK_SIZE as u64).min(size);
@@ -2109,7 +2313,78 @@ async fn stream_copy(
         .close()
         .await
         .map_err(|error| format!("Failed to close writer for '{target_path}': {error}"))?;
+    let written = target_operator
+        .stat(target_path)
+        .await
+        .map(|metadata| metadata.content_length())
+        .map_err(|error| format!("Failed to verify copied '{target_path}': {error}"))?;
+    if written != size {
+        return Err(format!(
+            "Copy size mismatch for '{target_path}': source has {size} bytes, target stored {written}"
+        ));
+    }
     Ok(())
+}
+
+/// rclone-aligned incremental comparison: sizes must match, and when both
+/// sides report a modification time they must agree within ±2s (rclone's
+/// modtime window). A missing mtime on either side degrades the check to
+/// size-only — backends without modification-time support (e.g. the memory
+/// service) simply cannot be compared on time.
+fn file_unchanged(
+    source_size: u64,
+    source_mtime: Option<u64>,
+    target_size: u64,
+    target_mtime: Option<u64>,
+) -> bool {
+    if source_size != target_size {
+        return false;
+    }
+    match (source_mtime, target_mtime) {
+        (Some(source), Some(target)) => source.abs_diff(target) <= MTIME_TOLERANCE_MILLIS,
+        _ => true,
+    }
+}
+
+/// Builds the one-shot dry-run summary payload on the existing progress
+/// channel: exact wouldCopy/wouldSkip/wouldDelete counts plus capped path
+/// samples, with the standard dir-job context (state/sync/kind/remotePath).
+fn build_dry_run_summary(
+    job: &DirJob,
+    to_copy: &[&slot::WalkedFileMeta],
+    deletions: &[String],
+) -> serde_json::Value {
+    let mut event = dir_progress_event(job);
+    if let Some(object) = event.as_object_mut() {
+        object.insert("state".into(), serde_json::json!(job.status.as_str()));
+        object.insert("sync".into(), serde_json::json!(job.sync));
+        object.insert("kind".into(), serde_json::json!(job.kind));
+        object.insert("remotePath".into(), serde_json::json!(job.source_path));
+        object.insert("dryRun".into(), serde_json::json!(true));
+        object.insert("wouldCopy".into(), serde_json::json!(to_copy.len()));
+        object.insert(
+            "bytesToCopy".into(),
+            serde_json::json!(to_copy.iter().map(|(_, size, _)| size).sum::<u64>()),
+        );
+        object.insert("wouldSkip".into(), serde_json::json!(job.files_skipped));
+        object.insert("wouldDelete".into(), serde_json::json!(deletions.len()));
+        let copy_paths: Vec<String> = to_copy
+            .iter()
+            .map(|(path, _, _)| path.clone())
+            .take(DRY_RUN_SAMPLE_CAP)
+            .collect();
+        object.insert("copyPaths".into(), serde_json::json!(copy_paths));
+        let delete_paths: Vec<String> = deletions
+            .iter()
+            .take(DRY_RUN_SAMPLE_CAP)
+            .cloned()
+            .collect();
+        object.insert("deletePaths".into(), serde_json::json!(delete_paths));
+        if let Some(error) = &job.error {
+            object.insert("error".into(), serde_json::json!(error));
+        }
+    }
+    event
 }
 
 /// Appends `relative` (OpenDAL-relative) onto a user-facing target dir path.
@@ -2120,15 +2395,15 @@ async fn stream_copy(
 /// dir marker last. Precise per-entry deletes instead of a recursive delete:
 /// OpenDAL 0.57's recursive delete matches by bare path prefix on some
 /// backends and would wipe prefix siblings (e.g. `d1-renamed` for `d1`).
-fn plan_source_deletions(source_path: &str, plan: &[(String, u64)]) -> Vec<String> {
+fn plan_source_deletions(source_path: &str, plan: &[slot::WalkedFileMeta]) -> Vec<String> {
     let source_trimmed = source_path.trim().trim_matches('/');
     let mut deletions: Vec<String> = plan
         .iter()
-        .map(|(relative, _)| join_target(source_path, relative))
+        .map(|(relative, _, _)| join_target(source_path, relative))
         .collect();
     let mut markers: Vec<String> = plan
         .iter()
-        .flat_map(|(relative, _)| {
+        .flat_map(|(relative, _, _)| {
             let mut dirs = Vec::new();
             let mut current = relative.as_str();
             while let Some(idx) = current.rfind('/') {
@@ -2208,12 +2483,15 @@ fn emit_running_at(emitter: &PluginEmitter, task_id: &str, transferred: u64, tot
 }
 
 /// Directory-job progress payload (`filesDone, filesTotal, bytesDone,
-/// bytesTotal` per §7) plus state context.
-fn emit_dir_progress(emitter: &PluginEmitter, job: &DirJob) {
+/// bytesTotal` per §7, plus the incremental-skip counters) and state context.
+fn emit_dir_progress(sink: &EventSink, job: &DirJob) {
     let mut event = dir_progress_event(job);
     if let Some(object) = event.as_object_mut() {
         object.insert("state".into(), serde_json::json!(job.status.as_str()));
         object.insert("sync".into(), serde_json::json!(job.sync));
+        if job.dry_run {
+            object.insert("dryRun".into(), serde_json::json!(true));
+        }
         // P-FILES ①a/①b: carry the triggering kind so event-driven UI can
         // classify the job without a status round-trip.
         object.insert("kind".into(), serde_json::json!(job.kind));
@@ -2222,11 +2500,11 @@ fn emit_dir_progress(emitter: &PluginEmitter, job: &DirJob) {
             object.insert("error".into(), serde_json::json!(error));
         }
     }
-    let _ = emitter.event("files/transfer/progress", event);
+    sink.emit("files/transfer/progress", event);
 }
 
-fn emit_dir_running(emitter: &PluginEmitter, job_id: &str) {
-    let _ = emitter.event(
+fn emit_dir_running(sink: &EventSink, job_id: &str) {
+    sink.emit(
         "files/transfer/progress",
         serde_json::json!({ "jobId": job_id, "state": JobStatus::Running.as_str() }),
     );
@@ -2252,6 +2530,8 @@ pub fn dir_progress_event(job: &DirJob) -> serde_json::Value {
         "filesTotal": job.files_total,
         "bytesDone": job.bytes_done,
         "bytesTotal": job.bytes_total,
+        "filesSkipped": job.files_skipped,
+        "bytesSkipped": job.bytes_skipped,
     })
 }
 
@@ -2311,6 +2591,10 @@ mod tests {
             files_total: Some(2),
             bytes_done: 10,
             bytes_total: Some(20),
+            files_skipped: 0,
+            bytes_skipped: 0,
+            dry_run: false,
+            max_delete: None,
             status: JobStatus::Running,
             error: None,
             started_at: None,
@@ -2390,8 +2674,8 @@ mod tests {
         // recursive delete matches by bare prefix). Files first, empty
         // markers deepest-first, source dir marker last.
         let plan = vec![
-            ("inner.txt".to_string(), 1),
-            ("sub/deep.txt".to_string(), 2),
+            ("inner.txt".to_string(), 1, None),
+            ("sub/deep.txt".to_string(), 2, None),
         ];
         let deletions = plan_source_deletions("/d1", &plan);
         assert_eq!(
@@ -2533,6 +2817,10 @@ mod tests {
                 files_total: None,
                 bytes_done: 0,
                 bytes_total: None,
+                files_skipped: 0,
+                bytes_skipped: 0,
+                dry_run: false,
+                max_delete: None,
                 status: JobStatus::Running,
                 error: None,
                 started_at: Some(42),
@@ -2644,6 +2932,10 @@ mod tests {
                     files_total: Some(1),
                     bytes_done: 5,
                     bytes_total: Some(5),
+                    files_skipped: 0,
+                    bytes_skipped: 0,
+                    dry_run: false,
+                    max_delete: None,
                     status: JobStatus::Completed,
                     error: None,
                     started_at: Some(42),
@@ -2724,6 +3016,276 @@ mod tests {
         assert_eq!(remote_file_name("/remote/dir/"), "dir");
         assert_eq!(remote_file_name("plain.txt"), "plain.txt");
         assert_eq!(remote_file_name("a\\b\\c.bin"), "c.bin");
+    }
+
+    // -------------------------------------------------------------------------
+    // rclone 对齐（audit-rclone 一.1/一.2/一.5 + 二.1/二.4）：以下均为 memory
+    // 连接离线可跑的目录 job 测试——SDK 的 PluginEmitter 无测试构造器，目录
+    // job 走 EventSink::Test 捕获事件断言。
+    // -------------------------------------------------------------------------
+
+    fn memory_operator() -> opendal::Operator {
+        opendal::Operator::via_iter("memory", Vec::<(String, String)>::new()).unwrap()
+    }
+
+    /// Drives [`run_dir_job`] offline on two memory operators (`/src` →
+    /// `/dst`) with a capturing event sink; returns the finished job record
+    /// plus every emitted `(method, payload)` pair.
+    async fn drive_dir_job(
+        sync: bool,
+        dry_run: bool,
+        max_delete: Option<u64>,
+        source_operator: &opendal::Operator,
+        target_operator: &opendal::Operator,
+    ) -> (DirJob, Vec<(String, serde_json::Value)>) {
+        let table = JobTable::new();
+        let inner = table.inner.clone();
+        let job_id = "test-job".to_string();
+        inner.dir_jobs.lock().await.insert(
+            job_id.clone(),
+            DirJob {
+                job_id: job_id.clone(),
+                source_connection_id: "src-conn".into(),
+                source_path: "/src".into(),
+                target_connection_id: "tgt-conn".into(),
+                target_path: "/dst".into(),
+                sync,
+                delete_source: false,
+                kind: if sync { DirJobKind::SyncDir } else { DirJobKind::CopyDir },
+                files_done: 0,
+                files_total: None,
+                bytes_done: 0,
+                bytes_total: None,
+                files_skipped: 0,
+                bytes_skipped: 0,
+                dry_run,
+                max_delete,
+                status: JobStatus::Queued,
+                error: None,
+                started_at: Some(1),
+                finished_at: None,
+            },
+        );
+        let cancel = Arc::new(AtomicBool::new(false));
+        inner
+            .dir_controls
+            .lock()
+            .await
+            .insert(job_id.clone(), cancel.clone());
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        run_dir_job(
+            inner.clone(),
+            job_id,
+            source_operator.clone(),
+            target_operator.clone(),
+            "src-conn".into(),
+            "tgt-conn".into(),
+            "/src".into(),
+            "/dst".into(),
+            sync,
+            false,
+            dry_run,
+            max_delete,
+            cancel,
+            EventSink::Test(events.clone()),
+        )
+        .await;
+        let job = inner.dir_jobs.lock().await.get("test-job").cloned().unwrap();
+        let captured = events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        (job, captured)
+    }
+
+    /// rclone 对齐：增量跳过的窗口语义——size 必须一致；双方都有 mtime 时
+    /// ±2s 内视为相同（rclone modtime 窗口）；任一侧缺 mtime 退化为仅比
+    /// size（如 memory 后端）。
+    #[test]
+    fn file_unchanged_matches_rclone_window() {
+        assert!(file_unchanged(5, Some(1_000), 5, Some(1_000)));
+        assert!(file_unchanged(5, Some(1_000), 5, Some(3_000)), "within ±2s");
+        assert!(!file_unchanged(5, Some(1_000), 5, Some(3_001)), "outside the window");
+        assert!(
+            file_unchanged(5, Some(1_000), 5, None),
+            "target without mtime degrades to size-only"
+        );
+        assert!(file_unchanged(5, None, 5, Some(1_000)), "source without mtime degrades too");
+        assert!(!file_unchanged(5, Some(1_000), 4, Some(1_000)), "size mismatch never skips");
+    }
+
+    /// rclone 一.1：目标树 size（+mtime）一致的文件跳过、改动过的重拷，
+    /// skipped 计数进 job（filesSkipped/bytesSkipped 随事件带出）。
+    #[test]
+    fn incremental_skip_copies_only_changed_files() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let source = memory_operator();
+            let target = memory_operator();
+            source.create_dir("/src/").await.unwrap();
+            source.write("/src/same.txt", "hello").await.unwrap();
+            source
+                .write("/src/changed.txt", "brand new content")
+                .await
+                .unwrap();
+            target.create_dir("/dst/").await.unwrap();
+            target.write("/dst/same.txt", "hello").await.unwrap();
+            target.write("/dst/changed.txt", "old").await.unwrap();
+
+            let (job, _events) = drive_dir_job(false, false, None, &source, &target).await;
+
+            assert_eq!(job.status, JobStatus::Completed, "job error: {:?}", job.error);
+            assert_eq!(job.files_skipped, 1, "same.txt is skipped: {job:?}");
+            assert_eq!(job.bytes_skipped, 5);
+            assert_eq!(job.files_total, Some(1), "only changed.txt remains as work");
+            assert_eq!(job.files_done, 1);
+            assert_eq!(
+                target.read("/dst/changed.txt").await.unwrap().to_vec(),
+                b"brand new content",
+                "modified file is re-copied"
+            );
+            assert_eq!(
+                target.read("/dst/same.txt").await.unwrap().to_vec(),
+                b"hello",
+                "unchanged file is left alone"
+            );
+        });
+    }
+
+    /// rclone 一.2：dryRun 只做计划对比——不复制、不删除，产出一次
+    /// wouldCopy/wouldSkip/wouldDelete 摘要（既有事件通道）后 Completed。
+    #[test]
+    fn dry_run_emits_summary_and_changes_nothing() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let source = memory_operator();
+            let target = memory_operator();
+            source.create_dir("/src/").await.unwrap();
+            source.write("/src/a.txt", "aaa").await.unwrap();
+            source.write("/src/keep.txt", "same").await.unwrap();
+            target.create_dir("/dst/").await.unwrap();
+            target.write("/dst/keep.txt", "same").await.unwrap();
+            target.write("/dst/stale.txt", "old").await.unwrap();
+
+            let (job, events) = drive_dir_job(true, true, None, &source, &target).await;
+
+            assert_eq!(job.status, JobStatus::Completed, "job error: {:?}", job.error);
+            assert!(job.dry_run);
+
+            // Nothing was written or deleted on the target.
+            assert!(target.stat("/dst/a.txt").await.is_err(), "dry run must not copy");
+            assert_eq!(
+                target.read("/dst/stale.txt").await.unwrap().to_vec(),
+                b"old",
+                "dry run must not delete extras"
+            );
+            assert_eq!(job.files_done, 0);
+
+            // Exactly one summary event, on the existing progress channel.
+            let summaries: Vec<&serde_json::Value> = events
+                .iter()
+                .filter(|(method, _)| method == "files/transfer/progress")
+                .map(|(_, payload)| payload)
+                .filter(|payload| payload["wouldCopy"].is_number())
+                .collect();
+            assert_eq!(summaries.len(), 1, "one dry-run summary: {events:?}");
+            for (method, payload) in &events {
+                assert_eq!(method, "files/transfer/progress");
+                if payload["state"] == "completed" {
+                    assert_eq!(
+                        payload["dryRun"].as_bool(),
+                        Some(true),
+                        "every dry-run event is flagged: {payload}"
+                    );
+                }
+            }
+            let summary = summaries[0];
+            assert_eq!(summary["wouldCopy"], 1);
+            assert_eq!(summary["wouldSkip"], 1);
+            assert_eq!(summary["wouldDelete"], 1);
+            assert_eq!(summary["bytesToCopy"], 3);
+            assert_eq!(summary["copyPaths"][0], "a.txt");
+            assert_eq!(summary["deletePaths"][0], "dst/stale.txt");
+            assert_eq!(summary["state"], "completed");
+        });
+    }
+
+    /// rclone 一.2：maxDelete 熔断——待删除文件数超过限额时 sync 失败且
+    /// 一个文件都不删；缺省（不限）时正常删除。
+    #[test]
+    fn max_delete_abort_blocks_mirror_deletions() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let source = memory_operator();
+            source.create_dir("/src/").await.unwrap();
+            source.write("/src/one.txt", "1").await.unwrap();
+
+            let mk_target = || async {
+                let target = memory_operator();
+                target.create_dir("/dst/").await.unwrap();
+                target.write("/dst/one.txt", "1").await.unwrap();
+                target.write("/dst/stale1.txt", "x").await.unwrap();
+                target.write("/dst/stale2.txt", "y").await.unwrap();
+                target
+            };
+
+            // Limit 1 with 2 extras: the sync aborts before deleting anything.
+            let target = mk_target().await;
+            let (job, _events) = drive_dir_job(true, false, Some(1), &source, &target).await;
+            assert_eq!(job.status, JobStatus::Failed);
+            let error = job.error.clone().unwrap();
+            assert!(error.contains("maxDelete"), "clear breaker error: {error}");
+            assert!(error.contains('2'), "error names the extra count: {error}");
+            assert!(target.stat("/dst/stale1.txt").await.is_ok(), "extras survive");
+            assert!(target.stat("/dst/stale2.txt").await.is_ok(), "extras survive");
+
+            // Unlimited (default) proceeds with the mirror deletions.
+            let target = mk_target().await;
+            let (job, _events) = drive_dir_job(true, false, None, &source, &target).await;
+            assert_eq!(job.status, JobStatus::Completed, "job error: {:?}", job.error);
+            assert!(target.stat("/dst/stale1.txt").await.is_err());
+            assert!(target.stat("/dst/stale2.txt").await.is_err());
+            assert!(target.stat("/dst/one.txt").await.is_ok());
+        });
+    }
+
+    /// rclone 一.5：sync 删除阶段顺带清理目标侧空目录标记（deepest-first
+    /// 尝试 delete，失败即停不报错）；仍有存活文件的目录不受影响。
+    #[test]
+    fn sync_sweeps_emptied_target_dir_markers() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let source = memory_operator();
+            let target = memory_operator();
+            source.create_dir("/src/").await.unwrap();
+            source.write("/src/one.txt", "1").await.unwrap();
+            source.write("/src/kept/nested.txt", "n").await.unwrap();
+            target.create_dir("/dst/").await.unwrap();
+            target.write("/dst/one.txt", "1").await.unwrap();
+            target.write("/dst/kept/nested.txt", "n").await.unwrap();
+            // Real stored marker (memory persists `dir/` keys): only its
+            // removal proves the sweep ran.
+            target.create_dir("/dst/emptied/").await.unwrap();
+            target.write("/dst/emptied/stale.txt", "old").await.unwrap();
+
+            let (job, _events) = drive_dir_job(true, false, None, &source, &target).await;
+
+            assert_eq!(job.status, JobStatus::Completed, "job error: {:?}", job.error);
+            assert!(
+                target.stat("/dst/emptied/").await.is_err(),
+                "emptied marker is swept"
+            );
+            assert!(target.stat("/dst/emptied/stale.txt").await.is_err());
+            assert!(
+                target.stat("/dst/kept/nested.txt").await.is_ok(),
+                "surviving subtree is untouched"
+            );
+            assert_eq!(
+                target.read("/dst/one.txt").await.unwrap().to_vec(),
+                b"1",
+                "kept file content is untouched"
+            );
+        });
     }
 
     /// `files/transfers/delete`（单条删除）：已结束记录三面齐删（单文件 job

@@ -617,6 +617,9 @@ impl Plugin {
                     &request.source_path,
                     &request.target_path,
                     method == "files/syncDir",
+                    // rclone 对齐的 dryRun / maxDelete（均可选，缺省关/不限）。
+                    request.dry_run.unwrap_or(false),
+                    request.max_delete,
                     emitter,
                 ))?;
                 Ok(json!({ "jobId": job_id }))

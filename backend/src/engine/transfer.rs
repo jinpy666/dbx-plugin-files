@@ -75,6 +75,12 @@ pub fn frame(offset: u64, payload: &[u8]) -> Vec<u8> {
 /// (`content_length`; 0 when the backend does not report it).
 pub type WalkedFile = (String, u64);
 
+/// One file discovered by [`walk_file_metas`] / [`walk_tree`]: OpenDAL-
+/// relative path + size + backend-reported mtime (Unix epoch millis; `None`
+/// when the backend does not report modification times). The mtime drives the
+/// incremental-skip comparison in the sync/copy jobs.
+pub type WalkedFileMeta = (String, u64, Option<u64>);
+
 /// Recursively collects the files under `dir` (directories are recursed, not
 /// returned). Paths are relative to `dir` itself — e.g. walking `src` yields
 /// `a.txt`, `nested/b.txt` — so they join directly onto a target directory
@@ -82,26 +88,65 @@ pub type WalkedFile = (String, u64);
 /// `dst/src/a.txt`). Walking the root (`""`/`"/"`) yields root-relative
 /// paths. Manual recursion via `list` per level.
 pub async fn walk_files(operator: &Operator, dir: &str) -> Result<Vec<WalkedFile>, String> {
-    let mut files = Vec::new();
-    walk_inner(operator, dir, &mut files).await?;
-    let prefix = dir.trim().trim_matches('/');
-    if prefix.is_empty() {
-        return Ok(files);
-    }
-    let prefix = format!("{prefix}/");
+    let (files, _) = walk_tree(operator, dir).await?;
     Ok(files
         .into_iter()
-        .map(|(path, size)| {
-            let relative = path.strip_prefix(&prefix).unwrap_or(&path).to_string();
-            (relative, size)
-        })
+        .map(|(path, size, _mtime)| (path, size))
         .collect())
+}
+
+/// [`walk_files`] variant that also returns each file's backend-reported
+/// mtime (Unix epoch millis; `None` when unsupported).
+pub async fn walk_file_metas(
+    operator: &Operator,
+    dir: &str,
+) -> Result<Vec<WalkedFileMeta>, String> {
+    Ok(walk_tree(operator, dir).await?.0)
+}
+
+/// One traversal for both projections: files (path + size + mtime) and the
+/// sub-directory markers encountered under `dir` (paths verbatim as the
+/// backend reports them — usually with a trailing `/`). Directory markers are
+/// only reported, never recursed into as files; consumers use them for
+/// empty-marker cleanup after mirror deletions.
+pub async fn walk_tree(
+    operator: &Operator,
+    dir: &str,
+) -> Result<(Vec<WalkedFileMeta>, Vec<String>), String> {
+    let mut files = Vec::new();
+    let mut dirs = Vec::new();
+    walk_inner(operator, dir, &mut files, &mut dirs).await?;
+    let prefix = dir.trim().trim_matches('/');
+    if prefix.is_empty() {
+        return Ok((files, dirs));
+    }
+    let prefix = format!("{prefix}/");
+    let strip = |path: String| {
+        let relative = path.strip_prefix(&prefix).unwrap_or(&path).to_string();
+        relative
+    };
+    Ok((
+        files
+            .into_iter()
+            .map(|(path, size, mtime)| (strip(path), size, mtime))
+            .collect(),
+        dirs.into_iter().map(strip).collect(),
+    ))
+}
+
+/// Last-modified (Unix epoch millis) from list/stat metadata; `None` when the
+/// backend does not track modification times (e.g. the memory service).
+fn modified_millis(metadata: &opendal::Metadata) -> Option<u64> {
+    metadata
+        .last_modified()
+        .map(|timestamp| timestamp.into_inner().as_millisecond().max(0) as u64)
 }
 
 async fn walk_inner(
     operator: &Operator,
     dir: &str,
-    files: &mut Vec<WalkedFile>,
+    files: &mut Vec<WalkedFileMeta>,
+    dirs: &mut Vec<String>,
 ) -> Result<(), String> {
     let prefix = dir.trim().trim_matches('/');
     let list_path = if prefix.is_empty() {
@@ -126,10 +171,11 @@ async fn walk_inner(
         }
         let metadata = entry.metadata();
         if metadata.mode().is_dir() {
+            dirs.push(path.clone());
             // Box::pin: async recursion without a size-cycle warning.
-            Box::pin(walk_inner(operator, &path, files)).await?;
+            Box::pin(walk_inner(operator, &path, files, dirs)).await?;
         } else {
-            files.push((path, metadata.content_length()));
+            files.push((path, metadata.content_length(), modified_millis(metadata)));
         }
     }
     Ok(())
@@ -187,6 +233,29 @@ mod tests {
 
         let root_files = walk_files(&operator, "").await.unwrap();
         assert_eq!(root_files.len(), 3, "root walk sees every file");
+    }
+
+    #[tokio::test]
+    async fn walk_tree_reports_dir_markers_and_meta_triples() {
+        // The incremental sync uses walk_tree for the target snapshot: files
+        // carry size + mtime (None on the memory backend), and the directory
+        // markers are reported so emptied markers can be cleaned up later.
+        let operator = memory_operator();
+        operator.write("dir/one.txt", "12345").await.unwrap();
+        operator.write("dir/sub/two.bin", "xy").await.unwrap();
+
+        let (files, dirs) = walk_tree(&operator, "dir").await.unwrap();
+        let mut names: Vec<&str> = files.iter().map(|(path, _, _)| path.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["one.txt", "sub/two.bin"]);
+        assert!(files.iter().all(|(_, _, mtime)| mtime.is_none()),
+            "memory backend reports no modification time");
+        let mut markers: Vec<&str> = dirs.iter().map(|path| path.as_str()).collect();
+        markers.sort();
+        assert_eq!(markers, vec!["sub/"], "sub-directory marker, relative to the walked dir");
+
+        let (root_files, _) = walk_tree(&operator, "").await.unwrap();
+        assert_eq!(root_files.len(), 2, "root walk sees every file");
     }
 
     #[tokio::test]
