@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { File, Folder } from "@lucide/vue";
+import { Folder } from "@lucide/vue";
 import { formatBytes, formatTime, type FileEntry } from "../lib/api";
+import { fileIcon } from "../lib/fileIcons";
 import { listNav, scrollRowIntoView, selectionRange, type ListNavState } from "../lib/listNav";
 
 const props = defineProps<{
@@ -228,7 +229,7 @@ function onDragStart(entry: FileEntry, event: DragEvent) {
         </label>
         <span class="wb-file-name">
           <Folder v-if="entry.kind === 'directory'" class="wb-icon-dir" />
-          <File v-else />
+          <component :is="fileIcon(entry.name)" v-else aria-hidden="true" />
           <span :title="entry.path">{{ entry.name }}</span>
         </span>
         <span class="wb-numeric" style="width: 90px">{{ entry.kind === "directory" ? "" : formatBytes(entry.size) }}</span>

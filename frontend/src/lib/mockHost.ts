@@ -130,6 +130,10 @@ export function installMockHost() {
     putLocal(`${LOCAL_HOME}/Desktop/logo-local.png`, "file", bytes.byteLength);
   }
   putLocal(`${LOCAL_HOME}/Downloads/installer.dmg`, "file", 32 * 1024 * 1024);
+  // 文件类型图标验证样例：集中放 Documents，一次导航即可目视核对各类型图标。
+  for (const name of ["报告.docx", "预算.xlsx", "路演.pptx", "手册.pdf", "backup.zip", "song.mp3", "clip.mp4", "app.py"]) {
+    putLocal(`${LOCAL_HOME}/Documents/${name}`, "file", 4096);
+  }
 
   const connections = new Map([
     ["mock-conn", { tree, contents, readOnly }],
@@ -756,6 +760,13 @@ export function installMockHost() {
     get locale() { return currentLocale; },
     request: async <T>(method: string) => {
       if (method === "host.getContext") return structuredClone(context) as T;
+      // 连接枚举：让双栏目标选择与调试壳的连接列表能看到两个内置连接。
+      if (method === "host.listConnections") {
+        return [
+          { id: "mock-conn", name: "Mock Storage" },
+          { id: "__local__", name: "本地文件" },
+        ] as T;
+      }
       throw new Error(`Unsupported plugin host method '${method}'`);
     },
     invoke: async <T>(method: string, payload?: Record<string, unknown>) => invoke(method, payload ?? {}) as Promise<T>,
