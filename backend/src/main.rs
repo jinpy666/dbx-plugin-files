@@ -341,15 +341,32 @@ impl Plugin {
                     .unwrap_or_else(|| request.connection_id.clone());
                 let source = self.engine.operator(&source_connection_id)?;
                 let target = self.engine.operator(&target_connection_id)?;
-                // §8.2 decision tree (X-A ③): same Operator instance +
-                // native capability → server-side copy/rename executed inline;
+                // §8.2 decision tree (X-A ③ + rclone `--server-side-across-configs`
+                // parity 2026-09-17): the engine's identity verdict (same
+                // Operator instance, or config-equivalent fingerprints) + native
+                // capability → server-side copy/rename executed inline;
                 // everything else degrades to a real async read→write job on
                 // the JobTable — the response carries a pollable `jobId`
                 // (previously `null`; see docs/PROGRESS-XA.zh-CN.md §2).
+                let identity = self
+                    .engine
+                    .backend_identity(&source_connection_id, &target_connection_id)?;
                 let native = if method == "files/copy" {
-                    engine::ops::native_copy_available(&source, &target)
+                    engine::ops::native_copy_available(
+                        &source,
+                        &target,
+                        &request.source_path,
+                        &request.target_path,
+                        identity,
+                    )
                 } else {
-                    engine::ops::native_move_available(&source, &target)
+                    engine::ops::native_move_available(
+                        &source,
+                        &target,
+                        &request.source_path,
+                        &request.target_path,
+                        identity,
+                    )
                 };
                 let (transport, job_id) = if native {
                     let outcome = if method == "files/copy" {
@@ -360,6 +377,7 @@ impl Plugin {
                                 &target,
                                 &request.source_path,
                                 &request.target_path,
+                                identity,
                             ),
                         )?
                     } else {
@@ -370,6 +388,7 @@ impl Plugin {
                                 &target,
                                 &request.source_path,
                                 &request.target_path,
+                                identity,
                             ),
                         )?
                     };
@@ -397,6 +416,7 @@ impl Plugin {
                             &request.target_path,
                             method == "files/move",
                             kind,
+                            identity,
                             emitter,
                         ),
                     )?;
@@ -440,6 +460,8 @@ impl Plugin {
                             &request.new_path,
                             true,
                             transfers::DirJobKind::Rename,
+                            self.engine
+                                .backend_identity(&connection.id, &connection.id)?,
                             emitter,
                         ),
                     )?;
@@ -687,6 +709,13 @@ impl Plugin {
                 let target = self.engine.connection(&request.target_connection_id)?;
                 let source_operator = self.engine.operator(&request.source_connection_id)?;
                 let target_operator = self.engine.operator(&request.target_connection_id)?;
+                // Config-equivalent connections (same fingerprint) let the dir
+                // job use per-file server-side copies (rclone
+                // --server-side-across-configs); distinct backends stream.
+                let identity = self.engine.backend_identity(
+                    &request.source_connection_id,
+                    &request.target_connection_id,
+                )?;
                 let job_id = self.block_on_timed(
                     Some(&source),
                     self.transfers.enqueue_dir_job(
@@ -700,6 +729,7 @@ impl Plugin {
                         // rclone 对齐的 dryRun / maxDelete（均可选，缺省关/不限）。
                         request.dry_run.unwrap_or(false),
                         request.max_delete,
+                        identity,
                         emitter,
                     ),
                 )?;
