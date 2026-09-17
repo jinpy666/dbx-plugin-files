@@ -1,4 +1,4 @@
-//! `opendal::raw::Access` implementation on top of [`SftpNativePool`]
+//! `opendal::raw::Service` implementation on top of [`SftpNativePool`]
 //! (dual-stack decision 2026-08-31; mirrors `engine::smb::access`).
 //!
 //! Root-mapping red line (learned from the SMB real-machine regression):
@@ -12,14 +12,17 @@
 use std::sync::Arc;
 
 use opendal::raw::*;
-use opendal::{Buffer, Capability, EntryMode, Error, ErrorKind, Metadata, Result};
+use opendal::{
+    Buffer, BytesRange, Capability, Error, ErrorKind, Metadata, MetadataBuilder,
+    OperationContext, Result,
+};
 
 use super::pool::{SftpNativePool, SftpOp, SftpOpResult};
 use super::SFTP_NATIVE_SCHEME;
 
-/// Sequential chunk served per `oio::Read::read` call. SFTP reads are
-/// request/response round trips, so this bounds per-flight size (russh-sftp
-/// does not pipeline reads).
+/// Sequential chunk served per read call. SFTP reads are request/response
+/// round trips, so this bounds per-flight size (russh-sftp does not pipeline
+/// reads).
 const SFTP_READ_CHUNK: u64 = 1024 * 1024;
 
 /// Maps a tokio io error from an SFTP file handle onto the OpenDAL taxonomy.
@@ -39,7 +42,8 @@ pub(super) struct SftpNativeAccess {
     /// Normalized OpenDAL root: an optional sub-path of the remote
     /// filesystem (`normalize_root` format, e.g. `/pub/`).
     root: String,
-    info: Arc<AccessorInfo>,
+    info: ServiceInfo,
+    capability: Capability,
 }
 
 impl std::fmt::Debug for SftpNativeAccess {
@@ -66,15 +70,11 @@ pub(super) fn sftp_path(root: &str, path: &str) -> String {
 
 impl SftpNativeAccess {
     pub(super) fn new(pool: Arc<SftpNativePool>, root: String, name: &str) -> Self {
-        let info = AccessorInfo::default();
-        info.set_scheme(SFTP_NATIVE_SCHEME);
-        info.set_name(name);
-        info.set_root(&root);
         // rename=true (SSH_FXP_RENAME is native) → files/move runs server-side;
         // copy=false → same-connection copies degrade to the engine's read→write
         // job; presign=false → files/publicLink reports the backend as
         // unsupported (both existing engine paths).
-        info.set_native_capability(Capability {
+        let capability = Capability {
             stat: true,
             read: true,
             write: true,
@@ -88,24 +88,31 @@ impl SftpNativeAccess {
             rename: true,
             shared: true,
             ..Default::default()
-        });
+        };
+        let info = ServiceInfo::new(SFTP_NATIVE_SCHEME, &root, name);
         Self {
             pool,
             root,
-            info: Arc::new(info),
+            info,
+            capability,
         }
     }
 }
 
-impl Access for SftpNativeAccess {
+impl Service for SftpNativeAccess {
     type Reader = SftpReader;
     type Writer = SftpWriter;
     type Lister = SftpLister;
     type Deleter = oio::OneShotDeleter<SftpDeleter>;
     type Copier = ();
+    type Composer = ();
 
-    fn info(&self) -> Arc<AccessorInfo> {
+    fn info(&self) -> ServiceInfo {
         self.info.clone()
+    }
+
+    fn capability(&self) -> Capability {
+        self.capability.clone()
     }
 
     /// mkdir -p: create every level; existing levels are detected via stat
@@ -114,7 +121,7 @@ impl Access for SftpNativeAccess {
     /// shape). The per-level prefixes keep the LEADING SLASH: a relative
     /// prefix would resolve against the server-side session cwd and create
     /// the tree somewhere else entirely.
-    async fn create_dir(&self, path: &str, _: OpCreateDir) -> Result<RpCreateDir> {
+    async fn create_dir(&self, _ctx: &OperationContext, path: &str, _: OpCreateDir) -> Result<RpCreateDir> {
         let target = sftp_path(&self.root, path);
         let mut prefix = String::new();
         for segment in target.split('/').filter(|segment| !segment.is_empty()) {
@@ -149,7 +156,7 @@ impl Access for SftpNativeAccess {
         Ok(RpCreateDir::default())
     }
 
-    async fn stat(&self, path: &str, _: OpStat) -> Result<RpStat> {
+    async fn stat(&self, _ctx: &OperationContext, path: &str, _: OpStat) -> Result<RpStat> {
         let target = sftp_path(&self.root, path);
         // A real network stat for the root too (unlike the SMB adapter's
         // local DIR answer) so `connection/test` actually probes the server
@@ -159,63 +166,81 @@ impl Access for SftpNativeAccess {
             SftpOpResult::Stat(info) => info,
             _ => return Err(unexpected_result("stat")),
         };
-        let mut metadata = Metadata::new(if info.is_dir() {
-            EntryMode::DIR
-        } else {
-            EntryMode::FILE
-        });
-        if let Some(size) = info.size {
-            metadata.set_content_length(size);
+        // 0.59: files carry the authoritative length when the server reports
+        // one (`MetadataBuilder::file`); unknown sizes fall back to 0-length
+        // file metadata, matching the old unset-length behavior.
+        let mut builder = MetadataBuilder::file(info.size.unwrap_or(0));
+        if info.is_dir() {
+            builder.set_dir();
         }
         // `mtime` is Unix seconds; opendal's raw Timestamp wraps jiff and
         // converts from SystemTime.
         if let Some(mtime) = info.mtime {
-            if let Ok(timestamp) = Timestamp::try_from(std::time::UNIX_EPOCH + std::time::Duration::from_secs(u64::from(mtime))) {
-                metadata.set_last_modified(timestamp);
+            if let Ok(timestamp) = Timestamp::try_from(
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(u64::from(mtime)),
+            ) {
+                builder.last_modified(timestamp);
             }
         }
-        Ok(RpStat::new(metadata))
+        Ok(RpStat::new(builder.build()))
     }
 
-    /// Opens a positioned sequential reader; the OpRead range decides the
-    /// served window (`oio::Read` drains it sequentially).
-    async fn read(&self, path: &str, args: OpRead) -> Result<(RpRead, Self::Reader)> {
+    /// Returns a lazily-dialed reader; every range opens a fresh positioned
+    /// handle (`pool.open_reader(path, offset)`) so no state survives reads.
+    fn read(&self, _ctx: &OperationContext, path: &str, _args: OpRead) -> Result<Self::Reader> {
         let target = sftp_path(&self.root, path);
-        let reader = self.pool.open_reader(&target, args.range().offset()).await?;
-        Ok((
-            RpRead::default(),
-            SftpReader {
-                reader: Some(reader),
-                remaining: args.range().size(),
-            },
-        ))
-    }
-
-    /// Opens a truncating streaming writer (overwrites by truncation).
-    async fn write(&self, path: &str, _: OpWrite) -> Result<(RpWrite, Self::Writer)> {
-        let target = sftp_path(&self.root, path);
-        let writer = self.pool.open_writer(&target).await?;
-        Ok((RpWrite::default(), SftpWriter { writer: Some(writer), written: 0 }))
-    }
-
-    async fn delete(&self) -> Result<(RpDelete, Self::Deleter)> {
-        Ok((
-            RpDelete::default(),
-            oio::OneShotDeleter::new(SftpDeleter {
+        Ok(SftpReader {
+            handle: SftpHandle {
                 pool: self.pool.clone(),
-                root: self.root.clone(),
-            }),
-        ))
+                path: target,
+            },
+        })
+    }
+
+    /// Returns a lazily-dialed truncating streaming writer (overwrites by
+    /// truncation; the handle opens on the first chunk or at `close`).
+    fn write(&self, _ctx: &OperationContext, path: &str, _args: OpWrite) -> Result<Self::Writer> {
+        let target = sftp_path(&self.root, path);
+        Ok(SftpWriter {
+            pool: self.pool.clone(),
+            path: target,
+            writer: None,
+            written: 0,
+        })
+    }
+
+    fn delete(&self, _ctx: &OperationContext) -> Result<Self::Deleter> {
+        Ok(oio::OneShotDeleter::new(SftpDeleter {
+            pool: self.pool.clone(),
+            root: self.root.clone(),
+        }))
     }
 
     /// QUERY_DIRECTORY-equivalent buffered enumeration; recursion is
     /// flattened by the lister itself (dir stack) when `args.recursive()` is
     /// set.
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Lister)> {
+    fn list(&self, _ctx: &OperationContext, path: &str, args: OpList) -> Result<Self::Lister> {
         let target = sftp_path(&self.root, path);
-        Ok((
-            RpList::default(),
-            SftpLister::new(self.pool.clone(), self.root.clone(), target, args.recursive()),
+        Ok(SftpLister::new(
+            self.pool.clone(),
+            self.root.clone(),
+            target,
+            args.recursive(),
+        ))
+    }
+
+    fn copy(
+        &self,
+        _ctx: &OperationContext,
+        _from: &str,
+        _to: &str,
+        _args: OpCopy,
+    ) -> Result<Self::Copier> {
+        // Capability copy=false gates this before it is ever reached; the
+        // engine degrades same-connection copies to its read→write job.
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "sftp-native copy is not supported",
         ))
     }
 
@@ -223,7 +248,13 @@ impl Access for SftpNativeAccess {
     /// overwrite: an existing target surfaces as a protocol error (OpenSSH
     /// answers SSH_FX_FAILURE), matching the engine's no-clobber behavior for
     /// `files/rename` on other no-overwrite backends.
-    async fn rename(&self, from: &str, to: &str, _: OpRename) -> Result<RpRename> {
+    async fn rename(
+        &self,
+        _ctx: &OperationContext,
+        from: &str,
+        to: &str,
+        _: OpRename,
+    ) -> Result<RpRename> {
         let (source, target) = (sftp_path(&self.root, from), sftp_path(&self.root, to));
         match self
             .pool
@@ -237,6 +268,18 @@ impl Access for SftpNativeAccess {
             _ => Err(unexpected_result("rename")),
         }
     }
+
+    async fn presign(
+        &self,
+        _ctx: &OperationContext,
+        _path: &str,
+        _args: OpPresign,
+    ) -> Result<RpPresign> {
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "sftp-native presign is not supported",
+        ))
+    }
 }
 
 /// Guard against a pool dispatch result not matching the requested op.
@@ -248,59 +291,143 @@ fn unexpected_result(op: &str) -> Error {
     )
 }
 
-/// Sequential reader over an SFTP file handle (tokio AsyncRead). EOF closes
-/// the handle eagerly so the server-side handle does not linger until the
-/// session drops.
+/// Shared coordinates for the reader and its derived streams: every range
+/// opens a fresh positioned handle via the pool, so nothing but the pool and
+/// the absolute wire path is shared.
+#[derive(Clone)]
+pub(super) struct SftpHandle {
+    pool: Arc<SftpNativePool>,
+    /// Absolute SFTP path (see [`sftp_path`]).
+    path: String,
+}
+
+impl SftpHandle {
+    /// Reads up to `size` bytes at `offset` from a fresh positioned handle,
+    /// buffering up to `SFTP_READ_CHUNK` per wire round trip. EOF (0 bytes
+    /// read) closes the handle eagerly so the server-side handle does not
+    /// linger until the session drops.
+    async fn read_exact_bounded(&self, offset: u64, size: u64) -> Result<Buffer> {
+        let mut file = self.pool.open_reader(&self.path, offset).await?;
+        let mut collected = Vec::new();
+        loop {
+            let want = (size - collected.len() as u64).min(SFTP_READ_CHUNK) as usize;
+            let mut chunk = vec![0u8; want];
+            let read = {
+                use tokio::io::AsyncReadExt as _;
+                file.read(&mut chunk).await.map_err(map_io_error)?
+            };
+            if read == 0 {
+                break;
+            }
+            chunk.truncate(read);
+            collected.extend_from_slice(&chunk);
+            if collected.len() as u64 >= size {
+                break;
+            }
+        }
+        shutdown_file(&mut file).await;
+        Ok(Buffer::from(collected))
+    }
+}
+
+/// Best-effort handle shutdown (flush + close on the wire). A server that
+/// already reaped the handle must not fail the read stream at EOF.
+async fn shutdown_file(file: &mut russh_sftp::client::fs::File) {
+    use tokio::io::AsyncWriteExt as _;
+    let _ = file.shutdown().await;
+}
+
+/// Positioned reader over an SFTP file handle; opendal 0.59 serves ranges
+/// through `read(&self, range)` with an optional streaming `open`.
 pub(super) struct SftpReader {
-    /// `None` once EOF / the requested range was drained.
-    reader: Option<russh_sftp::client::fs::File>,
-    /// Bytes left in the requested OpRead range; `None` = read to EOF.
-    remaining: Option<u64>,
+    handle: SftpHandle,
 }
 
 impl oio::Read for SftpReader {
-    async fn read(&mut self) -> Result<Buffer> {
-        use tokio::io::AsyncReadExt as _;
-        let Some(reader) = self.reader.as_mut() else {
-            return Ok(Buffer::new());
-        };
-        let budget = self.remaining.unwrap_or(SFTP_READ_CHUNK).min(SFTP_READ_CHUNK);
-        if budget == 0 {
-            self.take_reader_close().await;
-            return Ok(Buffer::new());
+    async fn read(&self, range: BytesRange) -> Result<(RpRead, Buffer)> {
+        let size = range
+            .size()
+            .ok_or_else(|| Error::new(ErrorKind::Unsupported, "sftp-native read requires a bounded range"))?;
+        let buffer = self.handle.read_exact_bounded(range.offset(), size).await?;
+        Ok((RpRead::default(), buffer))
+    }
+
+    async fn open(&self, range: BytesRange) -> Result<(RpRead, Box<dyn oio::ReadStreamDyn>)> {
+        Ok((
+            RpRead::default(),
+            Box::new(SftpStream {
+                handle: self.handle.clone(),
+                offset: range.offset(),
+                remaining: range.size(),
+                file: None,
+            }) as Box<dyn oio::ReadStreamDyn>,
+        ))
+    }
+}
+
+/// Chunked drain stream behind `oio::Read::open`: owns one positioned handle
+/// from the first chunk, serves the declared range (or EOF) in
+/// `SFTP_READ_CHUNK` windows, and shuts the handle down at the end.
+struct SftpStream {
+    handle: SftpHandle,
+    offset: u64,
+    remaining: Option<u64>,
+    file: Option<russh_sftp::client::fs::File>,
+}
+
+impl SftpStream {
+    /// Reads the next chunk into `chunk`; returns 0 at EOF (and shuts the
+    /// handle down).
+    async fn read_once(&mut self, chunk: &mut [u8]) -> Result<usize> {
+        if self.file.is_none() {
+            self.file = Some(self.handle.pool.open_reader(&self.handle.path, self.offset).await?);
         }
-        let mut chunk = vec![0u8; budget as usize];
-        let read = reader.read(&mut chunk).await.map_err(map_io_error)?;
+        let file = self.file.as_mut().expect("handle opened above");
+        let read = {
+            use tokio::io::AsyncReadExt as _;
+            file.read(chunk).await.map_err(map_io_error)?
+        };
         if read == 0 {
-            self.take_reader_close().await;
+            if let Some(mut file) = self.file.take() {
+                shutdown_file(&mut file).await;
+            }
+        }
+        Ok(read)
+    }
+}
+
+impl oio::ReadStream for SftpStream {
+    async fn read(&mut self) -> Result<Buffer> {
+        let budget = match self.remaining {
+            Some(0) => return Ok(Buffer::new()),
+            Some(left) => left.min(SFTP_READ_CHUNK),
+            None => SFTP_READ_CHUNK,
+        } as usize;
+        let mut chunk = vec![0u8; budget];
+        let read = self.read_once(&mut chunk).await?;
+        if read == 0 {
             return Ok(Buffer::new());
         }
         chunk.truncate(read);
+        self.offset += read as u64;
         if let Some(remaining) = self.remaining.as_mut() {
             *remaining -= read as u64;
             // Draining an exact range: close as soon as nothing is left.
             if *remaining == 0 {
-                self.take_reader_close().await;
+                if let Some(mut file) = self.file.take() {
+                    shutdown_file(&mut file).await;
+                }
             }
         }
         Ok(Buffer::from(chunk))
     }
 }
 
-impl SftpReader {
-    /// Takes the handle out and shuts it down (flush + close on the wire).
-    /// Best-effort: a server that already reaped the handle must not fail
-    /// the read stream at EOF.
-    async fn take_reader_close(&mut self) {
-        if let Some(mut reader) = self.reader.take() {
-            use tokio::io::AsyncWriteExt;
-            let _ = reader.shutdown().await;
-        }
-    }
-}
-
-/// Pipelined chunk writer over an SFTP file handle (tokio AsyncWrite).
+/// Pipelined chunk writer over an SFTP file handle (tokio AsyncWrite); the
+/// handle dials lazily on the first chunk (or on `close` for empty files).
 pub(super) struct SftpWriter {
+    pool: Arc<SftpNativePool>,
+    path: String,
     writer: Option<russh_sftp::client::fs::File>,
     written: u64,
 }
@@ -309,13 +436,19 @@ pub(super) struct SftpWriter {
 // same pattern as the upstream ftp service's writer.
 unsafe impl Sync for SftpWriter {}
 
+impl SftpWriter {
+    async fn writer(&mut self) -> Result<&mut russh_sftp::client::fs::File> {
+        if self.writer.is_none() {
+            self.writer = Some(self.pool.open_writer(&self.path).await?);
+        }
+        Ok(self.writer.as_mut().expect("writer opened above"))
+    }
+}
+
 impl oio::Write for SftpWriter {
     async fn write(&mut self, bs: Buffer) -> Result<()> {
-        use tokio::io::AsyncWriteExt;
-        let writer = self
-            .writer
-            .as_mut()
-            .ok_or_else(|| Error::new(ErrorKind::Unexpected, "sftp-native writer already closed"))?;
+        use tokio::io::AsyncWriteExt as _;
+        let writer = self.writer().await?;
         writer
             .write_all(bs.to_vec().as_slice())
             .await
@@ -325,15 +458,13 @@ impl oio::Write for SftpWriter {
     }
 
     async fn close(&mut self) -> Result<Metadata> {
-        use tokio::io::AsyncWriteExt;
+        use tokio::io::AsyncWriteExt as _;
         let mut writer = self
             .writer
             .take()
             .ok_or_else(|| Error::new(ErrorKind::Unexpected, "sftp-native writer already closed"))?;
         writer.shutdown().await.map_err(map_io_error)?;
-        let mut metadata = Metadata::new(EntryMode::FILE);
-        metadata.set_content_length(self.written);
-        Ok(metadata)
+        Ok(MetadataBuilder::file(self.written).build())
     }
 
     async fn abort(&mut self) -> Result<()> {
@@ -402,22 +533,21 @@ impl SftpLister {
             if is_dir && self.recursive {
                 self.stack.push(child);
             }
-            let mut metadata = Metadata::new(if is_dir {
-                EntryMode::DIR
-            } else {
-                EntryMode::FILE
-            });
-            if let Some(size) = size {
-                metadata.set_content_length(size);
+            // 0.59 raw list entries carry finalized metadata: directory mode,
+            // or file mode with the size the server reported (0 when absent,
+            // matching the old unset-length behavior).
+            let mut builder = MetadataBuilder::file(size.unwrap_or(0));
+            if is_dir {
+                builder.set_dir();
             }
             if let Some(mtime) = mtime {
                 if let Ok(timestamp) = Timestamp::try_from(
                     std::time::UNIX_EPOCH + std::time::Duration::from_secs(u64::from(mtime)),
                 ) {
-                    metadata.set_last_modified(timestamp);
+                    builder.last_modified(timestamp);
                 }
             }
-            queue.push(oio::Entry::new(&rel, metadata));
+            queue.push(oio::Entry::new(&rel, builder.build()));
         }
         self.queue = queue.into_iter();
         Ok(())

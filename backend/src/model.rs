@@ -293,7 +293,7 @@ pub struct FileEntry {
     pub modified_at: Option<u64>,
 }
 
-/// Capability report for `files/capabilities`; mirrors `info().full_capability()`
+/// Capability report for `files/capabilities`; mirrors `info().capability()`
 /// projections the frontend uses to show/hide actions.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

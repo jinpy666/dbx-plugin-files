@@ -420,35 +420,50 @@ fn parse_bucket_names(xml: &str, group: &str) -> Result<Vec<String>, String> {
     let mut names = Vec::new();
     let mut in_group = false;
     let mut in_name = false;
+    // Accumulates the <Name> text across events: quick-xml 0.42 splits
+    // general entity references (`&amp;`) into their own GeneralRef events,
+    // so a single bucket name can span Text + GeneralRef + Text.
+    let mut current = String::new();
     loop {
         match reader.read_event() {
             Ok(Event::Start(element)) => {
+                // quick-xml 0.42: bind LocalName first, then deref to &str.
                 let local = element.local_name();
-                let local = local.as_ref();
-                if local == group.as_bytes() {
+                if local.as_ref() == group {
                     in_group = true;
-                } else if local == b"Name" && in_group {
+                } else if local.as_ref() == "Name" && in_group {
                     in_name = true;
                 }
             }
             Ok(Event::Text(text)) => {
                 if in_name {
-                    // Bucket names are [a-z0-9.-]; entity decoding is not
-                    // needed and provider names arrive verbatim.
-                    let decoded = text.xml_content().map_err(|error| error.to_string())?;
-                    let decoded = decoded.trim();
-                    if !decoded.is_empty() {
-                        names.push(decoded.to_string());
-                    }
-                    in_name = false;
+                    // xml10_content only normalizes EOLs in 0.42; entity
+                    // decoding happens on the GeneralRef events (and the
+                    // final trim covers pretty-printed padding).
+                    current.push_str(&text.xml10_content());
+                }
+            }
+            Ok(Event::GeneralRef(reference)) => {
+                if in_name {
+                    let raw = format!("&{};", reference.xml10_content());
+                    let decoded = quick_xml::escape::unescape(&raw).map_err(|error| {
+                        format!("malformed bucket listing XML: bad escape: {error}")
+                    })?;
+                    current.push_str(&decoded);
                 }
             }
             Ok(Event::End(element)) => {
                 let local = element.local_name();
-                let local = local.as_ref();
-                if local == group.as_bytes() {
+                if local.as_ref() == group {
                     in_group = false;
-                } else if local == b"Name" {
+                } else if local.as_ref() == "Name" {
+                    if in_name {
+                        let decoded = current.trim();
+                        if !decoded.is_empty() {
+                            names.push(decoded.to_string());
+                        }
+                        current.clear();
+                    }
                     in_name = false;
                 }
             }
@@ -607,6 +622,22 @@ mod tests {
         // Empty listing is valid and yields no names.
         let empty = r#"<ListAllMyBucketsResult><Buckets /></ListAllMyBucketsResult>"#;
         assert!(parse_bucket_names(empty, "Bucket").unwrap().is_empty());
+    }
+
+    #[test]
+    fn bucket_names_decode_entities_and_normalize_eols() {
+        // quick-xml 0.42 path: xml10_content decodes entities and normalizes
+        // CRLF EOLs; CRLF between elements keeps whitespace-only nodes out of
+        // the names (trim_text), and trim() guards pretty-printed names.
+        let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n\
+                   <ListAllMyBucketsResult><Buckets>\r\n\
+                   <Bucket><Name>weird&amp;name</Name></Bucket>\r\n\
+                   <Bucket><Name>\r\n  spaced  </Name></Bucket>\r\n\
+                   </Buckets></ListAllMyBucketsResult>";
+        assert_eq!(
+            parse_bucket_names(xml, "Bucket").unwrap(),
+            vec!["weird&name".to_string(), "spaced".to_string()]
+        );
     }
 
     #[test]

@@ -164,7 +164,7 @@ impl Plugin {
             "files/capabilities" => {
                 let connection_id = connection_id_param(&params)?.to_string();
                 let operator = self.engine.operator(&connection_id)?;
-                // Single-logic projection of `info().full_capability()`
+                // Single-logic projection of `info().capability()`
                 // (F-B handover item ③: the inline copy is gone; the wire
                 // shape is unchanged).
                 let capabilities = engine::ops::capabilities(&operator)?;

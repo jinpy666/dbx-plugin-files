@@ -24,7 +24,7 @@
 mod access;
 mod pool;
 
-use opendal::raw::{normalize_root, Access};
+use opendal::raw::{normalize_root, Service};
 use opendal::{Builder, Configurator, Error, ErrorKind, Result};
 use serde::{Deserialize, Serialize};
 
@@ -120,7 +120,7 @@ impl SmbBuilder {
 impl Builder for SmbBuilder {
     type Config = SmbConfig;
 
-    fn build(self) -> Result<impl Access> {
+    fn build(self) -> Result<impl Service> {
         let config = self.config;
         let endpoint = config.endpoint.clone().unwrap_or_default();
         let (host, port) = parse_smb_endpoint(&endpoint)?;
@@ -332,14 +332,14 @@ mod tests {
             .password("wonderland")
             .domain("WORKGROUP")
             .root("/archive");
-        let operator = Operator::new(builder).unwrap().finish();
+        let operator = Operator::new(builder).unwrap();
 
         let info = operator.info();
         assert_eq!(info.scheme(), SMB_SCHEME);
         assert_eq!(info.root(), "/archive/", "normalized root");
         assert_eq!(info.name(), "media");
 
-        let capability = info.full_capability();
+        let capability = info.capability();
         assert!(capability.stat && capability.read && capability.write);
         assert!(capability.create_dir && capability.delete);
         assert!(capability.list && capability.rename);
@@ -355,9 +355,7 @@ mod tests {
 
     #[test]
     fn smb_builder_allows_server_level_browsing_without_share() {
-        let operator = Operator::new(SmbBuilder::new().endpoint("nas.local"))
-            .unwrap()
-            .finish();
+        let operator = Operator::new(SmbBuilder::new().endpoint("nas.local")).unwrap();
         assert_eq!(operator.info().scheme(), SMB_SCHEME);
         assert_eq!(operator.info().root(), "/");
     }
@@ -372,17 +370,13 @@ mod tests {
                 .endpoint("nas.local")
                 .root("/data/archive"),
         )
-        .unwrap()
-        .finish();
+        .unwrap();
         assert_eq!(operator.info().name(), "data", "root head becomes the share");
         assert_eq!(operator.info().root(), "/archive/", "root tail becomes the root");
 
         // A plain `/` root keeps share-discovery mode.
-        let discovery = Operator::new(
-            SmbBuilder::new().endpoint("nas.local").root("/"),
-        )
-        .unwrap()
-        .finish();
+        let discovery = Operator::new(SmbBuilder::new().endpoint("nas.local").root("/"))
+            .unwrap();
         assert_eq!(discovery.info().root(), "/");
     }
 

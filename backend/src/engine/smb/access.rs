@@ -1,17 +1,21 @@
-//! `opendal::raw::Access` implementation on top of [`SmbPool`]
+//! `opendal::raw::Service` implementation on top of [`SmbPool`]
 //! (IMPL_PLAN_SMB §2.2 operation mapping).
 
 use std::sync::Arc;
 
 use opendal::raw::*;
-use opendal::{Buffer, Capability, EntryMode, Error, ErrorKind, Metadata, Result};
+use opendal::{
+    Buffer, BytesRange, Capability, Error, ErrorKind, Metadata, MetadataBuilder, OperationContext,
+    Result,
+};
+use tokio::sync::Mutex;
 
 use super::pool::{map_smb_error, SmbOp, SmbOpResult, SmbPool};
 use super::SMB_SCHEME;
 
-/// Sequential chunk served per `oio::Read::read` call. The smb2 reader splits
-/// requests larger than the negotiated `MaxReadSize` on its own, so this only
-/// bounds our buffering, not the wire requests.
+/// Sequential chunk served per read call. The smb2 reader splits requests
+/// larger than the negotiated `MaxReadSize` on its own, so this only bounds
+/// our buffering, not the wire requests.
 const SMB_READ_CHUNK: u64 = 1024 * 1024;
 
 /// The SMB adapter: one pool (lazy single client) + capability declaration.
@@ -26,7 +30,8 @@ pub(super) struct SmbAccess {
     /// Normalized OpenDAL root: an optional sub-path inside the share
     /// (`normalize_root` format, e.g. `/sub/dir/`).
     root: String,
-    info: Arc<AccessorInfo>,
+    info: ServiceInfo,
+    capability: Capability,
 }
 
 impl std::fmt::Debug for SmbAccess {
@@ -50,14 +55,10 @@ pub(super) fn smb_path(root: &str, path: &str) -> String {
 
 impl SmbAccess {
     pub(super) fn new(pool: Arc<SmbPool>, root: String, share: Option<&str>) -> Self {
-        let info = AccessorInfo::default();
-        info.set_scheme(SMB_SCHEME);
-        info.set_name(share.unwrap_or("SMB server"));
-        info.set_root(&root);
         // copy=false → same-connection copies degrade to the engine's
         // read→write job; presign=false → files/publicLink reports the
         // backend as unsupported (both existing engine paths, §2.2).
-        info.set_native_capability(Capability {
+        let capability = Capability {
             stat: true,
             read: true,
             write: true,
@@ -71,12 +72,18 @@ impl SmbAccess {
             rename: true,
             shared: true,
             ..Default::default()
-        });
+        };
+        let info = ServiceInfo::new(
+            SMB_SCHEME,
+            &root,
+            share.unwrap_or("SMB server"),
+        );
         Self {
             pool,
             share: share.map(str::to_string),
             root,
-            info: Arc::new(info),
+            info,
+            capability,
         }
     }
 
@@ -119,20 +126,25 @@ impl SmbAccess {
     }
 }
 
-impl Access for SmbAccess {
+impl Service for SmbAccess {
     type Reader = SmbReader;
     type Writer = SmbWriter;
     type Lister = SmbLister;
     type Deleter = oio::OneShotDeleter<SmbDeleter>;
     type Copier = ();
+    type Composer = ();
 
-    fn info(&self) -> Arc<AccessorInfo> {
+    fn info(&self) -> ServiceInfo {
         self.info.clone()
+    }
+
+    fn capability(&self) -> Capability {
+        self.capability.clone()
     }
 
     /// mkdir -p: create every level; existing directories are fine
     /// (`create_directory` collides map to Ok).
-    async fn create_dir(&self, path: &str, _: OpCreateDir) -> Result<RpCreateDir> {
+    async fn create_dir(&self, _ctx: &OperationContext, path: &str, _: OpCreateDir) -> Result<RpCreateDir> {
         let (share, target) = self.require_path(path, "create_dir")?;
         if target.is_empty() {
             return Ok(RpCreateDir::default());
@@ -159,9 +171,9 @@ impl Access for SmbAccess {
         Ok(RpCreateDir::default())
     }
 
-    async fn stat(&self, path: &str, _: OpStat) -> Result<RpStat> {
+    async fn stat(&self, _ctx: &OperationContext, path: &str, _: OpStat) -> Result<RpStat> {
         let metadata = match self.resolve_path(path)? {
-            None => Metadata::new(EntryMode::DIR),
+            None => MetadataBuilder::dir().build(),
             Some((share, target)) if target.is_empty() => {
                 // A root stat cannot be sent as an SMB CREATE. Connecting the
                 // selected share still validates it before returning the virtual
@@ -169,7 +181,7 @@ impl Access for SmbAccess {
                 self.pool
                     .call(SmbOp::ConnectShare { share: &share })
                     .await?;
-                Metadata::new(EntryMode::DIR)
+                MetadataBuilder::dir().build()
             }
             Some((share, target)) => {
                 let info = match self
@@ -183,87 +195,98 @@ impl Access for SmbAccess {
                     SmbOpResult::Stat(info) => info,
                     _ => return Err(unexpected_result("stat")),
                 };
-                let mut metadata = Metadata::new(if info.is_directory {
-                    EntryMode::DIR
-                } else {
-                    EntryMode::FILE
-                });
-                metadata.set_content_length(info.size);
+                // Every file Metadata carries the authoritative full length by
+                // construction (opendal 0.59), and stat has it.
+                let mut builder = MetadataBuilder::file(info.size);
+                if info.is_directory {
+                    builder.set_dir();
+                }
                 // `modified` is a Windows FILETIME (0 = unset); opendal's raw
                 // Timestamp wraps jiff and converts from SystemTime.
                 if info.modified.0 > 0 {
                     if let Some(time) = info.modified.to_system_time() {
                         if let Ok(timestamp) = Timestamp::try_from(time) {
-                            metadata.set_last_modified(timestamp);
+                            builder.last_modified(timestamp);
                         }
                     }
                 }
-                metadata
+                builder.build()
             }
         };
         Ok(RpStat::new(metadata))
     }
 
-    /// Opens a positioned streaming reader; the OpRead range decides the
-    /// served window (`oio::Read` drains it sequentially).
-    async fn read(&self, path: &str, args: OpRead) -> Result<(RpRead, Self::Reader)> {
+    /// Returns a lazily-dialed reader; ranges are served on demand (`read_at`
+    /// is pread-like), so no handle opens until the first read/open.
+    fn read(&self, _ctx: &OperationContext, path: &str, _args: OpRead) -> Result<Self::Reader> {
         let (share, target) = self.require_path(path, "read")?;
-        let reader = self.pool.open_reader_on_share(&share, &target).await?;
-        Ok((
-            RpRead::default(),
-            SmbReader {
-                reader: Some(reader),
-                pos: args.range().offset(),
-                remaining: args.range().size(),
-            },
-        ))
-    }
-
-    /// Opens a pipelined streaming writer (truncating create).
-    async fn write(&self, path: &str, _: OpWrite) -> Result<(RpWrite, Self::Writer)> {
-        let (share, target) = self.require_path(path, "write")?;
-        let writer = self.pool.open_writer_on_share(&share, &target).await?;
-        Ok((
-            RpWrite::default(),
-            SmbWriter {
-                writer: Some(writer),
-            },
-        ))
-    }
-
-    async fn delete(&self) -> Result<(RpDelete, Self::Deleter)> {
-        Ok((
-            RpDelete::default(),
-            oio::OneShotDeleter::new(SmbDeleter {
+        Ok(SmbReader {
+            handle: SmbHandle {
                 pool: self.pool.clone(),
-                root: self.root.clone(),
-                share: self.share.clone(),
-            }),
-        ))
+                share,
+                path: target,
+                state: Arc::new(Mutex::new(None)),
+            },
+        })
+    }
+
+    /// Returns a lazily-dialed writer (truncating create on the first chunk,
+    /// or on `close` for never-written empty files).
+    fn write(&self, _ctx: &OperationContext, path: &str, _args: OpWrite) -> Result<Self::Writer> {
+        let (share, target) = self.require_path(path, "write")?;
+        Ok(SmbWriter {
+            pool: self.pool.clone(),
+            share,
+            path: target,
+            writer: None,
+        })
+    }
+
+    fn delete(&self, _ctx: &OperationContext) -> Result<Self::Deleter> {
+        Ok(oio::OneShotDeleter::new(SmbDeleter {
+            pool: self.pool.clone(),
+            root: self.root.clone(),
+            share: self.share.clone(),
+        }))
     }
 
     /// QUERY_DIRECTORY streaming enumeration; recursion is flattened by the
     /// lister itself (dir stack) when `args.recursive()` is set.
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Lister)> {
+    fn list(&self, _ctx: &OperationContext, path: &str, args: OpList) -> Result<Self::Lister> {
         if self.share.is_none() && path.trim_matches('/').is_empty() {
-            return Ok((RpList::default(), SmbLister::new_shares(self.pool.clone())));
+            return Ok(SmbLister::new_shares(self.pool.clone()));
         }
         let (share, target) = self.require_path(path, "list")?;
-        Ok((
-            RpList::default(),
-            SmbLister::new(
-                self.pool.clone(),
-                self.root.clone(),
-                share,
-                target,
-                self.share.is_none(),
-                args.recursive(),
-            ),
+        Ok(SmbLister::new(
+            self.pool.clone(),
+            self.root.clone(),
+            share,
+            target,
+            self.share.is_none(),
+            args.recursive(),
         ))
     }
 
+    fn copy(
+        &self,
+        _ctx: &OperationContext,
+        _from: &str,
+        _to: &str,
+        _args: OpCopy,
+    ) -> Result<Self::Copier> {
+        // Capability copy=false gates this before it is ever reached; the
+        // engine degrades same-connection copies to its read→write job.
+        Err(Error::new(ErrorKind::Unsupported, "smb copy is not supported"))
+    }
+
     /// SET_INFORMATION FileRenameInfo; works for files and directories.
-    async fn rename(&self, from: &str, to: &str, _: OpRename) -> Result<RpRename> {
+    async fn rename(
+        &self,
+        _ctx: &OperationContext,
+        from: &str,
+        to: &str,
+        _: OpRename,
+    ) -> Result<RpRename> {
         let (source_share, source) = self.require_path(from, "rename")?;
         let (target_share, target) = self.require_path(to, "rename")?;
         if source_share != target_share {
@@ -285,6 +308,18 @@ impl Access for SmbAccess {
             _ => Err(unexpected_result("rename")),
         }
     }
+
+    async fn presign(
+        &self,
+        _ctx: &OperationContext,
+        _path: &str,
+        _args: OpPresign,
+    ) -> Result<RpPresign> {
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "smb presign is not supported",
+        ))
+    }
 }
 
 /// Guard against a pool dispatch result not matching the requested op.
@@ -296,77 +331,173 @@ fn unexpected_result(op: &str) -> Error {
     )
 }
 
-/// Positioned sequential reader over an owned SMB file handle.
-pub(super) struct SmbReader {
+/// Shared state for the reader and its derived streams: the owned SMB file
+/// handle behind a mutex (reads take `&self` in opendal 0.59) plus the
+/// coordinates needed to (re)open it lazily.
+#[derive(Clone)]
+pub(super) struct SmbHandle {
+    pool: Arc<SmbPool>,
+    share: String,
+    /// Share-relative wire path (see [`smb_path`]).
+    path: String,
     /// `None` once the handle was closed (EOF / range exhausted). The smb2
     /// crate leaks the server-side handle when a `FileReader` is dropped
-    /// without `close().await`, and `oio::Read` has no async close hook —
-    /// so the close runs eagerly at EOF here. Early drops (error/cancel
-    /// paths) still leak until session teardown, matching the crate's
-    /// documented behavior.
-    reader: Option<smb2::FileReader>,
-    pos: u64,
-    /// Bytes left in the requested OpRead range; `None` = read to EOF.
-    remaining: Option<u64>,
+    /// without `close().await` — so the close runs eagerly at EOF here.
+    /// Early drops (error/cancel paths) still leak until session teardown,
+    /// matching the crate's documented behavior.
+    state: Arc<Mutex<Option<smb2::FileReader>>>,
 }
 
-impl oio::Read for SmbReader {
-    async fn read(&mut self) -> Result<Buffer> {
-        enum Outcome {
-            Data(Vec<u8>),
-            Eof,
-        }
-        let Some(reader) = self.reader.as_mut() else {
-            return Ok(Buffer::new());
-        };
-        let outcome = match self.remaining {
-            Some(0) => Outcome::Eof,
-            Some(remaining) => {
-                // read_at is pread-like and clamps at EOF; an empty return
-                // means EOF.
-                let data = reader
-                    .read_at(self.pos, remaining.min(SMB_READ_CHUNK))
-                    .await
-                    .map_err(map_smb_error)?;
-                if data.is_empty() {
-                    Outcome::Eof
-                } else {
-                    self.pos += data.len() as u64;
-                    self.remaining = Some(remaining - data.len() as u64);
-                    Outcome::Data(data)
-                }
-            }
+impl SmbHandle {
+    /// Reads up to `want` bytes at `offset`, opening the handle on first use.
+    /// An empty wire answer means EOF: the handle is closed eagerly and the
+    /// chunk loop terminates.
+    async fn read_chunk(
+        &self,
+        state: &mut Option<smb2::FileReader>,
+        offset: u64,
+        want: u64,
+    ) -> Result<Vec<u8>> {
+        let reader = match state.as_mut() {
+            Some(reader) => reader,
             None => {
-                if self.pos >= reader.size() {
-                    Outcome::Eof
-                } else {
-                    let data = reader
-                        .read_at(self.pos, SMB_READ_CHUNK)
-                        .await
-                        .map_err(map_smb_error)?;
-                    if data.is_empty() {
-                        Outcome::Eof
-                    } else {
-                        self.pos += data.len() as u64;
-                        Outcome::Data(data)
-                    }
-                }
+                let reader = self
+                    .pool
+                    .open_reader_on_share(&self.share, &self.path)
+                    .await?;
+                state.insert(reader)
             }
         };
-        match outcome {
-            Outcome::Data(data) => Ok(Buffer::from(data)),
-            Outcome::Eof => {
-                if let Some(reader) = self.reader.take() {
-                    reader.close().await.map_err(map_smb_error)?;
-                }
-                Ok(Buffer::new())
+        reader.read_at(offset, want).await.map_err(map_smb_error)
+    }
+
+    /// Closes the handle if present (best effort at EOF is the documented
+    /// red-line mitigation; see the field comment on `state`).
+    async fn close_eagerly(&self, state: &mut Option<smb2::FileReader>) {
+        if let Some(reader) = state.take() {
+            reader.close().await.map_err(map_smb_error).ok();
+        }
+    }
+
+    async fn read_range(&self, range: BytesRange) -> Result<Buffer> {
+        let mut state = self.state.lock().await;
+        let offset = range.offset();
+        let mut remaining = range.size();
+        let mut collected = Vec::new();
+        let mut hit_eof = false;
+        loop {
+            let want = match remaining {
+                Some(0) => break,
+                Some(left) => left.min(SMB_READ_CHUNK),
+                None => SMB_READ_CHUNK,
+            };
+            let data = self.read_chunk(&mut state, offset + collected.len() as u64, want).await?;
+            if data.is_empty() {
+                self.close_eagerly(&mut state).await;
+                hit_eof = true;
+                break;
+            }
+            let served = data.len() as u64;
+            collected.extend_from_slice(&data);
+            match remaining.as_mut() {
+                Some(left) => *left -= served.min(*left),
+                None => {}
+            }
+            // A short read means the server hit EOF before the range ended.
+            if served < want {
+                self.close_eagerly(&mut state).await;
+                hit_eof = true;
+                break;
             }
         }
+        if !hit_eof {
+            // A fully-served bounded range that ended exactly at EOF still
+            // leaves the handle open. RED LINE (delete-on-close): any pool
+            // handle kept open on a child blocks the parent rmdir with
+            // STATUS_DIRECTORY_NOT_EMPTY, so close as soon as the position
+            // reaches the negotiated file size.
+            if let Some(reader) = state.as_mut() {
+                if offset + collected.len() as u64 >= reader.size() {
+                    self.close_eagerly(&mut state).await;
+                }
+            }
+        }
+        Ok(Buffer::from(collected))
     }
 }
 
-/// Pipelined chunk writer over an owned SMB file handle.
+/// Positioned reader over an owned SMB file handle; opendal 0.59 serves
+/// ranges through `read(&self, range)` with an optional streaming `open`.
+pub(super) struct SmbReader {
+    handle: SmbHandle,
+}
+
+impl oio::Read for SmbReader {
+    async fn read(&self, range: BytesRange) -> Result<(RpRead, Buffer)> {
+        let buffer = self.handle.read_range(range).await?;
+        Ok((RpRead::default(), buffer))
+    }
+
+    async fn open(&self, range: BytesRange) -> Result<(RpRead, Box<dyn oio::ReadStreamDyn>)> {
+        Ok((
+            RpRead::default(),
+            Box::new(SmbStream {
+                handle: self.handle.clone(),
+                offset: range.offset(),
+                remaining: range.size(),
+            }) as Box<dyn oio::ReadStreamDyn>,
+        ))
+    }
+}
+
+/// Chunked drain stream behind `oio::Read::open`: serves the declared range
+/// (or EOF) in `SMB_READ_CHUNK` windows off the shared handle.
+struct SmbStream {
+    handle: SmbHandle,
+    offset: u64,
+    remaining: Option<u64>,
+}
+
+impl oio::ReadStream for SmbStream {
+    async fn read(&mut self) -> Result<Buffer> {
+        let mut state = self.handle.state.lock().await;
+        let want = match self.remaining {
+            Some(0) => return Ok(Buffer::new()),
+            Some(left) => left.min(SMB_READ_CHUNK),
+            None => SMB_READ_CHUNK,
+        };
+        let data = self
+            .handle
+            .read_chunk(&mut state, self.offset, want)
+            .await?;
+        if data.is_empty() {
+            self.handle.close_eagerly(&mut state).await;
+            return Ok(Buffer::new());
+        }
+        let served = data.len() as u64;
+        self.offset += served;
+        match self.remaining.as_mut() {
+            Some(left) => *left -= served.min(*left),
+            None => {}
+        }
+        // Same delete-on-close red line as read_range: at EOF, close eagerly.
+        if served < want {
+            self.handle.close_eagerly(&mut state).await;
+        } else if let Some(reader) = state.as_mut() {
+            if self.offset >= reader.size() {
+                self.handle.close_eagerly(&mut state).await;
+            }
+        }
+        Ok(Buffer::from(data))
+    }
+}
+
+/// Pipelined chunk writer over an owned SMB file handle; the handle dials
+/// lazily on the first chunk (or on `close` for empty files).
 pub(super) struct SmbWriter {
+    pool: Arc<SmbPool>,
+    share: String,
+    path: String,
     writer: Option<smb2::FileWriter>,
 }
 
@@ -375,12 +506,22 @@ pub(super) struct SmbWriter {
 // Same pattern as the upstream ftp service's reader.
 unsafe impl Sync for SmbWriter {}
 
+impl SmbWriter {
+    async fn writer(&mut self) -> Result<&mut smb2::FileWriter> {
+        if self.writer.is_none() {
+            self.writer = Some(
+                self.pool
+                    .open_writer_on_share(&self.share, &self.path)
+                    .await?,
+            );
+        }
+        Ok(self.writer.as_mut().expect("writer initialized above"))
+    }
+}
+
 impl oio::Write for SmbWriter {
     async fn write(&mut self, bs: Buffer) -> Result<()> {
-        let writer = self
-            .writer
-            .as_mut()
-            .ok_or_else(|| Error::new(ErrorKind::Unexpected, "smb writer already closed"))?;
+        let writer = self.writer().await?;
         writer
             .write_chunk(bs.to_vec().as_slice())
             .await
@@ -393,9 +534,7 @@ impl oio::Write for SmbWriter {
             .take()
             .ok_or_else(|| Error::new(ErrorKind::Unexpected, "smb writer already closed"))?;
         let written = writer.finish().await.map_err(map_smb_error)?;
-        let mut metadata = Metadata::new(EntryMode::FILE);
-        metadata.set_content_length(written);
-        Ok(metadata)
+        Ok(MetadataBuilder::file(written).build())
     }
 
     async fn abort(&mut self) -> Result<()> {
@@ -480,7 +619,7 @@ impl SmbLister {
                 }
                 queue.push(oio::Entry::new(
                     &format!("/{}/", share.name),
-                    Metadata::new(EntryMode::DIR),
+                    MetadataBuilder::dir().build(),
                 ));
             }
             self.queue = queue.into_iter();
@@ -518,12 +657,22 @@ impl SmbLister {
             if entry.is_directory && self.recursive {
                 self.stack.push(child);
             }
-            let mode = if entry.is_directory {
-                EntryMode::DIR
+            // 0.59 raw list entries carry finalized metadata: directory mode,
+            // or file mode with the authoritative size from QUERY_DIRECTORY.
+            let metadata = if entry.is_directory {
+                MetadataBuilder::dir().build()
             } else {
-                EntryMode::FILE
+                let mut builder = MetadataBuilder::file(entry.size);
+                if entry.modified.0 > 0 {
+                    if let Some(time) = entry.modified.to_system_time() {
+                        if let Ok(timestamp) = Timestamp::try_from(time) {
+                            builder.last_modified(timestamp);
+                        }
+                    }
+                }
+                builder.build()
             };
-            queue.push(oio::Entry::new(&rel, Metadata::new(mode)));
+            queue.push(oio::Entry::new(&rel, metadata));
         }
         self.queue = queue.into_iter();
         Ok(())
@@ -599,10 +748,24 @@ impl SmbDeleter {
                 Err(error) => return Err(error),
             }
         }
-        match self.pool.call(SmbOp::DeleteDirectory { share, path }).await {
-            Ok(_) => Ok(()),
-            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
+        // Samba finalizes a child's delete-on-close asynchronously, so an
+        // immediate rmdir can answer STATUS_DIRECTORY_NOT_EMPTY even though
+        // every child is already gone (macOS-container smoke, 2026-09-17).
+        // Bounded retry lets the server's deferred cleanup land; every other
+        // error and the final attempt fail honestly.
+        let mut attempt = 0;
+        loop {
+            match self.pool.call(SmbOp::DeleteDirectory { share, path }).await {
+                Ok(_) => return Ok(()),
+                Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+                Err(error)
+                    if attempt < 2 && error.to_string().contains("STATUS_DIRECTORY_NOT_EMPTY") =>
+                {
+                    attempt += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+                Err(error) => return Err(error),
+            }
         }
     }
 

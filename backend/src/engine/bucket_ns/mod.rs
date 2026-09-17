@@ -4,7 +4,7 @@
 //!
 //! ```
 //! StoredConnection(protocol="s3", bucket="")
-//!   → engine::build_operator → Operator::new(BucketNsBuilder)?.finish()
+//!   → engine::build_operator → Operator::new(BucketNsBuilder)?
 //!   → `/` lists buckets natively (list.rs); the first path segment selects
 //!     the bucket and every other operation delegates to a per-bucket child
 //!     operator built from the same Builder kv (bucket key injected, cached).
@@ -27,13 +27,14 @@ use std::time::Duration;
 
 use opendal::raw::*;
 use opendal::{
-    Buffer, Builder, Capability, EntryMode, Error, ErrorKind, Metadata, Operator, Result,
+    Buffer, Builder, BytesRange, Capability, Error, ErrorKind, Metadata, MetadataBuilder,
+    OperationContext, Operator, Result,
 };
 
 use crate::model::StoredConnection;
 
-/// Sequential window served per `oio::Read::read` call (matches the transfer
-/// layer's 4 MiB chunking; each window is one ranged child request).
+/// Sequential window served per read call (matches the transfer layer's
+/// 4 MiB chunking; each window is one ranged child request).
 const NS_READ_CHUNK: u64 = 4 * 1024 * 1024;
 
 /// Quick protocols whose service needs a bucket but whose cloud API can
@@ -162,7 +163,7 @@ impl BucketNsBuilder {
 impl Builder for BucketNsBuilder {
     type Config = BucketNsConfig;
 
-    fn build(self) -> Result<impl Access> {
+    fn build(self) -> Result<impl Service> {
         build_access(self.config)
     }
 }
@@ -180,11 +181,11 @@ fn build_access(config: BucketNsConfig) -> Result<BucketNsAccess> {
         .clone()
         .unwrap_or_else(|| "bucket".to_string());
     let timeout = Duration::from_secs(config.timeout_secs.unwrap_or(30).max(1));
-    let info = AccessorInfo::default();
     // The namespace reports the underlying scheme so the form matrix's
     // scheme assertions hold for bucket-filled and bucket-less alike.
-    // `set_scheme` stores the string by reference ('static); the namespace
-    // protocols are a fixed set, so only an out-of-contract scheme leaks.
+    // `ServiceInfo::new` stores the scheme string by reference ('static); the
+    // namespace protocols are a fixed set, so only an out-of-contract scheme
+    // leaks.
     let scheme_static: &'static str = match scheme.as_str() {
         "s3" => "s3",
         "oss" => "oss",
@@ -193,9 +194,6 @@ fn build_access(config: BucketNsConfig) -> Result<BucketNsAccess> {
         "azblob" => "azblob",
         other => Box::leak(other.to_string().into_boxed_str()),
     };
-    info.set_scheme(scheme_static);
-    info.set_name(&format!("{scheme} buckets"));
-    info.set_root("/");
     // The namespace must not promise more than the child service delivers:
     // the engine plans moves/copies off these flags (a claimed rename that
     // the child lacks turns every move into a hard error instead of the
@@ -204,12 +202,12 @@ fn build_access(config: BucketNsConfig) -> Result<BucketNsAccess> {
     let mut probe_kv = config.base_kv.clone();
     probe_kv.push((bucket_key.clone(), "bucket-namespace-capability-probe".to_string()));
     let child = super::build_registered_operator(&scheme, probe_kv)
-        .map(|operator| operator.info().full_capability())
+        .map(|operator| operator.info().capability())
         .unwrap_or_default();
     // copy=false → copies (cross-bucket included) degrade to the engine's
     // read→write job; presign=false → files/publicLink reports unsupported.
     // stat/list stay on (namespace root + virtual bucket dirs answer locally).
-    info.set_native_capability(Capability {
+    let capability = Capability {
         stat: true,
         read: child.read,
         write: child.write,
@@ -223,10 +221,11 @@ fn build_access(config: BucketNsConfig) -> Result<BucketNsAccess> {
         rename: child.rename,
         shared: true,
         ..Default::default()
-    });
+    };
     Ok(BucketNsAccess {
         children: Arc::new(Mutex::new(HashMap::new())),
-        info: Arc::new(info),
+        info: ServiceInfo::new(scheme_static, "/", format!("{scheme} buckets")),
+        capability,
         base_kv: Arc::new(config.base_kv),
         list_params: Arc::new(config.list),
         scheme,
@@ -259,7 +258,7 @@ fn resolve(path: &str) -> Result<Option<(String, String)>> {
     )))
 }
 
-/// The bucket namespace Access: one child operator per selected bucket,
+/// The bucket namespace service: one child operator per selected bucket,
 /// built lazily from the shared base kv and cached for the connection's
 /// lifetime.
 struct BucketNsAccess {
@@ -269,7 +268,8 @@ struct BucketNsAccess {
     list_params: Arc<list::ListParams>,
     timeout: Duration,
     children: Arc<Mutex<HashMap<String, Operator>>>,
-    info: Arc<AccessorInfo>,
+    info: ServiceInfo,
+    capability: Capability,
 }
 
 impl std::fmt::Debug for BucketNsAccess {
@@ -343,15 +343,20 @@ fn child_operator(
     Ok(operator)
 }
 
-impl Access for BucketNsAccess {
+impl Service for BucketNsAccess {
     type Reader = NsReader;
     type Writer = NsWriter;
     type Lister = NsLister;
     type Deleter = oio::OneShotDeleter<NsDeleter>;
     type Copier = ();
+    type Composer = ();
 
-    fn info(&self) -> Arc<AccessorInfo> {
+    fn info(&self) -> ServiceInfo {
         self.info.clone()
+    }
+
+    fn capability(&self) -> Capability {
+        self.capability.clone()
     }
 
     /// mkdir -p inside the selected bucket. The bucket root itself answers
@@ -360,7 +365,7 @@ impl Access for BucketNsAccess {
     /// the bucket — the SMB adapter makes the same share-root choice).
     /// Creating a *new* bucket surfaces later as the provider's NoSuchBucket
     /// on the first object write.
-    async fn create_dir(&self, path: &str, _: OpCreateDir) -> Result<RpCreateDir> {
+    async fn create_dir(&self, _ctx: &OperationContext, path: &str, _: OpCreateDir) -> Result<RpCreateDir> {
         let Some((bucket, rest)) = resolve(path)? else {
             return Err(Error::new(
                 ErrorKind::ConfigInvalid,
@@ -377,100 +382,96 @@ impl Access for BucketNsAccess {
     /// Namespace root and bucket roots answer virtually (no network) so
     /// breadcrumbs stay cheap; existence/permission errors surface on the
     /// first real list inside the bucket.
-    async fn stat(&self, path: &str, _: OpStat) -> Result<RpStat> {
+    async fn stat(&self, _ctx: &OperationContext, path: &str, _: OpStat) -> Result<RpStat> {
         let metadata = match resolve(path)? {
-            None => Metadata::new(EntryMode::DIR),
-            Some((_bucket, rest)) if rest.is_empty() => Metadata::new(EntryMode::DIR),
+            None => MetadataBuilder::dir().build(),
+            Some((_bucket, rest)) if rest.is_empty() => MetadataBuilder::dir().build(),
             Some((bucket, rest)) => self.child(&bucket)?.stat(&rest).await?,
         };
         Ok(RpStat::new(metadata))
     }
 
-    /// Opens a ranged streaming reader over the selected bucket.
-    async fn read(&self, path: &str, args: OpRead) -> Result<(RpRead, Self::Reader)> {
+    /// Returns a ranged reader over the selected bucket; the child dials on
+    /// the first read/open.
+    fn read(&self, _ctx: &OperationContext, path: &str, _args: OpRead) -> Result<Self::Reader> {
         let (bucket, rest) = self.require_object(path, "read")?;
-        let child = self.child(&bucket)?;
-        Ok((
-            RpRead::default(),
-            NsReader {
-                child,
-                path: rest,
-                pos: args.range().offset(),
-                remaining: args.range().size(),
-                total: None,
-            },
-        ))
+        Ok(NsReader {
+            child: self.child(&bucket)?,
+            path: rest,
+            total: Mutex::new(None),
+        })
     }
 
-    /// Opens a pipelined streaming writer into the selected bucket (the
-    /// child's Writer handles multipart semantics per service).
-    async fn write(&self, path: &str, _: OpWrite) -> Result<(RpWrite, Self::Writer)> {
+    /// Returns a pipelined streaming writer into the selected bucket (the
+    /// child's Writer handles multipart semantics per service); the child
+    /// writer opens lazily on the first chunk.
+    fn write(&self, _ctx: &OperationContext, path: &str, _args: OpWrite) -> Result<Self::Writer> {
         let (bucket, rest) = self.require_object(path, "write")?;
-        let child = self.child(&bucket)?;
-        Ok((
-            RpWrite::default(),
-            NsWriter {
-                child,
-                path: rest,
-                writer: None,
-            },
-        ))
+        Ok(NsWriter {
+            child: self.child(&bucket)?,
+            path: rest,
+            writer: None,
+        })
     }
 
-    async fn delete(&self) -> Result<(RpDelete, Self::Deleter)> {
-        Ok((
-            RpDelete::default(),
-            oio::OneShotDeleter::new(NsDeleter {
-                scheme: self.scheme.clone(),
-                bucket_key: self.bucket_key.clone(),
-                base_kv: self.base_kv.clone(),
-                children: self.children.clone(),
-            }),
-        ))
+    fn delete(&self, _ctx: &OperationContext) -> Result<Self::Deleter> {
+        Ok(oio::OneShotDeleter::new(NsDeleter {
+            scheme: self.scheme.clone(),
+            bucket_key: self.bucket_key.clone(),
+            base_kv: self.base_kv.clone(),
+            children: self.children.clone(),
+        }))
     }
 
     /// Namespace root → native bucket listing; any deeper path delegates to
     /// the child operator's lister with the bucket prefixed back onto the
-    /// entry paths (same namespace mapping as the SMB share lister).
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Lister)> {
-        let entries: Vec<oio::Entry> = match resolve(path)? {
-            None => list::list_buckets(&self.list_params, self.timeout)
-                .await
-                .map_err(list_error_to_opendal)?
-                .into_iter()
-                .map(|bucket| {
-                    oio::Entry::new(&format!("{bucket}/"), Metadata::new(EntryMode::DIR))
-                })
-                .collect(),
-            Some((bucket, rest)) => {
-                let child = self.child(&bucket)?;
-                let raw = if args.recursive() {
-                    child.list_with(&rest).recursive(true).await?
-                } else {
-                    child.list(&rest).await?
-                };
-                raw.into_iter()
-                    .map(|entry| {
-                        oio::Entry::new(
-                            &format!("{bucket}/{}", entry.path()),
-                            entry.metadata().clone(),
-                        )
-                    })
-                    .collect()
-            }
-        };
-        Ok((
-            RpList::default(),
-            NsLister {
-                queue: entries.into_iter(),
+    /// entry paths (same namespace mapping as the SMB share lister). The
+    /// listing work happens lazily on the lister's first `next()` (0.59
+    /// `Service::list` is a synchronous constructor).
+    fn list(&self, _ctx: &OperationContext, path: &str, args: OpList) -> Result<Self::Lister> {
+        let source = match resolve(path)? {
+            None => NsSource::Buckets {
+                params: (*self.list_params).clone(),
+                timeout: self.timeout,
             },
+            Some((bucket, rest)) => NsSource::Child {
+                child: self.child(&bucket)?,
+                bucket,
+                rest,
+                recursive: args.recursive(),
+            },
+        };
+        Ok(NsLister {
+            source: Some(source),
+            queue: Vec::new().into_iter(),
+        })
+    }
+
+    fn copy(
+        &self,
+        _ctx: &OperationContext,
+        _from: &str,
+        _to: &str,
+        _args: OpCopy,
+    ) -> Result<Self::Copier> {
+        // Capability copy=false gates this before it is ever reached; the
+        // engine degrades copies to its read→write job.
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "bucket namespace copy is not supported",
         ))
     }
 
     /// Rename within one bucket delegates to the child; crossing buckets
     /// (or renaming a bucket itself) is refused — cross-bucket moves go
     /// through the engine's copy jobs.
-    async fn rename(&self, from: &str, to: &str, _: OpRename) -> Result<RpRename> {
+    async fn rename(
+        &self,
+        _ctx: &OperationContext,
+        from: &str,
+        to: &str,
+        _: OpRename,
+    ) -> Result<RpRename> {
         let (source_bucket, source) = self.require_object(from, "rename")?;
         let (target_bucket, target) = self.require_object(to, "rename")?;
         if source_bucket != target_bucket {
@@ -483,6 +484,18 @@ impl Access for BucketNsAccess {
             .rename(&source, &target)
             .await?;
         Ok(RpRename::default())
+    }
+
+    async fn presign(
+        &self,
+        _ctx: &OperationContext,
+        _path: &str,
+        _args: OpPresign,
+    ) -> Result<RpPresign> {
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "bucket namespace presign is not supported",
+        ))
     }
 }
 
@@ -499,55 +512,127 @@ fn list_error_to_opendal(error: list::BucketListError) -> Error {
     }
 }
 
-/// Ranged sequential reader: each `oio::Read::read` serves one bounded
-/// window via a ranged child request (the OpRead window from `Access::read`
-/// decides what is served, exactly like the SMB reader).
+/// Ranged reader: every `oio::Read::read` serves the requested window via a
+/// ranged child request; unbounded ranges stat the object once (cached) and
+/// drain to EOF in `NS_READ_CHUNK` windows.
 struct NsReader {
     child: Operator,
     path: String,
-    pos: u64,
-    /// Bytes left in the requested OpRead range; `None` = read to EOF (the
-    /// object is sized once, so the final window ends exactly at EOF).
-    remaining: Option<u64>,
-    total: Option<u64>,
+    /// Object size cache for unbounded reads (std mutex: no await held while
+    /// locked — the stat completes first).
+    total: Mutex<Option<u64>>,
 }
 
-impl oio::Read for NsReader {
-    async fn read(&mut self) -> Result<Buffer> {
-        let Some(remaining) = self.remaining else {
-            let total = match self.total {
-                Some(total) => total,
-                None => {
-                    let metadata = self.child.stat(&self.path).await?;
-                    let total = metadata.content_length();
-                    self.total = Some(total);
-                    total
-                }
-            };
-            if self.pos >= total {
-                return Ok(Buffer::new());
-            }
-            let want = (total - self.pos).min(NS_READ_CHUNK);
-            let buffer = self
-                .child
-                .read_with(&self.path)
-                .range(self.pos..self.pos + want)
-                .await?;
-            self.pos += buffer.len() as u64;
-            return Ok(buffer);
-        };
-        if remaining == 0 {
-            return Ok(Buffer::new());
+impl NsReader {
+    /// Object size for unbounded windows, resolved once via the child stat.
+    async fn total(&self) -> Result<u64> {
+        if let Some(total) = *self.total.lock().expect("size cache not poisoned") {
+            return Ok(total);
         }
-        let want = remaining.min(NS_READ_CHUNK);
+        let total = self.child.stat(&self.path).await?.content_length();
+        *self.total.lock().expect("size cache not poisoned") = Some(total);
+        Ok(total)
+    }
+
+    /// Serves `[offset, offset + want)` — may return fewer bytes only at EOF.
+    async fn read_window(&self, offset: u64, want: u64) -> Result<Vec<u8>> {
         let buffer = self
             .child
             .read_with(&self.path)
-            .range(self.pos..self.pos + want)
+            .range(offset..offset + want)
             .await?;
-        let len = buffer.len() as u64;
-        self.pos += len;
-        self.remaining = Some(remaining - len);
+        Ok(buffer.to_vec())
+    }
+}
+
+impl oio::Read for NsReader {
+    async fn read(&self, range: BytesRange) -> Result<(RpRead, Buffer)> {
+        let offset = range.offset();
+        let mut collected = Vec::new();
+        match range.size() {
+            Some(size) => {
+                while (collected.len() as u64) < size {
+                    let want = (size - collected.len() as u64).min(NS_READ_CHUNK);
+                    let chunk = self.read_window(offset + collected.len() as u64, want).await?;
+                    if chunk.is_empty() {
+                        break;
+                    }
+                    collected.extend_from_slice(&chunk);
+                }
+            }
+            None => {
+                let total = self.total().await?;
+                while (offset + collected.len() as u64) < total {
+                    let want =
+                        (total - offset - collected.len() as u64).min(NS_READ_CHUNK);
+                    let chunk = self.read_window(offset + collected.len() as u64, want).await?;
+                    if chunk.is_empty() {
+                        break;
+                    }
+                    collected.extend_from_slice(&chunk);
+                }
+            }
+        }
+        Ok((RpRead::default(), Buffer::from(collected)))
+    }
+
+    async fn open(&self, range: BytesRange) -> Result<(RpRead, Box<dyn oio::ReadStreamDyn>)> {
+        Ok((
+            RpRead::default(),
+            Box::new(NsStream {
+                child: self.child.clone(),
+                path: self.path.clone(),
+                offset: range.offset(),
+                remaining: range.size(),
+                total: Arc::new(Mutex::new(None)),
+            }) as Box<dyn oio::ReadStreamDyn>,
+        ))
+    }
+}
+
+/// Chunked drain stream behind `oio::Read::open`.
+struct NsStream {
+    child: Operator,
+    path: String,
+    offset: u64,
+    remaining: Option<u64>,
+    total: Arc<Mutex<Option<u64>>>,
+}
+
+impl oio::ReadStream for NsStream {
+    async fn read(&mut self) -> Result<Buffer> {
+        // Resolve the size cache without holding the std mutex across awaits.
+        let cached = *self.total.lock().expect("size cache not poisoned");
+        let total = match cached {
+            Some(total) => Some(total),
+            None => {
+                let total = self.child.stat(&self.path).await?.content_length();
+                *self.total.lock().expect("size cache not poisoned") = Some(total);
+                Some(total)
+            }
+        };
+        if let Some(total) = total {
+            if self.offset >= total {
+                return Ok(Buffer::new());
+            }
+        }
+        let want = match self.remaining {
+            Some(left) => left.min(NS_READ_CHUNK),
+            None => total.map_or(NS_READ_CHUNK, |total| (total - self.offset).min(NS_READ_CHUNK)),
+        };
+        let buffer = self
+            .child
+            .read_with(&self.path)
+            .range(self.offset..self.offset + want)
+            .await?;
+        let served = buffer.len() as u64;
+        if served == 0 {
+            return Ok(Buffer::new());
+        }
+        self.offset += served;
+        if let Some(remaining) = self.remaining.as_mut() {
+            *remaining -= served.min(*remaining);
+        }
         Ok(buffer)
     }
 }
@@ -589,16 +674,78 @@ impl oio::Write for NsWriter {
     }
 }
 
-/// Entry-queue lister: both the bucket listing and the delegated child list
-/// are fetched once inside `Access::list` (errors surface as list errors,
-/// not as lister items), so the lister itself is infallible.
+/// Entry-queue lister: the bucket listing and the delegated child list run
+/// lazily on the first `next()` (errors surface as lister errors), after
+/// which entries drain from a plain queue.
 struct NsLister {
+    source: Option<NsSource>,
     queue: std::vec::IntoIter<oio::Entry>,
+}
+
+/// Where the lister's entries come from: the native bucket listing at the
+/// namespace root, or a delegated child-operator list inside one bucket.
+enum NsSource {
+    Buckets {
+        params: list::ListParams,
+        timeout: Duration,
+    },
+    Child {
+        child: Operator,
+        bucket: String,
+        rest: String,
+        recursive: bool,
+    },
+}
+
+impl NsLister {
+    /// Loads the next directory/bucket level into the queue.
+    async fn load(&mut self, source: NsSource) -> Result<()> {
+        let entries: Vec<oio::Entry> = match source {
+            NsSource::Buckets { params, timeout } => list::list_buckets(&params, timeout)
+                .await
+                .map_err(list_error_to_opendal)?
+                .into_iter()
+                .map(|bucket| {
+                    oio::Entry::new(&format!("{bucket}/"), MetadataBuilder::dir().build())
+                })
+                .collect(),
+            NsSource::Child {
+                child,
+                bucket,
+                rest,
+                recursive,
+            } => {
+                let raw = if recursive {
+                    child.list_with(&rest).recursive(true).await?
+                } else {
+                    child.list(&rest).await?
+                };
+                raw.into_iter()
+                    .map(|entry| {
+                        oio::Entry::new(
+                            &format!("{bucket}/{}", entry.path()),
+                            entry.metadata().clone(),
+                        )
+                    })
+                    .collect()
+            }
+        };
+        self.queue = entries.into_iter();
+        Ok(())
+    }
 }
 
 impl oio::List for NsLister {
     async fn next(&mut self) -> Result<Option<oio::Entry>> {
-        Ok(self.queue.next())
+        loop {
+            if let Some(entry) = self.queue.next() {
+                return Ok(Some(entry));
+            }
+            match self.source.take() {
+                Some(source) => self.load(source).await?,
+                None => return Ok(None),
+            }
+        }
     }
 }
 
@@ -640,6 +787,7 @@ impl oio::OneShotDelete for NsDeleter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use opendal::raw::oio::Read as _;
 
     fn config(scheme: &str) -> BucketNsConfig {
         BucketNsConfig {
@@ -692,9 +840,8 @@ mod tests {
     #[test]
     fn namespace_operators_build_offline_with_underlying_scheme() {
         for scheme in ["s3", "oss", "cos", "obs", "azblob"] {
-            let operator = Operator::new(BucketNsBuilder::from_config(config(scheme)))
-                .unwrap()
-                .finish();
+            // opendal 0.58+: Operator::new returns the finished operator.
+            let operator = Operator::new(BucketNsBuilder::from_config(config(scheme))).unwrap();
             assert_eq!(operator.info().scheme(), scheme, "{scheme}");
             assert_eq!(operator.info().root(), "/");
             assert!(
@@ -709,9 +856,8 @@ mod tests {
     fn namespace_capability_never_exceeds_the_child() {
         let capability = Operator::new(BucketNsBuilder::from_config(config("s3")))
             .unwrap()
-            .finish()
             .info()
-            .full_capability();
+            .capability();
         // Child-derived flags (probed offline from the same base kv).
         let probe_kv = vec![
             ("bucket".to_string(), "probe".to_string()),
@@ -720,7 +866,7 @@ mod tests {
         let child = super::super::build_registered_operator("s3", probe_kv)
             .unwrap()
             .info()
-            .full_capability();
+            .capability();
         println!(
             "PROBE child: rename={} copy={} delete={} read={} write={}",
             child.rename, child.copy, child.delete, child.read, child.write
@@ -809,16 +955,63 @@ mod tests {
         // transfer walkers' ancestor creation succeeds (mirrors the SMB
         // share-root choice).
         let access = build_access(config("memory")).unwrap();
+        let ctx = opendal::OperationContext::default();
         access
-            .create_dir("media", opendal::raw::OpCreateDir::default())
+            .create_dir(&ctx, "media", opendal::raw::OpCreateDir::default())
             .await
             .expect("bucket-root create_dir answers Ok");
         // Namespace root still refuses: there is no bucket selected.
         let error = access
-            .create_dir("/", opendal::raw::OpCreateDir::default())
+            .create_dir(&ctx, "/", opendal::raw::OpCreateDir::default())
             .await
             .unwrap_err();
         assert_eq!(error.kind(), ErrorKind::ConfigInvalid);
         assert!(error.to_string().contains("requires a selected bucket"));
+    }
+
+    #[tokio::test]
+    async fn ns_reader_serves_bounded_windows_unbounded_drains_and_eof() {
+        // 0.59 reader semantics, offline: the memory child provides a real
+        // backend; the payload spans two NS_READ_CHUNK windows plus a tail so
+        // the multi-window loop is exercised in both bounded and unbounded
+        // (size-cache + EOF drain) modes.
+        let access = build_access(config("memory")).unwrap();
+        let child = access.child("media").unwrap();
+        let total = (NS_READ_CHUNK * 2 + 4096) as usize;
+        let payload: Vec<u8> = (0..total).map(|i| (i % 251) as u8).collect();
+        child.write("big.bin", payload.clone()).await.unwrap();
+
+        let reader = NsReader {
+            child: child.clone(),
+            path: "big.bin".to_string(),
+            total: Mutex::new(None),
+        };
+
+        // Bounded range spanning two windows lands exactly the asked slice.
+        let window = NS_READ_CHUNK + 4096;
+        let (_, head) = reader.read(BytesRange::from(0..window)).await.unwrap();
+        assert_eq!(head.len() as u64, window);
+        assert_eq!(head.to_vec(), payload[..window as usize]);
+
+        // Bounded range deep into the final window.
+        let (_, tail_bounded) = reader
+            .read(BytesRange::from((total as u64 - 1024)..total as u64))
+            .await
+            .unwrap();
+        assert_eq!(tail_bounded.to_vec(), payload[total - 1024..]);
+
+        // Unbounded range drains from the offset to EOF (size cache stats the
+        // child exactly once, then answers from cache).
+        let (_, drained) = reader
+            .read(BytesRange::from((total as u64 - 100)..))
+            .await
+            .unwrap();
+        assert_eq!(drained.len(), 100);
+        assert_eq!(drained.to_vec(), payload[total - 100..]);
+        assert_eq!(*reader.total.lock().unwrap(), Some(total as u64));
+
+        // Offset at EOF answers empty instead of erroring.
+        let (_, past) = reader.read(BytesRange::from(total as u64..)).await.unwrap();
+        assert!(past.is_empty());
     }
 }

@@ -283,9 +283,7 @@ fn build_bucket_namespace_operator(
         .base_kv(base_kv)
         .list_connection(connection)
         .timeout(Duration::from_secs(connection.timeout_secs.max(1)));
-    Operator::new(builder)
-        .map(|builder| builder.finish())
-        .map_err(|error| format!("Failed to build storage operator: {error}"))
+    Operator::new(builder).map_err(|error| format!("Failed to build storage operator: {error}"))
 }
 
 /// Builds a registered OpenDAL service from the configuration map.
@@ -300,22 +298,14 @@ fn build_registered_operator(
     kv: Vec<(String, String)>,
 ) -> opendal::Result<Operator> {
     match scheme {
-        "aliyun-drive" => Operator::from_iter::<opendal::services::AliyunDrive>(kv)
-            .map(|builder| builder.finish()),
-        "dropbox" => Operator::from_iter::<opendal::services::Dropbox>(kv)
-            .map(|builder| builder.finish()),
-        "gdrive" => Operator::from_iter::<opendal::services::Gdrive>(kv)
-            .map(|builder| builder.finish()),
-        "koofr" => Operator::from_iter::<opendal::services::Koofr>(kv)
-            .map(|builder| builder.finish()),
-        "onedrive" => Operator::from_iter::<opendal::services::Onedrive>(kv)
-            .map(|builder| builder.finish()),
-        "pcloud" => Operator::from_iter::<opendal::services::Pcloud>(kv)
-            .map(|builder| builder.finish()),
-        "seafile" => Operator::from_iter::<opendal::services::Seafile>(kv)
-            .map(|builder| builder.finish()),
-        "yandex-disk" => Operator::from_iter::<opendal::services::YandexDisk>(kv)
-            .map(|builder| builder.finish()),
+        "aliyun-drive" => Operator::from_iter::<opendal::services::AliyunDrive>(kv),
+        "dropbox" => Operator::from_iter::<opendal::services::Dropbox>(kv),
+        "gdrive" => Operator::from_iter::<opendal::services::Gdrive>(kv),
+        "koofr" => Operator::from_iter::<opendal::services::Koofr>(kv),
+        "onedrive" => Operator::from_iter::<opendal::services::Onedrive>(kv),
+        "pcloud" => Operator::from_iter::<opendal::services::Pcloud>(kv),
+        "seafile" => Operator::from_iter::<opendal::services::Seafile>(kv),
+        "yandex-disk" => Operator::from_iter::<opendal::services::YandexDisk>(kv),
         _ => Operator::via_iter(scheme, kv),
     }
 }
@@ -336,9 +326,7 @@ fn build_sftp_native_operator(connection: &StoredConnection) -> Result<Operator,
         .key(&connection.key)
         .known_hosts_strategy(&connection.known_hosts_strategy)
         .root(&connection.root);
-    Operator::new(builder)
-        .map(|builder| builder.finish())
-        .map_err(|error| format!("Failed to build storage operator: {error}"))
+    Operator::new(builder).map_err(|error| format!("Failed to build storage operator: {error}"))
 }
 
 /// Builds the SMB Operator via static dispatch on [`smb::SmbBuilder`].
@@ -355,9 +343,7 @@ fn build_smb_operator(connection: &StoredConnection) -> Result<Operator, String>
         .password(&connection.password)
         .domain(&connection.domain)
         .root(&connection.root);
-    Operator::new(builder)
-        .map(|builder| builder.finish())
-        .map_err(|error| format!("Failed to build storage operator: {error}"))
+    Operator::new(builder).map_err(|error| format!("Failed to build storage operator: {error}"))
 }
 
 /// Resolves the OpenDAL scheme and Builder kv for a connection.
@@ -1262,7 +1248,7 @@ mod tests {
             // Building must not touch the network (lazy dial); capabilities
             // are declared by the adapter, copy/presign deliberately false.
             let operator = build_operator(&smb_connection()).unwrap();
-            let capability = operator.info().full_capability();
+            let capability = operator.info().capability();
             assert_eq!(operator.info().scheme(), "smb");
             assert!(capability.list && capability.read && capability.write);
             assert!(capability.rename && capability.create_dir && capability.delete);

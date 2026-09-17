@@ -308,11 +308,14 @@ async fn dial(params: &SftpNativeConnectParams) -> opendal::Result<SftpNativeSta
     // 128 KiB passed; the OpenSSH CLI ships 32 KiB chunks by default). Cap
     // the wire packet at 64 KiB — the crate derives max read/write lengths
     // from it — and keep a small write window instead of the crate default
-    // of 8: real servers mis-handle deep write pipelining too.
+    // of 8: real servers mis-handle deep write pipelining too. russh-sftp 3.0
+    // adds read pipelining (left at the crate default) and a write packet
+    // length that follows max_packet_len unless overridden.
     let sftp_config = russh_sftp::client::Config {
         max_packet_len: 64 * 1024,
         max_concurrent_writes: 4,
         request_timeout_secs: 30,
+        ..Default::default()
     };
     let sftp = SftpSession::new_with_config(channel.into_stream(), sftp_config)
         .await

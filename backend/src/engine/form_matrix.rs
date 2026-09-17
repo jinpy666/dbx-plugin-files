@@ -484,7 +484,7 @@ fn bucket_namespace_connections_build_for_every_namespace_protocol() {
             protocol,
             "namespace operator reports the underlying scheme for {protocol}"
         );
-        let capability = operator.info().full_capability();
+        let capability = operator.info().capability();
         assert!(
             !capability.copy,
             "{protocol}: namespace copies degrade to the read→write job"

@@ -1598,7 +1598,7 @@ async fn run_dir_job(
     emit_dir_running(&emitter, &job_id);
 
     let native_copy = source_connection_id == target_connection_id
-        && source_operator.info().full_capability().copy;
+        && source_operator.info().capability().copy;
 
     // Ensure the target directory itself exists (mkdir -p semantics). Only
     // for directory sources: a single-file copy/move targets a file path, and

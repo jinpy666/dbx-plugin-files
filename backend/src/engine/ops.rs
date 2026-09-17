@@ -12,7 +12,7 @@
 //!   derive from the Operator itself (purge root guard, capability probes);
 //! - OpenDAL 0.57 notes: recursive delete is `delete_with(path).recursive(true)`
 //!   (`remove_all` is deprecated), `create_dir` needs a trailing `/`,
-//!   capability probing uses `op.info().full_capability()`, and listing uses
+//!   capability probing uses `op.info().capability()`, and listing uses
 //!   `list_with(path).recursive(true)` (the `Lister` stream needs a
 //!   `futures`/`Stream` dependency that is out of scope — `list_with`
 //!   internally pages through the same backend cursors).
@@ -235,7 +235,7 @@ fn fs_quick_path_candidates(home: &str) -> Vec<(&'static str, String)> {
 /// `files/capabilities` (§8.1): no params → `{scheme, list, write, read, stat,
 /// delete, createDir, copy, rename, presign}`.
 ///
-/// Projects `op.info().full_capability()` (0.57: `Capability` has `bool`
+/// Projects `op.info().capability()` (0.57: `Capability` has `bool`
 /// fields per op). The scheme string comes from `op.info().scheme()`.
 ///
 /// Note: `main.rs` currently carries an inline copy of this projection (the
@@ -243,7 +243,7 @@ fn fs_quick_path_candidates(home: &str) -> Vec<(&'static str, String)> {
 /// replace the inline body during the call-site consolidation.
 pub fn capabilities(operator: &Operator) -> Result<Capabilities, String> {
     let info = operator.info();
-    let capability = info.full_capability();
+    let capability = info.capability();
     Ok(Capabilities {
         scheme: info.scheme().to_string(),
         list: capability.list,
@@ -286,7 +286,7 @@ pub async fn public_link(
     expire_secs: u64,
 ) -> Result<String, String> {
     let info = operator.info();
-    if !info.full_capability().presign_read {
+    if !info.capability().presign_read {
         return Err(format!(
             "Backend '{}' does not support presigned public links (presign is only \
              available on signature-capable backends such as s3/gcs/azblob/oss)",
@@ -552,7 +552,7 @@ pub async fn rename(operator: &Operator, path: &str, new_path: &str) -> Result<(
              files only); copy and purge instead"
         ));
     }
-    if operator.info().full_capability().rename {
+    if operator.info().capability().rename {
         operator
             .rename(path, new_path)
             .await
@@ -562,7 +562,7 @@ pub async fn rename(operator: &Operator, path: &str, new_path: &str) -> Result<(
         return Ok(());
     }
     // Degrade: copy (native when the backend supports it) + source delete.
-    if operator.info().full_capability().copy {
+    if operator.info().capability().copy {
         operator
             .copy(path, new_path)
             .await
@@ -585,21 +585,21 @@ pub async fn rename(operator: &Operator, path: &str, new_path: &str) -> Result<(
 /// True when both operators wrap the same backend instance (an `Operator`
 /// clone shares the underlying `Arc<dyn AccessDyn>` accessor).
 fn same_instance(source: &Operator, target: &Operator) -> bool {
-    std::sync::Arc::ptr_eq(source.inner(), target.inner())
+    std::sync::Arc::ptr_eq(source.base_service(), target.base_service())
 }
 
 /// §8.2 decision predicate shared by `ops::copy` and the main.rs router:
 /// `files/copy` can run natively (server-side `op.copy`) only when both sides
 /// wrap the same backend instance and the backend advertises `copy`.
 pub fn native_copy_available(source: &Operator, target: &Operator) -> bool {
-    same_instance(source, target) && source.info().full_capability().copy
+    same_instance(source, target) && source.info().capability().copy
 }
 
 /// §8.2 decision predicate shared by `ops::move_path` and the main.rs router:
 /// `files/move` can run as a native server-side `op.rename` only when both
 /// sides wrap the same backend instance and the backend advertises `rename`.
 pub fn native_move_available(source: &Operator, target: &Operator) -> bool {
-    same_instance(source, target) && source.info().full_capability().rename
+    same_instance(source, target) && source.info().capability().rename
 }
 
 /// Lists a directory (non-recursive) or the whole subtree (recursive),

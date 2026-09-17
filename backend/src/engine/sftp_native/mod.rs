@@ -35,7 +35,7 @@
 mod access;
 mod pool;
 
-use opendal::raw::{normalize_root, Access};
+use opendal::raw::{normalize_root, Service};
 use opendal::{Builder, Configurator, Error, ErrorKind, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -176,7 +176,7 @@ impl SftpNativeBuilder {
 impl Builder for SftpNativeBuilder {
     type Config = SftpNativeConfig;
 
-    fn build(self) -> Result<impl Access> {
+    fn build(self) -> Result<impl Service> {
         let config = self.config;
         let endpoint = config.endpoint.clone().unwrap_or_default();
         let (host, port, endpoint_user) = parse_sftp_native_endpoint(&endpoint)?;
@@ -475,14 +475,14 @@ mod tests {
             .password("secret")
             .root("/pub")
             .known_hosts_strategy("Trust");
-        let operator = Operator::new(builder).unwrap().finish();
+        let operator = Operator::new(builder).unwrap();
 
         let info = operator.info();
         assert_eq!(info.scheme(), SFTP_NATIVE_SCHEME);
         assert_eq!(info.root(), "/pub/", "normalized root");
         assert_eq!(info.name(), "bob");
 
-        let capability = info.full_capability();
+        let capability = info.capability();
         assert!(capability.stat && capability.read && capability.write);
         assert!(capability.create_dir && capability.delete);
         assert!(capability.list && capability.rename);
@@ -545,7 +545,7 @@ mod tests {
             if !username.is_empty() {
                 builder = builder.username(username);
             }
-            Operator::new(builder).unwrap().finish().info().name().to_string()
+            Operator::new(builder).unwrap().info().name().to_string()
         };
         assert_eq!(build("a@h", "u1", "u2"), "u1");
         assert_eq!(build("a@h", "", "u2"), "u2");
