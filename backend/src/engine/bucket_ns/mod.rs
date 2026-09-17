@@ -198,14 +198,18 @@ fn build_access(config: BucketNsConfig) -> Result<BucketNsAccess> {
     // the engine plans moves/copies off these flags (a claimed rename that
     // the child lacks turns every move into a hard error instead of the
     // copy+delete degrade job — real-MinIO regression, smoke 2026-09-17).
-    // A throwaway child operator is built offline (no dial) for introspection.
+    // copy/rename follow the child verbatim: same-bucket copies then run as
+    // the child's native CopyObject and cross-bucket copies stream between
+    // the two children inside `copy` (OpenDAL's s3-family pins the copy
+    // source to the operator's own bucket, so no single request spans
+    // buckets). A throwaway child operator is built offline (no dial) for
+    // introspection.
     let mut probe_kv = config.base_kv.clone();
     probe_kv.push((bucket_key.clone(), "bucket-namespace-capability-probe".to_string()));
     let child = super::build_registered_operator(&scheme, probe_kv)
         .map(|operator| operator.info().capability())
         .unwrap_or_default();
-    // copy=false → copies (cross-bucket included) degrade to the engine's
-    // read→write job; presign=false → files/publicLink reports unsupported.
+    // presign=false → files/publicLink reports unsupported.
     // stat/list stay on (namespace root + virtual bucket dirs answer locally).
     let capability = Capability {
         stat: true,
@@ -214,6 +218,7 @@ fn build_access(config: BucketNsConfig) -> Result<BucketNsAccess> {
         write_can_empty: child.write_can_empty,
         write_can_multi: child.write_can_multi,
         create_dir: true,
+        copy: child.copy,
         delete: child.delete,
         delete_with_recursive: child.delete_with_recursive,
         list: true,
@@ -348,7 +353,7 @@ impl Service for BucketNsAccess {
     type Writer = NsWriter;
     type Lister = NsLister;
     type Deleter = oio::OneShotDeleter<NsDeleter>;
-    type Copier = ();
+    type Copier = oio::OneShotCopier;
     type Composer = ();
 
     fn info(&self) -> ServiceInfo {
@@ -447,19 +452,53 @@ impl Service for BucketNsAccess {
         })
     }
 
+    /// Same-scheme copy inside the namespace. Within one bucket the child's
+    /// native CopyObject runs; across buckets the object streams through the
+    /// two child operators (OpenDAL 0.59's s3/oss/cos/obs/azblob build the
+    /// copy source as `{operator bucket}/{from}`, so no single child request
+    /// can span buckets — see `cross_bucket_copy`). Copying a whole bucket
+    /// (source at a bucket root) stays out of scope, and the namespace root
+    /// / bucket-root targets are refused like every object-only op.
     fn copy(
         &self,
         _ctx: &OperationContext,
-        _from: &str,
-        _to: &str,
+        from: &str,
+        to: &str,
         _args: OpCopy,
     ) -> Result<Self::Copier> {
-        // Capability copy=false gates this before it is ever reached; the
-        // engine degrades copies to its read→write job.
-        Err(Error::new(
-            ErrorKind::Unsupported,
-            "bucket namespace copy is not supported",
-        ))
+        // Source side: a whole-bucket source (bucket root) gets its own
+        // Unsupported refusal instead of require_object's ConfigInvalid.
+        let Some((source_bucket, source_rest)) = resolve(from)? else {
+            return Err(Error::new(
+                ErrorKind::ConfigInvalid,
+                "object storage copy requires a selected bucket; the connection root lists \
+                 all buckets",
+            ));
+        };
+        if source_rest.is_empty() {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                format!(
+                    "copying bucket '{source_bucket}' is not supported; copy objects inside \
+                     the bucket (bucket-tree duplication goes through the engine's copy job)"
+                ),
+            ));
+        }
+        let (target_bucket, target_rest) = self.require_object(to, "copy")?;
+        // Both children resolve offline (cached per bucket), so this stays a
+        // synchronous constructor; the transfer happens in `close()`.
+        if source_bucket == target_bucket {
+            let child = self.child(&source_bucket)?;
+            Ok(oio::OneShotCopier::new(async move {
+                child.copy_with(&source_rest, &target_rest).await
+            }))
+        } else {
+            let source = self.child(&source_bucket)?;
+            let target = self.child(&target_bucket)?;
+            Ok(oio::OneShotCopier::new(async move {
+                cross_bucket_copy(&source, &source_rest, &target, &target_rest).await
+            }))
+        }
     }
 
     /// Rename within one bucket delegates to the child; crossing buckets
@@ -497,6 +536,39 @@ impl Service for BucketNsAccess {
             "bucket namespace presign is not supported",
         ))
     }
+}
+
+/// Streams one object from the source bucket's child into the target
+/// bucket's child (cross-bucket copies). Mirrors the reader's windowing:
+/// stat once for the size, then pump `NS_READ_CHUNK` ranged windows through
+/// the child's pipelined writer so memory stays flat regardless of object
+/// size. A missing source fails before the target writer opens, so no
+/// partial object is left behind on the common failure path.
+async fn cross_bucket_copy(
+    source: &Operator,
+    from: &str,
+    target: &Operator,
+    to: &str,
+) -> Result<Metadata> {
+    let total = source.stat(from).await?.content_length();
+    let mut writer = target.writer(to).await?;
+    let mut offset = 0u64;
+    while offset < total {
+        let want = (total - offset).min(NS_READ_CHUNK);
+        let buffer = source
+            .read_with(from)
+            .range(offset..offset + want)
+            .await?;
+        if buffer.is_empty() {
+            // Source shrank underneath us; close with what was read (a copy
+            // is not transactional) instead of spinning forever.
+            break;
+        }
+        let served = buffer.len() as u64;
+        writer.write(buffer).await?;
+        offset += served;
+    }
+    writer.close().await
 }
 
 /// Maps a bucket listing failure onto OpenDAL error kinds (401/403 →
@@ -819,6 +891,27 @@ mod tests {
         }
     }
 
+    /// Namespace over a real native-copy child: the fs service ignores the
+    /// bucket kv (it only reads `root`), so both bucket children map onto the
+    /// tempdir and the delegated rest paths are directly observable on disk.
+    /// `fs` advertises copy=true, so the same-bucket path exercises the
+    /// child's native CopyObject end-to-end.
+    fn fs_config(root: &std::path::Path) -> BucketNsConfig {
+        BucketNsConfig {
+            scheme: Some("fs".to_string()),
+            bucket_key: Some("bucket".to_string()),
+            base_kv: vec![(
+                "root".to_string(),
+                root.to_string_lossy().to_string(),
+            )],
+            list: list::ListParams {
+                protocol: "fs".to_string(),
+                ..list::ListParams::default()
+            },
+            timeout_secs: Some(5),
+        }
+    }
+
     #[test]
     fn namespace_mode_matches_protocols_and_empty_bucket() {
         let connection = |protocol: &str, bucket: &str| {
@@ -892,12 +985,12 @@ mod tests {
             capability.rename, capability.copy, capability.delete, capability.read, capability.write
         );
         assert_eq!(capability.rename, child.rename, "rename tracks the child");
+        assert_eq!(capability.copy, child.copy, "copy tracks the child");
         assert_eq!(capability.write_can_multi, child.write_can_multi);
         assert_eq!(capability.delete, child.delete);
         // Namespace invariants regardless of the child.
         assert!(capability.stat && capability.list);
         assert!(capability.create_dir);
-        assert!(!capability.copy, "copies degrade to the read→write job");
         assert!(!capability.presign_read);
     }
 
@@ -1029,5 +1122,130 @@ mod tests {
         // Offset at EOF answers empty instead of erroring.
         let (_, past) = reader.read(BytesRange::from(total as u64..)).await.unwrap();
         assert!(past.is_empty());
+    }
+
+    #[test]
+    fn namespace_copy_capability_follows_the_child_service() {
+        // memory does not implement copy: the namespace must not advertise
+        // more than the child delivers (the engine plans its degraded
+        // read→write jobs off this flag).
+        let child = super::super::build_registered_operator(
+            "memory",
+            vec![("bucket".to_string(), "probe".to_string())],
+        )
+        .unwrap()
+        .info()
+        .capability();
+        assert!(!child.copy, "precondition: memory has no native copy");
+        let capability = Operator::new(BucketNsBuilder::from_config(config("memory")))
+            .unwrap()
+            .info()
+            .capability();
+        assert_eq!(capability.copy, child.copy);
+    }
+
+    #[tokio::test]
+    async fn same_bucket_copy_delegates_to_the_child_operator() {
+        let temp = tempfile::tempdir().unwrap();
+        let op = Operator::new(BucketNsBuilder::from_config(fs_config(temp.path()))).unwrap();
+        op.write("media/a.txt", "copy me").await.unwrap();
+
+        op.copy("media/a.txt", "media/b.txt").await.unwrap();
+
+        // The child received the bucket-stripped rests: the copy landed at
+        // "<root>/b.txt" (not "<root>/media/b.txt") with the source bytes.
+        let copied = op.stat("media/b.txt").await.unwrap();
+        assert_eq!(copied.content_length(), 7);
+        assert_eq!(op.read("media/b.txt").await.unwrap().to_vec(), b"copy me");
+        assert!(temp.path().join("b.txt").is_file());
+        assert!(
+            !temp.path().join("media").exists(),
+            "bucket segment stays out of child paths"
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_bucket_copy_hands_each_rest_to_its_own_child() {
+        let temp = tempfile::tempdir().unwrap();
+        let op = Operator::new(BucketNsBuilder::from_config(fs_config(temp.path()))).unwrap();
+        // Payload spans two NS_READ_CHUNK windows plus a tail so the
+        // cross-bucket streaming pump runs past a single window.
+        let total = (NS_READ_CHUNK * 2 + 4096) as usize;
+        let payload: Vec<u8> = (0..total).map(|i| (i % 251) as u8).collect();
+        op.write("media/big.bin", payload.clone()).await.unwrap();
+
+        op.copy("media/big.bin", "backup/out.bin").await.unwrap();
+
+        // Source child served "big.bin", target child received "out.bin":
+        // the copy lands at "<root>/out.bin" with the full payload, and
+        // neither bucket segment leaks into the children's paths.
+        let copied = op.stat("backup/out.bin").await.unwrap();
+        assert_eq!(copied.content_length(), total as u64);
+        assert_eq!(op.read("backup/out.bin").await.unwrap().to_vec(), payload);
+        assert!(temp.path().join("out.bin").is_file());
+        assert!(!temp.path().join("media").exists());
+        assert!(!temp.path().join("backup").exists());
+    }
+
+    #[test]
+    fn copy_refuses_namespace_roots_and_whole_bucket_sources() {
+        let access = build_access(config("memory")).unwrap();
+        let ctx = opendal::OperationContext::default();
+        // `Self::Copier` carries no Debug, so the Ok arm is erased before
+        // unwrapping the refusal.
+        let refuse = |result: Result<oio::OneShotCopier>| result.map(|_| ()).unwrap_err();
+
+        // Namespace root: no bucket selected (same contract as every op).
+        let error = refuse(access.copy(&ctx, "/", "media/a.txt", OpCopy::default()));
+        assert_eq!(error.kind(), ErrorKind::ConfigInvalid);
+        assert!(error.to_string().contains("requires a selected bucket"));
+
+        // Whole-bucket source stays out of scope for an object copy.
+        let error = refuse(access.copy(&ctx, "media", "media/b.txt", OpCopy::default()));
+        assert_eq!(error.kind(), ErrorKind::Unsupported);
+        assert!(
+            error.to_string().contains("copying bucket 'media'"),
+            "{error}"
+        );
+
+        // Bucket-root target: a copy needs a path inside a bucket.
+        let error = refuse(access.copy(&ctx, "media/a.txt", "backup", OpCopy::default()));
+        assert_eq!(error.kind(), ErrorKind::ConfigInvalid);
+        assert!(error.to_string().contains("inside a bucket"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn copy_delegation_reaches_the_child_even_without_child_copy() {
+        // With capability.copy following the child, the engine never routes
+        // memory-namespace copies here; called directly, the namespace must
+        // still surface the child's own Unsupported (memory lacks copy) —
+        // not its retired "bucket namespace copy is not supported" gate.
+        let op = Operator::new(BucketNsBuilder::from_config(config("memory"))).unwrap();
+        op.write("one/a.txt", "payload").await.unwrap();
+        let error = op.copy("one/a.txt", "one/b.txt").await.unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Unsupported);
+        assert!(
+            !error.to_string().contains("bucket namespace copy"),
+            "delegation must reach the child: {error}"
+        );
+        assert!(op.stat("one/b.txt").await.is_err(), "nothing was copied");
+    }
+
+    #[tokio::test]
+    async fn rename_keeps_refusing_cross_bucket_moves() {
+        // S3-family children have no native rename, so the engine degrades
+        // moves to copy+delete; the namespace rule stays as the defensive
+        // backstop and its message is part of the UX contract.
+        let access = build_access(config("memory")).unwrap();
+        let ctx = opendal::OperationContext::default();
+        let error = access
+            .rename(&ctx, "media/a.txt", "backup/b.txt", OpRename::default())
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::ConfigInvalid);
+        assert!(
+            error.to_string().contains("cannot cross buckets"),
+            "{error}"
+        );
     }
 }
