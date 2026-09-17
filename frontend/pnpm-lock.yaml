@@ -23,6 +23,9 @@ importers:
       '@file-viewer/preset-all':
         specifier: 3.1.1
         version: 3.1.1(pdf-lib@1.17.1)(three@0.186.0)
+      '@file-viewer/renderer-media':
+        specifier: 3.1.1
+        version: 3.1.1
       '@file-viewer/vue3':
         specifier: 3.1.1
         version: 3.1.1(vue@3.5.42(typescript@6.0.3))

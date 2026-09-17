@@ -712,10 +712,13 @@ pub enum NativeRoute {
 /// of a dir request is dropped (native dir-marker copies are not a flow —
 /// directory trees go through the dir-job layer).
 fn physical_path(root: &str, relative: &str) -> String {
-    let base = if root.ends_with('/') {
-        root.to_string()
+    // Windows 的 fs root 携带 `\` 分隔符（canonicalize 风格）；几何判定与
+    // OpenDAL 的路径面统一按 `/` 归一化。
+    let normalized = root.replace('\\', "/");
+    let base = if normalized.ends_with('/') {
+        normalized
     } else {
-        format!("{root}/")
+        format!("{normalized}/")
     };
     format!("{base}{}", relative.trim_matches('/'))
 }
@@ -726,7 +729,8 @@ fn physical_path(root: &str, relative: &str) -> String {
 fn path_remainder(path: &str, base_root: &str) -> Option<String> {
     // The base keeps its leading slash; the trailing one is the boundary we
     // require (so `/ab` does not strip under `/a`).
-    let base = base_root.trim_end_matches('/');
+    let base = base_root.replace('\\', "/");
+    let base = base.trim_end_matches('/');
     let rest = path.strip_prefix(base)?;
     let rest = rest.strip_prefix('/')?;
     if rest.is_empty() {

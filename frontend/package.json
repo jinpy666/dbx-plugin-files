@@ -15,6 +15,7 @@
     "@codemirror/state": "^6.7.5",
     "@codemirror/view": "^6.43.12",
     "@file-viewer/preset-all": "3.1.1",
+    "@file-viewer/renderer-media": "3.1.1",
     "@file-viewer/vue3": "3.1.1",
     "@lezer/highlight": "^1.2.3",
     "@lucide/vue": "1.45.0",
