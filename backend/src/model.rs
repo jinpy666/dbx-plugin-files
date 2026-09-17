@@ -421,6 +421,14 @@ pub struct DirJobRequest {
     pub source_path: String,
     pub target_connection_id: String,
     pub target_path: String,
+    /// rclone `--dry-run` 对齐：true 时只做增量对比并产出一次摘要事件
+    /// （wouldCopy/wouldSkip/wouldDelete），不执行任何写/删；缺省 false。
+    #[serde(default)]
+    pub dry_run: Option<bool>,
+    /// rclone `--max-delete` 对齐：sync 的 mirror 删除阶段待删除文件数超过
+    /// 该值时任务失败（不删任何文件）；缺省不限制。
+    #[serde(default)]
+    pub max_delete: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
