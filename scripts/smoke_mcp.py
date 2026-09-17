@@ -116,6 +116,7 @@ import argparse
 import base64
 import json
 import os
+import pathlib
 import queue
 import shutil
 import subprocess
@@ -1267,7 +1268,8 @@ class MockBridge:
 
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         port = self.server.server_address[1]
-        with open(os.path.join(app_data, "mcp-bridge-port"), "w", encoding="utf-8") as handle:
+        port_file = pathlib.Path(app_data) / "mcp-bridge-port"
+        with port_file.open("w", encoding="utf-8") as handle:
             handle.write(str(port))
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 

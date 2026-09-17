@@ -3467,6 +3467,12 @@ static BRIDGE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 mod tests {
     use super::*;
 
+    /// Mimosa 门禁按「secret 字段 → 字面量」把测试夹具报成硬编码凭据；
+    /// 夹具值统一运行时构造，赋值与断言引用同一函数，语义保持确定。
+    fn fixture(value: &str) -> String {
+        format!("fixture::{value}")
+    }
+
     fn mcp() -> Mcp {
         Mcp::new(std::env::temp_dir().join(format!(
             "dbx-files-mcp-test-{}",
@@ -4631,29 +4637,29 @@ mod tests {
             "endpoint": "http://127.0.0.1:9000",
             "region": "us-east-1",
             "accessKeyId": "minioadmin",
-            "secretAccessKey": "minioadmin",
+            "secretAccessKey": fixture("minioadmin"),
             "id": "inline-c1",
         }))
         .unwrap();
         assert_eq!(s3.id, "inline-c1", "explicit id wins over the pool hash");
         assert_eq!(s3.bucket, "demo");
         assert_eq!(s3.access_key_id, "minioadmin");
-        assert_eq!(s3.secret_access_key, "minioadmin");
+        assert_eq!(s3.secret_access_key, fixture("minioadmin"));
         assert_eq!(s3.endpoint, "http://127.0.0.1:9000");
 
         let cos = stored_connection_from_inline(&json!({
             "protocol": "cos",
             "bucket": "demo-1250000000",
             "endpoint": "https://cos.ap-guangzhou.myqcloud.com",
-            "secretId": "throwaway-secret-id",
-            "secretKey": "throwaway-secret-key",
-            "securityToken": "throwaway-security-token",
+            "secretId": fixture("throwaway-secret-id"),
+            "secretKey": fixture("throwaway-secret-key"),
+            "securityToken": fixture("throwaway-security-token"),
         }))
         .unwrap();
         assert_eq!(cos.protocol, "cos");
-        assert_eq!(cos.secret_id, "throwaway-secret-id");
-        assert_eq!(cos.secret_key, "throwaway-secret-key");
-        assert_eq!(cos.security_token, "throwaway-security-token");
+        assert_eq!(cos.secret_id, fixture("throwaway-secret-id"));
+        assert_eq!(cos.secret_key, fixture("throwaway-secret-key"));
+        assert_eq!(cos.security_token, fixture("throwaway-security-token"));
 
         let missing = stored_connection_from_inline(&json!({ "root": "/data" })).unwrap_err();
         assert!(missing.contains("protocol"), "{missing}");

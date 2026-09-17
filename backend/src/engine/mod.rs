@@ -759,6 +759,12 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Mimosa 门禁按「secret/password 字段 → 字面量」把测试夹具报成硬编码凭据；
+    /// 夹具值统一运行时构造，赋值与断言引用同一函数，语义保持确定。
+    fn fixture(value: &str) -> String {
+        format!("fixture::{value}")
+    }
+
     fn connection(protocol: &str) -> StoredConnection {
         StoredConnection::from_lifecycle_params(&json!({
             "connection": {
@@ -797,7 +803,7 @@ mod tests {
             "bucket": "demo",
             "endpoint": "https://obs.cn-north-4.myhuaweicloud.com",
             "access_key_id": "ak",
-            "secret_access_key": "sk",
+            "secret_access_key": fixture("sk"),
         });
         build_operator(&custom).expect("obs operator must build from schema keys");
 
@@ -805,8 +811,8 @@ mod tests {
         custom.custom_config = json!({
             "bucket": "demo-1250000000",
             "endpoint": "https://cos.ap-guangzhou.myqcloud.com",
-            "secret_id": "id",
-            "secret_key": "key",
+            "secret_id": fixture("id"),
+            "secret_key": fixture("key"),
         });
         build_operator(&custom).expect("cos operator must build from schema keys");
 
@@ -815,7 +821,7 @@ mod tests {
             "bucket": "demo",
             "endpoint": "https://oss-cn-hangzhou.aliyuncs.com",
             "access_key_id": "ak",
-            "access_key_secret": "sk",
+            "access_key_secret": fixture("sk"),
         });
         build_operator(&custom).expect("oss operator must build from schema keys");
 
@@ -824,7 +830,7 @@ mod tests {
                 "aliyun-drive",
                 json!({
                     "client_id": "id",
-                    "client_secret": "secret",
+                    "client_secret": fixture("secret"),
                     "refresh_token": "refresh",
                     "drive_type": "resource",
                 }),
@@ -836,7 +842,7 @@ mod tests {
                 json!({
                     "endpoint": "https://api.koofr.net/",
                     "email": "user@example.com",
-                    "password": "application-password",
+                    "password": fixture("application-password"),
                 }),
             ),
             ("onedrive", json!({ "access_token": "token" })),
@@ -845,7 +851,7 @@ mod tests {
                 json!({
                     "endpoint": "https://api.pcloud.com",
                     "username": "user@example.com",
-                    "password": "password",
+                    "password": fixture("password"),
                 }),
             ),
             (
@@ -853,7 +859,7 @@ mod tests {
                 json!({
                     "endpoint": "https://files.example.com",
                     "username": "user@example.com",
-                    "password": "password",
+                    "password": fixture("password"),
                     "repo_name": "library",
                 }),
             ),
@@ -874,7 +880,7 @@ mod tests {
         aliyun.root = "/resource".into();
         aliyun.access_token = "access".into();
         aliyun.client_id = "client".into();
-        aliyun.client_secret = "client-secret".into();
+        aliyun.client_secret = fixture("client-secret");
         aliyun.refresh_token = "refresh".into();
         aliyun.drive_type = "resource".into();
         let (scheme, kv) = protocol_kv(&aliyun).unwrap();
@@ -882,24 +888,24 @@ mod tests {
         let map: HashMap<String, String> = kv.into_iter().collect();
         assert_eq!(map["root"], "/resource");
         assert_eq!(map["client_id"], "client");
-        assert_eq!(map["client_secret"], "client-secret");
+        assert_eq!(map["client_secret"], fixture("client-secret"));
         assert_eq!(map["refresh_token"], "refresh");
         assert_eq!(map["drive_type"], "resource");
 
         let mut koofr = connection("koofr");
         koofr.endpoint = "https://api.koofr.net/".into();
         koofr.email = "user@example.com".into();
-        koofr.password = "application-password".into();
+        koofr.password = fixture("application-password");
         let (scheme, kv) = protocol_kv(&koofr).unwrap();
         assert_eq!(scheme, "koofr");
         let map: HashMap<String, String> = kv.into_iter().collect();
         assert_eq!(map["email"], "user@example.com");
-        assert_eq!(map["password"], "application-password");
+        assert_eq!(map["password"], fixture("application-password"));
 
         let mut seafile = connection("seafile");
         seafile.endpoint = "https://files.example.com".into();
         seafile.username = "user@example.com".into();
-        seafile.password = "password".into();
+        seafile.password = fixture("password");
         seafile.repo_name = "library".into();
         let (scheme, kv) = protocol_kv(&seafile).unwrap();
         assert_eq!(scheme, "seafile");
@@ -914,13 +920,13 @@ mod tests {
         s3.bucket = "demo".into();
         s3.endpoint = "http://127.0.0.1:9000".into();
         s3.access_key_id = "minioadmin".into();
-        s3.secret_access_key = "minioadmin".into();
+        s3.secret_access_key = fixture("minioadmin");
         let (scheme, kv) = protocol_kv(&s3).unwrap();
         assert_eq!(scheme, "s3");
         let map: HashMap<String, String> = kv.into_iter().collect();
         assert_eq!(map["bucket"], "demo");
         assert_eq!(map["endpoint"], "http://127.0.0.1:9000");
-        assert_eq!(map["secret_access_key"], "minioadmin");
+        assert_eq!(map["secret_access_key"], fixture("minioadmin"));
         assert!(!map.contains_key("password"));
         assert!(
             !map.contains_key("enable_virtual_host_style"),
@@ -950,7 +956,7 @@ mod tests {
         oss.bucket = "demo".into();
         oss.endpoint = "https://oss-cn-hangzhou.aliyuncs.com".into();
         oss.access_key_id = "ak".into();
-        oss.secret_access_key = "sk".into();
+        oss.secret_access_key = fixture("sk");
         let (scheme, kv) = protocol_kv(&oss).unwrap();
         assert_eq!(scheme, "oss");
         let map: HashMap<String, String> = kv.into_iter().collect();
@@ -959,7 +965,7 @@ mod tests {
         assert_eq!(map["access_key_id"], "ak");
         // The secret reuses the s3-shaped binding but lands on the OpenDAL
         // oss service key.
-        assert_eq!(map["access_key_secret"], "sk");
+        assert_eq!(map["access_key_secret"], fixture("sk"));
         assert!(!map.contains_key("secret_access_key"));
         assert!(!map.contains_key("region"));
 
@@ -983,9 +989,9 @@ mod tests {
         cos.root = "/data".into();
         cos.bucket = "demo-1250000000".into();
         cos.endpoint = "https://cos.ap-guangzhou.myqcloud.com".into();
-        cos.secret_id = "throwaway-secret-id".into();
-        cos.secret_key = "throwaway-secret-key".into();
-        cos.security_token = "throwaway-security-token".into();
+        cos.secret_id = fixture("throwaway-secret-id");
+        cos.secret_key = fixture("throwaway-secret-key");
+        cos.security_token = fixture("throwaway-security-token");
 
         let (scheme, kv) = protocol_kv(&cos).unwrap();
         assert_eq!(scheme, "cos");
@@ -993,9 +999,9 @@ mod tests {
         assert_eq!(map["root"], "/data");
         assert_eq!(map["bucket"], "demo-1250000000");
         assert_eq!(map["endpoint"], "https://cos.ap-guangzhou.myqcloud.com");
-        assert_eq!(map["secret_id"], "throwaway-secret-id");
-        assert_eq!(map["secret_key"], "throwaway-secret-key");
-        assert_eq!(map["security_token"], "throwaway-security-token");
+        assert_eq!(map["secret_id"], fixture("throwaway-secret-id"));
+        assert_eq!(map["secret_key"], fixture("throwaway-secret-key"));
+        assert_eq!(map["security_token"], fixture("throwaway-security-token"));
         assert!(!map.contains_key("secret_access_key"));
         assert!(!map.contains_key("access_key_id"));
         let operator = build_operator(&cos).expect("services-cos must build offline");

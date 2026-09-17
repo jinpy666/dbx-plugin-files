@@ -16,6 +16,22 @@ function names(payload: unknown): string[] {
   return entries.map((entry) => entry.name);
 }
 
+describe("mockHost host.* contract", () => {
+  it("host.listConnections exposes both built-in connections with names", async () => {
+    const api = await setup();
+    const list = await api.request<Array<{ id: string; name: string }>>("host.listConnections");
+    const ids = list.map((item) => item.id);
+    expect(ids).toContain("mock-conn");
+    expect(ids).toContain("__local__");
+    for (const item of list) expect(item.name).toBeTruthy();
+  });
+
+  it("keeps rejecting unsupported host methods", async () => {
+    const api = await setup();
+    await expect(api.request("host.unknownMethod")).rejects.toThrow("Unsupported plugin host method");
+  });
+});
+
 describe("mockHost delete/purge connection routing (R3-P2-2)", () => {
   it("files/delete with connectionId=__local__ removes from the local tree only", async () => {
     const api = await setup();
@@ -203,7 +219,8 @@ describe("mockHost query and lifecycle contracts", () => {
     stopEvent();
     host.setEnvironment({ locale: "es" });
     expect(environment).toHaveBeenCalledTimes(1);
-    await expect(api.request("host.listConnections")).rejects.toThrow("Unsupported plugin host method 'host.listConnections'");
+    const connections = await api.request<Array<{ id: string }>>("host.listConnections");
+    expect(connections.map((item) => item.id)).toEqual(["mock-conn", "__local__"]);
     await expect(api.request("host.unknown")).rejects.toThrow("Unsupported plugin host method 'host.unknown'");
     expect(api).not.toHaveProperty("onLocaleChange");
     expect(api).not.toHaveProperty("onContextChange");

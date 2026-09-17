@@ -121,6 +121,55 @@ describe("FileTable 空态与 a11y（R3-P2-6 / R3-P2-8）", () => {
   });
 });
 
+describe("FileTable 类型图标", () => {
+  const typedEntries: FileEntry[] = [
+    { name: "photo.png", path: "/photo.png", kind: "file", size: 1 },
+    { name: "报告.docx", path: "/报告.docx", kind: "file", size: 2 },
+    { name: "预算.xlsx", path: "/预算.xlsx", kind: "file", size: 3 },
+    { name: "notes.txt", path: "/notes.txt", kind: "file", size: 4 },
+    { name: "docs", path: "/docs", kind: "directory" },
+  ];
+
+  function mountTypedTable() {
+    return mount(FileTable, {
+      props: {
+        entries: typedEntries,
+        selection: [],
+        activePath: "",
+        sort: { column: "name", direction: "asc" },
+        t: (key: string) => key,
+      },
+    });
+  }
+
+  it.each([
+    [0, ".lucide-file-image"],
+    [1, ".lucide-file-text"],
+    [2, ".lucide-file-spreadsheet"],
+    [3, ".lucide-file"],
+  ])("行 %i 按扩展名渲染类型图标（%s）", (index, selector) => {
+    const wrapper = mountTypedTable();
+    const cells = wrapper.findAll(".wb-file-name");
+    expect(cells[index].find(selector).exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("目录仍渲染文件夹图标", () => {
+    const wrapper = mountTypedTable();
+    const cells = wrapper.findAll(".wb-file-name");
+    expect(cells[4].find("svg.wb-icon-dir.lucide-folder").exists()).toBe(true);
+    expect(cells[4].find(".lucide-file").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("类型图标对辅助技术隐藏", () => {
+    const wrapper = mountTypedTable();
+    const icon = wrapper.findAll(".wb-file-name")[0].find("svg");
+    expect(icon.attributes("aria-hidden")).toBe("true");
+    wrapper.unmount();
+  });
+});
+
 describe("FileTable write shortcuts", () => {
   it("Delete requests confirmation and F2 targets exactly one selected entry", async () => {
     const wrapper = mountTable();

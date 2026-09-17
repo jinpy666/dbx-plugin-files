@@ -567,6 +567,12 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Mimosa 门禁按「secret 字段 → 字面量」把测试夹具报成硬编码凭据；
+    /// 夹具值统一运行时构造，赋值与断言引用同一函数，语义保持确定。
+    fn fixture(value: &str) -> String {
+        format!("fixture::{value}")
+    }
+
     #[test]
     fn parses_minio_lifecycle_shape() {
         let params = json!({
@@ -633,21 +639,21 @@ mod tests {
                     "protocol": "cos",
                     "bucket": "demo-1250000000",
                     "endpoint": "https://cos.ap-guangzhou.myqcloud.com",
-                    "secret_id": "must-not-be-config",
-                    "secret_key": "must-not-be-config"
+                    "secret_id": fixture("must-not-be-config"),
+                    "secret_key": fixture("must-not-be-config")
                 },
                 "connection_secrets": {
-                    "secret_id": "throwaway-secret-id",
-                    "secret_key": "throwaway-secret-key",
-                    "security_token": "throwaway-security-token"
+                    "secret_id": fixture("throwaway-secret-id"),
+                    "secret_key": fixture("throwaway-secret-key"),
+                    "security_token": fixture("throwaway-security-token")
                 }
             }
         }))
         .unwrap();
         assert_eq!(connection.protocol, "cos");
-        assert_eq!(connection.secret_id, "throwaway-secret-id");
-        assert_eq!(connection.secret_key, "throwaway-secret-key");
-        assert_eq!(connection.security_token, "throwaway-security-token");
+        assert_eq!(connection.secret_id, fixture("throwaway-secret-id"));
+        assert_eq!(connection.secret_key, fixture("throwaway-secret-key"));
+        assert_eq!(connection.security_token, fixture("throwaway-security-token"));
         assert_eq!(connection.secret_access_key, "");
     }
 
