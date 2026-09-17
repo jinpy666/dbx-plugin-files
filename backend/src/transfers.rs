@@ -2037,6 +2037,9 @@ async fn run_dir_job(
     // Target snapshot (size + mtime per file, plus the directory markers) for
     // the incremental skip. Read access to the target connection is enough;
     // backends without mtime support degrade the compare to size-only.
+    // A missing target directory is the NORMAL rename/copy-to-new-path case
+    // (FTP answers 550 where memory just lists empty): NotFound maps to an
+    // empty snapshot, i.e. copy everything. Other errors still fail the job.
     let (target_index, mut target_dirs): TargetSnapshot = if source_is_dir {
         match slot::walk_tree(&target_operator, &target_path).await {
             Ok((files, dirs)) => (
@@ -2046,6 +2049,7 @@ async fn run_dir_job(
                     .collect(),
                 dirs,
             ),
+            Err(error) if error.contains("NotFound") => (HashMap::new(), Vec::new()),
             Err(error) => {
                 inner
                     .complete_dir_job(&job_id, JobStatus::Failed, Some(error), &sink)
