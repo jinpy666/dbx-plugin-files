@@ -8,7 +8,15 @@
 #[cfg(test)]
 pub(super) static BRIDGE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+use std::sync::Arc;
+
+use std::time::Duration;
+
 use super::scan::{glob_match, PathRow};
+use super::stdio::{
+    inline_pool_id, parse_request_line, stdio_max_line_bytes, stored_connection_from_inline,
+    DEFAULT_STDIO_MAX_LINE_BYTES, StdioServer,
+};
 use super::state::{ConfirmEntry, CursorSession, IntentLookup, McpSettings};
 use super::*;
 
