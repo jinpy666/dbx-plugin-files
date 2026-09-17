@@ -30,7 +30,7 @@
 - 归档：zip 压缩、解压、在线分页浏览（archiveList）。
 - 分享与链接：S3 对象 presigned 公开链接（publicLink）。
 - 安全：read_only、allow_delete、lock_to_root、known_hosts 策略、连接级超时。
-- 自动化：12 个 MCP 工具，stdio 独立模式与 DBX MCP 桥双通道。
+- 自动化：13 个 MCP 工具，stdio 独立模式与 DBX MCP 桥双通道。
 - 平台：linux-x64、linux-arm64、darwin-arm64、darwin-x64、windows-x64 五平台候选包。
 
 ## 使用边界

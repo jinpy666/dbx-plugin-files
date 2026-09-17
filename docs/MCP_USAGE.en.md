@@ -18,7 +18,7 @@ backend/target/release/dbx-plugin-files --mcp
 The stdio frame ceiling defaults to 16 MiB and is tunable via
 `DBX_FILES_MCP_STDIO_MAX_LINE` (violations return `-32700` naming the ceiling).
 
-## Tool list (12 tools, matching the smoke suite)
+## Tool list (13 tools, matching the smoke suite)
 
 | Tool | Purpose |
 | --- | --- |
@@ -31,6 +31,7 @@ The stdio frame ceiling defaults to 16 MiB and is tunable via
 | `files_mkdir` | Create a directory |
 | `files_rename` | Rename/move |
 | `files_delete` / `files_purge` | Delete a file / purge a directory tree (both two-phase) |
+| `files_sync` | Cross-connection directory sync/copy (incremental compare; `sync:true` mirror-deletes target extras — preview with `dryRun:true` first; returns a jobId to poll via `files/transfer/status`) |
 
 ## Typical patterns
 

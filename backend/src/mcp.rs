@@ -23,6 +23,12 @@
 //!   answer the first call with a preview instead. `files_write` /
 //!   `files_mkdir` / `files_rename` execute directly. Every MCP write is
 //!   audited with `source:"mcp"`.
+//! - **Directory sync**: `files_sync` delegates to the workbench
+//!   `files/syncDir|copyDir` enqueue (incremental size+mtime compare; the
+//!   optional mirror delete is gated by the target's `allow_delete`;
+//!   `dryRun` plans only, `maxDelete` bounds deletions) and answers with a
+//!   `jobId` to poll via `files/transfer/status`. The async job needs the
+//!   DBX event channel, so standalone stdio answers an explicit refusal.
 //! - **Token economy**: single-response cap 16 KiB (truncated flag), cell
 //!   width 120 (locator fields never truncated), rows format clamped at 20,
 //!   binary content never leaves the sidecar over MCP.
@@ -1079,6 +1085,83 @@ impl Mcp {
                 Ok(json!({ "success": true, "path": path }))
             }
 
+            // -- directory sync (§8.4 via MCP) -------------------------------------
+            "files_sync" => {
+                // Parameter enumeration, flag tolerance, path shapes and the
+                // target write/mirror-delete gates all run before anything
+                // async is touched ([`parse_sync_request`], unit-tested pure).
+                let request = parse_sync_request(engine, arguments)?;
+                // The dir job reports through the DBX event channel +
+                // `files/transfer/status`; standalone stdio has neither, so it
+                // answers with explicit guidance instead of enqueueing a job
+                // nobody can observe (files_rename dir-path parity).
+                let Some(emitter) = emitter else {
+                    return Err(SYNC_STDIO_UNAVAILABLE.to_string());
+                };
+                let source_operator = engine.operator(&request.source.id)?;
+                let target_operator = engine.operator(&request.target.id)?;
+                let job_id = transfers
+                    .enqueue_dir_job(
+                        &request.source,
+                        &source_operator,
+                        &request.target,
+                        &target_operator,
+                        &request.source_path,
+                        &request.target_path,
+                        request.sync,
+                        request.dry_run,
+                        request.max_delete,
+                        emitter,
+                    )
+                    .await?;
+                audit_mcp(
+                    store,
+                    &request.target,
+                    "files/sync",
+                    &format!(
+                        "{}:{} -> {}",
+                        request.source.id, request.source_path, request.target_path
+                    ),
+                    "ok",
+                );
+                let mut result = json!({
+                    "success": true,
+                    "transport": "job",
+                    "jobId": job_id,
+                    "sourceConnectionId": request.source.id,
+                    "sourcePath": request.source_path,
+                    "targetConnectionId": request.target.id,
+                    "targetPath": request.target_path,
+                    "sync": request.sync,
+                    "dryRun": request.dry_run,
+                });
+                if let Some(max_delete) = request.max_delete {
+                    result["maxDelete"] = json!(max_delete);
+                }
+                result["hint"] = if request.dry_run {
+                    // Dry run: the plan/compare phase emits ONE summary event
+                    // (files/transfer/progress with toCopy/toDelete counts and
+                    // path samples) and the job completes without writes.
+                    json!("Dry run: nothing is copied or deleted; the job plans/compares, \
+                           emits one summary event and completes — poll files/transfer/status \
+                           for the counts")
+                } else {
+                    json!("Async directory job enqueued; poll files/transfer/status (or the \
+                           workbench transfers pane) for progress")
+                };
+                if request.sync && !request.dry_run {
+                    // The destructive half of mirror semantics, spelled out in
+                    // the response too (the tool description carries it as
+                    // well) — an LLM must never learn about deletions only
+                    // after they happened.
+                    result["warning"] = json!(
+                        "sync=true mirrors the source: files present on the target but missing \
+                         from the source are DELETED (bounded by maxDelete when set)"
+                    );
+                }
+                Ok(result)
+            }
+
             other => Err(unknown_tool_message(other)),
         }
     }
@@ -1341,6 +1424,23 @@ impl Mcp {
                         "limit": { "type": "integer", "description": "Max entries to return (1-50, default 50)" },
                     },
                     "required": ["connectionId"],
+                },
+            },
+            {
+                "name": "files_sync",
+                "description": "Synchronize/copy a directory tree between two connections (workbench files/syncDir|copyDir semantics; incremental size+mtime compare skips unchanged files). sync:true makes it a MIRROR — files present on the target but missing from the source are DELETED (rclone-sync semantics; requires a target connection with allow_delete, and maxDelete can bound the deletions). dryRun:true plans and compares only — no copies, no deletes — and is strongly recommended before any sync:true run. Runs as an async job over the DBX event channel: the answer carries a jobId to poll via files/transfer/status. Never available in standalone stdio mode.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "sourceConnectionId": { "type": "string", "description": "Source connection id (may be read-only; the source is never modified)" },
+                        "sourcePath": { "type": "string", "description": "Source directory path ('/' syncs the whole source tree)" },
+                        "targetConnectionId": { "type": "string", "description": "Target connection id (must be writable; with sync:true it must also allow delete)" },
+                        "targetPath": { "type": "string", "description": "Target directory path ('/' = the connection root)" },
+                        "sync": { "type": "boolean", "default": false, "description": "Mirror delete switch (default false). true DELETES files on the target that are missing from the source; destructive on the target — run a dryRun first. Refused when the target disallows delete (allow_delete=false), a dry run included" },
+                        "dryRun": { "type": "boolean", "default": false, "description": "Plan only (default false): no copies, no deletes; one summary event with toCopy/toDelete counts and path samples, then the job completes" },
+                        "maxDelete": { "type": "integer", "description": "Abort the sync when more than this many target files would be deleted (omit = unlimited; rclone --max-delete)" },
+                    },
+                    "required": ["sourceConnectionId", "sourcePath", "targetConnectionId", "targetPath"],
                 },
             },
         ])
@@ -2007,6 +2107,94 @@ fn audit_mcp(store: &Store, connection: &StoredConnection, action: &str, target:
 }
 
 // ---------------------------------------------------------------------------
+// files_sync: directory sync over MCP (§8.4)
+// ---------------------------------------------------------------------------
+
+/// stdio refusal for `files_sync` (files_rename dir-path parity): the dir
+/// job's progress events need the host event channel, which standalone stdio
+/// does not have.
+const SYNC_STDIO_UNAVAILABLE: &str = "files_sync runs as an async progress job over the DBX event \
+     channel, which is unavailable in standalone stdio mode; call it through the DBX MCP bridge \
+     (dbx_call_plugin_tool) or use the DBX workbench transfers pane";
+
+/// Everything `files_sync` validates and resolves BEFORE the async job
+/// machinery is touched. Built by [`parse_sync_request`] (pure + unit-tested);
+/// the `files_sync` arm only feeds it to [`JobTable::enqueue_dir_job`], which
+/// re-runs the target gates as defense in depth.
+#[derive(Debug)]
+struct SyncRequest {
+    source: StoredConnection,
+    source_path: String,
+    target: StoredConnection,
+    target_path: String,
+    sync: bool,
+    dry_run: bool,
+    max_delete: Option<u64>,
+}
+
+/// Validates a `files_sync` call end to end at the synchronous layer:
+/// missing-parameter enumeration (schema `required` order), LLM-tolerant flag
+/// parsing, target gates, and path-shape hard gates.
+///
+/// Gate semantics mirror the workbench `files/syncDir` path
+/// (`transfers::validate_dir_job_gates`): the TARGET must be writable, and
+/// `sync=true` additionally requires `allow_delete` — a dry run included,
+/// because its plan still proposes deletions (enqueue re-checks the same).
+/// The SOURCE connection may be read-only: copying FROM a read-only source is
+/// a legitimate topology (nothing is ever written to the source).
+fn parse_sync_request(engine: &Engine, arguments: &Value) -> Result<SyncRequest, String> {
+    missing_required(
+        arguments,
+        &["sourceConnectionId", "sourcePath", "targetConnectionId", "targetPath"],
+    )?;
+    let source = engine.connection(required_str(arguments, "sourceConnectionId")?)?;
+    let target = engine.connection(required_str(arguments, "targetConnectionId")?)?;
+    let sync = bool_arg_or(arguments, "sync", false)?;
+    let dry_run = bool_arg_or(arguments, "dryRun", false)?;
+    let max_delete = numeric_arg_u64(arguments, "maxDelete")?;
+    // Gates before path validation — caller-side parameter errors (wrong
+    // flag types) and permission walls surface before spelling nitpicks,
+    // same ordering as files_delete/files_rename.
+    ensure_writable(&target)?;
+    if sync {
+        ensure_deletable(&target)?;
+    }
+    // '/' is legitimate on both sides (whole-tree sync, rclone style);
+    // only the shape gates apply.
+    let source_path = normalize_slashes(required_str(arguments, "sourcePath")?);
+    let target_path = normalize_slashes(required_str(arguments, "targetPath")?);
+    validate_path_shape(&source_path, "sourcePath")?;
+    validate_path_shape(&target_path, "targetPath")?;
+    Ok(SyncRequest {
+        source,
+        source_path,
+        target,
+        target_path,
+        sync,
+        dry_run,
+        max_delete,
+    })
+}
+
+/// Boolean argument with a default (absent/null → `default`), LLM string
+/// tolerance for the intent spellings (`"true"/"1"/"yes"/"on"` and inverses —
+/// model.rs `bool_field` 同族口径), and a fail-fast error for any other
+/// present-but-invalid value: a silent flip on the sync delete switch would
+/// be worse than a clear error.
+fn bool_arg_or(arguments: &Value, key: &str, default: bool) -> Result<bool, String> {
+    match arguments.get(key) {
+        None | Some(Value::Null) => Ok(default),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(Value::String(text)) => match text.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => Ok(true),
+            "false" | "0" | "no" | "off" => Ok(false),
+            _ => Err(format!("Parameter '{key}' must be a boolean (true/false)")),
+        },
+        Some(_) => Err(format!("Parameter '{key}' must be a boolean (true/false)")),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
 
@@ -2186,7 +2374,7 @@ fn canonical_delete_target(raw: &str, kind: Option<&str>) -> String {
 /// Every registered tool name, for the unknown-tool self-correction hint
 /// (ssh `TOOL_NAMES` / ldap `available:` parity). Kept in one place so the
 /// hint can never drift from the dispatch table.
-const ALL_TOOL_NAMES: [&str; 12] = [
+const ALL_TOOL_NAMES: [&str; 13] = [
     "files_ui_focus",
     "files_ui_search",
     "files_ui_select",
@@ -2199,6 +2387,7 @@ const ALL_TOOL_NAMES: [&str; 12] = [
     "files_rename",
     "files_delete",
     "files_purge",
+    "files_sync",
 ];
 
 /// Actionable error for an unregistered tool name: a separator/case variant
@@ -2315,10 +2504,14 @@ fn unavailable_message(tool: &str) -> String {
     )
 }
 
-/// Tools whose execution resolves a storage connection. `files_cursor_next`
-/// is a pure session lookup and runs without one.
+/// Tools whose execution resolves a single generic `connectionId`/inline
+/// `connection` parameter — the stdio surfaces relax exactly that pair into
+/// an anyOf. `files_cursor_next` is a pure session lookup and runs without a
+/// connection, and `files_sync` addresses explicit `sourceConnectionId` /
+/// `targetConnectionId` parameters (and cannot run in stdio anyway — no
+/// event channel), so neither takes the generic parameter.
 fn needs_connection_id(tool: &str) -> bool {
-    !matches!(tool, "files_cursor_next")
+    !matches!(tool, "files_cursor_next" | "files_sync")
 }
 
 /// Pool id for an inline connection payload: `mcp-inline-` + 16 hex chars of
@@ -4257,6 +4450,208 @@ mod tests {
         assert!(refuse_root_purge(&connection(false, true), "/data/x").is_ok());
     }
 
+    // -- files_sync (directory sync over MCP) ------------------------------------
+
+    /// Engine with four fs connections covering the gate matrix: a writable
+    /// source/target pair, a read-only connection and a no-delete connection.
+    fn sync_engine() -> (Engine, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::new();
+        let connect = |engine: &Engine, id: &str, read_only: bool, allow_delete: bool| {
+            engine
+                .connect(
+                    StoredConnection::from_lifecycle_params(&json!({
+                        "connection": {
+                            "id": id,
+                            "external_config": {
+                                "protocol": "fs",
+                                "root": dir.path().join(id).to_string_lossy(),
+                                "read_only": read_only,
+                                "allow_delete": allow_delete,
+                            },
+                        }
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+        };
+        connect(&engine, "src", false, true);
+        connect(&engine, "tgt", false, true);
+        connect(&engine, "ro", true, true);
+        connect(&engine, "nodelete", false, false);
+        (engine, dir)
+    }
+
+    #[test]
+    fn files_sync_parses_defaults_and_passthrough() {
+        let (engine, _dir) = sync_engine();
+        // 缺参枚举式：一次列全 4 个业务缺口（与 schema required 顺序一致）。
+        let error = parse_sync_request(&engine, &json!({})).unwrap_err();
+        assert!(
+            error.contains(
+                "Missing required parameters: \
+                 sourceConnectionId, sourcePath, targetConnectionId, targetPath"
+            ),
+            "{error}"
+        );
+        // 缺省值：sync=false、dryRun=false、maxDelete 不限。
+        let request = parse_sync_request(
+            &engine,
+            &json!({
+                "sourceConnectionId": "src", "sourcePath": "/data",
+                "targetConnectionId": "tgt", "targetPath": "/backup",
+            }),
+        )
+        .unwrap();
+        assert_eq!(request.source.id, "src");
+        assert_eq!(request.target.id, "tgt");
+        assert!(!request.sync);
+        assert!(!request.dry_run);
+        assert_eq!(request.max_delete, None);
+        // 参数透传：sync/dryRun/maxDelete 原样进入请求（LLM 字符串容错同族口径）。
+        let request = parse_sync_request(
+            &engine,
+            &json!({
+                "sourceConnectionId": "src", "sourcePath": "/data/",
+                "targetConnectionId": "tgt", "targetPath": "/backup",
+                "sync": true, "dryRun": "true", "maxDelete": "5",
+            }),
+        )
+        .unwrap();
+        assert!(request.sync);
+        assert!(request.dry_run);
+        assert_eq!(request.max_delete, Some(5));
+        assert_eq!(request.source_path, "/data", "trailing slash normalized");
+        // present-but-类型错误 fail-fast 点名参数，绝不静默回落默认值。
+        for (key, value, hint) in [
+            ("sync", json!(3), "'sync' must be a boolean"),
+            ("dryRun", json!("maybe"), "'dryRun' must be a boolean"),
+            ("maxDelete", json!(-1), "maxDelete must be a non-negative integer"),
+            ("maxDelete", json!("abc"), "maxDelete must be a non-negative integer"),
+        ] {
+            let error = parse_sync_request(
+                &engine,
+                &json!({
+                    "sourceConnectionId": "src", "sourcePath": "/data",
+                    "targetConnectionId": "tgt", "targetPath": "/backup",
+                    (key): value,
+                }),
+            )
+            .unwrap_err();
+            assert!(error.contains(hint), "{key}={value}: {error}");
+        }
+        // 路径形状硬门（.. 段拒绝）。
+        let error = parse_sync_request(
+            &engine,
+            &json!({
+                "sourceConnectionId": "src", "sourcePath": "/data/../secret",
+                "targetConnectionId": "tgt", "targetPath": "/backup",
+            }),
+        )
+        .unwrap_err();
+        assert!(error.contains("'..'"), "{error}");
+        // '/' 双侧合法（整树同步，rclone 风格）。
+        let request = parse_sync_request(
+            &engine,
+            &json!({
+                "sourceConnectionId": "src", "sourcePath": "/",
+                "targetConnectionId": "tgt", "targetPath": "/",
+            }),
+        )
+        .unwrap();
+        assert_eq!(request.source_path, "/");
+        assert_eq!(request.target_path, "/");
+    }
+
+    #[test]
+    fn files_sync_gates_mirror_the_workbench_delete_rules() {
+        let (engine, _dir) = sync_engine();
+        let args = |source: &str, target: &str, sync: bool| {
+            json!({
+                "sourceConnectionId": source, "sourcePath": "/data",
+                "targetConnectionId": target, "targetPath": "/backup",
+                "sync": sync,
+            })
+        };
+        // 只读目标拒绝（纯 copy 也一样——目标要写）。
+        let error = parse_sync_request(&engine, &args("src", "ro", false)).unwrap_err();
+        assert!(error.contains("read-only"), "{error}");
+        // sync=true 要求 allow_delete：与 transfers::validate_dir_job_gates 同语义。
+        let error = parse_sync_request(&engine, &args("src", "nodelete", true)).unwrap_err();
+        assert!(error.contains("allow_delete=false"), "{error}");
+        // dryRun 不豁免门禁（dry-run 仍要规划删除，工作台路径同样拒绝）。
+        let error = parse_sync_request(
+            &engine,
+            &json!({
+                "sourceConnectionId": "src", "sourcePath": "/data",
+                "targetConnectionId": "nodelete", "targetPath": "/backup",
+                "sync": true, "dryRun": true,
+            }),
+        )
+        .unwrap_err();
+        assert!(error.contains("allow_delete=false"), "{error}");
+        // 纯 copy 到 allow_delete=false 的目标放行（不删除任何东西）。
+        let request = parse_sync_request(&engine, &args("src", "nodelete", false)).unwrap();
+        assert!(!request.sync);
+        // 源只读合法（从只读连接向外同步是正当拓扑）。
+        let request = parse_sync_request(&engine, &args("ro", "tgt", false)).unwrap();
+        assert_eq!(request.source.id, "ro");
+    }
+
+    /// 工具清单：files_sync 双侧连接工具，不受单一连接只读清单过滤影响
+    /// （门禁在调用时按目标连接执行）；schema required 顺序与缺参枚举一致，
+    /// 删除警告写进描述，dryRun 建议写进参数。
+    #[test]
+    fn files_sync_is_always_listed_with_the_full_schema() {
+        let mcp = mcp();
+        let definition = |read_only: bool| {
+            mcp.definitions_for(read_only)["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == "files_sync")
+                .cloned()
+                .expect("files_sync registered for writable listings")
+        };
+        let writable = definition(false);
+        let schema = writable["inputSchema"].as_object().unwrap();
+        assert_eq!(
+            schema["required"],
+            json!(["sourceConnectionId", "sourcePath", "targetConnectionId", "targetPath"]),
+            "required order matches the missing_required enumeration"
+        );
+        let properties = schema["properties"].as_object().unwrap();
+        for key in ["sync", "dryRun", "maxDelete"] {
+            assert!(properties.contains_key(key), "{key} documented in the schema");
+        }
+        // 「sync 会删除目标多余文件」必须显式写进工具描述。
+        assert!(
+            definition(false)["description"].as_str().unwrap().contains("DELETED"),
+            "sync delete warning must be in the description"
+        );
+        assert!(properties["sync"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("dryRun"));
+        // 只读连接清单同样注册（目标是参数，不是注册连接）。
+        assert!(definition(true)["inputSchema"].is_object());
+        // 双连接工具不吃通用 connectionId/inline connection 放宽（stdio 原样 schema）。
+        let stdio = mcp
+            .stdio_tool_list()["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "files_sync")
+            .cloned()
+            .expect("files_sync registered in the stdio list");
+        let stdio_schema = stdio["inputSchema"].as_object().unwrap();
+        assert!(stdio_schema.get("anyOf").is_none(), "files_sync keeps its plain schema");
+        assert!(
+            !stdio_schema["properties"].as_object().unwrap().contains_key("connection"),
+            "no generic inline connection injection for the dual-connection tool"
+        );
+    }
+
     // -- standalone stdio server (`--mcp`) ---------------------------------------
 
     fn stdio_server() -> (StdioServer, tempfile::TempDir) {
@@ -4427,6 +4822,82 @@ mod tests {
             json!({ "name": "files_scan_digest", "arguments": { "path": "/" } }),
         );
         assert!(!error.contains("UNAVAILABLE"), "{error}");
+    }
+
+    /// files_sync stdio 路由：参数齐备且门禁通过时，调用一路推进到 enqueue
+    /// 边界，仅在事件通道处显式拒绝（stdio 无 emitter，不假死不静默）；缺参
+    /// 与 allow_delete 门禁在事件通道检查之前先行报错。双连接 id 池化进
+    /// engine（与 bridge_forward_plan 测试同一手法）。
+    #[test]
+    fn files_sync_stdio_reaches_the_enqueue_boundary_then_refuses() {
+        let (server, dir) = stdio_server();
+        let fsroot = dir.path().join("sync-fsroot");
+        std::fs::create_dir_all(fsroot.join("src")).unwrap();
+        let connect = |id: &str, read_only: bool, allow_delete: bool| {
+            server
+                .engine
+                .connect(
+                    StoredConnection::from_lifecycle_params(&json!({
+                        "connection": {
+                            "id": id,
+                            "external_config": {
+                                "protocol": "fs",
+                                "root": fsroot.join(id).to_string_lossy(),
+                                "read_only": read_only,
+                                "allow_delete": allow_delete,
+                            },
+                        }
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+        };
+        connect("sync-src", false, true);
+        connect("sync-tgt", false, true);
+        connect("sync-nodelete", false, false);
+        // 门禁全过 → 路由到 enqueue 边界（sync/dryRun/maxDelete 全量透传的
+        // 参数形状被接受），仅因无事件通道显式拒绝。
+        let error = stdio_error(
+            &server,
+            "tools/call",
+            json!({
+                "name": "files_sync",
+                "arguments": {
+                    "sourceConnectionId": "sync-src", "sourcePath": "/data",
+                    "targetConnectionId": "sync-tgt", "targetPath": "/backup",
+                    "sync": true, "dryRun": false, "maxDelete": 10,
+                },
+            }),
+        );
+        assert!(error.contains("standalone stdio"), "{error}");
+        assert!(error.contains("files_sync"), "{error}");
+        // 缺 source/target 业务参数：先于事件通道，枚举报参错。
+        let error = stdio_error(
+            &server,
+            "tools/call",
+            json!({ "name": "files_sync", "arguments": {} }),
+        );
+        assert!(
+            error.contains(
+                "Missing required parameters: \
+                 sourceConnectionId, sourcePath, targetConnectionId, targetPath"
+            ),
+            "{error}"
+        );
+        // allow_delete 门禁：先于事件通道拒绝（复用既有删除门禁语义）。
+        let error = stdio_error(
+            &server,
+            "tools/call",
+            json!({
+                "name": "files_sync",
+                "arguments": {
+                    "sourceConnectionId": "sync-src", "sourcePath": "/data",
+                    "targetConnectionId": "sync-nodelete", "targetPath": "/backup",
+                    "sync": true,
+                },
+            }),
+        );
+        assert!(error.contains("allow_delete=false"), "{error}");
     }
 
     // -- stdio bridge fallback (L1; ssh bridge_forward_plan 同构 + ldap M14) --

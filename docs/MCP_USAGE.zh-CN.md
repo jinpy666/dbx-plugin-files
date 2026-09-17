@@ -16,7 +16,7 @@ backend/target/release/dbx-plugin-files --mcp
 stdio 帧上限默认 16 MiB，可用 `DBX_FILES_MCP_STDIO_MAX_LINE` 调整（超限返回
 `-32700` 并点名上限）。
 
-## 工具清单（12 个，与 smoke 一致）
+## 工具清单（13 个，与 smoke 一致）
 
 | 工具 | 用途 |
 | --- | --- |
@@ -29,6 +29,7 @@ stdio 帧上限默认 16 MiB，可用 `DBX_FILES_MCP_STDIO_MAX_LINE` 调整（�
 | `files_mkdir` | 建目录 |
 | `files_rename` | 改名/移动 |
 | `files_delete` / `files_purge` | 删文件 / 递归清目录（均两阶段） |
+| `files_sync` | 跨连接目录同步/复制（增量对比；`sync:true` 镜像删除目标多余文件，先 `dryRun:true` 预演；返回 jobId 轮询 `files/transfer/status`） |
 
 ## 典型模式
 

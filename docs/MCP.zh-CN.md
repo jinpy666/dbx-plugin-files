@@ -204,7 +204,7 @@ handlers)`（公共层单点维护，插件不各抄一份）。
   anchor?}`，sidecar 缓存最新快照；`files_ui_state` 不带 intentId 时返回。
 - 未知/已过期 intentId 回报报业务错误（-32000）。
 
-## 工具一览（12 个）
+## 工具一览（13 个）
 
 `mcp/tools` 可带可选 `{connectionId}`：该连接配置为只读（表单
 `read_only` ∥ 宿主标准 read_only；delete 类另受 `allow_delete` 约束）
@@ -226,6 +226,7 @@ connectionId 时全量列出（调用时仍有只读门拒绝，纵深防御）�
 | `files_rename` | `connectionId`、`path`、`newPath` 必填 | 单阶段直执行；目录 rename 降级异步 copy+delete job（返回 jobId）；审计 `source:"mcp"` |
 | `files_delete` | `connectionId`、`path` 必填；`confirmToken?` | 强制两阶段，见下节 |
 | `files_purge` | `connectionId`、`path` 必填；`confirmToken?` | 强制两阶段；**拒绝连接根与 `/`**（§8.2 红线，与工作台同源判定） |
+| `files_sync` | `sourceConnectionId`、`sourcePath`、`targetConnectionId`、`targetPath` 必填；`sync?`（缺省 false）、`dryRun?`（缺省 false）、`maxDelete?` | 跨连接目录同步/复制（§8.4，委托 `files/syncDir|copyDir` 入队，增量 size+mtime 对比跳过未变文件）。`sync:true` 镜像删除——**目标上源里没有的文件会被删除**（rclone sync 语义；目标须 `allow_delete`，dryRun 也不例外）。`dryRun:true` 只规划对比：不复制不删除，产出一次摘要事件，**建议任何 `sync:true` 前先跑一次**。`maxDelete` 限制镜像删除数量，超出即熔断中止。返回 `{jobId}`，轮询 `files/transfer/status`。异步 job 走 DBX 事件通道：仅工作台/桥可用，**stdio 模式显式拒绝**。双连接工具不受单一连接只读清单过滤影响（只读/删除门在调用时按目标连接执行，与工作台同源） |
 
 ## 写路径与两阶段确认（§4）
 
@@ -287,13 +288,17 @@ connectionId 时全量列出（调用时仍有只读门拒绝，纵深防御）�
   `modifiedUntil`/`n`/`offset`/`limit`）：数字、数字字符串（`"1024"`，
   trim 后解析）、整型浮点（`8.0`）均接受；其他类型（含负数、`1.5`、
   布尔）报 `{key} must be a non-negative integer` 并点名参数。
-- **布尔参数**（内联 `connection` 的 `readOnly`/`allowDelete`/`lockToRoot`
-  等）：字符串变体 `"true"/"false"/"1"/"0"/"yes"/"no"/"on"/"off"` 按意图
-  解析（安全相关：字符串 `"true"` 的只读意图不会静默降级为可写）；
-  无法解析时回退字段默认值。
+- **布尔参数**：内联 `connection` 的 `readOnly`/`allowDelete`/`lockToRoot`
+  等字符串变体 `"true"/"false"/"1"/"0"/"yes"/"no"/"on"/"off"` 按意图
+  解析（安全相关：字符串 `"true"` 的只读意图不会静默降级为可写），
+  无法解析时回退字段默认值；工具参数 `files_sync` 的
+  `sync`/`dryRun` 同样接受布尔与字符串变体，但其余类型/无法解析的
+  字符串 fail-fast 报 `Parameter '<key>' must be a boolean (true/false)`
+  并点名参数（删除开关不做静默猜测）。
 - **path 尾斜杠**：写/rename 目标去尾斜杠（根路径本身拒绝）；delete/purge
   目标按 preview kind 决定拼写（目录保留尾斜杠、文件去除）；digest 起点
-  path 去尾斜杠后回显。
+  path 去尾斜杠后回显；`files_sync` 的 `sourcePath`/`targetPath` 同样去尾
+  斜杠（`/` 合法——整树同步，rclone 风格）。
 - **空串**：`dataBase64: ""` 合法（建空文件）；其余必填字符串参数空串报
   `Parameter '<key>' must be a non-empty string`。
 - **缺参枚举式（第七轮拉齐 ssh 口径，MCP_ACCEPTANCE §3.9）**：业务 required
@@ -321,7 +326,7 @@ connectionId 时全量列出（调用时仍有只读门拒绝，纵深防御）�
 - **未知 intentId**：报错附引导（intent 进程内 60s 过期；重发 files_ui_*
   调用，或省略 intentId 读最新快照）。
 - **未知工具名**：报错附 `Did you mean` 变体建议（`files-scandigest`、
-  `FILES_SCAN_DIGEST` 这类分隔符/大小写变体直指注册名）+ 全部 12 个注册
+  `FILES_SCAN_DIGEST` 这类分隔符/大小写变体直指注册名）+ 全部 13 个注册
   工具名 + 发现面（桥 `mcp/tools` / stdio `tools/list`）；stdio 入口对
   未注册名先报 Unknown tool，再谈连接参数，避免 LLM 被引去补
   connectionId。
