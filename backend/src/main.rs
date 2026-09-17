@@ -63,7 +63,12 @@ impl Plugin {
         F: Future<Output = Result<T, E>>,
     {
         let timeout = request_timeout(connection);
-        match self.runtime.block_on(tokio::time::timeout(timeout, future)) {
+        // timeout 的 Sleep 计时器要在 runtime 上下文内注册：构造必须发生在
+        // block_on 的 async 块里，否则 worker 线程上 Handle::current() 直接
+        // panic "there is no reactor running"（真实容器冒烟抓到的回归）。
+        match self.runtime.block_on(async move {
+            tokio::time::timeout(timeout, future).await
+        }) {
             Ok(Ok(value)) => Ok(value),
             // Engine errors (String or opendal::Error) flatten to the sidecar's
             // String business-error channel, exactly as the bare `?` did.
