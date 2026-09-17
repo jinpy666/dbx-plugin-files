@@ -12,6 +12,8 @@ use std::sync::Arc;
 
 use std::time::Duration;
 
+use serde_json::json;
+
 use super::scan::{glob_match, PathRow};
 use super::stdio::{
     inline_pool_id, parse_request_line, stdio_max_line_bytes, stored_connection_from_inline,
