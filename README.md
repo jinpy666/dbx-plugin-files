@@ -56,9 +56,10 @@ Files Studio（`io.dbx.files`）是统一的多后端文件工作台：本地文
 backend/target/release/dbx-plugin-files --mcp
 ```
 
-共 12 个工具：`files_scan_digest`、`files_cursor_next`、`files_ui_focus/search/select/state`、
+共 13 个工具：`files_scan_digest`、`files_cursor_next`、`files_ui_focus/search/select/state`、
 `files_ui_quick_paths`、`files_write`、`files_mkdir`、`files_rename`、`files_delete`、
-`files_purge`。大目录先 digest 再 cursor 翻页；delete/purge 走两阶段确认。
+`files_purge`、`files_sync`。大目录先 digest 再 cursor 翻页；delete/purge 走两阶段确认；
+跨连接目录同步走 `files_sync`（先 dryRun 预演再 sync）。
 完整配置、工具调用示例和安全边界见 [MCP 使用指南](docs/MCP_USAGE.zh-CN.md)与
 [Files MCP 参考](docs/MCP.zh-CN.md)。
 

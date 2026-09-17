@@ -61,10 +61,11 @@ permission boundaries. Standalone stdio mode:
 backend/target/release/dbx-plugin-files --mcp
 ```
 
-There are 12 tools: `files_scan_digest`, `files_cursor_next`,
+There are 13 tools: `files_scan_digest`, `files_cursor_next`,
 `files_ui_focus/search/select/state`, `files_ui_quick_paths`, `files_write`,
-`files_mkdir`, `files_rename`, `files_delete`, and `files_purge`. Use digest plus
-cursor paging for large directories; delete and purge require two-phase confirmation.
+`files_mkdir`, `files_rename`, `files_delete`, `files_purge`, and `files_sync`. Use digest plus
+cursor paging for large directories; delete and purge require two-phase confirmation;
+cross-connection directory sync goes through `files_sync` (dryRun first, then sync).
 See the [MCP usage guide](docs/MCP_USAGE.en.md) and the
 [Files MCP reference](docs/MCP.zh-CN.md).
 

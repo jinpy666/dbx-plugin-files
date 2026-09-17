@@ -24,7 +24,7 @@ target platform and exact version before choosing.
 | Read-only / delete protection / root locking | Built-in (policy gates) | CLI flags or config | Config-dependent | — |
 | Credential management | DBX host secret binding, never on disk | Config file (obfuscatable) | Session/site config | OS keychain |
 | Scripting / CLI | — (focused on DBX and MCP channels) | Built-in (core strength) | Built-in (scripting/CLI) | — |
-| MCP automation tools | Built-in (12 tools) | — | — | — |
+| MCP automation tools | Built-in (13 tools) | — | — | — |
 | Deep integration into a host workbench | Native (DBX plugin) | — | — | — |
 
 ## Positioning differences
