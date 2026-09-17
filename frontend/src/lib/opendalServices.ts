@@ -386,6 +386,49 @@ export function schemaForService(service: string): readonly CustomFieldSpec[] | 
 }
 
 // ---------------------------------------------------------------------------
+// 字段语义分组（审计#14）：opendal-custom 动态表单按「连接目标 / 凭据 /
+// 高级」三组渲染。纯 key 判定，不改 schema、不参与序列化，只是渲染顺序糖；
+// 组内仍按 schema 声明顺序，键盘 tab 顺序稳定。
+// ---------------------------------------------------------------------------
+
+export type FieldGroup = "target" | "credentials" | "advanced";
+
+/** 凭据类词根：key 按 `_`/`-` 分段后命中即归凭据（access_key_id、secret…）。 */
+const CREDENTIAL_SEGMENTS: ReadonlySet<string> = new Set([
+  "key",
+  "secret",
+  "password",
+  "token",
+  "credential",
+  "account", // azblob account_name / account_key
+  "client", // OAuth client_id / client_secret
+  "user",
+  "username", // webdav username / ftp user
+  "email",
+]);
+
+/** 连接目标类词根：描述「连到哪」（endpoint/bucket/container/root…）。 */
+const TARGET_SEGMENTS: ReadonlySet<string> = new Set([
+  "endpoint",
+  "bucket",
+  "container",
+  "root",
+  "share",
+  "region",
+]);
+
+/**
+ * 字段 key → 语义分组：凭据 > 连接目标 > 其余可选键归高级。
+ * 大小写不敏感、容忍 `_`/`-` 以外的分隔；凭据命中优先于目标。
+ */
+export function field_group(key: string): FieldGroup {
+  const segments = key.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  if (segments.some((segment) => CREDENTIAL_SEGMENTS.has(segment))) return "credentials";
+  if (segments.some((segment) => TARGET_SEGMENTS.has(segment))) return "target";
+  return "advanced";
+}
+
+// ---------------------------------------------------------------------------
 // 安全校验：URL 类参数只允许 http/https；host 类参数拒绝 localhost/环回/
 // 私有/保留地址（SSRF 护栏，作用于 UI 层校验，不改后端透传语义）。
 // ---------------------------------------------------------------------------

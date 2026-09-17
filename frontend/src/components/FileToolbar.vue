@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { Columns2, Download, FolderPlus, Gauge, ScrollText, Settings, Trash2, Upload, Plug } from "@lucide/vue";
 
 // 全局动作栏：路径/面包屑/过滤等栏内控件已下沉到各栏 wb-pane-header
@@ -25,13 +25,35 @@ const emit = defineEmits<{
   (event: "upload", files: File[] | null): void;
   (event: "download"): void;
   (event: "delete"): void;
-  (event: "toggle-dock", tab: "transfers" | "audit" | "connection" | "settings"): void;
+  /** 审计#17：工具栏只保留一个 dock 开关。tab 省略即切换「当前页签」的
+   * 开/关；带 tab 时语义不变（打开指定页签）——App 层兼容两种调用。 */
+  (event: "toggle-dock", tab?: "transfers" | "audit" | "connection" | "settings"): void;
   (event: "toggle-dual-pane"): void;
 }>();
 
 function t(key: string, values?: Record<string, string | number>) {
   return props.t(key, values);
 }
+
+// 审计#17：4 个 per-dock 图标收敛为单个开关按钮——按钮即「当前 dock 页签」
+// （图标与提示随 dockTab 走，is-active 表示 dock 已打开），开/关切换在
+// 工具栏，页签切换只保留 dock 内 tablist 一处。
+const DOCK_ICONS = {
+  transfers: Gauge,
+  audit: ScrollText,
+  connection: Plug,
+  settings: Settings,
+} as const;
+
+const DOCK_TIP_KEYS: Record<keyof typeof DOCK_ICONS, string> = {
+  transfers: "transfers",
+  audit: "auditPanel",
+  connection: "connectionPanel",
+  settings: "settingsPanel",
+};
+
+const dockIcon = computed(() => DOCK_ICONS[props.dockTab]);
+const dockTipKey = computed(() => DOCK_TIP_KEYS[props.dockTab]);
 
 const fileInput = ref<HTMLInputElement>();
 
@@ -68,10 +90,8 @@ function onPicked(event: Event) {
       <button class="wb-toolbar-button" v-tip="t('deleteSelected')" :disabled="!hasSelection || !canWrite || busy" @click="emit('delete')"><Trash2 /> {{ t("deleteSelected") }}</button>
       <span class="wb-toolbar-separator" aria-hidden="true" />
       <button class="wb-icon-button wb-icon-neutral" v-tip="t('dualPane')" :class="{ 'is-active': dualPane }" @click="emit('toggle-dual-pane')"><Columns2 /></button>
-      <button class="wb-icon-button wb-icon-neutral" v-tip="t('transfers')" :class="{ 'is-active': dockOpen && dockTab === 'transfers' }" @click="emit('toggle-dock', 'transfers')"><Gauge /></button>
-      <button class="wb-icon-button wb-icon-neutral" v-tip="t('auditPanel')" :class="{ 'is-active': dockOpen && dockTab === 'audit' }" @click="emit('toggle-dock', 'audit')"><ScrollText /></button>
-      <button class="wb-icon-button wb-icon-neutral" v-tip="t('connectionPanel')" :class="{ 'is-active': dockOpen && dockTab === 'connection' }" @click="emit('toggle-dock', 'connection')"><Plug /></button>
-      <button class="wb-icon-button wb-icon-neutral" v-tip="t('settingsPanel')" :class="{ 'is-active': dockOpen && dockTab === 'settings' }" @click="emit('toggle-dock', 'settings')"><Settings /></button>
+      <!-- 审计#17：单一 dock 开关（高亮=已打开；图标/提示=当前页签）。 -->
+      <button class="wb-icon-button wb-icon-neutral" v-tip="t(dockTipKey)" :class="{ 'is-active': dockOpen }" :aria-pressed="dockOpen" @click="emit('toggle-dock')"><component :is="dockIcon" /></button>
     </div>
   </header>
 </template>

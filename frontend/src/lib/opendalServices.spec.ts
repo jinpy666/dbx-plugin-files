@@ -9,6 +9,8 @@ import {
   quickProtocolIds,
   schemaForService,
   templateFor,
+  field_group,
+  type FieldGroup,
   validateConfigAgainstSchema,
   validateFieldInput,
   validateHostField,
@@ -217,6 +219,60 @@ describe("custom service schemas", () => {
     expect(specOf("pcloud", "endpoint").security).toBe("url");
     expect(specOf("seafile", "endpoint").security).toBe("url");
     expect(specOf("sftp", "known_hosts_strategy").options).toEqual(["Tolerate", "Strict", "Trust"]);
+  });
+});
+
+describe("field grouping (audit #14)", () => {
+  const GROUPS = ["target", "credentials", "advanced"] as const satisfies readonly FieldGroup[];
+
+  it("groups endpoint/bucket/container/root-class keys as target", () => {
+    for (const key of ["endpoint", "bucket", "container", "root", "share", "region"]) {
+      expect(field_group(key), key).toBe("target");
+    }
+  });
+
+  it("groups access_key/secret/password/token-class keys as credentials", () => {
+    for (const key of [
+      "access_key_id",
+      "secret_access_key",
+      "password",
+      "security_token",
+      "refresh_token",
+      "credential",
+      "account_name",
+      "account_key",
+      "client_id",
+      "client_secret",
+      "username",
+      "user",
+      "email",
+      "key", // sftp 私钥内容
+    ]) {
+      expect(field_group(key), key).toBe("credentials");
+    }
+  });
+
+  it("groups the remaining optional keys as advanced", () => {
+    for (const key of ["scope", "known_hosts_strategy", "drive_type", "repo_name", "enable_virtual_host_style", "read_only", "allow_delete", "domain"]) {
+      expect(field_group(key), key).toBe("advanced");
+    }
+  });
+
+  it("partitions every key of every known service schema into a valid group", () => {
+    for (const service of CUSTOM_SERVICES) {
+      for (const spec of schemaForService(service) ?? []) {
+        expect(GROUPS, `${service}.${spec.key}`).toContain(field_group(spec.key));
+      }
+    }
+  });
+
+  it("is case-insensitive, prefers credentials over target and defaults to advanced", () => {
+    expect(field_group("ENDPOINT")).toBe("target");
+    // 凭据命中优先：即使同时带目标词根（假想的 token 类 bucket 键）。
+    expect(field_group("bucket_token")).toBe("credentials");
+    expect(field_group("custom_key_extra")).toBe("credentials");
+    expect(field_group("unknown_option")).toBe("advanced");
+    expect(field_group("")).toBe("advanced");
   });
 });
 

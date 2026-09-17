@@ -9,9 +9,11 @@ import {
   CUSTOM_CONFIG_HINTS,
   CUSTOM_SERVICES,
   configFromFormValues,
+  field_group,
   formValuesFromConfig,
   schemaForService,
   validateConfigAgainstSchema,
+  type CustomFieldSpec,
   type CustomFormValue,
   type FieldError,
 } from "../lib/opendalServices";
@@ -45,6 +47,23 @@ const schema = computed(() => schemaForService(service.value));
 /** 未知服务拿不到 schema → 只保留 JSON 模式。 */
 const formAvailable = computed(() => schema.value !== undefined);
 const hint = computed(() => CUSTOM_CONFIG_HINTS[service.value] ?? "{}");
+
+// 审计#14：动态表单按「连接目标 / 凭据 / 高级」三组渲染（纯渲染糖——
+// schema 与序列化不变，组内保持声明顺序）。空组不渲染标题。
+type FieldGroupKey = "target" | "credentials" | "advanced";
+const GROUP_LABEL_KEY: Record<FieldGroupKey, string> = {
+  target: "formGroupTarget",
+  credentials: "formGroupCredentials",
+  advanced: "formGroupAdvanced",
+};
+const GROUP_ORDER: readonly FieldGroupKey[] = ["target", "credentials", "advanced"];
+const schemaGroups = computed<{ group: FieldGroupKey; specs: readonly CustomFieldSpec[] }[]>(() => {
+  if (!schema.value) return [];
+  return GROUP_ORDER.flatMap((group) => {
+    const specs = schema.value!.filter((spec) => field_group(spec.key) === group);
+    return specs.length ? [{ group, specs }] : [];
+  });
+});
 
 const FIELD_ERROR_KEY: Record<FieldError, string> = {
   required: "customFieldRequiredError",
@@ -187,14 +206,21 @@ async function test() {
     </div>
     <p v-if="switchError" class="wb-icon-danger" style="margin: 0; font-size: 11px">{{ switchError }}</p>
 
-    <!-- Form 模式：按 schema 渲染动态控件 -->
+    <!-- Form 模式：按 schema 渲染动态控件（审计#14：三组语义分组，组内
+         声明顺序不变；schema 与序列化不受分组影响） -->
     <template v-if="formAvailable && mode === 'form'">
       <p v-if="!schema!.length" class="wb-muted" style="margin: 0; font-size: 11px">{{ t("customFormNoParams") }}</p>
-      <div
-        v-for="spec in schema"
-        :key="spec.key"
-        style="display: flex; flex-direction: column; gap: 4px"
+      <section
+        v-for="group in schemaGroups"
+        :key="group.group"
+        style="display: flex; flex-direction: column; gap: 8px"
       >
+        <p class="wb-muted" style="margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em">{{ t(GROUP_LABEL_KEY[group.group]) }}</p>
+        <div
+          v-for="spec in group.specs"
+          :key="spec.key"
+          style="display: flex; flex-direction: column; gap: 4px"
+        >
         <label v-if="spec.type === 'boolean'" style="display: flex; align-items: center; gap: 6px">
           <input
             type="checkbox"
@@ -235,7 +261,8 @@ async function test() {
           />
           <span v-if="errorText(spec.key)" class="wb-icon-danger" style="font-size: 11px">{{ errorText(spec.key) }}</span>
         </template>
-      </div>
+        </div>
+      </section>
     </template>
 
     <!-- JSON 模式：未知服务的唯一入口；已知服务与表单双向同步 -->

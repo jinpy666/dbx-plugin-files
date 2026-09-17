@@ -2315,6 +2315,8 @@ onBeforeUnmount(() => {
     </div>
     <div v-if="notice" class="wb-notice" role="status">{{ noticeText }}</div>
 
+    <!-- 审计#17：工具栏为单一 dock 开关（不带 tab = 切换当前页签开/关）；
+         带 tab 的旧语义保留，供既有调用方/MCP intent 兼容。 -->
     <FileToolbar
       :can-write="canWrite"
       :busy="loading"
@@ -2332,7 +2334,7 @@ onBeforeUnmount(() => {
       @download="downloadSelection(toolbarTarget.side)"
       @delete="startDelete(toolbarSelectionEntries(toolbarTarget.side), toolbarTarget.side)"
       @toggle-dual-pane="dualPane = !dualPane"
-      @toggle-dock="(tab) => { if (dockOpen && dockTab === tab) dockOpen = false; else { dockOpen = true; dockTab = tab; if (tab === 'audit') auditRef?.refresh(); } }"
+      @toggle-dock="(tab) => { const target = tab ?? dockTab; if (dockOpen && dockTab === target) dockOpen = false; else { dockOpen = true; dockTab = target; if (target === 'audit') auditRef?.refresh(); } }"
     />
 
     <div class="wb-content">
