@@ -9,3 +9,4 @@
 .dbx-repository-signing-key.env
 .idea/
 .mimosa
+.pnpm-store/
