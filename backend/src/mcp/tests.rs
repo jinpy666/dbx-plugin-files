@@ -9,6 +9,7 @@
 pub(super) static BRIDGE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 use super::scan::{glob_match, PathRow};
+use super::state::{ConfirmEntry, CursorSession, IntentLookup, McpSettings};
 use super::*;
 
 /// Mimosa 门禁按「secret 字段 → 字面量」把测试夹具报成硬编码凭据；
