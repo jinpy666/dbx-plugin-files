@@ -638,6 +638,55 @@ def run_s3_section(client: SidecarClient) -> None:
     scenario_audit(runner)
     scenario_public_link(runner, f"{base}/dir/hello.txt")
     scenario_transfer_roundtrip(runner, base)
+    bucket2 = os.environ.get("DBX_FILES_S3_BUCKET2")
+    if bucket2:
+        scenario_namespace_cross_bucket(runner, bucket, bucket2, endpoint, access, secret)
+
+
+def scenario_namespace_cross_bucket(runner: Runner, bucket: str, bucket2: str, endpoint: str, access: str, secret: str) -> None:
+    """Bucket-namespace 连接（bucket 留空）的直传覆盖：namespace 根列出桶伪
+    目录、同桶走子服务原生 CopyObject、跨桶走命名空间流式复制
+    （engine/bucket_ns，rclone 跨桶直传对齐项）。"""
+    client = runner.client
+    ns = "smoke-s3-ns"
+    connect(client, ns, {
+        "protocol": "s3",
+        "bucket": "",
+        "endpoint": endpoint,
+        "region": os.environ.get("DBX_FILES_S3_REGION", "us-east-1"),
+        "access_key_id": access,
+    }, secrets={"secret_access_key": secret})
+    payload = base64.b64encode(b"cross-bucket").decode()
+
+    def _namespace_root_lists_buckets():
+        entries = client.request("files/list", {"connectionId": ns, "path": "/"}).get("entries", [])
+        # 引擎把目录尾斜杠规范化进 name，列表断言用裸桶名。
+        names = [entry["name"].rstrip("/") for entry in entries]
+        assert bucket in names and bucket2 in names, f"namespace root missing buckets: {names}"
+    runner.step("namespace-root-lists-buckets", _namespace_root_lists_buckets)
+
+    def _cross_bucket_copy():
+        client.request("files/write", {"connectionId": ns, "path": f"/{bucket}/ns-cross.txt", "dataBase64": payload})
+        result = client.request("files/copy", {"connectionId": ns, "sourcePath": f"/{bucket}/ns-cross.txt", "targetPath": f"/{bucket2}/ns-cross.txt"})
+        job_id = result.get("jobId")
+        if job_id:
+            state = wait_job(runner, job_id)
+            assert state == "completed", f"cross-bucket copy job ended as {state}"
+        stat = client.request("files/stat", {"connectionId": ns, "path": f"/{bucket2}/ns-cross.txt"})
+        assert stat["entry"]["size"] == len(b"cross-bucket"), f"cross-bucket copy size mismatch: {stat}"
+        # 跨桶是复制不是移动：源必须仍在。
+        client.request("files/stat", {"connectionId": ns, "path": f"/{bucket}/ns-cross.txt"})
+    runner.step("namespace-cross-bucket-copy", _cross_bucket_copy)
+
+    def _same_bucket_native_copy():
+        result = client.request("files/copy", {"connectionId": ns, "sourcePath": f"/{bucket}/ns-cross.txt", "targetPath": f"/{bucket}/ns-cross-2.txt"})
+        job_id = result.get("jobId")
+        if job_id:
+            state = wait_job(runner, job_id)
+            assert state == "completed", f"same-bucket copy job ended as {state}"
+        stat = client.request("files/stat", {"connectionId": ns, "path": f"/{bucket}/ns-cross-2.txt"})
+        assert stat["entry"]["size"] == len(b"cross-bucket"), f"same-bucket copy size mismatch: {stat}"
+    runner.step("namespace-same-bucket-native-copy", _same_bucket_native_copy)
 
 
 def run_sftp_section(client: SidecarClient) -> None:

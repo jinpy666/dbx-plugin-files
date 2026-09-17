@@ -42,6 +42,7 @@ FTP_PASV_MAX=30109
 MINIO_USER="dbxsmoke"
 MINIO_PASSWORD="$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 MINIO_BUCKET="dbx-files-smoke-$(date +%s)"
+MINIO_BUCKET2="dbx-files-smoke2-$(date +%s)"
 SFTP_USER="sftpuser"
 SFTP_PASSWORD="$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 SMB_USER="smoketest"
@@ -120,14 +121,15 @@ done
 curl -fsS "http://127.0.0.1:${MINIO_PORT}/minio/health/live" >/dev/null || {
   echo "FAIL: MinIO did not become healthy" >&2; exit 1; }
 
-echo "==> creating bucket ${MINIO_BUCKET} (minio/mc, MC_HOST_ 原生配置，无 shell 拼接)"
+echo "==> creating buckets ${MINIO_BUCKET} + ${MINIO_BUCKET2} (minio/mc, MC_HOST_ 原生配置，无 shell 拼接)"
 MC_URL="$(printf 'http://%s:%s@minio:9000' "$MINIO_USER" "$MINIO_PASSWORD")"
 # 注意：minio/mc 镜像默认 entrypoint 会吞掉参数（静默 no-op），必须显式
 # --entrypoint mc；否则 mc mb "成功"退出但 bucket 并不存在。
+# 第二个桶：bucket-namespace 连接的跨桶直传覆盖（同账号 CopyObject/流式）。
 docker run --rm --link dbx-files-minio-test:minio \
   -e "MC_HOST_local=${MC_URL}" \
   --entrypoint mc \
-  minio/mc mb "local/${MINIO_BUCKET}" >/dev/null
+  minio/mc mb "local/${MINIO_BUCKET}" "local/${MINIO_BUCKET2}" >/dev/null
 
 echo "==> starting OpenSSH test server (:${SFTP_PORT}, 密码+密钥双认证)"
 ensure_image "linuxserver/openssh-server" "ghcr.io/linuxserver/openssh-server" "mirror.gcr.io/linuxserver/openssh-server"
@@ -313,6 +315,7 @@ ENV_FILE="$TMPDIR_SMOKE/smoke.env"
 {
   printf 'DBX_FILES_S3_ENDPOINT=http://127.0.0.1:%s\n' "$MINIO_PORT"
   printf 'DBX_FILES_S3_BUCKET=%s\n' "$MINIO_BUCKET"
+  printf 'DBX_FILES_S3_BUCKET2=%s\n' "$MINIO_BUCKET2"
   printf 'DBX_FILES_S3_ACCESS_KEY=%s\n' "$MINIO_USER"
   printf 'DBX_FILES_S3_SECRET_KEY=%s\n' "$MINIO_PASSWORD"
   printf 'DBX_FILES_S3_REGION=us-east-1\n'
