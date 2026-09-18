@@ -55,7 +55,27 @@ DBX_PLUGIN_SIDECAR="$PWD/backend/target/release/dbx-plugin-files" \
   is uploaded (publish requires the full build matrix plus the candidate
   count check).
 
-## 5. Troubleshooting
+## 5. Bundled rclone binary
+
+Each platform's `.dbxp` carries a matching-architecture rclone at
+`bin/<target>/rclone[.exe]` (the sidecar prefers the sibling binary at
+runtime, then `DBX_FILES_RCLONE_BIN`, then the system PATH).
+
+- **Version and checksums are pinned in** `scripts/fetch-rclone.sh`
+  (`RCLONE_VERSION` + `pinned_sha256()`); the binary is not committed — it is
+  downloaded on demand (idempotently) by local builds and CI.
+- The packaging jobs in `release.yml` and `ci.yml` run
+  `scripts/fetch-rclone.sh <os> <arch> bin/<target>` before
+  `dbx-plugin package .`, then verify the packaged rclone (presence, exec
+  bit, checksums) with `scripts/check_rclone_package.py`;
+  `scripts/build.sh` runs the same check locally.
+- Skip the download for a fast local package: `SKIP_RCLONE=1 scripts/build.sh`
+  (no rclone inside; the sidecar falls back to the system PATH).
+- To bump rclone or switch to fork builds, update `RCLONE_VERSION` /
+  `pinned_sha256()` / `RCLONE_REPO` in `fetch-rclone.sh` together; fork
+  builds are documented in `contrib/rclone-fork/README.md`.
+
+## 6. Troubleshooting
 
 - **Tag pushed but no workflow ran**: the tag must start with `files-v` and
   match the manifest version.
