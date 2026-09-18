@@ -68,9 +68,8 @@ jobs:
         with:
           name: rclone-linux
           if-no-files-found: error
-          path: |
-            rclone-*.zip
-            !rclone-*beta*.zip
+          # cross-compile.go chdir("build") 后在 build/ 下产出 zip
+          path: build/rclone-*.zip
 
   windows:
     name: windows amd64 (CGO=0, cmount)
@@ -111,9 +110,8 @@ jobs:
         with:
           name: rclone-windows
           if-no-files-found: error
-          path: |
-            rclone-*.zip
-            !rclone-*beta*.zip
+          # cross-compile.go chdir("build") 后在 build/ 下产出 zip
+          path: build/rclone-*.zip
 
   macos:
     name: darwin amd64+arm64 (CGO + macfuse)
@@ -148,9 +146,8 @@ jobs:
         with:
           name: rclone-darwin
           if-no-files-found: error
-          path: |
-            rclone-*.zip
-            !rclone-*beta*.zip
+          # cross-compile.go chdir("build") 后在 build/ 下产出 zip
+          path: build/rclone-*.zip
 
   release:
     name: Publish release with SHA256SUMS

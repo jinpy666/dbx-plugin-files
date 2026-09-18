@@ -24,7 +24,7 @@
 | 去 selfupdate | 构建时 `-tags noselfupdate` | 插件内置二进制不应自我更新（版本由插件统一管理） |
 | 体积优化 | `cross-compile.go` 自带 `-trimpath` + `-ldflags "-s -X ...fs.Version=<ver>"`；可选：在该文件 ldflags 处补 `-w` | 二进制更小 |
 | mount 支持 | macOS 构建加 `-tags cmount` + macfuse；Linux/Windows 默认即可 | macOS mount（Windows mount 运行时装 WinFsp，无需编译期改动） |
-| `bin/make_rc_docs.sh` | `go install` → `go install -tags "${GOTAGS:-}"`（已打补丁） | `make doc` 的 rcdocs 用 PATH 里的 rclone 挂载生成文档，tagless install 在 macOS/Windows 上没有 mount 命令会失败 |
+| `bin/make_rc_docs.sh` | CI 环境置为 no-op（已打补丁）；`make doc` 其余部分带 `GOTAGS=cmount` | rcdocs 需要真实 FUSE 挂载，CI runner 上不可能（macfuse kext 未加载/linux 无 /dev/fuse）；跳过后使用 v1.75.1 提交版 rc.md，与代码基线一致 |
 
 不做深度裁剪（不删 `backend/all/all.go` 的 backend 列表）：同步上游冲突面最小。
 
