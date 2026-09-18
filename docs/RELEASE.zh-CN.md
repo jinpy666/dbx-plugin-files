@@ -50,7 +50,24 @@ DBX_PLUGIN_SIDECAR="$PWD/backend/target/release/dbx-plugin-files" \
 - Release 工作流运行记录为绿色；若 build 矩阵有平台失败，产物不会上传
   （publish 依赖 build 全量成功且数量校验）。
 
-## 5. 常见问题
+## 5. 内置 rclone 二进制
+
+每个平台的 `.dbxp` 在 `bin/<target>/rclone[.exe]` 附带一份对应架构的 rclone
+（sidecar 运行时优先取同目录二进制，其次 `DBX_FILES_RCLONE_BIN`，最后系统 PATH）。
+
+- **版本与校验固定在** `scripts/fetch-rclone.sh`（`RCLONE_VERSION` +
+  `pinned_sha256()`），二进制不进 git，构建/CI 时按需下载（幂等）。
+- `release.yml` 与 `ci.yml` 的打包 job 在 `dbx-plugin package .` 前执行
+  `scripts/fetch-rclone.sh <os> <arch> bin/<target>`，打包后用
+  `scripts/check_rclone_package.py` 校验包内 rclone 存在、可执行位与
+  checksums；本地 `scripts/build.sh` 末尾同样校验。
+- 本地想跳过下载快速出包：`SKIP_RCLONE=1 scripts/build.sh`（包内无 rclone，
+  运行时回退系统 PATH）。
+- 切换 rclone 版本或切到 fork 产物：改 `fetch-rclone.sh` 的
+  `RCLONE_VERSION` / `pinned_sha256()` / `RCLONE_REPO`，三处同步更新；
+  fork 构建见 `contrib/rclone-fork/README.md`。
+
+## 6. 常见问题
 
 - **tag 建了但工作流没跑**：tag 必须以 `files-v` 开头且与 manifest 版本一致。
 - **CI 的 ui/ freshness 门禁失败**：重新执行 `pnpm --dir frontend build`
