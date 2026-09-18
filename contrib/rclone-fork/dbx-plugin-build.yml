@@ -54,11 +54,12 @@ jobs:
       - name: Install doc + packaging toolchain
         # pandoc: make doc 生成 MANUAL.txt/html 与 rclone.1（cross-compile.go
         # 打 zip 时复制）；release_dep_linux = go install nfpm（linux 附带
-        # .deb/.rpm 产物）
+        # .deb/.rpm 产物）。GOTOOLCHAIN=auto：nfpm@latest 的 go 要求高于
+        # go.mod 钉住的版本，允许 go 自动下载新 toolchain 完成安装
         run: |
           sudo apt-get update
           sudo apt-get install -y pandoc zip
-          make release_dep_linux
+          GOTOOLCHAIN=auto make release_dep_linux
       - name: Build docs
         run: make doc
       - name: Cross-compile linux amd64+arm64
@@ -97,6 +98,11 @@ jobs:
           $path = (get-command mingw32-make.exe).Path
           Copy-Item -Path $path -Destination (Join-Path (Split-Path -Path $path) 'make.exe')
       - name: Build docs
+        # 同 darwin：rcdocs 需要宿主二进制带 cmount；windows 的 cmount 不需要
+        # cgo（官方矩阵即 cgo=0），显式关闭避免对 gcc 的依赖
+        env:
+          GOTAGS: cmount
+          CGO_ENABLED: '0'
         run: make doc
       # cross-compile.go 对 windows 自动加 -buildmode exe 并嵌版本/图标资源
       - name: Cross-compile windows amd64
@@ -128,6 +134,10 @@ jobs:
       - name: Install macfuse + pandoc
         run: brew install --cask macfuse && brew install pandoc
       - name: Build docs
+        # rcdocs 需要宿主 rclone 带 mount 命令（macOS 上只有 cmount tag 才有）；
+        # 官方 build.yml 同款 GOTAGS 做法
+        env:
+          GOTAGS: cmount
         run: make doc
       # 官方 build.yml 同款参数：一个 macOS runner 用 clang -arch 出双架构
       - name: Cross-compile darwin amd64
