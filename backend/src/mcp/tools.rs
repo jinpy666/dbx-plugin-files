@@ -62,28 +62,15 @@ pub struct RcloneRoute {
     pub start_sync: Option<SyncJobStarter>,
 }
 
-/// Resolves the connection reference to an rclone binding. `__local__` maps
-/// onto the rclone `local` backend rooted at `/` (OpenDAL engine parity for
-/// the built-in filesystem); anything else must be a connected registry id.
+/// Resolves the connection reference to an rclone binding via the shared
+/// engine resolver: `__local__` maps onto the rclone `local` backend rooted
+/// at `/` (OpenDAL engine parity for the built-in filesystem); anything else
+/// must be a connected registry id.
 fn rclone_binding(
     route: &RcloneRoute,
     connection_id: &str,
 ) -> Result<crate::rclone::registry::RemoteBinding, String> {
-    if connection_id == crate::engine::LOCAL_CONNECTION_ID {
-        return Ok(crate::rclone::registry::RemoteBinding {
-            remote_fs: "/".to_string(),
-            backend_type: "local",
-            root: "/".to_string(),
-            lock_to_root: false,
-            read_only: false,
-            allow_delete: true,
-        });
-    }
-    route
-        .engine
-        .registry
-        .get(connection_id)
-        .ok_or_else(|| "Connection is not connected (rclone engine)".to_string())
+    route.engine.binding(connection_id)
 }
 
 /// Plain-field snapshot of a parsed sync request (the request value itself

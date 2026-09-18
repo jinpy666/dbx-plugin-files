@@ -57,7 +57,7 @@ DBX 宿主 ⇄ stdio 帧协议（不变） ⇄ Rust sidecar
 
 | manifest protocol | rclone type | 参数映射要点 | 备注 |
 |---|---|---|---|
-| `fs` | （免注册） | rc 调用 `fs` 参数直接用本地路径；`root` 为空时用 `/` | 与 OpenDAL root 语义对齐 |
+| `fs` | （免注册） | rc 调用 `fs` 参数直接用本地路径；`root` 为空时用 `/` | 与 OpenDAL root 语义对齐；内置 `__local__` 连接（双栏左侧本地栏，root `/`）由 `RcloneEngine::binding()` 在引擎层折入——不注册、不经 connect（connect 拒绝 reserved），工作台与 MCP 路由共用，rcd 重生不会孤儿化 |
 | `s3` | `s3` | `provider`（自定义 endpoint→`Minio`/`Other`，否则 AWS）、`access_key_id`、`secret_access_key`(obscure)、`region`(缺省 us-east-1)、`endpoint`、`force_path_style`（virtual-host 关闭时 true） | 桶留空 → 根目录 `operations/list` 原生列桶（退役 bucket_ns） |
 | `oss` | `s3` | `provider=Alibaba` + endpoint/access_key_id/secret_access_key | |
 | `cos` | `s3` | `provider=TencentCOS`；`secret_id`/`secret_key` → `access_key_id`/`secret_access_key`；`security_token` → s3 STS 参数（键名以 `rclone config providers s3` 实测为准） | |

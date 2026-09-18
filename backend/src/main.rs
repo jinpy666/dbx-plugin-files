@@ -178,6 +178,15 @@ impl Plugin {
             }
             "connection/connect" => {
                 let connection = StoredConnection::from_lifecycle_params(&params)?;
+                // Same reserved-id rule as the OpenDAL engine (engine::connect):
+                // the built-in local filesystem must never be shadowed by a
+                // host-registered connection of the same id.
+                if connection.id == engine::LOCAL_CONNECTION_ID {
+                    return Err(format!(
+                        "connectionId '{}' is reserved for the built-in local filesystem",
+                        engine::LOCAL_CONNECTION_ID
+                    ));
+                }
                 let client = self.rclone.client().await?;
                 rclone::registry::connect(&self.rclone.registry, &client, &connection).await?;
                 Ok(Some(json!({ "success": true })))
@@ -200,11 +209,7 @@ impl Plugin {
                 match method {
                     "files/list" => {
                         let request: model::ListRequest = parse(params)?;
-                        let binding = self
-                            .rclone
-                            .registry
-                            .get(&request.connection_id)
-                            .ok_or("Connection is not connected (rclone engine)")?;
+                        let binding = self.rclone.binding(&request.connection_id)?;
                         let fs = rclone::call_fs(&binding);
                         let entries = rclone::ops::list(
                             &client,
@@ -219,11 +224,7 @@ impl Plugin {
                     }
                     "files/listPaged" => {
                         let request: model::ListPagedRequest = parse(params)?;
-                        let binding = self
-                            .rclone
-                            .registry
-                            .get(&request.connection_id)
-                            .ok_or("Connection is not connected (rclone engine)")?;
+                        let binding = self.rclone.binding(&request.connection_id)?;
                         let fs = rclone::call_fs(&binding);
                         let (entries, total) = rclone::ops::list_paged(
                             &client,
@@ -239,11 +240,7 @@ impl Plugin {
                     }
                     "files/stat" => {
                         let request: model::PathRequest = parse(params)?;
-                        let binding = self
-                            .rclone
-                            .registry
-                            .get(&request.connection_id)
-                            .ok_or("Connection is not connected (rclone engine)")?;
+                        let binding = self.rclone.binding(&request.connection_id)?;
                         let fs = rclone::call_fs(&binding);
                         let entry = rclone::ops::stat(
                             &client,
@@ -257,11 +254,7 @@ impl Plugin {
                     }
                     _ => {
                         let request: model::PathRequest = parse(params)?;
-                        let binding = self
-                            .rclone
-                            .registry
-                            .get(&request.connection_id)
-                            .ok_or("Connection is not connected (rclone engine)")?;
+                        let binding = self.rclone.binding(&request.connection_id)?;
                         let fs = rclone::call_fs(&binding);
                         let (count, bytes) = rclone::ops::size(
                             &client,
@@ -277,11 +270,7 @@ impl Plugin {
             }
             "files/capabilities" => {
                 let connection_id = connection_id_param(&params)?.to_string();
-                let binding = self
-                    .rclone
-                    .registry
-                    .get(&connection_id)
-                    .ok_or("Connection is not connected (rclone engine)")?;
+                let binding = self.rclone.binding(&connection_id)?;
                 let client = self.rclone.client().await?;
                 let capabilities =
                     rclone::ops::capabilities(&client, &rclone::call_fs(&binding), binding.backend_type)
@@ -295,11 +284,7 @@ impl Plugin {
             }
             "files/quickPaths" => {
                 let connection_id = connection_id_param(&params)?.to_string();
-                let binding = self
-                    .rclone
-                    .registry
-                    .get(&connection_id)
-                    .ok_or("Connection is not connected (rclone engine)")?;
+                let binding = self.rclone.binding(&connection_id)?;
                 let client = self.rclone.client().await?;
                 let payload = rclone::ops::quick_paths(
                     &client,
@@ -326,11 +311,7 @@ impl Plugin {
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string();
-                let binding = self
-                    .rclone
-                    .registry
-                    .get(&request_connection_id)
-                    .ok_or("Connection is not connected (rclone engine)")?;
+                let binding = self.rclone.binding(&request_connection_id)?;
                 let client = self.rclone.client().await?;
                 if method == "files/read" {
                     let request: model::ReadRequest = parse(params)?;
@@ -388,11 +369,7 @@ impl Plugin {
             }
             "files/mkdir" | "files/rmdir" | "files/delete" | "files/purge" => {
                 let request: model::PathRequest = parse(params)?;
-                let binding = self
-                    .rclone
-                    .registry
-                    .get(&request.connection_id)
-                    .ok_or("Connection is not connected (rclone engine)")?;
+                let binding = self.rclone.binding(&request.connection_id)?;
                 let client = self.rclone.client().await?;
                 let fs = rclone::call_fs(&binding);
                 match method {
@@ -459,16 +436,8 @@ impl Plugin {
                     .target_connection_id
                     .clone()
                     .unwrap_or_else(|| request.connection_id.clone());
-                let source_binding = self
-                    .rclone
-                    .registry
-                    .get(&source_connection_id)
-                    .ok_or("Connection is not connected (rclone engine)")?;
-                let target_binding = self
-                    .rclone
-                    .registry
-                    .get(&target_connection_id)
-                    .ok_or("Connection is not connected (rclone engine)")?;
+                let source_binding = self.rclone.binding(&source_connection_id)?;
+                let target_binding = self.rclone.binding(&target_connection_id)?;
                 ensure_binding_writable(&target_binding)?;
                 // `move` deletes the source (copy+delete degrade semantics) —
                 // the source connection passes the delete gate too, same rule
@@ -513,11 +482,7 @@ impl Plugin {
             }
             "files/rename" => {
                 let request: model::RenameRequest = parse(params)?;
-                let binding = self
-                    .rclone
-                    .registry
-                    .get(&request.connection_id)
-                    .ok_or("Connection is not connected (rclone engine)")?;
+                let binding = self.rclone.binding(&request.connection_id)?;
                 // Rename removes the source path — write + delete gates, same
                 // rule as the OpenDAL rename arm (ops::rename applies the
                 // policy check_rename whitelist on both endpoints itself).
@@ -538,11 +503,7 @@ impl Plugin {
             }
             "files/publicLink" => {
                 let request: model::PublicLinkRequest = parse(params)?;
-                let binding = self
-                    .rclone
-                    .registry
-                    .get(&request.connection_id)
-                    .ok_or("Connection is not connected (rclone engine)")?;
+                let binding = self.rclone.binding(&request.connection_id)?;
                 let client = self.rclone.client().await?;
                 // `expire_secs` is ignored: rc `operations/publiclink` takes
                 // no expiry parameter (backends without public links surface
@@ -570,11 +531,7 @@ impl Plugin {
             // ------------------------------------------------------------------
             "files/archiveList" => {
                 let request: model::ArchiveListRequest = parse(params)?;
-                let binding = self
-                    .rclone
-                    .registry
-                    .get(&request.connection_id)
-                    .ok_or("Connection is not connected (rclone engine)")?;
+                let binding = self.rclone.binding(&request.connection_id)?;
                 let client = self.rclone.client().await?;
                 let entries = rclone::archive::archive_list(
                     &client,
@@ -594,11 +551,7 @@ impl Plugin {
             }
             "files/extract" => {
                 let request: model::ExtractRequest = parse(params)?;
-                let binding = self
-                    .rclone
-                    .registry
-                    .get(&request.connection_id)
-                    .ok_or("Connection is not connected (rclone engine)")?;
+                let binding = self.rclone.binding(&request.connection_id)?;
                 // Extract writes the target tree but never deletes the source
                 // archive → read_only gate applies, allow_delete does not.
                 ensure_binding_writable(&binding)?;
@@ -621,11 +574,7 @@ impl Plugin {
             }
             "files/compress" => {
                 let request: model::CompressRequest = parse(params)?;
-                let binding = self
-                    .rclone
-                    .registry
-                    .get(&request.connection_id)
-                    .ok_or("Connection is not connected (rclone engine)")?;
+                let binding = self.rclone.binding(&request.connection_id)?;
                 ensure_binding_writable(&binding)?;
                 if request.paths.is_empty() {
                     return Err("paths must not be empty".to_string());
@@ -694,11 +643,7 @@ impl Plugin {
             // ------------------------------------------------------------------
             "files/upload/start" => {
                 let request: model::UploadStartRequest = parse(params)?;
-                let binding = self
-                    .rclone
-                    .registry
-                    .get(&request.connection_id)
-                    .ok_or("Connection is not connected (rclone engine)")?;
+                let binding = self.rclone.binding(&request.connection_id)?;
                 ensure_binding_writable(&binding)?;
                 let remote = rclone_gate(
                     &binding.root,
@@ -755,11 +700,7 @@ impl Plugin {
             }
             "files/download/start" => {
                 let request: model::DownloadStartRequest = parse(params)?;
-                let binding = self
-                    .rclone
-                    .registry
-                    .get(&request.connection_id)
-                    .ok_or("Connection is not connected (rclone engine)")?;
+                let binding = self.rclone.binding(&request.connection_id)?;
                 let client = self.rclone.client().await?;
                 let remote = rclone_gate(
                     &binding.root,
@@ -2428,14 +2369,8 @@ async fn rclone_start_dir_job(
     sync: bool,
     emitter: Option<&PluginEmitter>,
 ) -> Result<String, String> {
-    let source_binding = rclone
-        .registry
-        .get(&request.source_connection_id)
-        .ok_or("Connection is not connected (rclone engine)")?;
-    let target_binding = rclone
-        .registry
-        .get(&request.target_connection_id)
-        .ok_or("Connection is not connected (rclone engine)")?;
+    let source_binding = rclone.binding(&request.source_connection_id)?;
+    let target_binding = rclone.binding(&request.target_connection_id)?;
     // Gate order/message parity with `validate_dir_job_gates(target,
     // sync)`: the target must be writable, and sync's delete phase
     // additionally requires allow_delete (read_only rejects both).

@@ -113,6 +113,21 @@ impl RcloneEngine {
     pub async fn client(&self) -> Result<RcClient, String> {
         self.supervisor.lock().await.client().await
     }
+
+    /// Connection-id → binding lookup shared by the workbench route and the
+    /// MCP route. Folds in the built-in `__local__` connection (the
+    /// dual-pane local column): the synthesized root-`/` fs connection,
+    /// identical to the OpenDAL operator-table rule
+    /// (`engine::local_connection`). The binding is never registered — local
+    /// fs stays config-free, so a rcd respawn cannot orphan it.
+    pub fn binding(&self, connection_id: &str) -> Result<registry::RemoteBinding, String> {
+        if connection_id == crate::engine::LOCAL_CONNECTION_ID {
+            return registry::binding_for(&crate::engine::local_connection());
+        }
+        self.registry
+            .get(connection_id)
+            .ok_or_else(|| "Connection is not connected (rclone engine)".to_string())
+    }
 }
 
 impl Default for RcloneEngine {
@@ -157,6 +172,26 @@ mod wiring_tests {
         );
         // Local bindings already carry the root as the fs string.
         assert_eq!(call_fs(&binding("local", "/tmp/data", "/tmp/data")), "/tmp/data");
+    }
+
+    /// The built-in `__local__` id resolves without registration (rooted fs
+    /// binding, no policy gates) while unknown ids stay registry errors —
+    /// the dual-pane local column depends on the first half, the MCP route
+    /// on both.
+    #[test]
+    fn binding_folds_in_built_in_local_connection() {
+        let engine = RcloneEngine::new();
+        assert_eq!(
+            engine.binding("not-connected").err().as_deref(),
+            Some("Connection is not connected (rclone engine)")
+        );
+        let local = engine
+            .binding(crate::engine::LOCAL_CONNECTION_ID)
+            .expect("built-in local binding");
+        assert_eq!(local.backend_type, "local");
+        assert_eq!(local.remote_fs, "/");
+        assert_eq!(local.root, "/");
+        assert!(local.allow_delete && !local.read_only && !local.lock_to_root);
     }
 
     /// End-to-end through a live rcd: the fs-protocol wiring path — call_fs

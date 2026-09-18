@@ -4,8 +4,10 @@
 Exercises the same wire path the DBX host uses (5-byte frame header: 1 kind
 byte + 4-byte BE length, JSON payloads) against a locally built sidecar
 binary. Runs the full Phase A surface — plugin/initialize, connection
-test/connect/disconnect, files list/listPaged/stat/capabilities/size/
-quickPaths, one negative case, and one cross-engine fallback case — plus the
+test/connect/disconnect (including the reserved `__local__` refusal),
+files list/listPaged/stat/capabilities/size/quickPaths, the built-in
+`__local__` local filesystem (list/stat/read, no connect), one negative
+case, and one cross-engine fallback case — plus the
 Phase B file surface: read/write with truncation, mkdir/copy/move/rename,
 delete/purge (root refusal), publicLink (local refuses), and the binary
 upload/download channels (§7 frames: kind 1 payload = 2B channel length +
@@ -16,8 +18,8 @@ state in files/transfers/list. The rclone pass closes the method surface
 with the Phase D archive round — zip archiveList (rc-serve Range reads),
 extract, compress (zip + tar.gz) and byte-level read-back — plus a
 standalone `bin --mcp` check (rclone mode): initialize, tools/list,
-files_scan_digest over an inline local connection and files_cursor_next
-paging.
+files_scan_digest over an inline local connection and over the built-in
+`__local__` id, and files_cursor_next paging.
 
 Usage:
   python3 scripts/rclone_engine_smoke.py <path-to-dbx-plugin-files-bin> [--engine rclone|opendal]
@@ -359,6 +361,46 @@ def run(binary: str, engine: str | None) -> bool:
             "files/quickPaths",
             error is None and isinstance((result or {}).get("paths"), list) and result["paths"],
             f"error={error} result={result}",
+        )
+
+        # Built-in local filesystem (`__local__`): the dual-pane left column.
+        # Never connected — the sidecar synthesizes the root="/" fs binding,
+        # so absolute paths address the real disk (both engines).
+        result, error = sidecar.call(
+            "files/list", {"connectionId": "__local__", "path": tmp}
+        )
+        names = {e["name"] for e in (result or {}).get("entries", [])}
+        check(
+            "files/list __local__",
+            error is None and {"hello.txt", "sub", "empty"} <= names,
+            f"error={error} names={sorted(names)}",
+        )
+        result, error = sidecar.call(
+            "files/stat", {"connectionId": "__local__", "path": f"{tmp}/hello.txt"}
+        )
+        entry = (result or {}).get("entry", {})
+        check(
+            "files/stat __local__",
+            error is None and entry.get("kind") == "file" and entry.get("size") == 12,
+            f"error={error} entry={entry}",
+        )
+        result, error = sidecar.call(
+            "files/read", {"connectionId": "__local__", "path": f"{tmp}/hello.txt"}
+        )
+        data = base64.b64decode((result or {}).get("dataBase64", ""))
+        check(
+            "files/read __local__",
+            data == b"hello rclone",
+            f"error={error} data={data!r}",
+        )
+        result, error = sidecar.call(
+            "connection/connect",
+            lifecycle_params("__local__", {"protocol": "fs", "root": tmp}),
+        )
+        check(
+            "connection/connect __local__ reserved",
+            result is None and error and "reserved" in str(error),
+            f"result={result} error={error}",
         )
 
         # Cross-engine fallback reality (rclone pass only): the two engines
@@ -842,6 +884,25 @@ def run(binary: str, engine: str | None) -> bool:
                 check(
                     "mcp files_cursor_next page 2 (done)",
                     len(payload.get("rows", [])) == 1 and payload.get("done") is True,
+                    f"error={error} payload={payload}",
+                )
+                # `__local__` through the rclone MCP route: the built-in id
+                # stays local (never forwarded to the app bridge) and resolves
+                # via the shared engine binding — same walk, absolute path
+                # under the root="/" fs.
+                result, error = mcp.call(
+                    "tools/call",
+                    {
+                        "name": "files_scan_digest",
+                        "arguments": {"connectionId": "__local__", "path": mcp_root},
+                    },
+                )
+                payload = unwrap_envelope(result)
+                check(
+                    "mcp files_scan_digest __local__",
+                    error is None
+                    and payload.get("matched") == 3
+                    and payload.get("scanned") == 3,
                     f"error={error} payload={payload}",
                 )
             except Exception as exc:  # noqa: BLE001 — smoke reports via check()
