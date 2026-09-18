@@ -5,30 +5,33 @@
 #   os:   darwin | linux | windows
 #   arch: arm64 | amd64   (x64 accepted as an alias of amd64)
 #
-# Downloads rclone-v<RCLONE_VERSION>-<rclone-os>-<arch>.zip from the rclone
-# GitHub Releases (downloads.rclone.org as fallback), verifies the pinned
-# SHA256 below, extracts the rclone binary to <dest-dir> and smoke-checks
-# `--version`. Idempotent: when <dest-dir> already holds a binary reporting
-# the pinned version, nothing is downloaded (CI-cache friendly).
+# Downloads rclone-v<RCLONE_VERSION>-<rclone-os>-<arch>.zip from the dbx fork's
+# GitHub Releases (RCLONE_REPO=rclone/rclone restores the official source with
+# a downloads.rclone.org fallback), verifies the pinned SHA256 below, extracts
+# the rclone binary to <dest-dir> and smoke-checks `--version`. Idempotent:
+# when <dest-dir> already holds a binary reporting the pinned version, nothing
+# is downloaded (CI-cache friendly).
 #
 # rclone asset naming: darwin -> osx, linux -> linux, windows -> windows.
 # The release zips contain a single top-level dir with the binary inside.
 set -euo pipefail
 
-RCLONE_VERSION="v1.75.1"
-# Override to fetch from a fork release instead (contrib/rclone-fork/README.md);
-# the pinned SHA256 list below must be updated in the same change.
-RCLONE_REPO="${RCLONE_REPO:-rclone/rclone}"
+RCLONE_VERSION="v1.75.1-dbx.1"
+# Fork releases carry the cmount-tagged build with the DBX plugin fixes; the
+# pinned SHA256 list below must be updated in the same change as the version
+# (contrib/rclone-fork/README.md). Override to rclone/rclone for the official
+# source.
+RCLONE_REPO="${RCLONE_REPO:-jinpy666/rclone}"
 
-# Pinned SHA256 of the release zips, from the official checksum list:
-# https://downloads.rclone.org/v1.75.1/SHA256SUMS
+# Pinned SHA256 of the release zips, from the fork's checksum list:
+# https://github.com/jinpy666/rclone/releases/download/v1.75.1-dbx.1/SHA256SUMS
 pinned_sha256() {
   case "$1" in
-    rclone-v1.75.1-osx-arm64.zip)      echo "c61d7a371c62bcbbe882c3423aa4b8bf63485c248dd0f692997b8f0c3f6d0c6f" ;;
-    rclone-v1.75.1-osx-amd64.zip)      echo "29253d0288b8fbbac46baad6e5f6add6cb01d462c79f10805bbd4631c4cdf82c" ;;
-    rclone-v1.75.1-linux-amd64.zip)    echo "982b5aa772841168f8e380f139e9e787b2a105403e32b94da8676a0e1c0a13ab" ;;
-    rclone-v1.75.1-linux-arm64.zip)    echo "03f2504174034b6d004152ed7369251c9a9ec1f7e0836eda420f5c7a5ec0dff9" ;;
-    rclone-v1.75.1-windows-amd64.zip)  echo "200eb602c126d82aa38b51e0f6b9ae837473ff99b51278d3f6f837574c494d6e" ;;
+    rclone-v1.75.1-dbx.1-osx-arm64.zip)      echo "f27caad79bb18af872706df46614c14997b1002254c068f9d30630dbd5d759b8" ;;
+    rclone-v1.75.1-dbx.1-osx-amd64.zip)      echo "f158a0d1ef7a2945a87a3eb2a375af072822882cf369c69cdf2de92e15c1eed6" ;;
+    rclone-v1.75.1-dbx.1-linux-amd64.zip)    echo "a012b6edd9445a225609d9bbd51245fbeff67064b71eb59e238894ad06cab1d7" ;;
+    rclone-v1.75.1-dbx.1-linux-arm64.zip)    echo "5379cf0c39cb95858e93b7283a221ded1fcc08ecfee521342c56ff3217559c97" ;;
+    rclone-v1.75.1-dbx.1-windows-amd64.zip)  echo "4e4fbb680b9bb7300cb7d71e27f95a685d5c70f5e98a3404e3f9cfefd435b66d" ;;
     *) return 1 ;;
   esac
 }
