@@ -63,7 +63,7 @@ jobs:
       - name: Build docs
         run: make doc
       - name: Cross-compile linux amd64+arm64
-        run: go run bin/cross-compile.go "$FORK_VERSION" -include '^(linux)/(amd64|arm64)$' -tags noselfupdate
+        run: go run bin/cross-compile.go -include '^(linux)/(amd64|arm64)$' -tags noselfupdate "$FORK_VERSION"
       - uses: actions/upload-artifact@v7
         with:
           name: rclone-linux
@@ -106,7 +106,7 @@ jobs:
         run: make doc
       # cross-compile.go 对 windows 自动加 -buildmode exe 并嵌版本/图标资源
       - name: Cross-compile windows amd64
-        run: go run bin/cross-compile.go "$FORK_VERSION" -include '^windows/amd64$' -tags 'cmount noselfupdate'
+        run: go run bin/cross-compile.go -include '^windows/amd64$' -tags 'cmount noselfupdate' "$FORK_VERSION"
       - uses: actions/upload-artifact@v7
         with:
           name: rclone-windows
@@ -141,9 +141,9 @@ jobs:
         run: make doc
       # 官方 build.yml 同款参数：一个 macOS runner 用 clang -arch 出双架构
       - name: Cross-compile darwin amd64
-        run: go run bin/cross-compile.go "$FORK_VERSION" -include '^darwin/amd64' -cgo -tags 'cmount noselfupdate'
+        run: go run bin/cross-compile.go -include '^darwin/amd64' -cgo -tags 'cmount noselfupdate' "$FORK_VERSION"
       - name: Cross-compile darwin arm64
-        run: go run bin/cross-compile.go "$FORK_VERSION" -include '^darwin/arm64' -cgo -macos-arch arm64 -cgo-cflags=-I/usr/local/include -cgo-ldflags=-L/usr/local/lib -tags 'cmount noselfupdate'
+        run: go run bin/cross-compile.go -include '^darwin/arm64' -cgo -macos-arch arm64 -cgo-cflags=-I/usr/local/include -cgo-ldflags=-L/usr/local/lib -tags 'cmount noselfupdate' "$FORK_VERSION"
       - uses: actions/upload-artifact@v7
         with:
           name: rclone-darwin
