@@ -1795,3 +1795,15 @@ DBX Archivos/…」别名（README 明示 "Files Studio（io.dbx.files，DBX 文
   若未来前端自渲染快捷协议表单需先补七语。
 - 译文审校为单轮人工比对（en 基准 × 六语），es/it 语域混用（tú/usted）等
   风格层面差异未统一，仅修语义错误。
+
+## Linux 发布产物 glibc 基线修复（2026-09-18，跨插件 CI 收口）
+
+issue dbx-plugin-ssh#8/#58（官方 web docker 镜像 bookworm/glibc 2.36 装
+插件后 sidecar 启动即退 `exited with status 1`）根因适用于本插件：v0.1.59
+linux 产物实测同样钉死 GLIBC_2.39（ubuntu-24.04 原生构建），bookworm 容器
+内复现 loader 失败。修复收口在上层仓（`build-candidates.yml` Linux 走
+cargo-zigbuild 低 glibc 基线 + `CGO_ENABLED=0`；`validate_artifact_set.py`
+新增 ELF GLIBC ≤2.31 守卫，files v0.1.59 坏包实测被拦），本仓唯一改动是
+`scripts/build.sh` 的 `~/.cargo/bin` PATH 前置改条件式（防压回 CI 包装
+器）。详见上层仓 `docs/CI_MULTI_PLATFORM.zh-CN.md`「Linux glibc 基线」节
+与 ssh PROGRESS 同日条目。
