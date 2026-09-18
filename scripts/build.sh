@@ -8,7 +8,13 @@ cd "$(dirname "$0")/.."
 if ! command -v pnpm >/dev/null; then
   export PATH="$HOME/.nvm/versions/node/v22.21.0/bin:$HOME/Library/pnpm:$PATH"
 fi
-export PATH="$HOME/.cargo/bin:$PATH"
+# Prepend only when cargo is not already resolvable: the release CI installs a
+# cargo→cargo-zigbuild wrapper ahead of the rustup shim (Linux sidecars must
+# link a low glibc baseline), and an unconditional prepend here would shadow
+# the wrapper and silently revert Linux builds to the runner's native glibc.
+if ! command -v cargo >/dev/null 2>&1; then
+  export PATH="$HOME/.cargo/bin:$PATH"
+fi
 
 echo "==> frontend: install + typecheck + test + build"
 # Skip install when node_modules is fresh (lockfile unchanged since); saves
