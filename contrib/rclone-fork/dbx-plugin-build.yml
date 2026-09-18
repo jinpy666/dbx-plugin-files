@@ -32,6 +32,9 @@ env:
   # 版本即产物名与 fs.Version：tag 构建用 tag 名（如 dbx-v1.75.1-1），
   # 分支构建用 dbx-<sha> 供联调。
   FORK_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('dbx-{0}', github.sha) }}
+  # windows runner 的 python 默认 cp1252，make doc 读 docs/*.md 会
+  # UnicodeDecodeError；UTF-8 模式对其他平台无副作用
+  PYTHONUTF8: "1"
 
 jobs:
   linux:
