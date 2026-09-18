@@ -933,11 +933,16 @@ mod tests {
         assert!(params.get("pass").is_none(), "cleared password not forwarded");
 
         // Key file path form: tilde expansion, password-class keys absent.
+        // The expectation mirrors expand_tilde's own Path::join so the
+        // assertion holds with Windows path separators too.
         connection.user = String::new();
         let home = home_dir().unwrap_or_else(|| "/home".to_string());
         connection.key = "~/.ssh/id_ed25519".into();
         let params = param_map(&connection);
-        assert_eq!(params["key_file"], format!("{home}/.ssh/id_ed25519"));
+        assert_eq!(
+            params["key_file"],
+            Path::new(&home).join(".ssh/id_ed25519").to_string_lossy().into_owned()
+        );
         assert!(!params_for(&connection).expect("tuple").2, "key_file is not obscured");
         assert!(params.get("pass").is_none());
 
