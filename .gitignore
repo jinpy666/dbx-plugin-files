@@ -10,3 +10,6 @@
 .idea/
 .mimosa
 .pnpm-store/
+bin/
+.dbx-dev/
+frontend/.pnpm-store/
