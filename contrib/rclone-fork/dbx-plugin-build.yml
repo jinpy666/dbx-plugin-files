@@ -18,7 +18,9 @@ on:
   push:
     # dbx（裸名）与 dbx/** 前缀分支；dbx/** 不匹配裸名，需并列声明
     branches: [dbx, 'dbx/**']
-    tags: ['dbx-v*']
+    # 版本须为 semver（resource_windows.go 校验，剥 v 前缀后解析），
+    # 如 v1.75.1-dbx.1；dbx 前缀写法会被 windows 宿主构建拒绝
+    tags: ['v*-dbx*']
   workflow_dispatch:
   schedule:
     # 每周一检查上游新版本（见 check-upstream job）；注意 GitHub 会在仓库
@@ -29,7 +31,7 @@ permissions:
   contents: read
 
 env:
-  # 版本即产物名与 fs.Version：tag 构建用 tag 名（如 dbx-v1.75.1-1），
+  # 版本即产物名与 fs.Version：tag 构建用 tag 名（如 v1.75.1-dbx.1），
   # 分支构建用 dbx-<sha> 供联调。
   FORK_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('dbx-{0}', github.sha) }}
   # windows runner 的 python 默认 cp1252，make doc 读 docs/*.md 会
@@ -144,7 +146,7 @@ jobs:
       - name: Cross-compile darwin amd64
         run: go run bin/cross-compile.go -include '^darwin/amd64' -cgo -tags 'cmount noselfupdate' "$FORK_VERSION"
       - name: Cross-compile darwin arm64
-        run: go run bin/cross-compile.go -include '^darwin/arm64' -cgo -macos-arch arm64 -cgo-cflags=-I/usr/local/include -cgo-ldflags=-L/usr/local/lib -tags 'cmount noselfupdate' "$FORK_VERSION"
+        run: go run bin/cross-compile.go -include '^darwin/arm64' -cgo -macos-arch arm64 -cgo-cflags=-I/usr/local/include -cgo-ldflags=-L/usr/local/lib -no-clean -tags 'cmount noselfupdate' "$FORK_VERSION"
       - uses: actions/upload-artifact@v7
         with:
           name: rclone-darwin
@@ -157,7 +159,7 @@ jobs:
     needs: [linux, windows, macos]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    if: startsWith(github.ref, 'refs/tags/dbx-v')
+    if: startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-dbx')
     permissions:
       contents: write
     steps:
@@ -175,7 +177,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$FORK_VERSION" dist/rclone-*.zip dist/SHA256SUMS \
+          gh release create --repo "$GITHUB_REPOSITORY" "$FORK_VERSION" dist/rclone-*.zip dist/SHA256SUMS \
             --title "rclone $FORK_VERSION for DBX plugin" \
             --notes "dbx fork build. Asset naming and SHA256SUMS follow the official rclone convention; see dbx-plugin-files contrib/rclone-fork/README.md." \
             --verify-tag
