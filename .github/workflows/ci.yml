@@ -24,6 +24,21 @@ env:
   # Unicode (→, ✓) and would die on UnicodeEncodeError. UTF-8 mode is a no-op
   # on the other platforms.
   PYTHONUTF8: "1"
+  # sccache caches rustc invocations. It matters because `dbx-plugin package`
+  # rebuilds the sidecar from a staging copy with its own target dir
+  # (verified: a full ~374-unit rebuild on every run, CARGO_TARGET_DIR is not
+  # reused), so rust-cache's target-dir reuse cannot help that step —
+  # sccache's content-keyed compilation cache can. Storage is a local dir
+  # persisted via actions/cache: sccache's GitHub-Actions-cache backend
+  # (SCCACHE_GHA_ENABLED) speaks the legacy artifactcache API and failed at
+  # server startup against the decommissioning endpoint (HTTP 400 from the
+  # Edge error page), which would turn every cache-service hiccup into a red
+  # run; a local-dir startup never touches the network, so a restore miss
+  # degrades to a cold build instead of a failure. Incremental must stay off
+  # for sccache Rust hits.
+  RUSTC_WRAPPER: sccache
+  SCCACHE_DIR: ${{ github.workspace }}/.sccache-cache
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   validate:
@@ -79,6 +94,19 @@ jobs:
         # source on Linux (pkg-config covers its transitive build probes).
         run: sudo apt-get update && sudo apt-get install -y pkg-config nasm
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.7
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.sccache-cache
+          # sccache is content-keyed, so an unchanged lock hash keeps the key
+          # stable and new code just adds entries. The primary key carries the
+          # job (and matrix target in the candidate job) so parallel saves
+          # never collide; the restore prefix lets sibling jobs on the same
+          # OS share compilations.
+          key: sccache-${{ runner.os }}-${{ github.job }}-${{ hashFiles('backend/Cargo.lock') }}
+          restore-keys: |
+            sccache-${{ runner.os }}-${{ github.job }}-
+            sccache-${{ runner.os }}-
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
@@ -99,6 +127,14 @@ jobs:
       - name: Install native dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config nasm
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.7
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.sccache-cache
+          key: sccache-${{ runner.os }}-${{ github.job }}-${{ hashFiles('backend/Cargo.lock') }}
+          restore-keys: |
+            sccache-${{ runner.os }}-${{ github.job }}-
+            sccache-${{ runner.os }}-
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
@@ -112,7 +148,11 @@ jobs:
 
   candidate:
     name: Package candidate (${{ matrix.target }})
-    needs: [validate, frontend, backend, container-smoke]
+    # Runs in parallel with container-smoke (not after it): packaging is
+    # validated independently by the offline MCP smoke below, and the run
+    # still goes red if the protocol smoke fails — candidates-check waits
+    # for both. Saves container-smoke's runtime from the critical path.
+    needs: [validate, frontend, backend]
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -168,8 +208,19 @@ jobs:
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.7
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.sccache-cache
+          # Primary key carries matrix.target so the five parallel saves
+          # never collide.
+          key: sccache-${{ runner.os }}-${{ github.job }}-${{ matrix.target }}-${{ hashFiles('backend/Cargo.lock') }}
+          restore-keys: |
+            sccache-${{ runner.os }}-${{ github.job }}-${{ matrix.target }}-
+            sccache-${{ runner.os }}-
       # rust-cache 的 key 自动包含 job 名与 matrix 值，五个 target 各自缓存；
-      # 打包步骤的 CARGO_TARGET_DIR 也指向 backend/target，可一并复用。
+      # 直接构建这一步靠它复用。`dbx-plugin package` 的 staging 副本构建
+      # 不复用 target（见顶部 env 注释），改由 sccache 按编译单元提速。
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
@@ -191,8 +242,10 @@ jobs:
         # the version pin and SHA256 live in scripts/fetch-rclone.sh.
         run: scripts/fetch-rclone.sh "${{ matrix.rclone_os }}" "${{ matrix.rclone_arch }}" "bin/${{ matrix.target }}"
       - name: Package .dbxp candidate
-        # CARGO_TARGET_DIR points the CLI's own cargo build at the warm
-        # backend/target from the step above instead of a throwaway staging dir.
+        # The CLI's staging build does NOT reuse backend/target (verified
+        # locally: a full ~374-unit rebuild on every run regardless of
+        # CARGO_TARGET_DIR); keep the env harmless and rely on sccache to
+        # serve the cached compilations instead.
         env:
           DBX_PLUGIN_TARGET: ${{ matrix.target }}
           CARGO_TARGET_DIR: ${{ github.workspace }}/backend/target
@@ -210,7 +263,7 @@ jobs:
 
   candidates-check:
     name: Cross-target candidate checks
-    needs: [candidate]
+    needs: [candidate, container-smoke]
     timeout-minutes: 15
     runs-on: ubuntu-24.04
     steps:
