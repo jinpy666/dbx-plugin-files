@@ -9,6 +9,13 @@
 - 工作分支命名 `dbx/**`（如 `dbx`），基于上游 release 分支或 `master`。
 - 自己的改动收敛为少量小提交，方便定期 `git merge upstream/master` 跟进
   （用 merge 不用 rebase；rclone 约每 6–8 周发一个 minor）。
+- **坑：release tag 不在 master 上**（如 v1.75.1 是 `v1.75-stable` 分支头），
+  `--default-branch-only` 的 fork 不含该分支；建基分支需
+  `git fetch --depth 1 upstream refs/tags/v1.75.1` 后把
+  `FETCH_HEAD^{commit}` 推为 fork 的 `dbx` 分支。
+- 实际部署：`jinpy666/rclone` 的 `dbx` 分支已挂 `dbx-plugin-build.yml`；
+  分支 push / 手动 dispatch 只构建并上传工件（artifacts），**只有推
+  `dbx-v*` tag 才会创建 GitHub Release**。
 
 ## 2. 改造内容（保守裁剪）
 
