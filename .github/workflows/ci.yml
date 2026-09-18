@@ -121,22 +121,32 @@ jobs:
           - os: linux
             runner: ubuntu-24.04
             target: linux-x64
+            rclone_os: linux
+            rclone_arch: amd64
             python: python3
           - os: linux
             runner: ubuntu-24.04-arm
             target: linux-arm64
+            rclone_os: linux
+            rclone_arch: arm64
             python: python3
           - os: macos
             runner: macos-15
             target: darwin-arm64
+            rclone_os: darwin
+            rclone_arch: arm64
             python: python3
           - os: macos
             runner: macos-15-intel
             target: darwin-x64
+            rclone_os: darwin
+            rclone_arch: amd64
             python: python3
           - os: windows
             runner: windows-2022
             target: windows-x64
+            rclone_os: windows
+            rclone_arch: amd64
             python: python
     runs-on: ${{ matrix.runner }}
     defaults:
@@ -176,6 +186,10 @@ jobs:
       - name: Offline MCP smoke
         run: ${{ matrix.python }} scripts/smoke_mcp.py --binary "$SIDECAR_BINARY"
       - run: npm install --global "@dbx-app/plugin-cli@${PLUGIN_CLI_VERSION}"
+      - name: Fetch pinned rclone
+        # Bundles rclone next to the sidecar via [package].include "bin";
+        # the version pin and SHA256 live in scripts/fetch-rclone.sh.
+        run: scripts/fetch-rclone.sh "${{ matrix.rclone_os }}" "${{ matrix.rclone_arch }}" "bin/${{ matrix.target }}"
       - name: Package .dbxp candidate
         # CARGO_TARGET_DIR points the CLI's own cargo build at the warm
         # backend/target from the step above instead of a throwaway staging dir.
@@ -184,6 +198,8 @@ jobs:
           CARGO_TARGET_DIR: ${{ github.workspace }}/backend/target
           NO_COLOR: "1"
         run: dbx-plugin package .
+      - name: Check bundled rclone in candidate
+        run: ${{ matrix.python }} scripts/check_rclone_package.py dist/*.dbxp --target "${{ matrix.target }}"
       - uses: actions/upload-artifact@v7
         with:
           name: dbx-plugin-files-${{ matrix.target }}

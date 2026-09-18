@@ -1,0 +1,207 @@
+# rclone fork（dbx 分支）→ DBX 插件多架构二进制构建
+#
+# 用法：将本文件复制到 rclone fork 仓库的 .github/workflows/dbx-plugin-build.yml。
+# 产物命名与官方完全一致（rclone-<version>-<os>-<arch>.zip + SHA256SUMS，
+# darwin 映射为 osx），使 dbx-plugin-files 侧 scripts/fetch-rclone.sh 只需更新
+# RCLONE_VERSION / SHA256 pin / RCLONE_REPO 三处即可切换到 fork。
+#
+# 平台矩阵（与 dbx-plugin-files 的 5 个发布 target 一一对应）：
+#   linux   amd64 + arm64  CGO_ENABLED=0（mount 走纯 Go bazil fuse）
+#   windows amd64          CGO_ENABLED=0，cmount tag（运行期挂载需 WinFsp）
+#   darwin  amd64 + arm64  CGO + macfuse（cmount tag；macos runner 上 clang 交叉双架构）
+#
+# 保守裁剪：-tags noselfupdate（去 selfupdate）；cross-compile.go 自带
+# -trimpath 与 -ldflags "-s -X ...fs.Version=<version>"。
+name: Build rclone for DBX plugin
+
+on:
+  push:
+    # dbx（裸名）与 dbx/** 前缀分支；dbx/** 不匹配裸名，需并列声明
+    branches: [dbx, 'dbx/**']
+    # 版本须为 semver（resource_windows.go 校验，剥 v 前缀后解析），
+    # 如 v1.75.1-dbx.1；dbx 前缀写法会被 windows 宿主构建拒绝
+    tags: ['v*-dbx*']
+  workflow_dispatch:
+  schedule:
+    # 每周一检查上游新版本（见 check-upstream job）；注意 GitHub 会在仓库
+    # 60 天无活动后停用 scheduled workflow，需保持仓库活跃。
+    - cron: '23 3 * * 1'
+
+permissions:
+  contents: read
+
+env:
+  # 版本即产物名与 fs.Version：tag 构建用 tag 名（如 v1.75.1-dbx.1），
+  # 分支构建用 dbx-<sha> 供联调。
+  FORK_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('dbx-{0}', github.sha) }}
+  # windows runner 的 python 默认 cp1252，make doc 读 docs/*.md 会
+  # UnicodeDecodeError；UTF-8 模式对其他平台无副作用
+  PYTHONUTF8: "1"
+
+jobs:
+  linux:
+    name: linux amd64+arm64 (CGO=0)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          # 官方禁用 setup-go 缓存（key 只含 go.sum 时矩阵任务互相覆盖）；
+          # fork 构建频率低，不值得额外维护 actions/cache。
+          cache: false
+      - name: Install doc + packaging toolchain
+        # pandoc: make doc 生成 MANUAL.txt/html 与 rclone.1（cross-compile.go
+        # 打 zip 时复制）；release_dep_linux = go install nfpm（linux 附带
+        # .deb/.rpm 产物）。GOTOOLCHAIN=auto：nfpm@latest 的 go 要求高于
+        # go.mod 钉住的版本，允许 go 自动下载新 toolchain 完成安装
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc zip
+          GOTOOLCHAIN=auto make release_dep_linux
+      - name: Build docs
+        run: make doc
+      - name: Cross-compile linux amd64+arm64
+        run: go run bin/cross-compile.go -include '^(linux)/(amd64|arm64)$' -tags noselfupdate "$FORK_VERSION"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rclone-linux
+          if-no-files-found: error
+          # cross-compile.go chdir("build") 后在 build/ 下产出 zip
+          path: build/rclone-*.zip
+
+  windows:
+    name: windows amd64 (CGO=0, cmount)
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      # 官方 build.yml windows job 同款：winfsp 头文件（cmount 编译期）、zip、
+      # pandoc；mingw32-make 复制为 make 供 make doc 使用
+      - name: Install winfsp/zip/pandoc + make shim
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          choco install -y winfsp zip pandoc
+          "CPATH=C:\Program Files\WinFsp\inc\fuse;C:\Program Files (x86)\WinFsp\inc\fuse" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $path = (get-command mingw32-make.exe).Path
+          Copy-Item -Path $path -Destination (Join-Path (Split-Path -Path $path) 'make.exe')
+      - name: Build docs
+        # 同 darwin：rcdocs 需要宿主二进制带 cmount；windows 的 cmount 不需要
+        # cgo（官方矩阵即 cgo=0），显式关闭避免对 gcc 的依赖
+        env:
+          GOTAGS: cmount
+          CGO_ENABLED: '0'
+        run: make doc
+      # cross-compile.go 对 windows 自动加 -buildmode exe 并嵌版本/图标资源
+      - name: Cross-compile windows amd64
+        run: go run bin/cross-compile.go -include '^windows/amd64$' -tags 'cmount noselfupdate' "$FORK_VERSION"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rclone-windows
+          if-no-files-found: error
+          # cross-compile.go chdir("build") 后在 build/ 下产出 zip
+          path: build/rclone-*.zip
+
+  macos:
+    name: darwin amd64+arm64 (CGO + macfuse)
+    runs-on: macos-15
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      # cmount 需要 macfuse 头文件（编译期）；用户机器上的运行期挂载同样需要安装 macfuse
+      - name: Install macfuse + pandoc
+        run: brew install --cask macfuse && brew install pandoc
+      - name: Build docs
+        # rcdocs 需要宿主 rclone 带 mount 命令（macOS 上只有 cmount tag 才有）；
+        # 官方 build.yml 同款 GOTAGS 做法
+        env:
+          GOTAGS: cmount
+        run: make doc
+      # 官方 build.yml 同款参数：一个 macOS runner 用 clang -arch 出双架构
+      - name: Cross-compile darwin amd64
+        run: go run bin/cross-compile.go -include '^darwin/amd64' -cgo -tags 'cmount noselfupdate' "$FORK_VERSION"
+      - name: Cross-compile darwin arm64
+        run: go run bin/cross-compile.go -include '^darwin/arm64' -cgo -macos-arch arm64 -cgo-cflags=-I/usr/local/include -cgo-ldflags=-L/usr/local/lib -no-clean -tags 'cmount noselfupdate' "$FORK_VERSION"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rclone-darwin
+          if-no-files-found: error
+          # cross-compile.go chdir("build") 后在 build/ 下产出 zip
+          path: build/rclone-*.zip
+
+  release:
+    name: Publish release with SHA256SUMS
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    if: startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-dbx')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: rclone-*
+          merge-multiple: true
+          path: dist
+      - name: Generate SHA256SUMS
+        working-directory: dist
+        run: |
+          sha256sum rclone-*.zip > SHA256SUMS
+          cat SHA256SUMS
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create --repo "$GITHUB_REPOSITORY" "$FORK_VERSION" dist/rclone-*.zip dist/SHA256SUMS \
+            --title "rclone $FORK_VERSION for DBX plugin" \
+            --notes "dbx fork build. Asset naming and SHA256SUMS follow the official rclone convention; see dbx-plugin-files contrib/rclone-fork/README.md." \
+            --verify-tag
+
+  check-upstream:
+    name: Check upstream rclone releases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # 只在每周 cron 上运行；fork 默认关闭 Issues，如需开 issue 先在仓库设置里启用
+    if: github.event_name == 'schedule'
+    permissions:
+      issues: write
+    steps:
+      - name: Open an issue when upstream publishes a new release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest="$(gh api repos/rclone/rclone/releases/latest --jq .tag_name)"
+          echo "upstream latest: $latest"
+          if gh api "repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" --jq '.[].title' | grep -F "$latest"; then
+            echo "issue for $latest already exists"
+            exit 0
+          fi
+          gh issue create \
+            --title "上游 rclone 已发布 $latest，请评估同步 dbx 分支" \
+            --body "上游 [rclone $latest](https://github.com/rclone/rclone/releases/tag/$latest) 已发布。请按 contrib/rclone-fork/README.md 的上游同步流程 merge upstream/master，跑 quicktest 后打 dbx-<上游版本>-<序号> tag。" \
+            --repo "$GITHUB_REPOSITORY"

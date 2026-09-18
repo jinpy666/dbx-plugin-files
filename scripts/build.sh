@@ -87,7 +87,11 @@ for stale in bin/*; do
   [ -e "$stale" ] || continue
   [ "$stale" = "bin/$rclone_target" ] || rm -rf "$stale"
 done
-scripts/fetch-rclone.sh "$rclone_os" "$rclone_arch" "bin/$rclone_target"
+if [ "${SKIP_RCLONE:-0}" = "1" ]; then
+  echo "SKIP_RCLONE=1: not fetching rclone (sidecar falls back to system PATH at runtime)"
+else
+  scripts/fetch-rclone.sh "$rclone_os" "$rclone_arch" "bin/$rclone_target"
+fi
 
 unset DBX_PLUGIN_SDK_ROOT
 # The dbx-plugin CLI ships with the SDK checkout; build it on first use.
@@ -99,6 +103,16 @@ if ! command -v dbx-plugin >/dev/null 2>&1; then
   export PATH="$HOST/plugins/sdk/cli/target/release:$PATH"
 fi
 NO_COLOR=1 dbx-plugin package .
+
+# Same assertions release CI enforces: fails fast if the bin/ include lost the
+# rclone binary or its exec bit between fetch and packaging.
+if [ "${SKIP_RCLONE:-0}" != "1" ]; then
+  if py="$(command -v python3 || command -v python)"; then
+    "$py" scripts/check_rclone_package.py dist/*.dbxp --target "$rclone_target"
+  else
+    echo "python not found; skipping local rclone package check (release CI enforces it)"
+  fi
+fi
 
 echo
 echo "Artifacts:"
