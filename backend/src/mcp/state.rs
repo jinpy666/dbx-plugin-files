@@ -241,6 +241,9 @@ impl<T> LruTable<T> {
 
 /// All MCP in-process state: settings mirror + intent table + snapshot +
 /// cursor sessions + confirm tokens. Shared behind `Arc` from `Plugin`.
+/// `rclone` carries the Phase D engine route: `Some` when the sidecar runs
+/// `DBX_FILES_ENGINE=rclone`, and every storage-touching tool then dispatches
+/// through [`super::tools::RcloneRoute`] instead of the OpenDAL `Engine`.
 pub struct Mcp {
     settings: RwLock<McpSettings>,
     settings_path: PathBuf,
@@ -248,6 +251,7 @@ pub struct Mcp {
     pub(crate) snapshot: Mutex<Option<Value>>,
     pub(crate) cursors: Mutex<LruTable<CursorSession>>,
     pub(crate) confirms: Mutex<HashMap<String, ConfirmEntry>>,
+    pub(crate) rclone: Option<std::sync::Arc<super::tools::RcloneRoute>>,
 }
 
 impl Mcp {
@@ -261,7 +265,27 @@ impl Mcp {
             snapshot: Mutex::new(None),
             cursors: Mutex::new(LruTable::new(DEFAULT_MAX_CURSOR_SESSIONS)),
             confirms: Mutex::new(HashMap::new()),
+            rclone: None,
         }
+    }
+
+    /// Wires the rclone route (Phase D): called by `main.rs` / stdio when
+    /// `RcloneEngine::enabled()` before the `Arc` wrap.
+    pub fn attach_rclone(&mut self, route: super::tools::RcloneRoute) {
+        self.rclone = Some(std::sync::Arc::new(route));
+    }
+
+    /// The rclone route when the sidecar runs the rclone engine.
+    pub(crate) fn rclone_route(&self) -> Option<&super::tools::RcloneRoute> {
+        self.rclone.as_deref()
+    }
+
+    /// True when `connection_id` resolves in the rclone registry (stdio
+    /// bridge-forward planning: pooled rclone connections stay local).
+    pub(crate) fn rclone_pooled(&self, connection_id: &str) -> bool {
+        self.rclone
+            .as_ref()
+            .is_some_and(|route| route.engine.registry.get(connection_id).is_some())
     }
 
     pub(crate) fn current_settings(&self) -> McpSettings {

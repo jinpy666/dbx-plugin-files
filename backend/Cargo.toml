@@ -49,7 +49,7 @@ smb2 = "=0.20.1"
 # `rustls` (aws-lc-rs) TLS feature opendal enables, and the RustCrypto set is
 # the digest-0.11 line (hmac 0.13 / sha1 0.11 / sha2 0.11) already in the
 # lock; chrono only formats request timestamps (no clock features pulled).
-reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "multipart"] }
 hmac = "0.13"
 sha1 = "0.11"
 sha2 = "0.11"

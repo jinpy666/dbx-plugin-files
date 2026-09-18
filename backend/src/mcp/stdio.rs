@@ -284,10 +284,22 @@ pub fn run_mcp_stdio(data_dir: PathBuf) -> io::Result<()> {
             data_dir.display()
         ))
     })?;
-    let mcp = Arc::new(Mcp::new(data_dir.clone()));
+    let store = Arc::new(Store::new(data_dir.clone()));
+    let mut mcp_inner = Mcp::new(data_dir.clone());
+    // Phase D: the standalone server honors DBX_FILES_ENGINE=rclone too —
+    // storage tools then dispatch through the rclone engine (inline
+    // connections register into its registry below). `start_sync` stays
+    // None: files_sync refuses in stdio either way (no event channel).
+    if crate::rclone::RcloneEngine::enabled() {
+        mcp_inner.attach_rclone(super::tools::RcloneRoute {
+            engine: Arc::new(crate::rclone::RcloneEngine::new()),
+            store: Arc::clone(&store),
+            start_sync: None,
+        });
+    }
+    let mcp = Arc::new(mcp_inner);
     let engine = Arc::new(Engine::new());
     let transfers = Arc::new(JobTable::new());
-    let store = Arc::new(Store::new(data_dir));
     // Parity with the framed path: hydrate the persisted transfer history.
     {
         let transfers = Arc::clone(&transfers);
@@ -524,7 +536,7 @@ impl StdioServer {
                 };
             }
         }
-        let arguments = self.prepare_arguments(name, arguments)?;
+        let arguments = self.prepare_arguments(name, arguments).await?;
         // Same dispatch as the DBX bridge (`emitter: None` — no workbench
         // event channel); the 16 KiB cap + envelope post-processing is shared.
         let mut payload = self
@@ -563,9 +575,11 @@ impl StdioServer {
             .map(str::trim)
             .filter(|value| !value.is_empty())?;
         // `engine.connection` answers Ok for the built-in `__local__`
-        // filesystem and every pooled inline id — both stay local. Only a
-        // genuinely unknown saved-connection id forwards.
-        if self.engine.connection(id).is_ok() {
+        // filesystem and every pooled inline id — both stay local. The rclone
+        // registry is consulted too (Phase D: inline connections pool there
+        // in rclone mode). Only a genuinely unknown saved-connection id
+        // forwards.
+        if self.engine.connection(id).is_ok() || self.mcp.rclone_pooled(id) {
             return None;
         }
         Some((id.to_string(), arguments.clone()))
@@ -612,7 +626,7 @@ impl StdioServer {
     /// [`StdioServer::call_tool`], so this branch only fires with the fallback
     /// switched off). Calls without any connection reference only pass for the
     /// connection-free tools (`files_cursor_next`).
-    fn prepare_arguments(&self, tool: &str, arguments: &Value) -> Result<Value, String> {
+    async fn prepare_arguments(&self, tool: &str, arguments: &Value) -> Result<Value, String> {
         if !arguments.is_object() {
             // Same semantics as the DBX bridge's mcp/call guard: a non-object
             // arguments payload is a caller bug, reported before anything else
@@ -622,7 +636,27 @@ impl StdioServer {
         match arguments.get("connection") {
             Some(connection) => {
                 let connection = stored_connection_from_inline(connection)?;
-                self.engine.connect(connection.clone())?;
+                // Phase D rclone mode: the real registration goes to the
+                // rclone registry (tools dispatch through it); the OpenDAL
+                // entry is best-effort bookkeeping for bridge planning and
+                // may fail on protocols OpenDAL cannot build but rclone
+                // serves.
+                if let Some(route) = self.mcp.rclone_route() {
+                    let client = route
+                        .engine
+                        .client()
+                        .await
+                        .map_err(|error| format!("Failed to reach the rclone engine: {error}"))?;
+                    crate::rclone::registry::connect(
+                        &route.engine.registry,
+                        &client,
+                        &connection,
+                    )
+                    .await?;
+                    let _ = self.engine.connect(connection.clone());
+                } else {
+                    self.engine.connect(connection.clone())?;
+                }
                 let mut normalized = arguments.clone();
                 if let Some(map) = normalized.as_object_mut() {
                     map.insert("connectionId".to_string(), json!(connection.id));
@@ -638,7 +672,8 @@ impl StdioServer {
                 match referenced {
                     Some(id)
                         if id != crate::engine::LOCAL_CONNECTION_ID
-                            && self.engine.connection(id).is_err() =>
+                            && self.engine.connection(id).is_err()
+                            && !self.mcp.rclone_pooled(id) =>
                     {
                         Err(unknown_connection_guidance(id, None))
                     }

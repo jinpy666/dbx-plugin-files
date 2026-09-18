@@ -33,6 +33,104 @@ pub const UI_TOOLS: [&str; 4] = [
     "files_ui_state",
 ];
 
+// ---------------------------------------------------------------------------
+// Phase D: rclone-mode dispatch (`DBX_FILES_ENGINE=rclone`)
+// ---------------------------------------------------------------------------
+
+/// Owned starter for one rclone dir sync job (workbench
+/// `files/syncDir|copyDir` semantics; `main.rs::rclone_start_dir_job`).
+/// `None` in standalone stdio mode — no DBX event channel, no job mirror.
+pub type SyncJobStarter = std::sync::Arc<
+    dyn Fn(
+            crate::model::DirJobRequest,
+            bool,
+            Option<PluginEmitter>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// rclone-mode dispatch context. The storage-touching tools route through it
+/// when the sidecar runs the rclone engine; tool schemas and response shapes
+/// stay identical to the OpenDAL path. `engine` doubles as the connection
+/// registry; `store` carries the `source:"mcp"` audit sink; `start_sync`
+/// shares the workbench sync-job mirror so `files/transfer/status` remains
+/// the single poll surface.
+pub struct RcloneRoute {
+    pub engine: std::sync::Arc<crate::rclone::RcloneEngine>,
+    pub store: std::sync::Arc<Store>,
+    pub start_sync: Option<SyncJobStarter>,
+}
+
+/// Resolves the connection reference to an rclone binding. `__local__` maps
+/// onto the rclone `local` backend rooted at `/` (OpenDAL engine parity for
+/// the built-in filesystem); anything else must be a connected registry id.
+fn rclone_binding(
+    route: &RcloneRoute,
+    connection_id: &str,
+) -> Result<crate::rclone::registry::RemoteBinding, String> {
+    if connection_id == crate::engine::LOCAL_CONNECTION_ID {
+        return Ok(crate::rclone::registry::RemoteBinding {
+            remote_fs: "/".to_string(),
+            backend_type: "local",
+            root: "/".to_string(),
+            lock_to_root: false,
+            read_only: false,
+            allow_delete: true,
+        });
+    }
+    route
+        .engine
+        .registry
+        .get(connection_id)
+        .ok_or_else(|| "Connection is not connected (rclone engine)".to_string())
+}
+
+/// Plain-field snapshot of a parsed sync request (the request value itself
+/// moves into the starter closure; `model::DirJobRequest` is not Clone).
+struct RcloneSyncArgs {
+    source_id: String,
+    source_path: String,
+    target_id: String,
+    target_path: String,
+    sync: bool,
+    dry_run: bool,
+    max_delete: Option<u64>,
+}
+
+impl RcloneSyncArgs {
+    fn from_request(request: &crate::model::DirJobRequest, sync: bool) -> Self {
+        Self {
+            source_id: request.source_connection_id.clone(),
+            source_path: request.source_path.clone(),
+            target_id: request.target_connection_id.clone(),
+            target_path: request.target_path.clone(),
+            sync,
+            dry_run: request.dry_run.unwrap_or(false),
+            max_delete: request.max_delete,
+        }
+    }
+}
+
+/// Number of path segments `path` sits below `start` (both MCP-absolute;
+/// `start` "/" is the root). The rclone scan enumerates recursively in one
+/// rc call, so the depth cap is emulated by segment counting instead of the
+/// per-level OpenDAL walk.
+fn depth_below(start: &str, path: &str) -> usize {
+    let start = start.trim_matches('/');
+    let base_len = if start.is_empty() {
+        0
+    } else {
+        start.split('/').count()
+    };
+    let path_len = path
+        .trim_start_matches('/')
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .count();
+    path_len.saturating_sub(base_len)
+}
+
 impl Mcp {
     /// `mcp/call` entry used by the DBX MCP bridge: registers the forwarded
     /// connection lifecycle payload (so `connectionId` resolves like any
@@ -56,9 +154,25 @@ impl Mcp {
         }
         if let Some(lifecycle) = params.get("lifecycle") {
             let connection = StoredConnection::from_lifecycle_params(lifecycle)?;
-            engine.connect(connection).map_err(|error| {
-                format!("Failed to register the forwarded connection lifecycle: {error}")
-            })?;
+            // Phase D: in rclone mode the forwarded lifecycle registers into
+            // the rclone registry (the OpenDAL engine table is not consulted
+            // by any tool in that mode).
+            if let Some(route) = self.rclone_route() {
+                let client = route
+                    .engine
+                    .client()
+                    .await
+                    .map_err(|error| format!("Failed to reach the rclone engine: {error}"))?;
+                crate::rclone::registry::connect(&route.engine.registry, &client, &connection)
+                    .await
+                    .map_err(|error| {
+                        format!("Failed to register the forwarded connection lifecycle: {error}")
+                    })?;
+            } else {
+                engine.connect(connection).map_err(|error| {
+                    format!("Failed to register the forwarded connection lifecycle: {error}")
+                })?;
+            }
             if let Some(map) = arguments.as_object_mut() {
                 map.entry("connectionId".to_string())
                     .or_insert_with(|| json!(lifecycle_id(lifecycle)));
@@ -167,9 +281,19 @@ impl Mcp {
             }
 
             // -- local read (design §3) ------------------------------------------
-            "files_scan_digest" => self.scan_digest_tool(engine, arguments).await,
+            // Phase D: storage-touching tools dispatch through the rclone
+            // route when the sidecar runs `DBX_FILES_ENGINE=rclone`; the
+            // OpenDAL bodies below are the default-engine path (same tool
+            // schemas, same response shapes — see the rclone_* methods).
+            "files_scan_digest" => match self.rclone_route() {
+                Some(route) => self.scan_digest_rclone(route, arguments).await,
+                None => self.scan_digest_tool(engine, arguments).await,
+            },
             "files_cursor_next" => self.cursor_next(arguments),
             "files_ui_quick_paths" => {
+                if let Some(route) = self.rclone_route() {
+                    return self.quick_paths_rclone(route, arguments).await;
+                }
                 let connection_id = required_str(arguments, "connectionId")?;
                 let operator = engine.operator(connection_id)?;
                 let connection = engine.connection(connection_id)?;
@@ -186,6 +310,9 @@ impl Mcp {
 
             // -- writes (design §4) ----------------------------------------------
             "files_write" => {
+                if let Some(route) = self.rclone_route() {
+                    return self.files_write_rclone(route, arguments).await;
+                }
                 missing_required(arguments, &["path", "dataBase64"])?;
                 let connection = engine.connection(required_str(arguments, "connectionId")?)?;
                 ensure_writable(&connection)?;
@@ -233,6 +360,9 @@ impl Mcp {
                 Ok(result)
             }
             "files_mkdir" => {
+                if let Some(route) = self.rclone_route() {
+                    return self.files_mkdir_rclone(route, arguments).await;
+                }
                 missing_required(arguments, &["path"])?;
                 let connection = engine.connection(required_str(arguments, "connectionId")?)?;
                 ensure_writable(&connection)?;
@@ -244,6 +374,9 @@ impl Mcp {
                 Ok(json!({ "success": true, "path": raw }))
             }
             "files_rename" => {
+                if let Some(route) = self.rclone_route() {
+                    return self.files_rename_rclone(route, arguments).await;
+                }
                 missing_required(arguments, &["path", "newPath"])?;
                 let connection = engine.connection(required_str(arguments, "connectionId")?)?;
                 ensure_writable(&connection)?;
@@ -297,6 +430,9 @@ impl Mcp {
                 Ok(json!({ "success": true, "transport": "native", "path": path, "newPath": new_path }))
             }
             "files_delete" | "files_purge" => {
+                if let Some(route) = self.rclone_route() {
+                    return self.files_delete_rclone(route, tool, arguments).await;
+                }
                 missing_required(arguments, &["path"])?;
                 let connection = engine.connection(required_str(arguments, "connectionId")?)?;
                 ensure_deletable(&connection)?;
@@ -360,6 +496,9 @@ impl Mcp {
 
             // -- directory sync (§8.4 via MCP) -------------------------------------
             "files_sync" => {
+                if let Some(route) = self.rclone_route() {
+                    return self.files_sync_rclone(route, emitter, arguments).await;
+                }
                 // Parameter enumeration, flag tolerance, path shapes and the
                 // target write/mirror-delete gates all run before anything
                 // async is touched ([`parse_sync_request`], unit-tested pure).
@@ -587,6 +726,416 @@ pub(crate) fn normalized_format(raw: Option<&str>) -> Result<String, String> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// rclone-mode tool bodies (Phase D). Response shapes mirror the OpenDAL
+// bodies above field-for-field; gates split the established way: connection
+// read_only/allow_delete bind on the registry binding here, path whitelist +
+// lock_to_root inside the rclone ops layer (shared policy::PathPolicy).
+// ---------------------------------------------------------------------------
+
+impl Mcp {
+    /// `files_scan_digest` over the rclone engine: one recursive
+    /// `operations/list` replaces the per-directory OpenDAL walk; the
+    /// depth/entry budgets and the digest/cursor contract are unchanged.
+    pub(crate) async fn scan_digest_rclone(
+        &self,
+        route: &RcloneRoute,
+        arguments: &Value,
+    ) -> Result<Value, String> {
+        let connection_id = required_str(arguments, "connectionId")?;
+        let binding = rclone_binding(route, connection_id)?;
+        let client = route.engine.client().await?;
+        let start = normalize_slashes(match optional_str(arguments, "path")? {
+            Some(raw) => raw,
+            None => "/",
+        });
+        validate_path_shape(&start, "path")?;
+        let depth = numeric_arg_or(arguments, "depth", u64::from(DEFAULT_SCAN_DEPTH))
+            .map_err(|error| format!("{error}; depth accepts an integer in 1..={MAX_SCAN_DEPTH}"))?
+            .clamp(1, u64::from(MAX_SCAN_DEPTH)) as u32;
+        let filter = ScanFilter::from_arguments(arguments)?;
+        let format = normalized_format(optional_str(arguments, "format")?)?;
+        let settings = self.current_settings();
+        let entries = crate::rclone::ops::list(
+            &client,
+            &crate::rclone::call_fs(&binding),
+            &start,
+            true,
+            &binding.root,
+            binding.lock_to_root,
+        )
+        .await?;
+        let mut walk = WalkState::new(filter);
+        for entry in entries {
+            // Entries deeper than the cap exist in the recursive listing but
+            // are neither counted nor matched (the OpenDAL walk never visits
+            // them).
+            if depth_below(&start, &entry.path) > depth as usize {
+                continue;
+            }
+            if walk.exhausted(MAX_SCAN_ENTRIES) {
+                walk.truncated = true;
+                break;
+            }
+            walk.visit(PathRow {
+                path: entry.path.clone(),
+                kind: entry.kind,
+                size: entry.size,
+                modified_at: entry.modified_at,
+            });
+        }
+        let stats = aggregate_rows(&walk.matched, &DigestLimits {
+            group_limit: settings.digest_group_limit,
+            top_n: settings.digest_top_n,
+        });
+        let (cursor_id, cursor_truncated) = self.cursor_put(
+            walk.matched
+                .iter()
+                .map(|row| row.path.clone())
+                .collect(),
+        );
+        let mut payload = json!({
+            "connectionId": connection_id,
+            "path": start,
+            "matched": walk.matched.len(),
+            "scanned": walk.scanned,
+            "scanTruncated": walk.truncated,
+            "cursorId": cursor_id,
+        });
+        match format.as_str() {
+            "rows" => {
+                payload["rows"] =
+                    json!(take_rows(&walk.matched, settings.digest_row_limit));
+            }
+            _ => {
+                payload["sample"] =
+                    json!(take_rows(&walk.matched, settings.digest_sample_rows));
+                payload["stats"] = json!({
+                    "totalBytes": stats.total_bytes,
+                    "byExtension": stats.by_extension,
+                    "largest": stats.largest,
+                    "newest": stats.newest,
+                });
+            }
+        }
+        if cursor_truncated {
+            payload["cursorTruncated"] = json!(true);
+        }
+        Ok(payload)
+    }
+
+    /// `files_ui_quick_paths` over the rclone engine (rclone/ops.rs has the
+    /// shape-aligned twin).
+    pub(crate) async fn quick_paths_rclone(
+        &self,
+        route: &RcloneRoute,
+        arguments: &Value,
+    ) -> Result<Value, String> {
+        let connection_id = required_str(arguments, "connectionId")?;
+        let binding = rclone_binding(route, connection_id)?;
+        let client = route.engine.client().await?;
+        let payload = crate::rclone::ops::quick_paths(
+            &client,
+            &crate::rclone::call_fs(&binding),
+            binding.backend_type,
+            &binding.root,
+        )
+        .await?;
+        let limit =
+            numeric_arg_or(arguments, "limit", QUICK_PATHS_LIMIT)?.clamp(1, QUICK_PATHS_LIMIT) as usize;
+        let all = payload
+            .get("paths")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Ok(json!({ "paths": &all[..limit.min(all.len())] }))
+    }
+
+    /// `files_write` over the rclone engine (`ops::write_bytes`: rc
+    /// uploadfile + movefile, overwrite semantics).
+    pub(crate) async fn files_write_rclone(
+        &self,
+        route: &RcloneRoute,
+        arguments: &Value,
+    ) -> Result<Value, String> {
+        missing_required(arguments, &["path", "dataBase64"])?;
+        let connection_id = required_str(arguments, "connectionId")?;
+        let binding = rclone_binding(route, connection_id)?;
+        ensure_binding_writable(&binding)?;
+        let path = file_target_path(required_str(arguments, "path")?, "path")?;
+        let data_base64 = match arguments.get("dataBase64") {
+            Some(Value::String(text)) => text.as_str(),
+            _ => {
+                return Err(
+                    "Parameter 'dataBase64' must be a base64 string (an empty string \
+                     creates an empty file)"
+                        .to_string(),
+                )
+            }
+        };
+        let data = BASE64_STANDARD
+            .decode(data_base64.as_bytes())
+            .map_err(|error| {
+                format!(
+                    "Invalid base64 in dataBase64: {error}; dataBase64 must be standard \
+                     base64 (RFC 4648, no data-URI prefix)"
+                )
+            })?;
+        if data.len() > MAX_INLINE_WRITE_BYTES {
+            return Err(format!(
+                "Inline write payload of {} bytes exceeds {}; use the upload channel \
+                 or the workbench transfer pane",
+                data.len(),
+                MAX_INLINE_WRITE_BYTES
+            ));
+        }
+        let client = route.engine.client().await?;
+        let remote = crate::engine::ops::policy::PathPolicy::from_parts(
+            &binding.root,
+            binding.lock_to_root,
+            false,
+            true,
+        )
+        .check_write(&path)
+        .map(|resolved| resolved.relative)?;
+        crate::rclone::ops::write_bytes(
+            &client,
+            &crate::rclone::call_fs(&binding),
+            &remote,
+            &data,
+        )
+        .await?;
+        audit_mcp_id(&route.store, connection_id, "files/write", &path, "ok");
+        let bytes = data.len();
+        let mut result = json!({ "success": true, "path": path, "bytes": bytes });
+        if bytes > MCP_RECOMMENDED_WRITE_BYTES {
+            result["hint"] = json!(
+                "Payload above the MCP-recommended 1 MiB; prefer the workbench transfer \
+                 pane or the upload channel for larger files"
+            );
+        }
+        Ok(result)
+    }
+
+    /// `files_mkdir` over the rclone engine (rc `operations/mkdir`, mkdir -p).
+    pub(crate) async fn files_mkdir_rclone(
+        &self,
+        route: &RcloneRoute,
+        arguments: &Value,
+    ) -> Result<Value, String> {
+        missing_required(arguments, &["path"])?;
+        let connection_id = required_str(arguments, "connectionId")?;
+        let binding = rclone_binding(route, connection_id)?;
+        ensure_binding_writable(&binding)?;
+        let raw = required_str(arguments, "path")?;
+        validate_path_shape(raw, "path")?;
+        let client = route.engine.client().await?;
+        crate::rclone::ops::mkdir(
+            &client,
+            &crate::rclone::call_fs(&binding),
+            raw,
+            &binding.root,
+            binding.lock_to_root,
+        )
+        .await?;
+        audit_mcp_id(&route.store, connection_id, "files/mkdir", raw, "ok");
+        Ok(json!({ "success": true, "path": raw }))
+    }
+
+    /// `files_rename` over the rclone engine (rc `operations/movefile`).
+    /// Deviation from the OpenDAL path, recorded for the handoff report:
+    /// directory renames do not degrade to an async copy+delete job here —
+    /// the rclone engine carries no per-entry dir-job machinery, so the call
+    /// goes to rclone's movefile and surfaces rclone's own answer/error.
+    pub(crate) async fn files_rename_rclone(
+        &self,
+        route: &RcloneRoute,
+        arguments: &Value,
+    ) -> Result<Value, String> {
+        missing_required(arguments, &["path", "newPath"])?;
+        let connection_id = required_str(arguments, "connectionId")?;
+        let binding = rclone_binding(route, connection_id)?;
+        ensure_binding_writable(&binding)?;
+        // Rename removes the source path — same delete gate as the workbench
+        // path (main.rs files/rename).
+        ensure_binding_deletable(&binding)?;
+        let path = file_target_path(required_str(arguments, "path")?, "path")?;
+        let new_path = file_target_path(required_str(arguments, "newPath")?, "newPath")?;
+        let client = route.engine.client().await?;
+        crate::rclone::ops::rename(
+            &client,
+            &crate::rclone::call_fs(&binding),
+            &path,
+            &new_path,
+            &binding.root,
+            binding.lock_to_root,
+        )
+        .await?;
+        audit_mcp_id(&route.store, connection_id, "files/rename", &path, "ok");
+        Ok(json!({ "success": true, "transport": "native", "path": path, "newPath": new_path }))
+    }
+
+    /// `files_delete` / `files_purge` over the rclone engine: identical
+    /// two-phase preview/confirm flow, preview built from the rclone stat,
+    /// execution via `ops::delete_file` / `ops::purge` (both idempotent on
+    /// missing paths like the OpenDAL engine).
+    pub(crate) async fn files_delete_rclone(
+        &self,
+        route: &RcloneRoute,
+        tool: &str,
+        arguments: &Value,
+    ) -> Result<Value, String> {
+        missing_required(arguments, &["path"])?;
+        let connection_id = required_str(arguments, "connectionId")?;
+        let binding = rclone_binding(route, connection_id)?;
+        ensure_binding_deletable(&binding)?;
+        let path = required_str(arguments, "path")?;
+        validate_path_shape(path, "path")?;
+        if tool == "files_purge" {
+            refuse_root_purge_root(&binding.root, path)?;
+        }
+        let client = route.engine.client().await?;
+        let fs = crate::rclone::call_fs(&binding);
+        // Preview before any deletion (identical shape to the OpenDAL arm).
+        let preview = match crate::rclone::ops::stat(
+            &client,
+            &fs,
+            path,
+            &binding.root,
+            binding.lock_to_root,
+        )
+        .await
+        {
+            Ok(entry) => json!({
+                "tool": tool,
+                "connectionId": connection_id,
+                "path": path,
+                "kind": entry.kind,
+                "size": entry.size,
+            }),
+            // rclone delete/purge are idempotent for missing paths: preview
+            // as absent instead of failing the flow (OpenDAL arm parity).
+            Err(_) => json!({
+                "tool": tool,
+                "connectionId": connection_id,
+                "path": path,
+                "kind": "missing",
+            }),
+        };
+        let Some(token) = arguments
+            .get("confirmToken")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        else {
+            let (confirm_token, expires_at) = self.confirm_begin(&arguments_without_token(arguments));
+            return Ok(json!({
+                "preview": preview,
+                "confirmToken": confirm_token,
+                "expiresAt": iso_millis(expires_at as i64),
+                "note": "nothing written yet; repeat the same arguments with \
+                         confirmToken to execute",
+            }));
+        };
+        self.confirm_verify(token, &arguments_without_token(arguments))?;
+        // rclone ops trim slash spellings internally; the bare validated path
+        // is the delete target (the dir-marker dance exists for OpenDAL
+        // prefix backends only).
+        let action = if tool == "files_delete" {
+            crate::rclone::ops::delete_file(
+                &client,
+                &fs,
+                path,
+                &binding.root,
+                binding.lock_to_root,
+            )
+            .await?;
+            "files/delete"
+        } else {
+            crate::rclone::ops::purge(
+                &client,
+                &fs,
+                path,
+                &binding.root,
+                binding.lock_to_root,
+            )
+            .await?;
+            "files/purge"
+        };
+        audit_mcp_id(&route.store, connection_id, action, path, "ok");
+        Ok(json!({ "success": true, "path": path }))
+    }
+
+    /// `files_sync` over the rclone engine: the pure parse twin validates
+    /// arguments, then the injected starter enqueues through the workbench
+    /// syncDir path (same binding gates, same job mirror, same DirJob wire
+    /// shape). Response keys are identical to the OpenDAL arm; the jobId is
+    /// pollable via `files/transfer/status` on the rclone mirrors.
+    pub(crate) async fn files_sync_rclone(
+        &self,
+        route: &RcloneRoute,
+        emitter: Option<&PluginEmitter>,
+        arguments: &Value,
+    ) -> Result<Value, String> {
+        let parsed = parse_rclone_sync_request(arguments)?;
+        // The dir job reports through the DBX event channel +
+        // `files/transfer/status`; standalone stdio has neither (OpenDAL-arm
+        // parity for the refusal).
+        let Some(emitter) = emitter else {
+            return Err(SYNC_STDIO_UNAVAILABLE.to_string());
+        };
+        let Some(start_sync) = route.start_sync.as_ref() else {
+            return Err(SYNC_STDIO_UNAVAILABLE.to_string());
+        };
+        // Field values are read out before the request moves into the
+        // starter (DirJobRequest is not Clone by contract).
+        let RcloneSyncArgs {
+            source_id,
+            source_path,
+            target_id,
+            target_path,
+            sync,
+            dry_run,
+            max_delete,
+        } = RcloneSyncArgs::from_request(&parsed.request, parsed.sync);
+        let job_id = start_sync(parsed.request, parsed.sync, Some(emitter.clone())).await?;
+        audit_mcp_id(
+            &route.store,
+            &target_id,
+            "files/sync",
+            &format!("{source_id}:{source_path} -> {target_path}"),
+            "ok",
+        );
+        let mut result = json!({
+            "success": true,
+            "transport": "job",
+            "jobId": job_id,
+            "sourceConnectionId": source_id,
+            "sourcePath": source_path,
+            "targetConnectionId": target_id,
+            "targetPath": target_path,
+            "sync": sync,
+            "dryRun": dry_run,
+        });
+        if let Some(max_delete) = max_delete {
+            result["maxDelete"] = json!(max_delete);
+        }
+        result["hint"] = if dry_run {
+            json!("Dry run: nothing is copied or deleted; the job plans/compares, \
+                   emits one summary event and completes — poll files/transfer/status \
+                   for the counts")
+        } else {
+            json!("Async directory job enqueued; poll files/transfer/status (or the \
+                   workbench transfers pane) for progress")
+        };
+        if parsed.sync && !dry_run {
+            result["warning"] = json!(
+                "sync=true mirrors the source: files present on the target but missing \
+                 from the source are DELETED (bounded by maxDelete when set)"
+            );
+        }
+        Ok(result)
+    }
+}
 
 /// Every registered tool name, for the unknown-tool self-correction hint
 /// (ssh `TOOL_NAMES` / ldap `available:` parity). Kept in one place so the
