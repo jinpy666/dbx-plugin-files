@@ -108,7 +108,10 @@ NO_COLOR=1 dbx-plugin package .
 # rclone binary or its exec bit between fetch and packaging.
 if [ "${SKIP_RCLONE:-0}" != "1" ]; then
   if py="$(command -v python3 || command -v python)"; then
-    "$py" scripts/check_rclone_package.py dist/*.dbxp --target "$rclone_target"
+    # Only the newest package: dist/ keeps older candidates and the checker
+    # takes exactly one positional.
+    newest_dbxp="$(ls -t dist/*.dbxp | head -1)"
+    "$py" scripts/check_rclone_package.py "$newest_dbxp" --target "$rclone_target"
   else
     echo "python not found; skipping local rclone package check (release CI enforces it)"
   fi
