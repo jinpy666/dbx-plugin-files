@@ -105,13 +105,18 @@ def main() -> int:
     if not Path(binary).exists():
         print(f"sidecar binary not found: {binary} (set DBX_PLUGIN_SIDECAR)")
         return 2
+    # rclone is the only engine: pin it for the sidecar spawned below
+    # (SidecarClient.start inherits os.environ verbatim).
+    os.environ["DBX_FILES_ENGINE"] = "rclone"
 
     rows: list[tuple[str, str]] = []
     client = SidecarClient.start(binary, timeout=60)
     try:
         client.initialize()
 
-        # --- memory:// backend: 10k entries + pagination ---
+        # --- memory backend: 10k entries + pagination ---
+        # The custom pass-through protocol: service "memory" → the engine's
+        # in-memory backend (rclone memory under DBX_FILES_ENGINE=rclone).
         connect(client, "perf-memory", {"protocol": "opendal-custom", "service": "memory", "config": {}})
         bulk = int(os.environ.get("PERF_BULK_COUNT", "10000"))
         if os.environ.get("PERF_SKIP_BULK") != "1":

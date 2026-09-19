@@ -134,8 +134,8 @@ docker run --rm --link dbx-files-minio-test:minio \
 echo "==> starting OpenSSH test server (:${SFTP_PORT}, 密码+密钥双认证)"
 ensure_image "linuxserver/openssh-server" "ghcr.io/linuxserver/openssh-server" "mirror.gcr.io/linuxserver/openssh-server"
 docker rm -f dbx-files-sftp-test >/dev/null 2>&1 || true
-# PASSWORD_ACCESS + USER_PASSWORD：同一容器同时服务 sftp 段（OpenDAL keyfile）
-# 与 sftp-native 段（russh 密码认证）。
+# PASSWORD_ACCESS + USER_PASSWORD：同一容器同时服务 sftp 段（keyfile 认证）
+# 与 sftp-native 段（密码认证）。
 docker run -d --rm --name dbx-files-sftp-test \
   -p "${SFTP_PORT}:2222" \
   -e "PUBLIC_KEY=$(cat "$TMPDIR_SMOKE/smoke_key.pub")" \
@@ -313,6 +313,9 @@ done
 # 冒烟所需环境写入运行时临时 env 文件后 source（无字面凭据；跑完随临时目录删除）
 ENV_FILE="$TMPDIR_SMOKE/smoke.env"
 {
+  # rclone 是唯一引擎：脚本内部也会自行钉定，这里在 harness 层显式声明，
+  # 防止外部遗留 DBX_FILES_ENGINE=opendal 串进来。
+  printf 'DBX_FILES_ENGINE=rclone\n'
   printf 'DBX_FILES_S3_ENDPOINT=http://127.0.0.1:%s\n' "$MINIO_PORT"
   printf 'DBX_FILES_S3_BUCKET=%s\n' "$MINIO_BUCKET"
   printf 'DBX_FILES_S3_BUCKET2=%s\n' "$MINIO_BUCKET2"
