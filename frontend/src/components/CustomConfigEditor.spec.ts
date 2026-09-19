@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 // CustomConfigEditor（opendal-custom 连接编辑器）组件级回归：
+// service 可输入（datalist 建议，任意 rclone 后端类型手输可达）、
 // Form/JSON 双模切换守卫、表单校验门控（必填/安全类别）、密码掩码、
 // connection/test 按钮状态机与 notice/error 事件形态。
 // lib 层（opendalServices.ts）的 schema/校验/往返同步已有专门 spec；
@@ -26,14 +27,34 @@ const CustomEditor = CustomConfigEditor;
 /** s3 schema 的文本输入顺序：bucket, endpoint, region, access_key_id, secret_access_key(password)。 */
 const S3_FIELDS = ["bucket", "endpoint", "region", "access_key_id", "secret_access_key"] as const;
 
+/** service 输入框（rclone 透传可达任意后端类型，datalist 建议非白名单）。 */
+function serviceInput(wrapper: ReturnType<typeof mountEditor>) {
+  return wrapper.find("#custom-service-input");
+}
+
+async function chooseService(
+  wrapper: ReturnType<typeof mountEditor>,
+  value: string,
+) {
+  await serviceInput(wrapper).setValue(value);
+  // 手输场景下 change 在失焦/回车时触发，与 datalist 点选保持同一路径。
+  await serviceInput(wrapper).trigger("change");
+}
+
 async function mountS3() {
   const wrapper = mountEditor();
-  await wrapper.find("select").setValue("s3");
+  await chooseService(wrapper, "s3");
   return wrapper;
 }
 
 function textInputs(wrapper: ReturnType<typeof mountEditor>) {
-  return wrapper.findAll("input").filter((input) => input.attributes("type") !== "checkbox");
+  return wrapper
+    .findAll("input")
+    .filter(
+      (input) =>
+        input.attributes("type") !== "checkbox" &&
+        input.attributes("id") !== "custom-service-input",
+    );
 }
 
 function fillS3(wrapper: ReturnType<typeof mountEditor>, values: Partial<Record<(typeof S3_FIELDS)[number], string>>) {
@@ -55,9 +76,32 @@ beforeEach(() => {
 describe("CustomConfigEditor", () => {
   it("opens on fs with the Form tab and a root text field", () => {
     const wrapper = mountEditor();
-    expect((wrapper.find("select").element as HTMLSelectElement).value).toBe("fs");
-    expect(wrapper.findAll("input")).toHaveLength(1);
+    expect((serviceInput(wrapper).element as HTMLInputElement).value).toBe("fs");
+    // datalist 建议覆盖 OpenDAL 已知服务 ∪ rclone 后端全集。
+    const suggestions = wrapper
+      .findAll("#custom-service-options option")
+      .map((option) => option.attributes("value"));
+    expect(suggestions).toContain("fs");
+    expect(suggestions).toContain("b2");
+    expect(suggestions).toContain("mega");
+    expect(wrapper.findAll("input")).toHaveLength(2);
     expect(textInputs(wrapper)[0].attributes("placeholder")).toBe("empty = whole filesystem");
+  });
+
+  it("accepts a typed rclone backend type and falls back to JSON-only mode", async () => {
+    const wrapper = mountEditor();
+    await chooseService(wrapper, "b2");
+    // 未知类型无 schema → Form Tab 整体隐藏，只保留 JSON 模式。
+    expect(wrapper.find(".wb-pane-tabs").exists()).toBe(false);
+    expect(wrapper.find("textarea").exists()).toBe(true);
+    await wrapper.find("textarea").setValue('{ "account": "a", "key": "k" }');
+    await wrapper.find(".wb-toolbar-button").trigger("click");
+    await flushPromises();
+    expect(call).toHaveBeenCalledTimes(1);
+    const external = (call.mock.calls[0][1] as { connection: { external_config: Record<string, unknown> } })
+      .connection.external_config;
+    expect(external.protocol).toBe("opendal-custom");
+    expect(external.service).toBe("b2");
   });
 
   it("switching service seeds the JSON hint and hydrates the form (MinIO loopback hint included)", async () => {
@@ -198,7 +242,7 @@ describe("CustomConfigEditor", () => {
     await wrapper.find(".wb-toolbar-button").trigger("click");
     await flushPromises();
     expect(wrapper.text()).toContain("customConfigTestFailed");
-    await wrapper.find("select").setValue("fs");
+    await chooseService(wrapper, "fs");
     expect(wrapper.text()).not.toContain("customConfigTestFailed");
   });
 });

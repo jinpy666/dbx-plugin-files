@@ -1,14 +1,15 @@
 <script setup lang="ts">
-// opendal-custom 编辑器：service 下拉（编译白名单）+ Form/JSON 双模。
-// 已知服务按 CUSTOM_SERVICE_SCHEMAS 渲染动态表单（必填标记/placeholder/
-// 安全校验），Form ⇄ JSON 双向同步；未知服务仍走纯 JSON。URL 类参数仅
-// http/https，host 类参数拒绝环回/私有/保留地址（SSRF 护栏，UI 层）。
+// opendal-custom 编辑器：service 可输入（datalist 建议 OpenDAL 已知服务 ∪
+// rclone 后端全集，任意 rclone 后端类型手输可达）+ Form/JSON 双模。已知服务
+// 按 CUSTOM_SERVICE_SCHEMAS 渲染动态表单（必填标记/placeholder/安全校验），
+// Form ⇄ JSON 双向同步；未知服务仍走纯 JSON。URL 类参数仅 http/https，
+// host 类参数拒绝环回/私有/保留地址（SSRF 护栏，UI 层）。
 // 支持就地 connection/test（走宿主 lifecycle，凭据不落日志）。
 import { computed, ref } from "vue";
 import {
   CUSTOM_CONFIG_HINTS,
-  CUSTOM_SERVICES,
   configFromFormValues,
+  customServiceSuggestions,
   field_group,
   formValuesFromConfig,
   schemaForService,
@@ -42,7 +43,7 @@ const switchError = ref("");
 const testing = ref(false);
 const lastResult = ref<"" | "ok" | "failed">("");
 
-const services = computed(() => Array.from(CUSTOM_SERVICES).sort());
+const services = computed(() => customServiceSuggestions());
 const schema = computed(() => schemaForService(service.value));
 /** 未知服务拿不到 schema → 只保留 JSON 模式。 */
 const formAvailable = computed(() => schema.value !== undefined);
@@ -193,9 +194,19 @@ async function test() {
     <p class="wb-muted" style="margin: 0; font-size: 11px">{{ t("customConfigHint") }}</p>
     <label style="display: flex; flex-direction: column; gap: 4px">
       <span>{{ t("customConfigService") }}</span>
-      <select v-model="service" @change="onServiceChange">
-        <option v-for="item in services" :key="item" :value="item">{{ item }}</option>
-      </select>
+      <!-- rclone 引擎的透传可达任意 rclone 后端：service 改为可输入
+           （datalist 建议），不在 schema 白名单的类型自动降级为纯 JSON。 -->
+      <input
+        id="custom-service-input"
+        v-model="service"
+        list="custom-service-options"
+        autocomplete="off"
+        spellcheck="false"
+        @change="onServiceChange"
+      />
+      <datalist id="custom-service-options">
+        <option v-for="item in services" :key="item" :value="item"></option>
+      </datalist>
     </label>
 
     <!-- Form/JSON 双 Tab：未知服务隐藏 Form Tab。审计#12：子元素补
