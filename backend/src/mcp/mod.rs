@@ -39,10 +39,8 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
 use serde_json::Value;
 
-use crate::engine::{ops, Engine};
 use crate::model::{StoredConnection, MAX_INLINE_WRITE_BYTES};
 use crate::store::Store;
-use crate::transfers::{DirJobKind, JobTable};
 
 // ---------------------------------------------------------------------------
 // Constants (design §3 "硬上限")
@@ -121,10 +119,8 @@ pub(crate) use tools::unknown_tool_message;
 use tools::ALL_TOOL_NAMES;
 #[cfg(test)]
 use tools::{normalized_format, UI_TOOLS, WRITE_TOOLS};
-
-mod scan;
-
-use scan::{aggregate_rows, take_rows, walk_subtree, DigestLimits, PathRow, ScanFilter, WalkState};
+#[cfg(test)]
+use tools::{glob_match, PathRow};
 
 
 mod truncate;
@@ -134,8 +130,7 @@ use truncate::{cap_response, content_envelope};
 mod guards;
 
 use guards::{
-    audit_mcp, audit_mcp_id, ensure_binding_deletable, ensure_binding_writable, ensure_deletable,
-    ensure_writable, parse_rclone_sync_request, parse_sync_request, refuse_root_purge,
+    audit_mcp_id, ensure_binding_deletable, ensure_binding_writable, parse_rclone_sync_request,
     refuse_root_purge_root, SYNC_STDIO_UNAVAILABLE,
 };
 

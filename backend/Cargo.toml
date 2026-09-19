@@ -10,63 +10,16 @@ description = "DBX files plugin sidecar: Apache OpenDAL storage engine"
 [dependencies]
 base64 = "0.23"
 dbx-plugin-sdk = "0.1.0"
-# opendal 0.58+ needs rustc >= 1.91 (edition 2024 workspace); host toolchain
-# is 1.98.1 and the release pipeline pins 1.97.1 — both clear the bar, so the
-# 0.57 lock (MSRV 1.85) is no longer needed.
-# `services-sftp` is declared per-target below: its `openssh` dependency is
-# Unix-only (stdio.rs impls fail E0119 on Windows), so Windows builds omit it
-# and the `sftp` quick protocol is rejected with an actionable hint — use
-# `sftp-native` (russh, all platforms) there.
-opendal = { version = "0.59", features = [
-    "services-fs",
-    "services-s3",
-    "services-webdav",
-    "services-ftp",
-    "services-gcs",
-    "services-azblob",
-    "services-oss",
-    "services-obs",
-    "services-cos",
-    "services-aliyun-drive",
-    "services-dropbox",
-    "services-gdrive",
-    "services-koofr",
-    "services-onedrive",
-    "services-pcloud",
-    "services-seafile",
-    "services-memory",
-    "services-yandex-disk",
-] }
-# Pure-Rust SMB2/3 client (F5-SMB): the OpenDAL service registry has no SMB
-# backend, so `engine/smb/` adapts this crate behind a custom
-# `opendal::raw::Access`. Exact pin — upgrades go through the SMB regression
-# checklist (docs/IMPL_PLAN_SMB.zh-CN.md §0.2/§4).
-smb2 = "=0.20.1"
-# Bucket namespace (design 2026-09-17): native ListBuckets for bucket-less
-# s3/oss/cos/obs/azblob connections (`engine/bucket_ns/list.rs`) — OpenDAL
-# services require a bucket and expose no bucket enumeration. Versions unify
-# with crates already in the opendal feature graph: reqwest rides the same
-# `rustls` (aws-lc-rs) TLS feature opendal enables, and the RustCrypto set is
-# the digest-0.11 line (hmac 0.13 / sha1 0.11 / sha2 0.11) already in the
-# lock; chrono only formats request timestamps (no clock features pulled).
+# OpenDAL was retired: the rclone engine (managed `rclone rcd` + rc HTTP
+# API) is the sole storage engine; the opendal/smb2/russh dependency set
+# below it left with backend/src/engine/.
+
+
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "multipart"] }
-hmac = "0.13"
-sha1 = "0.11"
-sha2 = "0.11"
-quick-xml = "0.42"
-chrono = { version = "0.4", default-features = false, features = ["std"] }
-# sftp-native（双栈决策 2026-08-31）：OpenDAL 0.57 的 sftp service 只支持
-# keyfile 认证（无 password 配置项），密码型账号（企业 MFT 常态）接不进来。
-# `engine/sftp_native/` 用 russh + russh-sftp（ssh 插件同款栈）自研
-# `opendal::raw::Access` 适配器补位；OpenDAL sftp service 保留为 `sftp`
-# 快捷协议，OpenDAL 后续支持密码认证时可整体切回。
-# Version note (dual-stack decision 2026-08-31): the 0.60.x line pins
-# aes-gcm `=0.11.0-rc.3` which cannot coexist with `smb2 =0.20.1` (same
-# aes-gcm 0.11 series, stable `0.11.0` requirement) — cargo cannot hold both.
-# 0.63.1 moved to stable pkcs5/pkcs8 (no rc chain) and MSRV 1.85 fits the
-# pinned host toolchain; the ssh plugin stays on 0.60.3 (no smb2 there).
-russh = "0.63.1"
-russh-sftp = "3.0"
+# reqwest powers the rc HTTP client (rclone engine) and the SSH tunnel
+# health probes; chrono serves the rclone archive layer's mtime windows.
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
@@ -78,10 +31,6 @@ uuid = { version = "1", features = ["v4"] }
 [patch.crates-io]
 dbx-plugin-sdk = { path = "../shared/sdk/rust/dbx-plugin-sdk" }
 
-# OpenDAL's sftp service (keyfile auth, `sftp` quick protocol) is Unix-only
-# via its `openssh` dependency; see the note above the base feature list.
-[target.'cfg(not(windows))'.dependencies]
-opendal = { version = "0.59", features = ["services-sftp"] }
 
 [dev-dependencies]
 tempfile = "3"

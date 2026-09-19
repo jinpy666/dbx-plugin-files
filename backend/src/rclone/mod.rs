@@ -64,9 +64,29 @@ pub(crate) struct DownloadTask {
     pub(crate) _work: WorkGuard,
 }
 
-/// Dual-engine facade held by the plugin: the rcd supervisor plus the
-/// connection→remote registry. `main.rs` routes Phase A methods here when
-/// `DBX_FILES_ENGINE=rclone` and falls back to the OpenDAL engine otherwise
+/// Reserved `connectionId` for the sidecar-local filesystem (dual-pane left
+/// column, "local files" side). Never present in the host connection table:
+/// [`RcloneEngine::binding`] folds it in on demand without registration —
+/// local fs stays config-free, so a rcd respawn cannot orphan it.
+pub const LOCAL_CONNECTION_ID: &str = "__local__";
+
+/// Synthesized connection record behind [`LOCAL_CONNECTION_ID`]: an fs
+/// connection rooted at `/` with default gates (writable, deletable,
+/// unlocked root) — identical to the retired OpenDAL engine's synthesized
+/// record, so policy/quick-path behavior stays uniform.
+pub fn local_connection() -> crate::model::StoredConnection {
+    crate::model::StoredConnection::from_lifecycle_params(&serde_json::json!({
+        "connection": {
+            "id": LOCAL_CONNECTION_ID,
+            "name": "Local",
+            "external_config": { "protocol": "fs", "root": "/" }
+        }
+    }))
+    .expect("local connection record is a constant shape")
+}
+
+/// Engine facade held by the plugin: the rcd supervisor plus the
+/// connection→remote registry. `main.rs` routes every storage method here
 /// (docs/IMPL_PLAN_RCLONE.zh-CN.md §2).
 pub struct RcloneEngine {
     pub supervisor: tokio::sync::Mutex<RcdSupervisor>,
@@ -192,8 +212,8 @@ impl RcloneEngine {
     /// (`engine::local_connection`). The binding is never registered — local
     /// fs stays config-free, so a rcd respawn cannot orphan it.
     pub fn binding(&self, connection_id: &str) -> Result<registry::RemoteBinding, String> {
-        if connection_id == crate::engine::LOCAL_CONNECTION_ID {
-            return registry::binding_for(&crate::engine::local_connection());
+        if connection_id == LOCAL_CONNECTION_ID {
+            return registry::binding_for(&local_connection());
         }
         self.registry
             .get(connection_id)
@@ -721,7 +741,7 @@ mod wiring_tests {
             Some("Connection is not connected (rclone engine)")
         );
         let local = engine
-            .binding(crate::engine::LOCAL_CONNECTION_ID)
+            .binding(LOCAL_CONNECTION_ID)
             .expect("built-in local binding");
         assert_eq!(local.backend_type, "local");
         assert_eq!(local.remote_fs, "/");

@@ -21,10 +21,7 @@
 #![allow(dead_code)]
 
 use std::borrow::Cow;
-use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
 
-use opendal::Operator;
 use serde::Serialize;
 
 // ---------------------------------------------------------------------------
@@ -896,84 +893,6 @@ pub fn paginate(total: u64, page: u64, page_size: u64) -> (usize, usize) {
     (start, end)
 }
 
-/// Reads the archive file from storage (size-capped) for either method.
-pub async fn read_archive(operator: &Operator, path: &str) -> Result<Vec<u8>, String> {
-    let metadata = operator
-        .stat(path)
-        .await
-        .map_err(|error| format!("Failed to stat archive '{path}': {error}"))?;
-    if metadata.mode().is_dir() {
-        return Err(format!("Cannot read archive '{path}': it is a directory"));
-    }
-    let size = metadata.content_length();
-    if size > MAX_ARCHIVE_FILE_BYTES {
-        return Err(format!(
-            "Archive '{path}' is {size} bytes; the archive methods cap input at \
-             {MAX_ARCHIVE_FILE_BYTES} bytes"
-        ));
-    }
-    let buffer = operator
-        .read(path)
-        .await
-        .map_err(|error| format!("Failed to read archive '{path}': {error}"))?;
-    Ok(buffer.to_vec())
-}
-
-/// Writes a planned extraction into `target_base` ("" = connection root):
-/// creates parent directories lazily, writes each entry, honors the
-/// cooperative `cancel` flag between entries (callers translate a
-/// "extraction canceled" error into the Canceled job state by checking the
-/// same flag). Returns `(files_written, bytes_written)`.
-pub async fn write_entries<F>(
-    operator: &Operator,
-    plan: Vec<ExtractEntry>,
-    target_base: &str,
-    cancel: &AtomicBool,
-    mut on_progress: F,
-) -> Result<(u64, u64), String>
-where
-    F: FnMut(u64, u64),
-{
-    let base = target_base.trim().trim_matches('/');
-    if !base.is_empty() {
-        operator
-            .create_dir(&format!("{base}/"))
-            .await
-            .map_err(|error| format!("Failed to create target directory '{base}': {error}"))?;
-    }
-    let mut created_dirs: HashSet<String> = HashSet::new();
-    let mut files_done = 0u64;
-    let mut bytes_done = 0u64;
-    for entry in &plan {
-        if cancel.load(Ordering::Acquire) {
-            return Err("extraction canceled".to_string());
-        }
-        let target_file = if base.is_empty() {
-            entry.path.clone()
-        } else {
-            format!("{base}/{}", entry.path)
-        };
-        let parent = match target_file.rfind('/') {
-            Some(index) => target_file[..index].to_string(),
-            None => String::new(),
-        };
-        if !parent.is_empty() && created_dirs.insert(parent.clone()) {
-            operator
-                .create_dir(&format!("/{parent}/"))
-                .await
-                .map_err(|error| format!("Failed to create directory '{parent}' during extract: {error}"))?;
-        }
-        operator
-            .write(&target_file, entry.data.clone())
-            .await
-            .map_err(|error| format!("Failed to write extracted file '{target_file}': {error}"))?;
-        files_done += 1;
-        bytes_done += entry.size;
-        on_progress(files_done, bytes_done);
-    }
-    Ok((files_done, bytes_done))
-}
-
 // ---------------------------------------------------------------------------
 // Compression (`files/compress`): tar writer + gzip (stored-DEFLATE) wrapper.
 // No new dependencies: the gzip layer emits stored (uncompressed) DEFLATE
@@ -981,11 +900,12 @@ where
 // ratio for zero crate weight (real deflate stays a Phase-2 item with zip).
 // ---------------------------------------------------------------------------
 
-/// One planned tar input entry, produced by [`plan_compress`]: where to read
-/// the payload (`source_path`) and where it lands inside the archive
-/// (`archive_path`, sanitized, no leading slash). `size` is the walk-time
-/// content length (0 when the backend does not report it) for budget checks;
-/// written headers always carry the actual byte count.
+/// One planned tar input entry: where the payload lives (`source_path`) and
+/// where it lands inside the archive (`archive_path`, sanitized, no leading
+/// slash). `size` is the walk-time content length (0 when the backend does
+/// not report it) for budget checks; written headers always carry the actual
+/// byte count. Built by the engine-side compress planners (rclone
+/// `archive.rs::compress_sources` mirrors the retired OpenDAL planner).
 #[derive(Debug, Clone)]
 pub struct TarPlanEntry {
     pub source_path: String,
@@ -998,62 +918,6 @@ pub struct TarPlanEntry {
 pub const MAX_COMPRESS_BYTES: u64 = MAX_ARCHIVE_BYTES;
 /// Entry-count cap for one `files/compress` request.
 pub const MAX_COMPRESS_ENTRIES: usize = MAX_ARCHIVE_ENTRIES;
-
-fn base_name(path: &str) -> &str {
-    let trimmed = path.trim_matches('/');
-    match trimmed.rfind('/') {
-        Some(index) => &trimmed[index + 1..],
-        None => trimmed,
-    }
-}
-
-/// Walks the requested sources into a tar plan (files only — directories are
-/// implicit through entry paths, matching our own extract semantics; empty
-/// directories are dropped). Applies the entry/payload budget guards.
-pub async fn plan_compress(operator: &Operator, sources: &[String]) -> Result<Vec<TarPlanEntry>, String> {
-    let mut plan: Vec<TarPlanEntry> = Vec::new();
-    for source in sources {
-        let trimmed = source.trim().trim_matches('/');
-        if trimmed.is_empty() {
-            return Err("Cannot compress the connection root; pick a subdirectory instead".to_string());
-        }
-        let base = base_name(trimmed);
-        if crate::engine::ops::is_dir_path(operator, source).await? {
-            for (relative, size) in crate::engine::transfer::walk_files(operator, trimmed).await? {
-                let archive_path = sanitize_entry_path(&format!("{base}/{relative}"))?;
-                plan.push(TarPlanEntry {
-                    source_path: format!("{trimmed}/{relative}"),
-                    archive_path,
-                    size,
-                });
-                if plan.len() > MAX_COMPRESS_ENTRIES {
-                    return Err(format!(
-                        "Compression source exceeds {MAX_COMPRESS_ENTRIES} entries"
-                    ));
-                }
-            }
-        } else {
-            let metadata = operator
-                .stat(trimmed)
-                .await
-                .map_err(|error| format!("Failed to stat '{trimmed}': {error}"))?;
-            let archive_path = sanitize_entry_path(base)?;
-            plan.push(TarPlanEntry {
-                source_path: trimmed.to_string(),
-                archive_path,
-                size: metadata.content_length(),
-            });
-        }
-    }
-    if plan.is_empty() {
-        return Err("Nothing to compress: the sources hold no files".to_string());
-    }
-    let total: u64 = plan.iter().map(|entry| entry.size).sum();
-    if total > MAX_COMPRESS_BYTES {
-        return Err(format!("Compression payload exceeds the {MAX_COMPRESS_BYTES} byte guard"));
-    }
-    Ok(plan)
-}
 
 fn write_octal_field(field: &mut [u8], value: u64) {
     let width = field.len() - 1;
@@ -1178,32 +1042,6 @@ pub fn gzip_stored_wrap(raw: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Builds the complete archive bytes in memory (synchronous small-package
-/// path): reads every planned file via `operator.read`. Header sizes carry
-/// the actual byte count (some backends report walk sizes as 0). The job
-/// path streams chunk-by-chunk from `transfers::run_compress_job` using the
-/// same pure helpers instead, keeping table locks and progress events in the
-/// established place.
-pub async fn build_archive(operator: &Operator, plan: &[TarPlanEntry], gzip: bool) -> Result<Vec<u8>, String> {
-    let mut tar: Vec<u8> = Vec::new();
-    let mut total = 0u64;
-    for entry in plan {
-        let data = operator
-            .read(&entry.source_path)
-            .await
-            .map_err(|error| format!("Failed to read '{}': {error}", entry.source_path))?
-            .to_vec();
-        total = total.saturating_add(data.len() as u64);
-        if total > MAX_COMPRESS_BYTES {
-            return Err(format!("Compression payload exceeds the {MAX_COMPRESS_BYTES} byte guard"));
-        }
-        tar.extend_from_slice(&tar_entry_header(&entry.archive_path, data.len() as u64)?);
-        tar.extend_from_slice(&data);
-        tar.extend(std::iter::repeat(0u8).take(payload_padding(data.len())));
-    }
-    tar.extend_from_slice(&TAR_END);
-    Ok(if gzip { gzip_stored_wrap(&tar) } else { tar })
-}
 
 
 
@@ -1636,10 +1474,6 @@ mod tests {
 
     // -- compression writer ---------------------------------------------------------
 
-    fn memory_operator() -> Operator {
-        opendal::Operator::via_iter("memory", Vec::<(String, String)>::new()).unwrap()
-    }
-
     #[test]
     fn gzip_stored_round_trips_multi_block() {
         // Multi-chunk (>65535) + non-aligned tail exercises block splitting.
@@ -1660,50 +1494,5 @@ mod tests {
         assert!(tar_entry_header("../escape.txt", 0).is_err());
         assert!(tar_entry_header("/absolute.txt", 0).is_err());
         assert!(tar_entry_header("ok.txt", 0).is_ok());
-    }
-
-    #[tokio::test]
-    async fn plan_and_build_round_trip_through_parser() {
-        let operator = memory_operator();
-        operator.write("/a.txt", b"alpha".to_vec()).await.unwrap();
-        operator.write("/pkg/inner.txt", "打包内容 longer payload".as_bytes().to_vec()).await.unwrap();
-        operator.write("/pkg/empty.bin", Vec::<u8>::new()).await.unwrap();
-
-        // Long directory name → PAX extended header path (>100 bytes).
-        let long_dir = format!("/{}", "长目录名-".repeat(20));
-        operator.create_dir(&format!("{long_dir}/")).await.unwrap();
-        operator.write(&format!("{long_dir}/leaf.txt"), b"leaf".to_vec()).await.unwrap();
-
-        let plan = plan_compress(&operator, &["/a.txt".to_string(), "/pkg".to_string(), long_dir.clone()])
-            .await
-            .unwrap();
-        assert_eq!(plan.len(), 4); // a.txt, pkg/inner.txt, pkg/empty.bin, long/leaf.txt
-        assert!(plan.iter().all(|entry| !entry.archive_path.starts_with('/')));
-
-        // Plain tar round-trip: header sizes carry actual byte counts.
-        let tar = build_archive(&operator, &plan, false).await.unwrap();
-        let entries = extract_entries(&tar, &DEFAULT_LIMITS).unwrap();
-        eprintln!("plan: {plan:?}");
-        eprintln!("entries: {:?}", entries.iter().map(|entry| (entry.path.as_str(), entry.size)).collect::<Vec<_>>());
-        let by_path = |path: &str| entries.iter().find(|entry| entry.path == path).map(|entry| entry.data.clone());
-        assert_eq!(by_path("a.txt").unwrap(), b"alpha");
-        assert_eq!(by_path("pkg/inner.txt").unwrap(), "打包内容 longer payload".as_bytes());
-        assert_eq!(by_path("pkg/empty.bin").unwrap(), Vec::<u8>::new());
-        assert_eq!(
-            by_path(&format!("{}/leaf.txt", long_dir.trim_start_matches('/'))).unwrap(),
-            b"leaf"
-        );
-
-        // gzip (stored) variant round-trips through the gzip/tar readers too.
-        let gz = build_archive(&operator, &plan, true).await.unwrap();
-        let listed = list_entries(&gz, &DEFAULT_LIMITS).unwrap();
-        assert_eq!(listed.len(), 4);
-    }
-
-    #[tokio::test]
-    async fn plan_compress_rejects_root_and_budget() {
-        let operator = memory_operator();
-        assert!(plan_compress(&operator, &["/".to_string()]).await.is_err());
-        assert!(plan_compress(&operator, &[]).await.is_err());
     }
 }
