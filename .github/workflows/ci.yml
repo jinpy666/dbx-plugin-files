@@ -94,8 +94,10 @@ jobs:
         # source on Linux (pkg-config covers its transitive build probes).
         run: sudo apt-get update && sudo apt-get install -y pkg-config nasm unzip
       - name: Install rclone (the sidecar spawns it for every engine op)
+        # Pinned: fsinfo feature reporting shifts between minor versions and
+        # the capabilities contract is asserted against 1.75.1 (dev machine).
         run: |
-          curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.zip -o /tmp/rclone.zip
+          curl -fsSL https://downloads.rclone.org/v1.75.1/rclone-v1.75.1-linux-amd64.zip -o /tmp/rclone.zip
           unzip -o -q /tmp/rclone.zip -d /tmp/rclone-tmp
           sudo mv /tmp/rclone-tmp/*/rclone /usr/local/bin/rclone
           rclone version | head -1
@@ -133,8 +135,10 @@ jobs:
       - name: Install native dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config nasm unzip
       - name: Install rclone (the sidecar spawns it for every engine op)
+        # Pinned: fsinfo feature reporting shifts between minor versions and
+        # the capabilities contract is asserted against 1.75.1 (dev machine).
         run: |
-          curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.zip -o /tmp/rclone.zip
+          curl -fsSL https://downloads.rclone.org/v1.75.1/rclone-v1.75.1-linux-amd64.zip -o /tmp/rclone.zip
           unzip -o -q /tmp/rclone.zip -d /tmp/rclone-tmp
           sudo mv /tmp/rclone-tmp/*/rclone /usr/local/bin/rclone
           rclone version | head -1
@@ -230,8 +234,10 @@ jobs:
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
       - name: Install rclone (the sidecar spawns it for every engine op)
+        # Pinned: fsinfo feature reporting shifts between minor versions and
+        # the capabilities contract is asserted against 1.75.1 (dev machine).
         run: |
-          curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.zip -o /tmp/rclone.zip
+          curl -fsSL https://downloads.rclone.org/v1.75.1/rclone-v1.75.1-linux-amd64.zip -o /tmp/rclone.zip
           unzip -o -q /tmp/rclone.zip -d /tmp/rclone-tmp
           sudo mv /tmp/rclone-tmp/*/rclone /usr/local/bin/rclone
           rclone version | head -1
