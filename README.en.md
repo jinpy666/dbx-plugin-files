@@ -97,3 +97,17 @@ Repository contracts (manifest/backend identity/connection forms) are enforced b
 `scripts/validate_repo.py` and `scripts/connection-forms/verify.mjs`; CI builds
 candidate packages for five targets (linux-x64, linux-arm64, darwin-arm64,
 darwin-x64, windows-x64). Provider capabilities and integration details live under `docs/`.
+
+### Local Docker test environment (optional)
+
+CI runs the throwaway all-protocol smoke via `scripts/container_smoke.sh`. For
+local manual verification, `scripts/docker_env.sh` starts a persistent set of
+test servers (MinIO / OpenSSH / Samba / mod_dav / pyftpdlib; credentials are
+generated at runtime, kept in a local state directory, never committed):
+
+```bash
+scripts/docker_env.sh up                      # initialize and start (idempotent, auto-restarts with Docker)
+python3 scripts/docker_env_connect_dbx.py     # inject the docker-* storage connections into local DBX (quit DBX first)
+scripts/docker_env.sh verify                  # real protocol-level health checks
+scripts/docker_env.sh down [--purge]          # stop containers; --purge also removes credentials/data
+```
