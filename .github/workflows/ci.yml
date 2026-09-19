@@ -245,7 +245,7 @@ jobs:
           $dir = (Get-ChildItem rclone-tmp -Directory | Select-Object -First 1).FullName
           New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\bin" | Out-Null
           Copy-Item "$dir\rclone.exe" "$env:USERPROFILE\bin\rclone.exe"
-          Add-Content $env:GITHUB_PATH "$env:USERPROFILE\bin" unzip
+          Add-Content $env:GITHUB_PATH "$env:USERPROFILE\bin"
       - uses: pnpm/action-setup@v6
         with:
           version: 11.24.0
