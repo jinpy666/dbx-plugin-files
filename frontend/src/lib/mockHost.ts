@@ -56,6 +56,9 @@ export function installMockHost() {
   const forceJob = params.get("job") === "1";
   // P2-13①：?ro=1 只读态注入（与 canWrite = !connection.readOnly && !capabilities.readOnly 双闸对齐）。
   const readOnly = params.get("ro") === "1";
+  // 对标 rclone-dashboard share 链接：?presign=1 让 mock capabilities.presign=true，
+  // files/publicLink 返回伪签名 URL（默认 false，模拟不支持公开链接的后端）。
+  const presign = params.get("presign") === "1";
 
   // ---- 虚拟文件树 ---------------------------------------------------------
   const tree = new Map<string, MockEntry>();
@@ -390,7 +393,32 @@ export function installMockHost() {
         return { entries: all.slice((page - 1) * size, page * size), total: all.length };
       }
       case "files/capabilities":
-        return { scheme: "mock", list: true, write: true, read: true, stat: true, delete: true, createDir: true, copy: true, rename: true, presign: false, readOnly: storageFor(p.connectionId).readOnly };
+        return { scheme: "mock", list: true, write: true, read: true, stat: true, delete: true, createDir: true, copy: true, rename: true, presign, readOnly: storageFor(p.connectionId).readOnly };
+      case "files/size": {
+        // 对标真实 sidecar：目录按直接子项汇总条目数与字节数；文件返回自身。
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        const path = str("path");
+        assertOk(path);
+        const entry = treeFor(p.connectionId).get(path.replace(/\/+$/, "") || "/");
+        if (!entry) throw new Error(`NotFound: ${path}`);
+        if (entry.kind === "file") return { count: 1, bytes: entry.size };
+        let count = 0;
+        let bytes = 0;
+        for (const child of children(treeFor(p.connectionId), path)) {
+          if (child.kind === "file") {
+            count += 1;
+            bytes += Number(child.size);
+          }
+        }
+        return { count, bytes };
+      }
+      case "files/publicLink": {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        if (!presign) throw new Error("operation not supported: backend has no public links");
+        const path = str("path");
+        assertOk(path);
+        return { url: `https://mock.example/presigned${path}?X-Expires=audit` };
+      }
       case "files/quickPaths": {
         const source = treeFor(p.connectionId);
         // mock 无真实 $HOME：远端树返回根目录 + 实际存在的样例目录 chips；

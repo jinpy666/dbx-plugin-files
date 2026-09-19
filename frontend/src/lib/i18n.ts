@@ -55,6 +55,14 @@ export const messages = {
     delete: "Delete",
     copyPath: "Copy path",
     copiedPath: "Path copied",
+    // 对标 rclone-dashboard：目录体积统计与公开链接
+    computeSize: "Calculate size",
+    computingSize: "Calculating size…",
+    sizeResult: "{count} items · {size}",
+    copyPublicLink: "Copy public link",
+    copiedPublicLink: "Public link copied",
+    // 预览浮窗最小化 pill
+    minimizePreview: "Minimize preview",
     // P-FILES 右键/侧栏增强
     copyName: "Copy name",
     copiedName: "Name copied",
@@ -276,6 +284,14 @@ export const messages = {
     delete: "Eliminar",
     copyPath: "Copiar ruta",
     copiedPath: "Ruta copiada",
+    // 对标 rclone-dashboard：目录体积统计与公开链接
+    computeSize: "Calcular tamaño",
+    computingSize: "Calculando tamaño…",
+    sizeResult: "{count} elementos · {size}",
+    copyPublicLink: "Copiar enlace público",
+    copiedPublicLink: "Enlace público copiado",
+    // 预览浮窗最小化 pill
+    minimizePreview: "Minimizar vista previa",
     // P-FILES 右键/侧栏增强
     copyName: "Copiar nombre",
     copiedName: "Nombre copiado",
@@ -487,6 +503,14 @@ export const messages = {
     delete: "Elimina",
     copyPath: "Copia percorso",
     copiedPath: "Percorso copiato",
+    // 对标 rclone-dashboard：目录体积统计与公开链接
+    computeSize: "Calcola dimensione",
+    computingSize: "Calcolo dimensione…",
+    sizeResult: "{count} voci · {size}",
+    copyPublicLink: "Copia link pubblico",
+    copiedPublicLink: "Link pubblico copiato",
+    // 预览浮窗最小化 pill
+    minimizePreview: "Minimizza anteprima",
     // P-FILES 右键/侧栏增强
     copyName: "Copia nome",
     copiedName: "Nome copiato",
@@ -698,6 +722,14 @@ export const messages = {
     delete: "削除",
     copyPath: "パスをコピー",
     copiedPath: "パスをコピーしました",
+    // 对标 rclone-dashboard：目录体积统计与公开链接
+    computeSize: "サイズを計算",
+    computingSize: "サイズを計算中…",
+    sizeResult: "{count} 項目 · {size}",
+    copyPublicLink: "公開リンクをコピー",
+    copiedPublicLink: "公開リンクをコピーしました",
+    // 预览浮窗最小化 pill
+    minimizePreview: "プレビューを最小化",
     // P-FILES 右键/侧栏增强
     copyName: "名前をコピー",
     copiedName: "名前をコピーしました",
@@ -909,6 +941,14 @@ export const messages = {
     delete: "Excluir",
     copyPath: "Copiar caminho",
     copiedPath: "Caminho copiado",
+    // 对标 rclone-dashboard：目录体积统计与公开链接
+    computeSize: "Calcular tamanho",
+    computingSize: "Calculando tamanho…",
+    sizeResult: "{count} itens · {size}",
+    copyPublicLink: "Copiar link público",
+    copiedPublicLink: "Link público copiado",
+    // 预览浮窗最小化 pill
+    minimizePreview: "Minimizar visualização",
     // P-FILES 右键/侧栏增强
     copyName: "Copiar nome",
     copiedName: "Nome copiado",
@@ -1120,6 +1160,14 @@ export const messages = {
     delete: "删除",
     copyPath: "复制路径",
     copiedPath: "路径已复制",
+    // 对标 rclone-dashboard：目录体积统计与公开链接
+    computeSize: "计算大小",
+    computingSize: "正在计算大小…",
+    sizeResult: "{count} 项 · {size}",
+    copyPublicLink: "复制公开链接",
+    copiedPublicLink: "公开链接已复制",
+    // 预览浮窗最小化 pill
+    minimizePreview: "最小化预览",
     // P-FILES 右键/侧栏增强
     copyName: "复制文件名",
     copiedName: "文件名已复制",
@@ -1331,6 +1379,14 @@ export const messages = {
     delete: "刪除",
     copyPath: "複製路徑",
     copiedPath: "路徑已複製",
+    // 对标 rclone-dashboard：目录体积统计与公开链接
+    computeSize: "計算大小",
+    computingSize: "正在計算大小…",
+    sizeResult: "{count} 項 · {size}",
+    copyPublicLink: "複製公開連結",
+    copiedPublicLink: "公開連結已複製",
+    // 预览浮窗最小化 pill
+    minimizePreview: "最小化預覽",
     // P-FILES 右键/侧栏增强
     copyName: "複製檔名",
     copiedName: "檔名已複製",

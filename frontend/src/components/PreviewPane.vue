@@ -3,7 +3,7 @@
 // 未知扩展走 text/hex 启发式；只有 Office/PDF/媒体/HTML/CSV 这类 CodeMirror
 // 无法渲染的格式交给 FileViewerPreview。读取仍受 files/read 的 2 MiB 上限约束。
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
-import { Download, Pencil, X } from "@lucide/vue";
+import { Download, Minus, Pencil, X } from "@lucide/vue";
 import { baseName, call, errorMessage, formatBytes, isMethodMissing } from "../lib/api";
 import { canEditBytes, hexDump, READ_MAX_BYTES, WRITE_MAX_BYTES } from "../lib/preview";
 import { resolvePreview, type PreviewResolution } from "../lib/previewResolver";
@@ -17,6 +17,8 @@ const props = defineProps<{
   connectionId?: string;
   /** 宿主外观（CodeMirror 主题色板，与 ssh sftp 编辑器同方案）。 */
   appearance: DbxPluginAppearance;
+  /** 浮窗宿主（App 预览层）允许最小化成悬浮 pill 时显示按钮。 */
+  allowMinimize?: boolean;
   t: (key: string, values?: Record<string, string | number>) => string;
 }>();
 
@@ -24,6 +26,7 @@ const emit = defineEmits<{
   (event: "close"): void;
   (event: "saved", path: string): void;
   (event: "download", path: string): void;
+  (event: "minimize"): void;
 }>();
 
 type PreviewMode = "text" | "image" | "hex" | "archive" | "viewer";
@@ -260,6 +263,7 @@ defineExpose({ isDirty });
       <span class="wb-muted">{{ loading || mode === "image" || mode === "archive" || mode === "viewer" ? "" : formatBytes(size) }}</span>
       <button v-if="canEdit && !saving" class="wb-icon-button wb-icon-neutral" v-tip="t('edit')" @click="startEdit"><Pencil /></button>
       <button class="wb-icon-button wb-icon-neutral" v-tip="t('download')" @click="emit('download', path)"><Download /></button>
+      <button v-if="allowMinimize" class="wb-icon-button wb-icon-neutral" v-tip="t('minimizePreview')" :aria-label="t('minimizePreview')" @click="emit('minimize')"><Minus /></button>
       <button class="wb-icon-button wb-icon-neutral" v-tip="t('close')" @click="emit('close')"><X /></button>
     </div>
     <div v-if="showEditbar" class="wb-preview-editbar">

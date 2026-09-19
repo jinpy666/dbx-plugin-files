@@ -15,6 +15,30 @@ export interface UiPrefs {
   rightSideTab: SideTab;
   leftSideCollapsed: boolean;
   rightSideCollapsed: boolean;
+  /** 预览浮窗尺寸（对齐 rclone-dashboard 的 per-layout 记忆）；缺省走居中默认。 */
+  previewWin?: PreviewWin;
+}
+
+export interface PreviewWin {
+  width: number;
+  height: number;
+}
+
+/** 预览浮窗拖拽缩放的上下限：避免缩到不可读或超出宿主视口。 */
+export const PREVIEW_MIN = { width: 360, height: 240 };
+export const PREVIEW_MAX = { width: 4096, height: 4096 };
+
+function sanitizePreviewWin(raw: unknown): PreviewWin | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const value = raw as Record<string, unknown>;
+  const width = Number(value.width);
+  const height = Number(value.height);
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return undefined;
+  if (width < PREVIEW_MIN.width || height < PREVIEW_MIN.height) return undefined;
+  return {
+    width: Math.min(Math.round(width), PREVIEW_MAX.width),
+    height: Math.min(Math.round(height), PREVIEW_MAX.height),
+  };
 }
 
 export const UI_PREFS_KEY = "dbx-files.ui";
@@ -44,6 +68,7 @@ function sanitize(raw: unknown): Partial<UiPrefs> {
       }
     }
   }
+  prefs.previewWin = sanitizePreviewWin(value.previewWin);
   return prefs;
 }
 
@@ -63,6 +88,7 @@ export function loadUiPrefs(storage?: Storage): UiPrefs {
     rightSideTab: prefs.rightSideTab ?? "tree",
     leftSideCollapsed: prefs.leftSideCollapsed ?? false,
     rightSideCollapsed: prefs.rightSideCollapsed ?? false,
+    previewWin: prefs.previewWin,
   };
 }
 
