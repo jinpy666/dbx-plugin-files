@@ -326,12 +326,10 @@ fn apply_features(caps: &mut Capabilities, features: Option<&Value>) {
     if let Some(presign) = flag("PublicLink") {
         caps.presign = presign;
     }
-    if let Some(write) = flag("PutStream")
-        .or_else(|| flag("PutUnchecked"))
-        .or_else(|| flag("OpenWriterAt"))
-    {
-        caps.write = write;
-    }
+    // `write` stays on the static `true` baseline: fsinfo's streaming flags
+    // (PutStream/PutUnchecked/OpenWriterAt) report unknown-size *streaming*
+    // support, not writability — webdav reports PutStream:false yet PUTs
+    // (and our known-size multipart uploadfile) work fine, verified e2e.
 }
 
 // ---------------------------------------------------------------------------

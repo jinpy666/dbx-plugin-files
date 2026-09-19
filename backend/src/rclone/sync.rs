@@ -55,6 +55,9 @@ pub enum SyncKind {
     Copy,
     /// `sync/sync`: mirror — delete dst files missing from src.
     Sync,
+    /// `sync/move`: copy src into dst, then delete the source tree —
+    /// the server-side move (files/rename on a directory).
+    Move,
 }
 
 #[derive(Debug, Clone)]
@@ -137,6 +140,7 @@ pub async fn start_job(
     let method = match params.kind {
         SyncKind::Copy => "sync/copy",
         SyncKind::Sync => "sync/sync",
+        SyncKind::Move => "sync/move",
     };
     let mut body = serde_json::json!({
         "srcFs": compose_fs(&params.src_fs, &params.src_rel),

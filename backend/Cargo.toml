@@ -15,7 +15,9 @@ dbx-plugin-sdk = "0.1.0"
 # below it left with backend/src/engine/.
 
 
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "multipart"] }
+# `stream` gates `Part::file` (upload staging streams from disk); it used to
+# arrive transitively via the opendal feature graph.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "multipart", "stream"] }
 # reqwest powers the rc HTTP client (rclone engine) and the SSH tunnel
 # health probes; chrono serves the rclone archive layer's mtime windows.
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }

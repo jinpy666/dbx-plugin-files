@@ -187,6 +187,13 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 [ "$smb_up" = 1 ] || { echo "FAIL: samba did not become ready on port ${SMB_PORT}" >&2; exit 1; }
+# 就绪探针通过后 smbd 仍可能处于配置装载窗口（实测树连接成功后瞬间
+# 又回 Network Name Not Found）：稳定 3 秒后复探一次，两次都过才算稳。
+sleep 3
+docker exec dbx-files-samba-test smbclient \
+  "//127.0.0.1/${SMB_SHARE}" -U "${SMB_USER}%${SMB_PASSWORD}" \
+  -c 'ls' >/dev/null 2>&1 \
+  || { echo "FAIL: samba share flapped after readiness" >&2; exit 1; }
 
 echo "==> preparing WebDAV config (hand-rolled minimal mod_dav httpd.conf)"
 ensure_image "httpd:2.4-alpine" "mirror.gcr.io/library/httpd:2.4-alpine" "public.ecr.aws/docker/library/httpd:2.4-alpine"
