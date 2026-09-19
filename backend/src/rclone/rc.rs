@@ -1,0 +1,327 @@
+//! Thin rclone rc HTTP API client.
+//!
+//! Endpoint set follows the patterns proven by yet-another-rclone-dashboard:
+//! POST JSON to `{base}/{method}` with Basic Auth, treat HTTP 200 + a JSON
+//! `error` field as the rclone business-error channel, and use
+//! `_async: true` + `job/status` for long operations (progress/cancel live in
+//! `transfers.rs`, phase C).
+
+use std::time::Duration;
+
+use serde_json::Value;
+
+#[derive(Debug)]
+pub enum RcError {
+    /// Transport-level failure (connection refused, timeout, body read).
+    Transport(reqwest::Error),
+    /// Non-200 from rcd (auth problems surface here as 401).
+    Http { status: u16, body: String },
+    /// rcd answered 200 but the payload carries an rclone error.
+    Rclone { message: String },
+    /// 200 with an unparsable body.
+    Malformed(String),
+}
+
+impl std::fmt::Display for RcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RcError::Transport(error) => write!(f, "rc transport error: {error}"),
+            RcError::Http { status, body } => write!(f, "rc http {status}: {}", truncate(body)),
+            RcError::Rclone { message } => write!(f, "{message}"),
+            RcError::Malformed(body) => write!(f, "rc returned malformed JSON: {}", truncate(body)),
+        }
+    }
+}
+
+impl std::error::Error for RcError {}
+
+fn truncate(text: &str) -> &str {
+    match text.char_indices().nth(240) {
+        Some((index, _)) => &text[..index],
+        None => text,
+    }
+}
+
+/// Minimal query-component percent-encoding (no urlencoding dependency):
+/// the rc `fs`/`remote` strings carry `:` and `/` which are legal in query
+/// strings; everything an endpoint could misread gets escaped.
+fn encode_query_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b':' | b'/' => {
+                encoded.push(byte as char)
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+/// Client bound to one rcd instance (base URL + session credential).
+#[derive(Debug, Clone)]
+pub struct RcClient {
+    http: reqwest::Client,
+    base_url: String,
+    user: String,
+    pass: String,
+}
+
+impl RcClient {
+    pub fn new(base_url: String, user: String, pass: String) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("reqwest client with static options always builds");
+        Self {
+            http,
+            base_url: base_url.trim_end_matches('/').to_string(),
+            user,
+            pass,
+        }
+    }
+
+    /// Client variant for long-running transfers: no wall-clock timeout —
+    /// a reqwest timeout spans the whole body, so staged uploads/pumped
+    /// downloads of large files would die at 30s. Control-plane calls keep
+    /// the default client.
+    pub fn transfer_client(&self) -> RcClient {
+        let http = reqwest::Client::builder()
+            .build()
+            .expect("reqwest client with static options always builds");
+        RcClient {
+            http,
+            base_url: self.base_url.clone(),
+            user: self.user.clone(),
+            pass: self.pass.clone(),
+        }
+    }
+
+    /// One rc call: POST JSON params, unwrap rclone's result envelope.
+    pub async fn call(&self, method: &str, params: &Value) -> Result<Value, RcError> {
+        let response = self
+            .http
+            .post(format!("{}/{}", self.base_url, method))
+            .basic_auth(&self.user, Some(&self.pass))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(params.to_string())
+            .send()
+            .await
+            .map_err(RcError::Transport)?;
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .map_err(RcError::Transport)?;
+        if !status.is_success() {
+            return Err(RcError::Http {
+                status: status.as_u16(),
+                body,
+            });
+        }
+        let value: Value = serde_json::from_str(&body).map_err(|_| RcError::Malformed(body))?;
+        // `error` must be non-empty to count: `job/status` carries
+        // `"error": ""` on every running/successful job (live-verified
+        // v1.75.1), and sync.rs polls it through this envelope.
+        if let Some(error) = value
+            .get("error")
+            .and_then(Value::as_str)
+            .filter(|message| !message.is_empty())
+        {
+            return Err(RcError::Rclone {
+                message: error.to_string(),
+            });
+        }
+        Ok(value)
+    }
+
+    /// Cheap liveness/auth probe (also used as spawn health check).
+    pub async fn noop(&self) -> Result<(), RcError> {
+        self.call("rc/noopauth", &serde_json::json!({})).await?;
+        Ok(())
+    }
+
+    pub async fn version(&self) -> Result<Value, RcError> {
+        self.call("core/version", &serde_json::json!({})).await
+    }
+
+    /// Registers `name` as a remote. Sensitive parameters are obscured by
+    /// rcd itself when `obscure` is set — they still transit this loopback
+    /// call, but are stored scrambled in the temp config file.
+    pub async fn config_create(
+        &self,
+        name: &str,
+        backend_type: &str,
+        parameters: Value,
+        obscure: bool,
+    ) -> Result<Value, RcError> {
+        self.call(
+            "config/create",
+            &serde_json::json!({
+                "name": name,
+                "type": backend_type,
+                "parameters": parameters,
+                "opt": { "obscure": obscure, "nonInteractive": true },
+            }),
+        )
+        .await
+    }
+
+    pub async fn config_delete(&self, name: &str) -> Result<Value, RcError> {
+        self.call("config/delete", &serde_json::json!({ "name": name }))
+            .await
+    }
+
+    pub async fn config_dump(&self) -> Result<Value, RcError> {
+        self.call("config/dump", &serde_json::json!({})).await
+    }
+
+    /// Lists `remote:path`. Non-recursive by default; `opt` carries extras
+    /// (`recurse`, `maxDepth`, `filesOnly`, `dirsOnly`) verbatim.
+    pub async fn operations_list(
+        &self,
+        fs: &str,
+        remote: &str,
+        opt: Value,
+    ) -> Result<Value, RcError> {
+        let mut payload = serde_json::json!({ "fs": fs, "remote": remote });
+        if !opt.is_null() {
+            payload["opt"] = opt;
+        }
+        self.call("operations/list", &payload).await
+    }
+
+    pub async fn operations_stat(&self, fs: &str, remote: &str) -> Result<Value, RcError> {
+        self.call(
+            "operations/stat",
+            &serde_json::json!({ "fs": fs, "remote": remote }),
+        )
+        .await
+    }
+
+    /// Recursive file count + byte total for a path.
+    pub async fn operations_size(&self, fs: &str, remote: &str) -> Result<Value, RcError> {
+        self.call(
+            "operations/size",
+            &serde_json::json!({ "fs": fs, "remote": remote }),
+        )
+        .await
+    }
+
+    /// Backend feature/capability report — input to the `files/capabilities`
+    /// projection (phase A wires a conservative per-protocol matrix on top).
+    pub async fn backend_features(&self, fs: &str, remote: &str) -> Result<Value, RcError> {
+        self.call(
+            "backend/features",
+            &serde_json::json!({ "fs": fs, "remote": remote }),
+        )
+        .await
+    }
+
+    /// rc-serve URL for byte reads. rcserver routes GET paths with the
+    /// `^\[(.*?)\](.*)$` regex, so the fs component MUST be bracket-wrapped —
+    /// plain forms 404 for every path (live-verified v1.68–1.75). Idempotent:
+    /// callers may pass a raw fs (bracketed here) or their own already
+    /// bracketed one (ops/bytes_channel conventions).
+    pub fn serve_url(&self, fs: &str, remote: &str) -> String {
+        let bracketed;
+        let fs_component = if fs.starts_with('[') {
+            fs
+        } else {
+            bracketed = format!("[{fs}]");
+            &bracketed
+        };
+        let remote_trim = remote.trim_matches('/');
+        if remote_trim.is_empty() {
+            format!("{}/{}", self.base_url, fs_component)
+        } else {
+            format!("{}/{}/{}", self.base_url, fs_component, remote_trim)
+        }
+    }
+
+    /// Byte read via `--rc-serve` with optional inclusive Range. Returns the
+    /// raw response (streaming body); a 416 for out-of-range starts maps to
+    /// `RcError::Http`. Caller inspects status (200 vs 206) for truncation.
+    pub async fn serve_get(
+        &self,
+        fs: &str,
+        remote: &str,
+        range: Option<(u64, Option<u64>)>,
+    ) -> Result<reqwest::Response, RcError> {
+        let url = self.serve_url(fs, remote);
+        let mut request = self
+            .http
+            .get(&url)
+            .basic_auth(&self.user, Some(&self.pass));
+        if let Some((start, end)) = range {
+            let value = match end {
+                Some(end) => format!("bytes={start}-{end}"),
+                None => format!("bytes={start}-"),
+            };
+            request = request.header(reqwest::header::RANGE, value);
+        }
+        let response = request.send().await.map_err(RcError::Transport)?;
+        let status = response.status();
+        if status.is_success() {
+            Ok(response)
+        } else {
+            Err(RcError::Http {
+                status: status.as_u16(),
+                body: response.text().await.unwrap_or_default(),
+            })
+        }
+    }
+
+    /// Multipart streaming upload via `operations/uploadfile` (rclone
+    /// >= 1.68). `file` is streamed from disk, not buffered whole.
+    pub async fn operations_uploadfile(
+        &self,
+        fs: &str,
+        remote: &str,
+        file: &std::path::Path,
+        mime: Option<&str>,
+    ) -> Result<Value, RcError> {
+        let mut part = reqwest::multipart::Part::file(file)
+            .await
+            .map_err(|error| RcError::Malformed(format!("staging file unreadable: {error}")))?;
+        part = part.file_name("payload");
+        if let Some(mime) = mime {
+            // Mime strings come from our own extension mapping; an invalid
+            // one is a caller bug, not a user-facing condition.
+            part = part
+                .mime_str(mime)
+                .map_err(|error| RcError::Malformed(format!("invalid mime {mime}: {error}")))?;
+        }
+        let form = reqwest::multipart::Form::new().part("file", part);
+        let url = format!(
+            "{}/operations/uploadfile?fs={}&remote={}",
+            self.base_url,
+            encode_query_component(fs),
+            encode_query_component(remote)
+        );
+        let response = self
+            .http
+            .post(url)
+            .basic_auth(&self.user, Some(&self.pass))
+            .multipart(form)
+            .send()
+            .await
+            .map_err(RcError::Transport)?;
+        let status = response.status();
+        let body = response.text().await.map_err(RcError::Transport)?;
+        if !status.is_success() {
+            return Err(RcError::Http {
+                status: status.as_u16(),
+                body,
+            });
+        }
+        let value: Value =
+            serde_json::from_str(&body).map_err(|_| RcError::Malformed(body))?;
+        if let Some(error) = value.get("error").and_then(Value::as_str) {
+            return Err(RcError::Rclone {
+                message: error.to_string(),
+            });
+        }
+        Ok(value)
+    }
+}

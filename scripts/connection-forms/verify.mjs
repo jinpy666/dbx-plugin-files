@@ -110,6 +110,7 @@ const SECRET_FIELDS = new Set([
   "access_token",
   "client_secret",
   "refresh_token",
+  "proxy_password",
 ]);
 for (const field of fields) {
   if (field.type === "password") {
@@ -191,6 +192,25 @@ for (const protocol of options("protocol")) {
     current.required("password", ["koofr", "pcloud", "seafile"].includes(protocol));
     current.visible("key", ["sftp", "sftp-native"].includes(protocol));
     current.visible("known_hosts_strategy", ["sftp", "sftp-native"].includes(protocol));
+    // Egress proxy (rclone engine, 2026-09-19): the selector shows for the
+    // FTP/SFTP family only. The dependent host/port/user/password fields stay
+    // hidden at the default proxy_type=off — dedicated scenarios below cover
+    // the visible/required states once a proxy type is picked.
+    current.visible("proxy_type", ["ftp", "sftp", "sftp-native"].includes(protocol));
+    current.required("proxy_type", false);
+    current.visible("proxy_host", false);
+    current.required("proxy_host", false);
+    current.visible("proxy_port", false);
+    current.required("proxy_port", false);
+    current.visible("proxy_username", false);
+    current.visible("proxy_password", false);
+    // SSH tunnel (rclone engine, 2026-09-19): the flat ssh -J pair is shown
+    // for every protocol except fs and is never required. The dedicated
+    // tunnel scenarios below re-check the boundary states.
+    current.visible("tunnel_jump_hosts", protocol !== "fs");
+    current.required("tunnel_jump_hosts", false);
+    current.visible("tunnel_identity_file", protocol !== "fs");
+    current.required("tunnel_identity_file", false);
     current.visible("access_token", ["dropbox", "gdrive", "onedrive", "yandex-disk"].includes(protocol));
     current.required("access_token", protocol === "yandex-disk");
     current.visible("client_id", ["aliyun-drive", "dropbox", "gdrive", "onedrive"].includes(protocol));
@@ -208,6 +228,82 @@ for (const protocol of options("protocol")) {
     current.visible("dbx_ssh_connection", false);
   }
 }
+
+// Egress proxy regression scenarios (rclone engine connection proxy).
+//
+// (a) FTP + HTTP proxy: the dependent proxy fields become visible once a
+// proxy type is picked; host and port are conditionally required while the
+// credentials stay optional (anonymous proxies are legitimate).
+const ftpProxy = state({ protocol: "ftp", read_only: false, proxy_type: "http" });
+ftpProxy.visible("proxy_type", true);
+ftpProxy.visible("proxy_host", true);
+ftpProxy.required("proxy_host", true);
+ftpProxy.visible("proxy_port", true);
+ftpProxy.required("proxy_port", true);
+ftpProxy.visible("proxy_username", true);
+ftpProxy.required("proxy_username", false);
+ftpProxy.visible("proxy_password", true);
+ftpProxy.required("proxy_password", false);
+
+// (b) S3 never surfaces proxy fields: proxy_type itself is hidden by the
+// protocol gate, and the visible_when chain (proxy_host -> proxy_type ->
+// protocol) hides every dependent field even when a stale proxy_type leaks
+// in from a saved state.
+const s3Proxy = state({ protocol: "s3", read_only: false, proxy_type: "http" });
+s3Proxy.visible("proxy_type", false);
+s3Proxy.visible("proxy_host", false);
+s3Proxy.required("proxy_host", false);
+s3Proxy.visible("proxy_port", false);
+s3Proxy.required("proxy_port", false);
+s3Proxy.visible("proxy_username", false);
+s3Proxy.required("proxy_username", false);
+s3Proxy.visible("proxy_password", false);
+s3Proxy.required("proxy_password", false);
+
+// (c) SFTP with proxy off: host/port are neither visible nor required, and
+// no dependent proxy field leaks into the form.
+const sftpOff = state({ protocol: "sftp", read_only: false, proxy_type: "off" });
+sftpOff.visible("proxy_type", true);
+sftpOff.visible("proxy_host", false);
+sftpOff.required("proxy_host", false);
+sftpOff.visible("proxy_port", false);
+sftpOff.required("proxy_port", false);
+sftpOff.visible("proxy_username", false);
+sftpOff.required("proxy_username", false);
+sftpOff.visible("proxy_password", false);
+sftpOff.required("proxy_password", false);
+
+// SSH tunnel contract (rclone engine, flat ssh -J fields, 2026-09-19): the
+// visible_when gate must target protocol and cover exactly the protocol
+// option set minus fs (the generic loop above already asserts target
+// precedence and that every gate value is a real protocol option).
+for (const key of ["tunnel_jump_hosts", "tunnel_identity_file"]) {
+  const gate = byKey[key].visible_when;
+  assert.equal(gate?.field, "protocol", `${key}: tunnel gate must target protocol`);
+  assert.deepEqual(
+    [...gate.one_of].sort(),
+    options("protocol").filter((value) => value !== "fs").sort(),
+    `${key}: tunnel gate must cover every protocol except fs`,
+  );
+  assert.equal(byKey[key].required_when, undefined, `${key}: tunnel fields are always optional`);
+  assert.equal(byKey[key].binding, "config", `${key}: tunnel fields bind to config`);
+}
+
+// (d) S3 surfaces the tunnel pair, both optional: object storage without any
+// FTP/SFTP baggage can still reach a private network through the jump chain.
+const s3Tunnel = state({ protocol: "s3", read_only: false });
+s3Tunnel.visible("tunnel_jump_hosts", true);
+s3Tunnel.required("tunnel_jump_hosts", false);
+s3Tunnel.visible("tunnel_identity_file", true);
+s3Tunnel.required("tunnel_identity_file", false);
+
+// (e) fs hides the tunnel pair entirely: the gate excludes fs, so neither
+// field (nor any requirement) can leak into a local-filesystem form.
+const fsTunnel = state({ protocol: "fs", read_only: false });
+fsTunnel.visible("tunnel_jump_hosts", false);
+fsTunnel.required("tunnel_jump_hosts", false);
+fsTunnel.visible("tunnel_identity_file", false);
+fsTunnel.required("tunnel_identity_file", false);
 
 assert.equal(byKey.key.binding, "secret");
 assert.equal(byKey.key.type, "textarea");

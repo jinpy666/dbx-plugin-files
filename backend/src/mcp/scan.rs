@@ -100,6 +100,21 @@ impl WalkState {
             truncated: false,
         }
     }
+
+    /// Records one visited entry (filter applied, scanned counter advanced).
+    /// The rclone walk (`tools.rs::scan_digest_rclone`) feeds pre-enumerated
+    /// entries here instead of calling `ops::list` per level.
+    pub(crate) fn visit(&mut self, row: PathRow) {
+        self.scanned += 1;
+        if self.filter.matches(&row) {
+            self.matched.push(row);
+        }
+    }
+
+    /// Whether the absolute scanned budget is used up.
+    pub(crate) fn exhausted(&self, max_entries: usize) -> bool {
+        self.scanned >= max_entries
+    }
 }
 
 /// Breadth-first walk with a depth cap (design §6.2). Reuses `ops::list` per

@@ -8,18 +8,27 @@
 //! `operationId` falls back to a local uuid on Host API 1.0 (ssh-sftp
 //! main.rs:694 pattern).
 
+// The inline MCP connection schema (mcp::stdio::inline_connection_properties)
+// is one large `json!` literal — the default 128-depth macro recursion limit
+// no longer fits it.
+#![recursion_limit = "256"]
+
 mod archive;
 mod engine;
 mod local_downloads;
 mod mcp;
 mod model;
+mod rclone;
 mod store;
 mod transfers;
 
 #[cfg(test)]
 mod bench;
 
+use std::collections::HashMap;
 use std::future::Future;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -43,9 +52,16 @@ use transfers::JobTable;
 struct Plugin {
     runtime: Runtime,
     engine: Arc<Engine>,
+    rclone: Arc<rclone::RcloneEngine>,
     transfers: Arc<JobTable>,
     store: Arc<Store>,
     mcp: Arc<mcp::Mcp>,
+    /// F-RCLONE Phase C sync jobs (`files/syncDir`|`files/copyDir`): jobId →
+    /// the frozen `sync.rs` handle plus the DirJob projection metadata. The
+    /// map is shared with each job's `on_event` closure (std Mutex; every
+    /// hold is a short sync section, nothing awaits under the lock), and the
+    /// handle is backfilled once `start_job` answers.
+    sync_jobs: Arc<std::sync::Mutex<HashMap<String, RcloneSyncRecord>>>,
 }
 
 impl Plugin {
@@ -90,21 +106,1328 @@ impl Plugin {
         })?;
         let runtime =
             Runtime::new().map_err(|error| format!("Failed to create async runtime: {error}"))?;
+        let store = Arc::new(Store::new(data_dir.clone()));
         let transfers = Arc::new(JobTable::new());
-        let mcp = Arc::new(mcp::Mcp::new(data_dir.clone()));
-        let store = Arc::new(Store::new(data_dir));
         // P-FILES ①c (X-A handover ④): hydrate the persisted transfer history
         // at startup (M3-F3-4 hook). Behavior is unchanged — `list` reads the
         // store fresh — but the in-memory mirror is now wired instead of
         // relying on the lazy first-write path.
         runtime.block_on(transfers.load_history(&store));
+        let rclone = Arc::new(rclone::RcloneEngine::new());
+        // Keepalive watchdog: proactive crash respawn + re-registration and
+        // idle proxy-group reaping (DBX_FILES_RCLONE_KEEPALIVE_SECS, 0=off).
+        rclone.start_keepalive();
+        {
+            // Phase D transfers-history persistence: the engine appends
+            // terminal single-file jobs to the same transfers.json, and the
+            // mirror is hydrated here (JobTable::load_history parity) so the
+            // panel and the local reveal/open whitelist survive restarts.
+            // Only terminal records are ever persisted.
+            *rclone_lock(&rclone.history) = Some(Arc::clone(&store));
+            let mut jobs = rclone_lock(&rclone.jobs);
+            for record in store.load_transfers() {
+                if jobs.contains_key(&record.task_id) {
+                    continue;
+                }
+                jobs.insert(record.task_id.clone(), rclone_job_from_record(record));
+            }
+        }
+        let sync_jobs: Arc<std::sync::Mutex<HashMap<String, RcloneSyncRecord>>> =
+            Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let mut mcp = mcp::Mcp::new(data_dir);
+        // F-RCLONE Phase D: when the rclone engine is selected, the MCP
+        // storage tools route through it too (same registry, same gates).
+        // The sync starter closure shares the workbench syncDir job mirror,
+        // so `files/transfer/status` stays the single poll surface.
+        if rclone::RcloneEngine::enabled() {
+            mcp.attach_rclone(mcp::RcloneRoute {
+                engine: Arc::clone(&rclone),
+                store: Arc::clone(&store),
+                start_sync: Some(mcp_sync_starter(
+                    Arc::clone(&rclone),
+                    Arc::clone(&sync_jobs),
+                )),
+            });
+        }
+        let mcp = Arc::new(mcp);
         Ok(Self {
             runtime,
             engine: Arc::new(Engine::new()),
+            rclone,
             transfers,
             store,
             mcp,
+            sync_jobs,
         })
+    }
+
+    /// F-RCLONE dual-engine route (docs/IMPL_PLAN_RCLONE.zh-CN.md §2/§5/§7):
+    /// methods the rclone engine implements are answered by it when selected
+    /// via `DBX_FILES_ENGINE=rclone`; `Ok(None)` lets the OpenDAL engine
+    /// serve everything else during the transition. Phase B adds the file
+    /// surface plus the binary upload/download channel wiring; every Phase B
+    /// arm mirrors the field-for-field response shape (and gate direction) of
+    /// its OpenDAL counterpart below.
+    async fn try_handle_rclone(
+        &self,
+        method: &str,
+        params: Value,
+        emitter: &PluginEmitter,
+    ) -> Result<Option<Value>, String> {
+        match method {
+            "connection/test" => {
+                let connection = StoredConnection::from_lifecycle_params(&params)?;
+                // The ::test key keeps a probe from disrupting the live
+                // forwarder of an already-connected same-id connection.
+                let connection = self
+                    .rclone
+                    .prepare(&format!("{}::test", connection.id), &connection)
+                    .await?;
+                let client = self.rclone.client_for(&connection).await?;
+                rclone::registry::test_connection(&client, &connection).await?;
+                Ok(Some(json!({
+                    "success": true,
+                    "message": "Storage backend reachable"
+                })))
+            }
+            "connection/connect" => {
+                let connection = StoredConnection::from_lifecycle_params(&params)?;
+                // Same reserved-id rule as the OpenDAL engine (engine::connect):
+                // the built-in local filesystem must never be shadowed by a
+                // host-registered connection of the same id.
+                if connection.id == engine::LOCAL_CONNECTION_ID {
+                    return Err(format!(
+                        "connectionId '{}' is reserved for the built-in local filesystem",
+                        engine::LOCAL_CONNECTION_ID
+                    ));
+                }
+                // A reconnect that changed its proxy config now lives in a
+                // different rcd group; the stale remote in the old group's
+                // config would leak until that rcd dies — pre-delete it
+                // through the old group first.
+                if let Some(old) = self.rclone.registry.get(&connection.id) {
+                    let same_group = old.proxy.as_ref().map(|proxy| proxy.group_key())
+                        == connection.proxy.as_ref().map(|proxy| proxy.group_key());
+                    if !same_group {
+                        if let Ok(old_client) = self.rclone.client_for_binding(&old).await {
+                            let _ = old_client
+                                .config_delete(&rclone::registry::remote_name(&connection.id))
+                                .await;
+                        }
+                    }
+                }
+                let connection = self.rclone.prepare(&connection.id, &connection).await?;
+                let client = self.rclone.client_for(&connection).await?;
+                if let Err(error) =
+                    rclone::registry::connect(&self.rclone.registry, &client, &connection).await
+                {
+                    // A failed connect must not leave a half-established
+                    // forwarder behind for this id.
+                    self.rclone.release_tunnel(&connection.id).await;
+                    return Err(error);
+                }
+                Ok(Some(json!({ "success": true })))
+            }
+            "connection/disconnect" => {
+                let connection_id = params
+                    .get("connection")
+                    .and_then(|value| value.get("id"))
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .ok_or("Missing connection id")?
+                    .to_string();
+                // Route by the registered binding's proxy group so
+                // `config/delete` hits the rcd that actually holds the
+                // remote; an unknown id is already disconnected.
+                let Some(binding) = self.rclone.registry.get(&connection_id) else {
+                    return Ok(Some(json!({ "success": true })));
+                };
+                let client = self.rclone.client_for_binding(&binding).await?;
+                rclone::registry::disconnect(&self.rclone.registry, &client, &connection_id)
+                    .await?;
+                // Tear down the tunnel forwarder(s) alongside the remote.
+                self.rclone.release_tunnel(&connection_id).await;
+                // Idle-group teardown: when this was the group's last
+                // connection and no async work is in flight, stop its rcd.
+                // Groups still draining work are reaped by the keepalive
+                // sweep once the work settles.
+                let group = rclone::registry::group_key_of(binding.proxy.as_ref());
+                self.rclone.shutdown_group_if_idle(&group).await;
+                Ok(Some(json!({ "success": true })))
+            }
+            "files/list" | "files/listPaged" | "files/stat" | "files/size" => {
+                let connection_id = params
+                    .get("connectionId")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .ok_or("Missing connectionId")?
+                    .to_string();
+                let client = self.rclone.client_for_id(&connection_id).await?;
+                match method {
+                    "files/list" => {
+                        let request: model::ListRequest = parse(params)?;
+                        let binding = self.rclone.binding(&request.connection_id)?;
+                        let fs = rclone::call_fs(&binding);
+                        let entries = rclone::ops::list(
+                            &client,
+                            &fs,
+                            &request.path,
+                            request.recurse,
+                            &binding.root,
+                            binding.lock_to_root,
+                        )
+                        .await?;
+                        Ok(Some(json!({ "entries": entries })))
+                    }
+                    "files/listPaged" => {
+                        let request: model::ListPagedRequest = parse(params)?;
+                        let binding = self.rclone.binding(&request.connection_id)?;
+                        let fs = rclone::call_fs(&binding);
+                        let (entries, total) = rclone::ops::list_paged(
+                            &client,
+                            &fs,
+                            &request.path,
+                            request.page,
+                            request.page_size,
+                            &binding.root,
+                            binding.lock_to_root,
+                        )
+                        .await?;
+                        Ok(Some(json!({ "entries": entries, "total": total })))
+                    }
+                    "files/stat" => {
+                        let request: model::PathRequest = parse(params)?;
+                        let binding = self.rclone.binding(&request.connection_id)?;
+                        let fs = rclone::call_fs(&binding);
+                        let entry = rclone::ops::stat(
+                            &client,
+                            &fs,
+                            &request.path,
+                            &binding.root,
+                            binding.lock_to_root,
+                        )
+                        .await?;
+                        Ok(Some(json!({ "entry": entry })))
+                    }
+                    _ => {
+                        let request: model::PathRequest = parse(params)?;
+                        let binding = self.rclone.binding(&request.connection_id)?;
+                        let fs = rclone::call_fs(&binding);
+                        let (count, bytes) = rclone::ops::size(
+                            &client,
+                            &fs,
+                            &request.path,
+                            &binding.root,
+                            binding.lock_to_root,
+                        )
+                        .await?;
+                        Ok(Some(json!({ "count": count, "bytes": bytes })))
+                    }
+                }
+            }
+            "files/capabilities" => {
+                let connection_id = connection_id_param(&params)?.to_string();
+                let binding = self.rclone.binding(&connection_id)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                let capabilities =
+                    rclone::ops::capabilities(&client, &rclone::call_fs(&binding), &binding.backend_type)
+                        .await?;
+                let mut payload =
+                    serde_json::to_value(capabilities).map_err(|error| error.to_string())?;
+                if let Some(object) = payload.as_object_mut() {
+                    object.insert("readOnly".to_string(), serde_json::Value::Bool(binding.read_only));
+                }
+                Ok(Some(payload))
+            }
+            "files/quickPaths" => {
+                let connection_id = connection_id_param(&params)?.to_string();
+                let binding = self.rclone.binding(&connection_id)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                let payload = rclone::ops::quick_paths(
+                    &client,
+                    &rclone::call_fs(&binding),
+                    &binding.backend_type,
+                    &binding.root,
+                )
+                .await?;
+                Ok(Some(payload))
+            }
+
+            // ------------------------------------------------------------------
+            // Phase B file surface (§5 files/read|write|mkdir|rmdir|delete|
+            // purge|copy|move|rename|publicLink). Gate direction and response
+            // shapes mirror the OpenDAL arms below; the connection-level
+            // read_only/allow_delete gates bind to the registry binding (the
+            // rclone engine keeps no StoredConnection records), while the
+            // path whitelist / lock_to_root / purge-root rules are enforced
+            // inside ops.rs through the shared policy layer.
+            // ------------------------------------------------------------------
+            "files/read" | "files/write" => {
+                let request_connection_id = params
+                    .get("connectionId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let binding = self.rclone.binding(&request_connection_id)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                if method == "files/read" {
+                    let request: model::ReadRequest = parse(params)?;
+                    // Same clamp as the OpenDAL arm: default 256 KiB, hard
+                    // cap MAX_PREVIEW_BYTES (2 MiB).
+                    let max_bytes = request
+                        .max_bytes
+                        .unwrap_or(256 * 1024)
+                        .clamp(1, model::MAX_PREVIEW_BYTES as u64);
+                    let remote = rclone_gate(
+                        &binding.root,
+                        binding.lock_to_root,
+                        &request.path,
+                        engine::ops::policy::PathPolicy::check_read,
+                    )?;
+                    let (data, truncated) = rclone::ops::read_prefix(
+                        &client,
+                        &rclone::call_fs(&binding),
+                        &remote,
+                        max_bytes,
+                    )
+                    .await?;
+                    Ok(Some(json!({
+                        "dataBase64": BASE64_STANDARD.encode(data),
+                        "truncated": truncated
+                    })))
+                } else {
+                    let request: model::WriteRequest = parse(params)?;
+                    ensure_binding_writable(&binding)?;
+                    let remote = rclone_gate(
+                        &binding.root,
+                        binding.lock_to_root,
+                        &request.path,
+                        engine::ops::policy::PathPolicy::check_write,
+                    )?;
+                    let data = BASE64_STANDARD
+                        .decode(request.data_base64.as_bytes())
+                        .map_err(|error| format!("Invalid base64 file data: {error}"))?;
+                    if data.len() > model::MAX_INLINE_WRITE_BYTES {
+                        return Err(format!(
+                            "Inline write payload of {} bytes exceeds {}; use the upload channel",
+                            data.len(),
+                            model::MAX_INLINE_WRITE_BYTES
+                        ));
+                    }
+                    rclone::ops::write_bytes(
+                        &client,
+                        &rclone::call_fs(&binding),
+                        &remote,
+                        &data,
+                    )
+                    .await?;
+                    Ok(Some(json!({ "success": true })))
+                }
+            }
+            "files/mkdir" | "files/rmdir" | "files/delete" | "files/purge" => {
+                let request: model::PathRequest = parse(params)?;
+                let binding = self.rclone.binding(&request.connection_id)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                let fs = rclone::call_fs(&binding);
+                match method {
+                    "files/mkdir" => {
+                        ensure_binding_writable(&binding)?;
+                        rclone::ops::mkdir(
+                            &client,
+                            &fs,
+                            &request.path,
+                            &binding.root,
+                            binding.lock_to_root,
+                        )
+                        .await?;
+                    }
+                    "files/rmdir" => {
+                        // Same double gate as the OpenDAL rmdir arm (write +
+                        // delete: read_only rejects, allow_delete rejects).
+                        ensure_binding_writable(&binding)?;
+                        ensure_binding_deletable(&binding)?;
+                        rclone::ops::rmdir(
+                            &client,
+                            &fs,
+                            &request.path,
+                            &binding.root,
+                            binding.lock_to_root,
+                        )
+                        .await?;
+                    }
+                    "files/delete" => {
+                        ensure_binding_deletable(&binding)?;
+                        rclone::ops::delete_file(
+                            &client,
+                            &fs,
+                            &request.path,
+                            &binding.root,
+                            binding.lock_to_root,
+                        )
+                        .await?;
+                        self.audit_id(&request.connection_id, method, &request.path, "ok")?;
+                    }
+                    _ => {
+                        ensure_binding_deletable(&binding)?;
+                        refuse_purge_of_root(&binding.root, &request.path)?;
+                        rclone::ops::purge(
+                            &client,
+                            &fs,
+                            &request.path,
+                            &binding.root,
+                            binding.lock_to_root,
+                        )
+                        .await?;
+                        self.audit_id(&request.connection_id, method, &request.path, "ok")?;
+                    }
+                }
+                Ok(Some(json!({ "success": true })))
+            }
+            "files/copy" | "files/move" => {
+                let request: model::CopyMoveRequest = parse(params)?;
+                let source_connection_id = request
+                    .source_connection_id
+                    .clone()
+                    .unwrap_or_else(|| request.connection_id.clone());
+                let target_connection_id = request
+                    .target_connection_id
+                    .clone()
+                    .unwrap_or_else(|| request.connection_id.clone());
+                let source_binding = self.rclone.binding(&source_connection_id)?;
+                let target_binding = self.rclone.binding(&target_connection_id)?;
+                ensure_binding_writable(&target_binding)?;
+                // `move` deletes the source (copy+delete degrade semantics) —
+                // the source connection passes the delete gate too, same rule
+                // as the OpenDAL copy/move arm.
+                if method == "files/move" {
+                    ensure_binding_deletable(&source_binding)?;
+                }
+                // Server-side copy/move runs both fs strings inside one rcd,
+                // so the two connections must share a proxy group.
+                rclone::ensure_same_proxy_group(&source_binding, &target_binding)?;
+                let client = self.rclone.client_for_binding(&source_binding).await?;
+                let src_fs = rclone::call_fs(&source_binding);
+                let dst_fs = rclone::call_fs(&target_binding);
+                if method == "files/copy" {
+                    rclone::ops::copy_file(
+                        &client,
+                        &src_fs,
+                        &request.source_path,
+                        &dst_fs,
+                        &request.target_path,
+                        &target_binding.root,
+                        target_binding.lock_to_root,
+                    )
+                    .await?;
+                } else {
+                    rclone::ops::move_file(
+                        &client,
+                        &src_fs,
+                        &request.source_path,
+                        &dst_fs,
+                        &request.target_path,
+                        &target_binding.root,
+                        target_binding.lock_to_root,
+                    )
+                    .await?;
+                }
+                self.audit_id(&request.connection_id, method, &request.source_path, "ok")?;
+                // rc operations/copyfile|movefile answer synchronously — no
+                // degraded job, so `transport` is always "native".
+                Ok(Some(json!({
+                    "success": true,
+                    "transport": "native",
+                    "jobId": Option::<String>::None,
+                })))
+            }
+            "files/rename" => {
+                let request: model::RenameRequest = parse(params)?;
+                let binding = self.rclone.binding(&request.connection_id)?;
+                // Rename removes the source path — write + delete gates, same
+                // rule as the OpenDAL rename arm (ops::rename applies the
+                // policy check_rename whitelist on both endpoints itself).
+                ensure_binding_writable(&binding)?;
+                ensure_binding_deletable(&binding)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                rclone::ops::rename(
+                    &client,
+                    &rclone::call_fs(&binding),
+                    &request.path,
+                    &request.new_path,
+                    &binding.root,
+                    binding.lock_to_root,
+                )
+                .await?;
+                self.audit_id(&request.connection_id, method, &request.path, "ok")?;
+                Ok(Some(json!({ "success": true, "transport": "native", "jobId": Option::<String>::None })))
+            }
+            "files/publicLink" => {
+                let request: model::PublicLinkRequest = parse(params)?;
+                let binding = self.rclone.binding(&request.connection_id)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                // `expire_secs` is ignored: rc `operations/publiclink` takes
+                // no expiry parameter (backends without public links surface
+                // rclone's own error text through ops::public_link).
+                let url = rclone::ops::public_link(
+                    &client,
+                    &rclone::call_fs(&binding),
+                    &request.path,
+                    &binding.root,
+                    binding.lock_to_root,
+                )
+                .await?;
+                Ok(Some(json!({ "url": url })))
+            }
+
+            // ------------------------------------------------------------------
+            // Phase D archive surface (method-face closeout): archiveList /
+            // extract / compress over the rc byte channel. Request/return
+            // shapes are field-for-field aligned with the OpenDAL arms below;
+            // zip is read via rc-serve Range reads (central directory at the
+            // file tail), tar/tar.gz reuse the pure `crate::archive` parsers
+            // (see rclone/archive.rs). The OpenDAL-era degrade-to-job branch
+            // is dropped here — both methods run synchronously under the same
+            // bomb guards and always answer `transport:"native"`.
+            // ------------------------------------------------------------------
+            "files/archiveList" => {
+                let request: model::ArchiveListRequest = parse(params)?;
+                let binding = self.rclone.binding(&request.connection_id)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                let entries = rclone::archive::archive_list(
+                    &client,
+                    &rclone::call_fs(&binding),
+                    &request.path,
+                    &binding.root,
+                    binding.lock_to_root,
+                )
+                .await?;
+                // Same pagination clamp as the OpenDAL arm (default page 1 /
+                // page_size 200, slice via the shared pure paginator).
+                let total = entries.len() as u64;
+                let page = request.page.unwrap_or(1).max(1);
+                let page_size = request.page_size.unwrap_or(200).clamp(1, 1000);
+                let (start, end) = archive::paginate(total, page, page_size);
+                Ok(Some(json!({ "entries": &entries[start..end], "total": total })))
+            }
+            "files/extract" => {
+                let request: model::ExtractRequest = parse(params)?;
+                let binding = self.rclone.binding(&request.connection_id)?;
+                // Extract writes the target tree but never deletes the source
+                // archive → read_only gate applies, allow_delete does not.
+                ensure_binding_writable(&binding)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                rclone::archive::extract(
+                    &client,
+                    &rclone::call_fs(&binding),
+                    &request.path,
+                    &request.target_path,
+                    &binding.root,
+                    binding.lock_to_root,
+                )
+                .await?;
+                self.audit_id(&request.connection_id, method, &request.path, "ok")?;
+                Ok(Some(json!({
+                    "success": true,
+                    "transport": "native",
+                    "jobId": Option::<String>::None,
+                })))
+            }
+            "files/compress" => {
+                let request: model::CompressRequest = parse(params)?;
+                let binding = self.rclone.binding(&request.connection_id)?;
+                ensure_binding_writable(&binding)?;
+                if request.paths.is_empty() {
+                    return Err("paths must not be empty".to_string());
+                }
+                // Archive file (not a directory): no trailing-slash rewrite.
+                // rclone mode additionally accepts .zip (stored entries).
+                let lower = request.target_path.to_lowercase();
+                if !(lower.ends_with(".tar")
+                    || lower.ends_with(".tar.gz")
+                    || lower.ends_with(".tgz")
+                    || lower.ends_with(".zip"))
+                {
+                    return Err(format!(
+                        "Archive target '{}' must end with .tar, .tar.gz, .tgz or .zip",
+                        request.target_path
+                    ));
+                }
+                let client = self.rclone.client_for_binding(&binding).await?;
+                let fs = rclone::call_fs(&binding);
+                // Refuse to overwrite: an existing target is never clobbered
+                // by a compression run (mirror of the OpenDAL arm's
+                // stat-first check; the gate runs here because ops::stat's
+                // not-found is an error, not a signal).
+                let target_rel = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    &request.target_path,
+                    engine::ops::policy::PathPolicy::check_write,
+                )?;
+                if !target_rel.trim_matches('/').is_empty() {
+                    let stat = client
+                        .operations_stat(&fs, target_rel.trim_matches('/'))
+                        .await
+                        .map_err(|error| {
+                            format!("Failed to stat '{target_rel}': {error}")
+                        })?;
+                    if stat.get("item").filter(|item| !item.is_null()).is_some() {
+                        return Err(format!(
+                            "Archive target '{}' already exists",
+                            request.target_path
+                        ));
+                    }
+                }
+                rclone::archive::compress(
+                    &client,
+                    &fs,
+                    &request.paths,
+                    &request.target_path,
+                    &binding.root,
+                    binding.lock_to_root,
+                )
+                .await?;
+                self.audit_id(&request.connection_id, method, &request.target_path, "ok")?;
+                Ok(Some(json!({
+                    "success": true,
+                    "transport": "native",
+                    "jobId": Option::<String>::None,
+                })))
+            }
+
+            // ------------------------------------------------------------------
+            // Phase B binary channels (§5/§7): upload frames land in a local
+            // UploadStaging sink and `finish` streams the staged file to the
+            // exact remote path; downloads pump the rc-serve GET body into
+            // `files/download/{taskId}` frames (8-byte BE offset + ≤256 KiB).
+            // ------------------------------------------------------------------
+            "files/upload/start" => {
+                let request: model::UploadStartRequest = parse(params)?;
+                let binding = self.rclone.binding(&request.connection_id)?;
+                ensure_binding_writable(&binding)?;
+                let remote = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    &request.remote_path,
+                    engine::ops::policy::PathPolicy::check_write,
+                )?;
+                // taskId generation copied from the OpenDAL start_upload arm
+                // (uuid v4); the staging sink carries the same id.
+                let task_id = uuid::Uuid::new_v4().to_string();
+                let staging =
+                    rclone::bytes_channel::UploadStaging::start(&task_id, request.size)?;
+                let job = transfers::TransferJob {
+                    task_id: task_id.clone(),
+                    connection_id: request.connection_id.clone(),
+                    kind: transfers::TransferKind::Upload,
+                    remote_path: request.remote_path.clone(),
+                    total_bytes: Some(request.size),
+                    transferred_bytes: 0,
+                    status: transfers::JobStatus::Queued,
+                    error: None,
+                    started_at: Some(store::unix_millis_now()),
+                    finished_at: None,
+                    local_path: None,
+                };
+                {
+                    rclone_lock(&self.rclone.jobs).insert(task_id.clone(), job.clone());
+                    rclone_lock(&self.rclone.uploads).insert(
+                        task_id.clone(),
+                        rclone::UploadTask {
+                            staging,
+                            fs: rclone::call_fs(&binding),
+                            remote,
+                            declared_size: request.size,
+                            throttle: transfers::Throttle::default(),
+                            _work: self
+                                .rclone
+                                .start_work(&rclone::registry::group_key_of(
+                                    binding.proxy.as_ref(),
+                                )),
+                        },
+                    );
+                }
+                // Initial queued event, identical payload shape to the
+                // JobTable's start_upload emission.
+                let _ = emitter.event("files/transfer/progress", rclone_job_progress_event(&job));
+                Ok(Some(json!({ "taskId": task_id })))
+            }
+            "files/upload/finish" => {
+                let request: model::TaskRequest = parse(params)?;
+                // Branch order is the job-table membership check itself: a
+                // task the rclone engine never started belongs to the OpenDAL
+                // JobTable (dual-engine transition, plan §2).
+                if !rclone_lock(&self.rclone.jobs).contains_key(&request.task_id) {
+                    return Ok(None);
+                }
+                self.finish_rclone_upload(&request.task_id, emitter).await?;
+                Ok(Some(json!({ "success": true })))
+            }
+            "files/download/start" => {
+                let request: model::DownloadStartRequest = parse(params)?;
+                let binding = self.rclone.binding(&request.connection_id)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                let remote = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    &request.remote_path,
+                    engine::ops::policy::PathPolicy::check_read,
+                )?;
+                let fs = rclone::call_fs(&binding);
+                // stat-first (missing object / directory), then the size
+                // prefetch via bytes_channel::remote_size.
+                let entry = rclone::ops::stat(
+                    &client,
+                    &fs,
+                    &request.remote_path,
+                    &binding.root,
+                    binding.lock_to_root,
+                )
+                .await?;
+                if entry.kind == "dir" {
+                    return Err(format!(
+                        "Cannot download '{}': it is a directory",
+                        remote.trim_matches('/')
+                    ));
+                }
+                let size = rclone::bytes_channel::remote_size(&client, &fs, &remote)
+                    .await?
+                    .unwrap_or(0);
+                let staging = if request.save_to_local {
+                    // Same geometry as the OpenDAL start_download arm: validate
+                    // the preference dir, .part staging under the downloads
+                    // base, pre-created so an unwritable dir fails at start.
+                    if let Some(download_dir) = request
+                        .download_dir
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|download_dir| !download_dir.is_empty())
+                    {
+                        local_downloads::validate_download_dir(download_dir)?;
+                    }
+                    let base = local_downloads::downloads_base_dir(
+                        request.download_dir.as_deref(),
+                        |key| std::env::var_os(key),
+                        &Store::default_dir(),
+                    );
+                    let staging = base.join(format!(
+                        "{}.part",
+                        local_downloads::sanitize_file_name(remote_file_name(
+                            &request.remote_path
+                        ))
+                    ));
+                    if let Some(parent) = staging.parent() {
+                        std::fs::create_dir_all(parent)
+                            .map_err(|error| format!("Failed to create download dir: {error}"))?;
+                    }
+                    std::fs::File::create(&staging)
+                        .map_err(|error| format!("Failed to create staging file: {error}"))?;
+                    Some(staging)
+                } else {
+                    None
+                };
+                let task_id = uuid::Uuid::new_v4().to_string();
+                let cancel = Arc::new(AtomicBool::new(false));
+                let pump_done = Arc::new(AtomicBool::new(false));
+                let job = transfers::TransferJob {
+                    task_id: task_id.clone(),
+                    connection_id: request.connection_id.clone(),
+                    kind: transfers::TransferKind::Download,
+                    remote_path: request.remote_path.clone(),
+                    total_bytes: Some(size),
+                    transferred_bytes: 0,
+                    status: transfers::JobStatus::Queued,
+                    error: None,
+                    started_at: Some(store::unix_millis_now()),
+                    finished_at: None,
+                    local_path: None,
+                };
+                {
+                    rclone_lock(&self.rclone.jobs).insert(task_id.clone(), job.clone());
+                    rclone_lock(&self.rclone.downloads).insert(
+                        task_id.clone(),
+                        rclone::DownloadTask {
+                            size,
+                            cancel: cancel.clone(),
+                            pump_done: pump_done.clone(),
+                            staging: staging.clone(),
+                            _work: self
+                                .rclone
+                                .start_work(&rclone::registry::group_key_of(
+                                    binding.proxy.as_ref(),
+                                )),
+                        },
+                    );
+                }
+                let _ = emitter.event("files/transfer/progress", rclone_job_progress_event(&job));
+                // Independent pump task (plan §5 allowance: the JobTable pump
+                // skeleton is welded to OpenDAL readers); the event sequence
+                // and frame format stay identical (running → throttled
+                // running events; kind-1 frames 8B BE offset + ≤256 KiB).
+                tokio::spawn(rclone_download_pump(
+                    Arc::clone(&self.rclone),
+                    task_id.clone(),
+                    request.connection_id.clone(),
+                    fs,
+                    remote,
+                    size,
+                    staging,
+                    cancel,
+                    pump_done,
+                    emitter.clone(),
+                ));
+                Ok(Some(json!({ "taskId": task_id, "size": size })))
+            }
+            "files/download/finish" => {
+                let request: model::TaskRequest = parse(params)?;
+                if !rclone_lock(&self.rclone.jobs).contains_key(&request.task_id) {
+                    return Ok(None);
+                }
+                let local_path = self
+                    .finish_rclone_download(&request.task_id, emitter)
+                    .await?;
+                // Response shape identical to the OpenDAL finish arm:
+                // `{success, taskId}` plus `localPath` for saveToLocal runs.
+                let mut response = json!({ "success": true, "taskId": request.task_id });
+                if let Some(local_path) = local_path {
+                    response["localPath"] = json!(local_path);
+                }
+                Ok(Some(response))
+            }
+            // ------------------------------------------------------------------
+            // Phase C dir sync (§5/§6): syncDir/copyDir run as rclone sync
+            // jobs — `sync::start_job` on the no-timeout transfer client,
+            // gates mirroring `validate_dir_job_gates`, a pollable `jobId`
+            // response, progress events in the exact `emit_dir_progress`
+            // DirJob shape. `files/transfer/status` and the transfers/* panel
+            // methods answer from the rclone job mirrors first and fall
+            // through to the OpenDAL engine on a miss (plan §2 branch order).
+            // ------------------------------------------------------------------
+            "files/syncDir" | "files/copyDir" => {
+                let request: model::DirJobRequest = parse(params)?;
+                // Phase D: the start logic is shared verbatim with the MCP
+                // `files_sync` tool (see [`rclone_start_dir_job`]).
+                let job_id = rclone_start_dir_job(
+                    Arc::clone(&self.rclone),
+                    Arc::clone(&self.sync_jobs),
+                    &request,
+                    method == "files/syncDir",
+                    Some(emitter),
+                )
+                .await?;
+                // Same response shape as the OpenDAL syncDir/copyDir arm; the
+                // jobId doubles as the cancel/status taskId (shared namespace,
+                // exactly like the OpenDAL dir-job table).
+                Ok(Some(json!({ "jobId": job_id })))
+            }
+            "files/transfer/status" => {
+                let request: model::JobRequest = parse(params)?;
+                // rclone mirrors first (single-file + sync jobs), OpenDAL
+                // arm on a miss. Lock order jobs → sync_jobs everywhere.
+                let answer = {
+                    let jobs = rclone_lock(&self.rclone.jobs);
+                    let sync_jobs = rclone_lock(&self.sync_jobs);
+                    match (jobs.get(&request.job_id), sync_jobs.get(&request.job_id)) {
+                        (Some(job), Some(record)) => Some(json!({
+                            "job": rclone_sync_dir_job_value(job, record),
+                            "kind": "dirJob",
+                        })),
+                        (Some(job), None) => Some(json!({
+                            "job": serde_json::to_value(job)
+                                .map_err(|error| error.to_string())?,
+                            "kind": "transfer",
+                        })),
+                        _ => None,
+                    }
+                };
+                if let Some(answer) = answer {
+                    return Ok(Some(answer));
+                }
+                // Mirror miss but a sync handle survives: query_status as the
+                // fallback — a live rclone job still reports as running.
+                let handle = {
+                    let sync_jobs = rclone_lock(&self.sync_jobs);
+                    sync_jobs
+                        .get(&request.job_id)
+                        .and_then(|record| record.handle.as_ref())
+                        .map(|handle| rclone::sync::SyncJobHandle {
+                            jobid: handle.jobid,
+                            group: handle.group.clone(),
+                        })
+                };
+                if let (Some(handle), Some(record)) = (handle, {
+                    let sync_jobs = rclone_lock(&self.sync_jobs);
+                    sync_jobs.get(&request.job_id).cloned()
+                }) {
+                    // Status polling must hit the rcd group that owns the
+                    // jobid — the source connection's group.
+                    let client = self.rclone.client_for_id(&record.src_conn).await?;
+                    if let Ok(Some(_stats)) = rclone::sync::query_status(&client, &handle).await {
+                        let probe = transfers::TransferJob {
+                            task_id: request.job_id.clone(),
+                            connection_id: record.src_conn.clone(),
+                            kind: transfers::TransferKind::Upload,
+                            remote_path: record.src_rel.clone(),
+                            total_bytes: None,
+                            transferred_bytes: 0,
+                            status: transfers::JobStatus::Running,
+                            error: None,
+                            started_at: None,
+                            finished_at: None,
+                            local_path: None,
+                        };
+                        return Ok(Some(json!({
+                            "job": rclone_sync_dir_job_value(&probe, &record),
+                            "kind": "dirJob",
+                        })));
+                    }
+                }
+                Ok(None)
+            }
+            "files/transfers/list" => {
+                let request: model::TransfersListRequest = parse(params)?;
+                // Phase D: the rclone mirror is hydrated from the shared
+                // transfers.json at startup and terminal records persist back
+                // into it, so this list is restart-safe exactly like the
+                // JobTable's list_merged (single-file records only — sync
+                // jobs stay memory-only).
+                let mut entries: Vec<(u64, Value)> = {
+                    let jobs = rclone_lock(&self.rclone.jobs);
+                    let sync_jobs = rclone_lock(&self.sync_jobs);
+                    let mut entries: Vec<(u64, Value)> = Vec::new();
+                    for (id, job) in jobs.iter() {
+                        let record = sync_jobs.get(id);
+                        if let Some(filter) = request.connection_id.as_deref() {
+                            let hit = job.connection_id == filter
+                                || record
+                                    .map(|record| {
+                                        record.src_conn == filter || record.dst_conn == filter
+                                    })
+                                    .unwrap_or(false);
+                            if !hit {
+                                continue;
+                            }
+                        }
+                        let value = match record {
+                            Some(record) => rclone_sync_dir_job_value(job, record),
+                            None => serde_json::to_value(job)
+                                .map_err(|error| error.to_string())?,
+                        };
+                        entries.push((job.started_at.unwrap_or(0), value));
+                    }
+                    entries
+                };
+                // list_merged parity: oldest start first.
+                entries.sort_by_key(|(started_at, _)| *started_at);
+                let jobs_out: Vec<Value> = entries.into_iter().map(|(_, value)| value).collect();
+                Ok(Some(json!({ "jobs": jobs_out })))
+            }
+            "files/transfers/clear" => {
+                let request: model::TransfersListRequest = parse(params)?;
+                // Mirror of the JobTable clear: terminal records leave the
+                // table (with their sync projection records), queued/running
+                // jobs are never touched. Response shape identical.
+                let drop_ids: Vec<String> = {
+                    let jobs = rclone_lock(&self.rclone.jobs);
+                    let sync_jobs = rclone_lock(&self.sync_jobs);
+                    jobs.iter()
+                        .filter(|(_, job)| job.status.is_terminal())
+                        .filter(|(id, job)| match request.connection_id.as_deref() {
+                            Some(filter) => {
+                                job.connection_id == filter
+                                    || sync_jobs
+                                        .get(*id)
+                                        .map(|record| {
+                                            record.src_conn == filter
+                                                || record.dst_conn == filter
+                                        })
+                                        .unwrap_or(false)
+                            }
+                            None => true,
+                        })
+                        .map(|(id, _)| id.clone())
+                        .collect()
+                };
+                let mut cleared = 0u64;
+                if !drop_ids.is_empty() {
+                    let mut jobs = rclone_lock(&self.rclone.jobs);
+                    let mut sync_jobs = rclone_lock(&self.sync_jobs);
+                    for id in drop_ids {
+                        if jobs.remove(&id).is_some() {
+                            cleared += 1;
+                            // The store row for a dropped mirror record is
+                            // removed too (history parity with JobTable::clear);
+                            // best-effort — the panel count comes from the
+                            // mirror.
+                            let _ = self.store.delete_transfer(&id);
+                        }
+                        sync_jobs.remove(&id);
+                    }
+                }
+                Ok(Some(json!({ "cleared": cleared })))
+            }
+            "files/transfers/delete" => {
+                let request: model::TaskRequest = parse(params)?;
+                // Mirror of the JobTable delete: active jobs refuse with the
+                // same message, terminal records leave the table together
+                // with their sync projection record.
+                let mut removed = 0u64;
+                {
+                    let mut jobs = rclone_lock(&self.rclone.jobs);
+                    if let Some(job) = jobs.get(&request.task_id) {
+                        if !job.status.is_terminal() {
+                            return Err(
+                                "Transfer is still in progress; cancel it first".to_string()
+                            );
+                        }
+                        jobs.remove(&request.task_id);
+                        removed += 1;
+                        // Persisted row goes with the mirror record (history
+                        // parity with `JobTable::delete_record`); best-effort.
+                        let _ = self.store.delete_transfer(&request.task_id);
+                    }
+                }
+                let record_gone =
+                    rclone_lock(&self.sync_jobs).remove(&request.task_id).is_some();
+                if record_gone && removed == 0 {
+                    removed = 1;
+                }
+                Ok(Some(json!({ "removed": removed })))
+            }
+            "files/transfer/cancel" => {
+                let request: model::TaskRequest = parse(params)?;
+                let task_id = request.task_id.as_str();
+                let ours = {
+                    let jobs = rclone_lock(&self.rclone.jobs);
+                    let uploads = rclone_lock(&self.rclone.uploads);
+                    let downloads = rclone_lock(&self.rclone.downloads);
+                    let sync_jobs = rclone_lock(&self.sync_jobs);
+                    jobs.contains_key(task_id)
+                        || uploads.contains_key(task_id)
+                        || downloads.contains_key(task_id)
+                        || sync_jobs.contains_key(task_id)
+                };
+                if !ours {
+                    return Ok(None);
+                }
+                // Upload: abort the staging file and drop the slot.
+                if let Some(task) = rclone_lock(&self.rclone.uploads).remove(task_id) {
+                    task.staging.abort();
+                    rclone_complete_job(
+                        &self.rclone,
+                        task_id,
+                        transfers::JobStatus::Canceled,
+                        None,
+                        emitter,
+                    );
+                    return Ok(Some(json!({ "success": true })));
+                }
+                // Download: raise the flag but keep the slot — the pump owns
+                // the cleanup while it lives (issue#4 mirror); a pump that
+                // already exited is cleaned up here.
+                if let Some(slot) = rclone_lock(&self.rclone.downloads).get(task_id).cloned() {
+                    slot.cancel.store(true, Ordering::Release);
+                    if slot.pump_done.load(Ordering::Acquire) {
+                        rclone_lock(&self.rclone.downloads).remove(task_id);
+                        if let Some(staging) = &slot.staging {
+                            let _ = std::fs::remove_file(staging);
+                        }
+                    }
+                    rclone_complete_job(
+                        &self.rclone,
+                        task_id,
+                        transfers::JobStatus::Canceled,
+                        None,
+                        emitter,
+                    );
+                    return Ok(Some(json!({ "success": true })));
+                }
+                // Phase C sync job (branch order preserved: uploads →
+                // downloads → sync). A settled mirror answers not-found like
+                // the fallthrough below; otherwise stop the rclone job and
+                // settle Canceled locally — terminal-once against the
+                // on_event side, DirJob-shaped final event.
+                let sync_stop = {
+                    let jobs = rclone_lock(&self.rclone.jobs);
+                    let sync_jobs = rclone_lock(&self.sync_jobs);
+                    match sync_jobs.get(task_id) {
+                        None => None,
+                        Some(record) => {
+                            if jobs
+                                .get(task_id)
+                                .map(|job| job.status.is_terminal())
+                                .unwrap_or(false)
+                            {
+                                Some(Err("Transfer task was not found".to_string()))
+                            } else {
+                                match record.handle.as_ref() {
+                                    Some(handle) => {
+                                        Some(Ok((
+                                            rclone::sync::SyncJobHandle {
+                                                jobid: handle.jobid,
+                                                group: handle.group.clone(),
+                                            },
+                                            record.src_conn.clone(),
+                                        )))
+                                    }
+                                    // start_job has not returned its handle
+                                    // yet (a millisecond-scale window).
+                                    None => Some(Err(
+                                        "Transfer task was not started yet".to_string()
+                                    )),
+                                }
+                            }
+                        }
+                    }
+                };
+                if let Some(stop) = sync_stop {
+                    let (handle, src_conn) = stop?;
+                    let client = self.rclone.client_for_id(&src_conn).await?;
+                    rclone::sync::stop_job(&client, &handle).await?;
+                    rclone_sync_terminal(
+                        &self.rclone.jobs,
+                        &self.sync_jobs,
+                        Some(emitter),
+                        task_id,
+                        transfers::JobStatus::Canceled,
+                        None,
+                        None,
+                    );
+                    return Ok(Some(json!({ "success": true })));
+                }
+                // Only a terminal record remains: the JobTable's cancel
+                // answers not-found once the slots are gone — mirror it.
+                Err("Transfer task was not found".to_string())
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Phase B `files/upload/finish` byte path: waits out in-flight frames
+    /// (same 250ms × 40 stall window as the JobTable's finish, issue#6-6),
+    /// then streams the staging file to the exact remote path and lands the
+    /// job in a terminal state. Failure removes the staging entry (the
+    /// `UploadStaging` cleans its temp file either way) and stores the error
+    /// for the terminal-replay path.
+    async fn finish_rclone_upload(
+        &self,
+        task_id: &str,
+        emitter: &PluginEmitter,
+    ) -> Result<(), String> {
+        // issue#6-3 twin: a settled job replays its stored outcome instead of
+        // silently re-completing.
+        {
+            let jobs = rclone_lock(&self.rclone.jobs);
+            if let Some(job) = jobs.get(task_id) {
+                if job.status.is_terminal() {
+                    return match job.status {
+                        transfers::JobStatus::Completed => Ok(()),
+                        transfers::JobStatus::Canceled => {
+                            Err("Upload was canceled".to_string())
+                        }
+                        _ => Err(job
+                            .error
+                            .clone()
+                            .unwrap_or_else(|| "Upload failed".to_string())),
+                    };
+                }
+            }
+        }
+        // Wait for in-flight frames while the staging entry is still live in
+        // the table, so concurrently arriving frames keep appending.
+        if let Some(declared) = {
+            let uploads = rclone_lock(&self.rclone.uploads);
+            uploads
+                .get(task_id)
+                .map(|task| task.declared_size)
+                .filter(|declared| *declared > 0)
+        } {
+            let mut last = rclone_lock(&self.rclone.uploads)
+                .get(task_id)
+                .map(|task| task.staging.received())
+                .unwrap_or(0);
+            let mut stall_ticks: u32 = 0;
+            while last < declared {
+                if stall_ticks >= UPLOAD_FINISH_STALL_TICKS {
+                    break;
+                }
+                tokio::time::sleep(UPLOAD_FINISH_TICK).await;
+                let Some(current) = rclone_lock(&self.rclone.uploads)
+                    .get(task_id)
+                    .map(|task| task.staging.received())
+                else {
+                    break; // slot consumed underneath (cancel / append failure)
+                };
+                if current == last {
+                    stall_ticks += 1;
+                } else {
+                    stall_ticks = 0;
+                    last = current;
+                }
+            }
+        }
+        // Single owner for the finish: take the task out (late frames after
+        // this point are past the declared size anyway).
+        let Some(task) = rclone_lock(&self.rclone.uploads).remove(task_id) else {
+            return Err("Upload task was not found".to_string());
+        };
+        // Transfer-path client (plan finding #11): no wall-clock timeout —
+        // the staged upload streams the whole file through one HTTP body and
+        // would die inside the default client's 30s. Routed to the owning
+        // connection's proxy group (the staging entry carries fs/remote
+        // only; the group lives on the connection).
+        let connection_id = rclone_lock(&self.rclone.jobs)
+            .get(task_id)
+            .map(|job| job.connection_id.clone())
+            .ok_or("Upload task was not found")?;
+        let client = self.rclone.client_for_id(&connection_id).await?.transfer_client();
+        let outcome = task.staging.finish(&client, &task.fs, &task.remote, None).await;
+        match outcome {
+            Ok(_uploaded) => {
+                rclone_complete_job(
+                    &self.rclone,
+                    task_id,
+                    transfers::JobStatus::Completed,
+                    None,
+                    emitter,
+                );
+                Ok(())
+            }
+            Err(error) => {
+                rclone_complete_job(
+                    &self.rclone,
+                    task_id,
+                    transfers::JobStatus::Failed,
+                    Some(error.clone()),
+                    emitter,
+                );
+                Err(error)
+            }
+        }
+    }
+
+    /// Phase B `files/download/finish`: mirrors the JobTable's
+    /// `finish_download` (in-flight wait, cancel replay, pump-exit grace,
+    /// saveToLocal promotion) against the rclone slot tables. Returns the
+    /// `localPath` for saveToLocal runs (`None` otherwise).
+    async fn finish_rclone_download(
+        &self,
+        task_id: &str,
+        emitter: &PluginEmitter,
+    ) -> Result<Option<String>, String> {
+        let slot = rclone_lock(&self.rclone.downloads).get(task_id).cloned();
+        let Some(slot) = slot else {
+            // Slot already settled: replay the stored terminal outcome
+            // (Completed idempotently carries localPath).
+            if let Some(job) = rclone_lock(&self.rclone.jobs).get(task_id) {
+                if job.status.is_terminal() {
+                    return rclone_download_finish_result(job);
+                }
+            }
+            return Err(format!("Download task '{task_id}' was not found"));
+        };
+        let staged_bytes = || -> u64 {
+            match &slot.staging {
+                Some(staging) => std::fs::metadata(staging)
+                    .map(|meta| meta.len())
+                    .unwrap_or(0),
+                None => rclone_lock(&self.rclone.jobs)
+                    .get(task_id)
+                    .map(|job| job.transferred_bytes)
+                    .unwrap_or(0),
+            }
+        };
+        // In-flight wait (issue#6-6/issue#3 mirror): bytes still advancing
+        // keep the wait alive; stall/cancel/pump-exit break out.
+        let mut last = staged_bytes();
+        let mut stall_ticks: u32 = 0;
+        while last < slot.size {
+            if stall_ticks >= UPLOAD_FINISH_STALL_TICKS
+                || slot.cancel.load(Ordering::Acquire)
+                || slot.pump_done.load(Ordering::Acquire)
+            {
+                break;
+            }
+            tokio::time::sleep(UPLOAD_FINISH_TICK).await;
+            if rclone_lock(&self.rclone.downloads).get(task_id).is_none() {
+                break; // pump consumed the slot → terminal replay below
+            }
+            let current = staged_bytes();
+            if current == last {
+                stall_ticks += 1;
+            } else {
+                stall_ticks = 0;
+                last = current;
+            }
+        }
+        if slot.cancel.load(Ordering::Acquire) {
+            // Canceled: the pump cleans up when it observes the flag; the
+            // idempotent residue sweep happens here too, and the stored
+            // Canceled outcome replays on any later finish.
+            rclone_lock(&self.rclone.downloads).remove(task_id);
+            if let Some(staging) = &slot.staging {
+                let _ = std::fs::remove_file(staging);
+            }
+            return Err("Download was canceled".to_string());
+        }
+        // Bytes settled: wait for the pump to exit (sub-millisecond normally)
+        // so the staging rename never races an open handle (Windows).
+        let mut grace_ticks: u32 = 0;
+        while !slot.pump_done.load(Ordering::Acquire) && grace_ticks < UPLOAD_FINISH_STALL_TICKS {
+            tokio::time::sleep(UPLOAD_FINISH_TICK).await;
+            if rclone_lock(&self.rclone.downloads).get(task_id).is_none() {
+                break;
+            }
+            grace_ticks += 1;
+        }
+        let Some(slot) = rclone_lock(&self.rclone.downloads).remove(task_id) else {
+            if let Some(job) = rclone_lock(&self.rclone.jobs).get(task_id) {
+                if job.status.is_terminal() {
+                    return rclone_download_finish_result(job);
+                }
+            }
+            return Err("Download was canceled".to_string());
+        };
+        // The pump may have landed the job in Failed/Canceled while we
+        // waited (short read, sink error): replay the stored outcome.
+        if let Some(job) = rclone_lock(&self.rclone.jobs).get(task_id) {
+            if job.status.is_terminal() {
+                if let Some(staging) = &slot.staging {
+                    let _ = std::fs::remove_file(staging);
+                }
+                return rclone_download_finish_result(job);
+            }
+        }
+        let mut local_path = None;
+        if let Some(staging) = &slot.staging {
+            match promote_rclone_staging(staging, slot.size) {
+                Ok(path) => {
+                    if let Some(job) = rclone_lock(&self.rclone.jobs).get_mut(task_id) {
+                        job.local_path = Some(path.clone());
+                    }
+                    local_path = Some(path);
+                }
+                Err(error) => {
+                    let _ = std::fs::remove_file(staging);
+                    rclone_complete_job(
+                        &self.rclone,
+                        task_id,
+                        transfers::JobStatus::Failed,
+                        Some(error.clone()),
+                        emitter,
+                    );
+                    return Err(error);
+                }
+            }
+        }
+        rclone_complete_job(
+            &self.rclone,
+            task_id,
+            transfers::JobStatus::Completed,
+            None,
+            emitter,
+        );
+        Ok(local_path)
     }
 
     fn handle_request(
@@ -113,6 +1436,16 @@ impl Plugin {
         params: Value,
         emitter: &PluginEmitter,
     ) -> Result<Value, String> {
+        // F-RCLONE dual-engine route: opt-in via DBX_FILES_ENGINE=rclone,
+        // unimplemented methods fall through to the OpenDAL engine.
+        if rclone::RcloneEngine::enabled() {
+            if let Some(routed) = self
+                .runtime
+                .block_on(self.try_handle_rclone(method, params.clone(), emitter))?
+            {
+                return Ok(routed);
+            }
+        }
         match method {
             // ------------------------------------------------------------------
             // Lifecycle (M0 §3.2)
@@ -866,9 +2199,21 @@ impl Plugin {
         target: &str,
         result: &str,
     ) -> Result<(), String> {
+        self.audit_id(&connection.id, action, target, result)
+    }
+
+    /// Connection-id-keyed audit twin used by the rclone arms (the rclone
+    /// registry keeps bindings, not StoredConnection records).
+    fn audit_id(
+        &self,
+        connection_id: &str,
+        action: &str,
+        target: &str,
+        result: &str,
+    ) -> Result<(), String> {
         if let Err(error) = self.store.append_audit(store::AuditRecord {
             time: store::format_rfc3339(store::unix_millis_now() as i64),
-            connection_id: connection.id.clone(),
+            connection_id: connection_id.to_string(),
             action: action.to_string(),
             target: target.to_string(),
             result: result.to_string(),
@@ -879,6 +2224,87 @@ impl Plugin {
             eprintln!("[io.dbx.files] audit write failed: {error}");
         }
         Ok(())
+    }
+
+    /// Dual-engine upload-frame router for `handle_binary`: `Some(Ok/Err)`
+    /// when the frame belongs to an rclone staging task (handled here),
+    /// `None` when the frame must keep flowing into the OpenDAL JobTable.
+    /// Membership is checked before anything else — the branch order the
+    /// transition contract requires (plan §7: 先查 rclone staging 表).
+    fn append_rclone_upload(
+        &self,
+        task_id: &str,
+        data: &[u8],
+        emitter: &PluginEmitter,
+    ) -> Option<Result<(), String>> {
+        if !rclone_lock(&self.rclone.uploads).contains_key(task_id) {
+            return None;
+        }
+        Some(self.append_rclone_upload_inner(task_id, data, emitter))
+    }
+
+    /// rclone upload-frame ingest, `JobTable::append_upload` semantics twin:
+    /// strict 8-byte BE offset continuity (misaligned frame = hard error),
+    /// declared-size guard, throttled `files/transfer/progress`. A staging
+    /// write failure consumes the slot and lands the job `Failed` with the
+    /// stored detail, exactly like the OpenDAL writer-failure path.
+    fn append_rclone_upload_inner(
+        &self,
+        task_id: &str,
+        data: &[u8],
+        emitter: &PluginEmitter,
+    ) -> Result<(), String> {
+        let (offset, payload) = transfers::parse_upload_frame(data)?;
+        let outcome = {
+            let mut uploads = rclone_lock(&self.rclone.uploads);
+            let Some(task) = uploads.get_mut(task_id) else {
+                return Err("Upload task was not found".to_string());
+            };
+            match task.staging.append(offset, payload) {
+                Ok(received) => {
+                    let emit = task
+                        .throttle
+                        .should_emit(received, Some(task.declared_size));
+                    (received, Some(task.declared_size), emit, None)
+                }
+                Err(error) => {
+                    uploads.remove(task_id);
+                    (0, None, false, Some(error))
+                }
+            }
+        };
+        match outcome {
+            (_, _, _, Some(error)) => {
+                rclone_complete_job(
+                    &self.rclone,
+                    task_id,
+                    transfers::JobStatus::Failed,
+                    Some(error.clone()),
+                    emitter,
+                );
+                Err(error)
+            }
+            (received, total, emit, None) => {
+                if let Some(job) = rclone_lock(&self.rclone.jobs).get_mut(task_id) {
+                    job.transferred_bytes = received;
+                    job.status = transfers::JobStatus::Running;
+                }
+                if emit {
+                    // Same throttled payload shape as append_upload:
+                    // `{taskId, transferred, total, size, state}`.
+                    let mut event = transfers::progress_event(task_id, received, total);
+                    if let Some(object) = event.as_object_mut() {
+                        object.insert("size".into(), serde_json::json!(total));
+                        object.insert(
+                            "state".into(),
+                            serde_json::json!(transfers::JobStatus::Running.as_str()),
+                        );
+                    }
+                    let _ = emitter.event("files/transfer/progress", event);
+                }
+                Ok(())
+            }
+        }
     }
 }
 
@@ -957,6 +2383,12 @@ fn ensure_deletable(connection: &StoredConnection) -> Result<(), String> {
 /// connection root and `/`). `engine/ops.rs::purge` re-checks once F-B fills
 /// the stub — defense in depth, exactly as the F-B contract comment requires.
 fn refuse_root_purge(connection: &StoredConnection, path: &str) -> Result<(), String> {
+    refuse_purge_of_root(&connection.root, path)
+}
+
+/// Root-string twin of [`refuse_root_purge`] for the rclone arms (bindings
+/// carry the root, not a StoredConnection); the message text is identical.
+fn refuse_purge_of_root(root: &str, path: &str) -> Result<(), String> {
     fn core(path: &str) -> String {
         path.trim().trim_matches('/').to_string()
     }
@@ -966,13 +2398,868 @@ fn refuse_root_purge(connection: &StoredConnection, path: &str) -> Result<(), St
                 .to_string(),
         );
     }
-    if !connection.root.is_empty() && core(path) == core(&connection.root) {
+    if !root.is_empty() && core(path) == core(root) {
         return Err(format!(
-            "Purge of the connection root '{}' is refused; purge a subdirectory instead",
-            connection.root
+            "Purge of the connection root '{root}' is refused; purge a subdirectory instead"
         ));
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// F-RCLONE Phase B helpers (docs/IMPL_PLAN_RCLONE.zh-CN.md §5/§7)
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// F-RCLONE Phase C helpers (docs/IMPL_PLAN_RCLONE.zh-CN.md §5/§6)
+// ---------------------------------------------------------------------------
+
+/// One rclone sync job (`files/syncDir`|`files/copyDir`): the frozen
+/// `sync.rs` handle (backfilled once `start_job` answers) plus the request
+/// metadata the DirJob-shaped status/list/terminal projections need after
+/// start. The `RcloneEngine.jobs` mirror stays in the single-file TransferJob
+/// shape — every wire projection of a sync job goes through
+/// [`rclone_sync_dir_job_value`], so the placeholder fields there never leak.
+#[derive(Clone)]
+struct RcloneSyncRecord {
+    handle: Option<rclone::sync::SyncJobHandle>,
+    kind: rclone::sync::SyncKind,
+    src_conn: String,
+    src_rel: String,
+    dst_conn: String,
+    dst_rel: String,
+    dry_run: bool,
+    max_delete: Option<u64>,
+    files_done: u64,
+    files_total: Option<u64>,
+    /// In-flight marker for the source connection's proxy group: dropped
+    /// with the record on terminal removal, releasing the idle-group
+    /// teardown hold. Clones share the guard's done flag.
+    work: rclone::WorkGuard,
+}
+
+/// Starts one rclone dir job (`files/syncDir`|`files/copyDir` semantics).
+/// Shared verbatim by the workbench arm and the MCP `files_sync` tool so
+/// both enqueue into the same job mirror and `files/transfer/status` stays
+/// the single poll surface.
+///
+/// Phase C 终态语义记录（决策固化）：OpenDAL 路径的全局并发 3 + 按连接 FIFO
+/// 排队模型在 rc 异步作业上**不强制**——rclone rcd 自身对 `_async` 作业排队，
+/// 侧车不再做第二层限流。这是 rclone 模式的终态语义而非遗留缺口；并发行为
+/// 差异由 rclone 的作业调度兜底。
+#[allow(clippy::too_many_arguments)]
+async fn rclone_start_dir_job(
+    rclone: Arc<rclone::RcloneEngine>,
+    sync_jobs: Arc<std::sync::Mutex<HashMap<String, RcloneSyncRecord>>>,
+    request: &model::DirJobRequest,
+    sync: bool,
+    emitter: Option<&PluginEmitter>,
+) -> Result<String, String> {
+    let source_binding = rclone.binding(&request.source_connection_id)?;
+    let target_binding = rclone.binding(&request.target_connection_id)?;
+    // Server-side mirror runs both fs strings inside one rcd, so the two
+    // connections must share a proxy group (same rule as files/copy).
+    rclone::ensure_same_proxy_group(&source_binding, &target_binding)?;
+    // Gate order/message parity with `validate_dir_job_gates(target,
+    // sync)`: the target must be writable, and sync's delete phase
+    // additionally requires allow_delete (read_only rejects both).
+    ensure_binding_writable(&target_binding)?;
+    if sync {
+        ensure_binding_deletable(&target_binding)?;
+    }
+    // Path whitelist (Phase B convention): policy-relative remotes for the
+    // sync job — source read / target write, connection
+    // read_only/allow_delete already gated above.
+    let src_rel = rclone_gate(
+        &source_binding.root,
+        source_binding.lock_to_root,
+        &request.source_path,
+        engine::ops::policy::PathPolicy::check_read,
+    )?;
+    let dst_rel = rclone_gate(
+        &target_binding.root,
+        target_binding.lock_to_root,
+        &request.target_path,
+        engine::ops::policy::PathPolicy::check_write,
+    )?;
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let job = transfers::TransferJob {
+        task_id: job_id.clone(),
+        connection_id: request.source_connection_id.clone(),
+        // The jobs mirror only carries the single-file TransferJob
+        // shape; sync jobs are always projected through
+        // `rclone_sync_dir_job_value` (kind: syncDir/copyDir), so
+        // this placeholder kind never reaches the wire.
+        kind: transfers::TransferKind::Upload,
+        remote_path: request.source_path.clone(),
+        total_bytes: None,
+        transferred_bytes: 0,
+        status: transfers::JobStatus::Queued,
+        error: None,
+        started_at: Some(store::unix_millis_now()),
+        finished_at: None,
+        local_path: None,
+    };
+    let record = RcloneSyncRecord {
+        handle: None,
+        kind: if sync {
+            rclone::sync::SyncKind::Sync
+        } else {
+            rclone::sync::SyncKind::Copy
+        },
+        src_conn: request.source_connection_id.clone(),
+        src_rel: src_rel.clone(),
+        dst_conn: request.target_connection_id.clone(),
+        dst_rel: dst_rel.clone(),
+        dry_run: request.dry_run.unwrap_or(false),
+        max_delete: request.max_delete,
+        files_done: 0,
+        files_total: None,
+        // Source and target share one proxy group (enforced above), so the
+        // source group's key tracks the rcd the job runs on.
+        work: rclone.start_work(&rclone::registry::group_key_of(
+            source_binding.proxy.as_ref(),
+        )),
+    };
+    rclone_lock(&rclone.jobs).insert(job_id.clone(), job.clone());
+    // Initial queued event before the spawn — enqueue_dir_job
+    // parity (queued is a wire-visible state there too).
+    if let Some(emitter) = emitter {
+        let _ = emitter.event(
+            "files/transfer/progress",
+            rclone_sync_event_from(&job, &record),
+        );
+    }
+    rclone_lock(&sync_jobs).insert(job_id.clone(), record);
+
+    // The on_event closure mirrors progress into the jobs table
+    // and re-emits `files/transfer/progress` under the shared
+    // PROGRESS_INTERVAL_MS/1% throttle, byte-shape aligned with
+    // `emit_dir_progress`; Failed/Canceled settle the same
+    // terminal-once semantics as complete_dir_job.
+    // Owned clones feed the 'static on_event closure (start_job spawns it);
+    // the caller's handles stay live for the unwind path below.
+    let engine = Arc::clone(&rclone);
+    let shared_jobs = Arc::clone(&sync_jobs);
+    let event_emitter = emitter.cloned();
+    let event_job_id = job_id.clone();
+    let mut throttle = transfers::Throttle::default();
+    let on_event: Box<dyn FnMut(rclone::sync::SyncEvent) + Send> =
+        Box::new(move |event| match event {
+            rclone::sync::SyncEvent::Progress {
+                transferred,
+                total,
+                rate: _,
+            } => {
+                let emit = {
+                    let mut jobs = rclone_lock(&engine.jobs);
+                    let Some(job) = jobs.get_mut(&event_job_id) else {
+                        return;
+                    };
+                    job.transferred_bytes = transferred;
+                    if job.status == transfers::JobStatus::Queued {
+                        job.status = transfers::JobStatus::Running;
+                    }
+                    if total > 0 {
+                        job.total_bytes = Some(total);
+                    }
+                    throttle.should_emit(transferred, job.total_bytes)
+                };
+                if emit {
+                    let job = rclone_lock(&engine.jobs).get(&event_job_id).cloned();
+                    let record = rclone_lock(&shared_jobs).get(&event_job_id).cloned();
+                    if let (Some(job), Some(record)) = (job, record) {
+                        if let Some(emitter) = &event_emitter {
+                            let _ = emitter.event(
+                                "files/transfer/progress",
+                                rclone_sync_event_from(&job, &record),
+                            );
+                        }
+                    }
+                }
+            }
+            rclone::sync::SyncEvent::Completed { bytes, files } => {
+                {
+                    let mut jobs = rclone_lock(&engine.jobs);
+                    if let Some(job) = jobs.get_mut(&event_job_id) {
+                        job.transferred_bytes = bytes;
+                        if bytes > 0 {
+                            job.total_bytes = Some(bytes);
+                        }
+                    }
+                }
+                rclone_sync_terminal(
+                    &engine.jobs,
+                    &shared_jobs,
+                    event_emitter.as_ref(),
+                    &event_job_id,
+                    transfers::JobStatus::Completed,
+                    None,
+                    Some(files),
+                );
+            }
+            rclone::sync::SyncEvent::Failed { message } => {
+                rclone_sync_terminal(
+                    &engine.jobs,
+                    &shared_jobs,
+                    event_emitter.as_ref(),
+                    &event_job_id,
+                    transfers::JobStatus::Failed,
+                    Some(message),
+                    None,
+                );
+            }
+            rclone::sync::SyncEvent::Canceled => {
+                rclone_sync_terminal(
+                    &engine.jobs,
+                    &shared_jobs,
+                    event_emitter.as_ref(),
+                    &event_job_id,
+                    transfers::JobStatus::Canceled,
+                    None,
+                    None,
+                );
+            }
+        });
+    // Plan finding #11: the transfer client drops the wall-clock
+    // timeout — long mirror runs would die inside the 30s default.
+    let started = rclone::sync::start_job(
+        rclone.client_for_binding(&source_binding).await?.transfer_client(),
+        rclone::sync::SyncJobParams {
+            task_id: job_id.clone(),
+            kind: if sync {
+                rclone::sync::SyncKind::Sync
+            } else {
+                rclone::sync::SyncKind::Copy
+            },
+            src_fs: rclone::call_fs(&source_binding),
+            dst_fs: rclone::call_fs(&target_binding),
+            src_rel,
+            dst_rel,
+            dry_run: request.dry_run.unwrap_or(false),
+            max_delete: request.max_delete,
+        },
+        on_event,
+    )
+    .await;
+    match started {
+        Ok(handle) => {
+            if let Some(record) = rclone_lock(&sync_jobs).get_mut(&job_id) {
+                record.handle = Some(handle);
+            }
+        }
+        Err(error) => {
+            // The job never started: unwind the mirrors so the
+            // panel never sees a ghost entry.
+            rclone_lock(&rclone.jobs).remove(&job_id);
+            rclone_lock(&sync_jobs).remove(&job_id);
+            return Err(error);
+        }
+    }
+    Ok(job_id)
+}
+
+/// MCP `RcloneRoute.start_sync` factory: an owned closure over the engine +
+/// sync-job mirror so the MCP `files_sync` tool can enqueue jobs with the
+/// exact workbench semantics (same gates, same mirror, same response).
+fn mcp_sync_starter(
+    rclone: Arc<rclone::RcloneEngine>,
+    sync_jobs: Arc<std::sync::Mutex<HashMap<String, RcloneSyncRecord>>>,
+) -> mcp::SyncJobStarter {
+    Arc::new(move |request: model::DirJobRequest, sync: bool, emitter: Option<PluginEmitter>| {
+        let rclone = Arc::clone(&rclone);
+        let sync_jobs = Arc::clone(&sync_jobs);
+        Box::pin(async move {
+            rclone_start_dir_job(rclone, sync_jobs, &request, sync, emitter.as_ref()).await
+        })
+    })
+}
+
+/// Persisted `TransferRecord` → live mirror `TransferJob` (hydration twin of
+/// the persistence below; both share the camelCase field set).
+fn rclone_job_from_record(record: store::TransferRecord) -> transfers::TransferJob {
+    let kind = match record.kind.as_str() {
+        "download" => transfers::TransferKind::Download,
+        _ => transfers::TransferKind::Upload,
+    };
+    let status = match record.status.as_str() {
+        "failed" => transfers::JobStatus::Failed,
+        "canceled" => transfers::JobStatus::Canceled,
+        _ => transfers::JobStatus::Completed,
+    };
+    transfers::TransferJob {
+        task_id: record.task_id,
+        connection_id: record.connection_id,
+        kind,
+        remote_path: record.remote_path,
+        total_bytes: record.total_bytes,
+        transferred_bytes: record.transferred_bytes,
+        status,
+        error: record.error,
+        started_at: record.started_at,
+        finished_at: record.finished_at,
+        local_path: record.local_path,
+    }
+}
+
+/// Cross-engine serialization for `transfers.json` writes: rclone-side
+/// terminal records append under this lock. The OpenDAL JobTable keeps its
+/// own write path (untouchable file), so a true cross-engine race remains
+/// possible in principle — each write is an atomic tmp+rename, so the worst
+/// case is one dropped history line, never a corrupt file. Under the rclone
+/// engine (the Phase D end state) every writer goes through here.
+fn history_write_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+    rclone_lock(&LOCK)
+}
+
+/// Appends a terminal single-file job to the persisted transfer history
+/// (`store.record_transfer`, ring-capped) — the JobTable history parity the
+/// transfers panel and the `files/local/reveal|open` whitelist rely on. Dir
+/// jobs (syncDir/copyDir) stay memory-only: `TransferRecord.kind` is
+/// upload|download only. Best-effort: a failed write never fails the job.
+fn persist_rclone_history(rclone: &rclone::RcloneEngine, job: &transfers::TransferJob) {
+    if !job.status.is_terminal() {
+        return;
+    }
+    let Some(store) = rclone_lock(&rclone.history).clone() else {
+        return;
+    };
+    let record = store::TransferRecord {
+        task_id: job.task_id.clone(),
+        connection_id: job.connection_id.clone(),
+        kind: match job.kind {
+            transfers::TransferKind::Upload => "upload".to_string(),
+            transfers::TransferKind::Download => "download".to_string(),
+        },
+        remote_path: job.remote_path.clone(),
+        total_bytes: job.total_bytes,
+        transferred_bytes: job.transferred_bytes,
+        status: job.status.as_str().to_string(),
+        error: job.error.clone(),
+        started_at: job.started_at,
+        finished_at: job.finished_at,
+        local_path: job.local_path.clone(),
+    };
+    let _guard = history_write_lock();
+    if let Err(error) = store.record_transfer(record) {
+        eprintln!("[io.dbx.files] rclone transfer history write failed: {error}");
+    }
+}
+
+/// `files/transfer/progress` payload for an rclone sync job, byte-shape
+/// aligned with `transfers.rs::emit_dir_progress` (the DirJob base keys plus
+/// state/sync/kind/remotePath and the optional dryRun/error flags). Skipped
+/// counters stay 0: rclone does the incremental compare server-side and the
+/// frozen `SyncEvent` carries no skip statistics.
+fn rclone_sync_event_from(job: &transfers::TransferJob, record: &RcloneSyncRecord) -> Value {
+    let mut event = json!({
+        "jobId": job.task_id,
+        "filesDone": record.files_done,
+        "filesTotal": record.files_total,
+        "bytesDone": job.transferred_bytes,
+        "bytesTotal": job.total_bytes,
+        "filesSkipped": 0,
+        "bytesSkipped": 0,
+        "state": job.status.as_str(),
+        "sync": matches!(record.kind, rclone::sync::SyncKind::Sync),
+        "kind": match record.kind {
+            rclone::sync::SyncKind::Sync => "syncDir",
+            rclone::sync::SyncKind::Copy => "copyDir",
+        },
+        "remotePath": job.remote_path,
+    });
+    if record.dry_run {
+        event["dryRun"] = json!(true);
+    }
+    if let Some(error) = &job.error {
+        event["error"] = json!(error);
+    }
+    event
+}
+
+/// DirJob-shaped projection of an rclone sync job for `files/transfer/status`
+/// (kind: "dirJob") and `files/transfers/list` — the exact camelCase `DirJob`
+/// wire shape `JobTable::dir_status`/`list_merged` carry (`maxDelete` omitted
+/// when unset, `error` always present, mirroring the serde derives).
+fn rclone_sync_dir_job_value(job: &transfers::TransferJob, record: &RcloneSyncRecord) -> Value {
+    let mut value = json!({
+        "jobId": job.task_id,
+        "sourceConnectionId": job.connection_id,
+        "sourcePath": job.remote_path,
+        "targetConnectionId": record.dst_conn,
+        "targetPath": record.dst_rel,
+        "sync": matches!(record.kind, rclone::sync::SyncKind::Sync),
+        "deleteSource": false,
+        "kind": match record.kind {
+            rclone::sync::SyncKind::Sync => "syncDir",
+            rclone::sync::SyncKind::Copy => "copyDir",
+        },
+        "filesDone": record.files_done,
+        "filesTotal": record.files_total,
+        "bytesDone": job.transferred_bytes,
+        "bytesTotal": job.total_bytes,
+        "filesSkipped": 0,
+        "bytesSkipped": 0,
+        "dryRun": record.dry_run,
+        "status": job.status.as_str(),
+        "error": job.error,
+        "startedAt": job.started_at,
+        "finishedAt": job.finished_at,
+    });
+    if let Some(max_delete) = record.max_delete {
+        value["maxDelete"] = json!(max_delete);
+    }
+    value
+}
+
+/// Terminal transition for an rclone sync job — `complete_dir_job` twin:
+/// settle the jobs mirror terminal-once, record the Completed file counters
+/// (the only SyncEvent carrying them), then emit the DirJob-shaped final
+/// progress event. `emitter` is `None` on emitter-less callers (stdio MCP);
+/// dir jobs are never persisted (single-file `TransferRecord` shape only).
+/// Returns `true` when this call performed the transition.
+fn rclone_sync_terminal(
+    jobs: &std::sync::Mutex<HashMap<String, transfers::TransferJob>>,
+    sync_jobs: &std::sync::Mutex<HashMap<String, RcloneSyncRecord>>,
+    emitter: Option<&PluginEmitter>,
+    job_id: &str,
+    status: transfers::JobStatus,
+    error: Option<String>,
+    files: Option<u64>,
+) -> bool {
+    let job = {
+        let mut jobs = rclone_lock(jobs);
+        let Some(job) = jobs.get_mut(job_id) else {
+            return false;
+        };
+        if job.status.is_terminal() {
+            return false;
+        }
+        job.status = status;
+        job.error = error;
+        job.finished_at = Some(store::unix_millis_now());
+        job.clone()
+    };
+    if files.is_some() {
+        let mut sync_jobs = rclone_lock(sync_jobs);
+        if let Some(record) = sync_jobs.get_mut(job_id) {
+            record.files_done = files.unwrap_or(0);
+            record.files_total = files;
+        }
+    }
+    if let (Some(record), Some(emitter)) = (rclone_lock(sync_jobs).get(job_id), emitter) {
+        let _ = emitter.event(
+            "files/transfer/progress",
+            rclone_sync_event_from(&job, record),
+        );
+    }
+    true
+}
+
+/// Poison-tolerant lock for the rclone Phase B tables (std Mutex; a panic in
+/// some other worker must not wedge every later request).
+fn rclone_lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Upload/download finish in-flight wait, copied from transfers.rs
+/// (issue#6-6): 250ms sampling, stalled after 40 ticks (10s).
+const UPLOAD_FINISH_TICK: Duration = Duration::from_millis(250);
+const UPLOAD_FINISH_STALL_TICKS: u32 = 40;
+
+/// Root-relative remote resolution for the Phase B ops that take a plain
+/// remote (`read_prefix`, `write_bytes`, the download pump): the same
+/// `policy::PathPolicy` whitelist the ops layer applies internally, so the
+/// wiring contributes identical gate semantics. The permissive read_only /
+/// allow_delete flags here are deliberate — those gates bind at the
+/// connection level ([`ensure_binding_writable`] / [`ensure_binding_deletable`]).
+fn rclone_gate(
+    root: &str,
+    lock_to_root: bool,
+    path: &str,
+    check: fn(&engine::ops::policy::PathPolicy, &str) -> Result<engine::ops::policy::ResolvedPath, String>,
+) -> Result<String, String> {
+    let policy = engine::ops::policy::PathPolicy::from_parts(root, lock_to_root, false, true);
+    check(&policy, path).map(|resolved| resolved.relative)
+}
+
+/// Connection-level write gate for the rclone arms, message-identical to
+/// [`ensure_writable`] (bindings carry the flags instead of a connection
+/// record).
+fn ensure_binding_writable(binding: &rclone::registry::RemoteBinding) -> Result<(), String> {
+    if binding.read_only {
+        Err("Connection is read-only; write operations are rejected".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+/// Connection-level delete gate for the rclone arms, message-identical to
+/// [`ensure_deletable`] (§9 stricter semantics: read_only rejects deletes).
+fn ensure_binding_deletable(binding: &rclone::registry::RemoteBinding) -> Result<(), String> {
+    if binding.read_only {
+        Err("Connection is read-only; delete operations are rejected".to_string())
+    } else if !binding.allow_delete {
+        Err("Connection disallows delete operations (allow_delete=false)".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+/// Remote path → display/download file name: last non-empty path segment
+/// (both separators accepted) — `transfers.rs` twin for the rclone pump.
+fn remote_file_name(remote_path: &str) -> &str {
+    remote_path
+        .rsplit(['/', '\\'])
+        .find(|segment| !segment.is_empty())
+        .unwrap_or(remote_path)
+}
+
+/// Renames the finished `.part` staging file to its final collision-free
+/// name after verifying the staged byte count matches `size` — byte-for-byte
+/// the `JobTable::promote_staging` semantics.
+fn promote_rclone_staging(staging: &std::path::Path, size: u64) -> Result<String, String> {
+    let staged = std::fs::metadata(staging)
+        .map_err(|error| format!("Failed to stat staging file: {error}"))?
+        .len();
+    if staged != size {
+        return Err(format!(
+            "Download ended short: {staged} of {size} bytes were received"
+        ));
+    }
+    let base = staging.parent().unwrap_or(std::path::Path::new("."));
+    let name = staging
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix(".part"))
+        .unwrap_or("download");
+    let final_path = local_downloads::pick_download_path(base, name);
+    std::fs::rename(staging, &final_path)
+        .map_err(|error| format!("Failed to finalize download: {error}"))?;
+    Ok(final_path.to_string_lossy().to_string())
+}
+
+/// Progress payload builder mirroring `transfers.rs::emit_job_progress`
+/// byte-for-byte (same event name is applied by the caller).
+fn rclone_job_progress_event(job: &transfers::TransferJob) -> Value {
+    let mut event =
+        transfers::progress_event(&job.task_id, job.transferred_bytes, job.total_bytes);
+    if let Some(object) = event.as_object_mut() {
+        object.insert("size".into(), serde_json::json!(job.total_bytes));
+        object.insert("state".into(), serde_json::json!(job.status.as_str()));
+        object.insert(
+            "kind".into(),
+            serde_json::json!(match job.kind {
+                transfers::TransferKind::Upload => "upload",
+                transfers::TransferKind::Download => "download",
+            }),
+        );
+        object.insert("connectionId".into(), serde_json::json!(job.connection_id));
+        object.insert("remotePath".into(), serde_json::json!(job.remote_path));
+        if let Some(error) = &job.error {
+            object.insert("error".into(), serde_json::json!(error));
+        }
+    }
+    event
+}
+
+/// `state:"running"` progress payload (pump start), `emit_running` twin.
+fn rclone_running_event(task_id: &str) -> Value {
+    let mut event = transfers::progress_event(task_id, 0, None);
+    if let Some(object) = event.as_object_mut() {
+        object.insert(
+            "state".into(),
+            serde_json::json!(transfers::JobStatus::Running.as_str()),
+        );
+    }
+    event
+}
+
+/// Throttled mid-flight progress payload, `emit_running_at` twin.
+fn rclone_running_at_event(task_id: &str, transferred: u64, total: Option<u64>) -> Value {
+    let mut event = transfers::progress_event(task_id, transferred, total);
+    if let Some(object) = event.as_object_mut() {
+        object.insert("size".into(), serde_json::json!(total));
+        object.insert(
+            "state".into(),
+            serde_json::json!(transfers::JobStatus::Running.as_str()),
+        );
+    }
+    event
+}
+
+/// Marks a queued rclone job `running` (no-op otherwise) — `mark_running` twin.
+fn rclone_mark_running(rclone: &rclone::RcloneEngine, task_id: &str) {
+    if let Some(job) = rclone_lock(&rclone.jobs).get_mut(task_id) {
+        if job.status == transfers::JobStatus::Queued {
+            job.status = transfers::JobStatus::Running;
+        }
+    }
+}
+
+/// Moves a single-file rclone job to a terminal state exactly once and emits
+/// the final progress event — `Inner::complete_job` twin WITH the Phase D
+/// history persistence: the terminal record is appended to the shared
+/// transfers.json (`persist_rclone_history`), so the panel history and the
+/// local reveal/open whitelist behave identically under both engines.
+fn rclone_complete_job(
+    rclone: &rclone::RcloneEngine,
+    task_id: &str,
+    status: transfers::JobStatus,
+    error: Option<String>,
+    emitter: &PluginEmitter,
+) -> bool {
+    let job = {
+        let mut jobs = rclone_lock(&rclone.jobs);
+        let Some(job) = jobs.get_mut(task_id) else {
+            return false;
+        };
+        if job.status.is_terminal() {
+            return false;
+        }
+        job.status = status;
+        job.error = error;
+        job.finished_at = Some(store::unix_millis_now());
+        job.clone()
+    };
+    persist_rclone_history(rclone, &job);
+    let _ = emitter.event("files/transfer/progress", rclone_job_progress_event(&job));
+    true
+}
+
+/// Terminal-replay twin of `download_finish_result`: Completed finishes
+/// idempotently with the recorded `localPath`; Failed/Canceled surface the
+/// stored outcome.
+fn rclone_download_finish_result(job: &transfers::TransferJob) -> Result<Option<String>, String> {
+    match job.status {
+        transfers::JobStatus::Completed => Ok(job.local_path.clone()),
+        transfers::JobStatus::Canceled => Err("Download was canceled".to_string()),
+        _ => Err(job
+            .error
+            .clone()
+            .unwrap_or_else(|| "Download failed".to_string())),
+    }
+}
+
+/// Pump-side terminal cleanup (`pump_cleanup` twin): sweep the `.part`
+/// residue, settle the job state and — for cancel exits — drop the slot.
+fn rclone_pump_cleanup(
+    rclone: &rclone::RcloneEngine,
+    task_id: &str,
+    staging: &Option<PathBuf>,
+    status: transfers::JobStatus,
+    error: Option<String>,
+    emitter: &PluginEmitter,
+    clear_slot: bool,
+) {
+    if let Some(staging) = staging {
+        let _ = std::fs::remove_file(staging);
+    }
+    rclone_complete_job(rclone, task_id, status, error, emitter);
+    if clear_slot {
+        rclone_lock(&rclone.downloads).remove(task_id);
+    }
+}
+
+/// Settles `pump_done` on every pump exit path (early bails and panics
+/// included) — `transfers::PumpDoneGuard` twin.
+struct RclonePumpDoneGuard(Arc<AtomicBool>);
+
+impl Drop for RclonePumpDoneGuard {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+/// rclone download pump (plan §5 independent-spawn allowance): streams
+/// `fs:remote` through `bytes_channel::download_pump` and re-emits each
+/// ≤256 KiB slice as a `files/download/{taskId}` kind-1 frame (8-byte BE
+/// offset + payload) — byte-identical to the JobTable pump's frame format.
+/// Honors the cooperative cancel flag between chunks; saveToLocal runs append
+/// into the start-created `.part` file and hand the terminal state to
+/// `finish_rclone_download` (like the JobTable pump does).
+#[allow(clippy::too_many_arguments)]
+async fn rclone_download_pump(
+    rclone: Arc<rclone::RcloneEngine>,
+    task_id: String,
+    connection_id: String,
+    fs: String,
+    remote: String,
+    size: u64,
+    staging: Option<PathBuf>,
+    cancel: Arc<AtomicBool>,
+    pump_done: Arc<AtomicBool>,
+    emitter: PluginEmitter,
+) {
+    let _pump_done_guard = RclonePumpDoneGuard(pump_done.clone());
+    rclone_mark_running(&rclone, &task_id);
+    let _ = emitter.event("files/transfer/progress", rclone_running_event(&task_id));
+    let channel = format!("files/download/{task_id}");
+    if cancel.load(Ordering::Acquire) {
+        rclone_pump_cleanup(
+            &rclone,
+            &task_id,
+            &staging,
+            transfers::JobStatus::Canceled,
+            None,
+            &emitter,
+            true,
+        );
+        return;
+    }
+    // saveToLocal: the staging file was pre-created at start; an unwritable
+    // file fails the job here, mirroring the JobTable pump.
+    let mut staging_file = match staging.as_deref() {
+        Some(path) => match std::fs::OpenOptions::new().append(true).open(path) {
+            Ok(file) => Some(file),
+            Err(error) => {
+                rclone_pump_cleanup(
+                    &rclone,
+                    &task_id,
+                    &staging,
+                    transfers::JobStatus::Failed,
+                    Some(format!("Failed to open staging file: {error}")),
+                    &emitter,
+                    false,
+                );
+                return;
+            }
+        },
+        None => None,
+    };
+    // Transfer-path client (plan finding #11): no wall-clock timeout, the
+    // pump streams the whole object through one GET body. Routed to the
+    // owning connection's proxy group.
+    let client = match rclone
+        .client_for_id(&connection_id)
+        .await
+        .map(|client| client.transfer_client())
+    {
+        Ok(client) => client,
+        Err(error) => {
+            rclone_pump_cleanup(
+                &rclone,
+                &task_id,
+                &staging,
+                transfers::JobStatus::Failed,
+                Some(error),
+                &emitter,
+                false,
+            );
+            return;
+        }
+    };
+    let mut offset = 0u64;
+    let mut throttle = transfers::Throttle::default();
+    let jobs = &rclone.jobs;
+    let mut sink = |chunk: &[u8]| -> Result<(), String> {
+        if cancel.load(Ordering::Acquire) {
+            return Err("download canceled".to_string());
+        }
+        if let Some(file) = staging_file.as_mut() {
+            use std::io::Write;
+            file.write_all(chunk)
+                .map_err(|error| format!("Failed to write staging file: {error}"))?;
+        }
+        let payload = engine::transfer::frame(offset, chunk);
+        emitter
+            .binary(&channel, &payload)
+            .map_err(|error| format!("Failed to push download frame: {error:?}"))?;
+        offset = offset.saturating_add(chunk.len() as u64);
+        if let Some(job) = rclone_lock(jobs).get_mut(&task_id) {
+            job.transferred_bytes = offset;
+        }
+        if throttle.should_emit(offset, Some(size)) {
+            let _ = emitter.event(
+                "files/transfer/progress",
+                rclone_running_at_event(&task_id, offset, Some(size)),
+            );
+        }
+        Ok(())
+    };
+    let outcome = rclone::bytes_channel::download_pump(&client, &fs, &remote, &mut sink).await;
+    match outcome {
+        Ok(_) => {
+            if cancel.load(Ordering::Acquire) {
+                rclone_pump_cleanup(
+                    &rclone,
+                    &task_id,
+                    &staging,
+                    transfers::JobStatus::Canceled,
+                    None,
+                    &emitter,
+                    true,
+                );
+                return;
+            }
+            if staging.is_some() {
+                // saveToLocal: the terminal state belongs to finish (the job
+                // stays running until finish confirms). Close the staging
+                // handle first — finish renames the `.part` once it observes
+                // pump_done, and Windows can neither rename nor delete an
+                // open file — then settle pump_done under the downloads lock
+                // racing cancel's "pump already exited" check. This is the
+                // JobTable pump's exact handover dance.
+                drop(staging_file.take());
+                let clean_up = {
+                    let mut downloads = rclone_lock(&rclone.downloads);
+                    let cancel_seen = cancel.load(Ordering::Acquire);
+                    let job_terminal = rclone_lock(&rclone.jobs)
+                        .get(&task_id)
+                        .map(|job| job.status.is_terminal())
+                        .unwrap_or(false);
+                    if cancel_seen || job_terminal {
+                        downloads.remove(&task_id);
+                        true
+                    } else {
+                        pump_done.store(true, Ordering::Release);
+                        false
+                    }
+                };
+                if clean_up {
+                    rclone_pump_cleanup(
+                        &rclone,
+                        &task_id,
+                        &staging,
+                        transfers::JobStatus::Canceled,
+                        None,
+                        &emitter,
+                        false,
+                    );
+                }
+                return;
+            }
+            // Channel download: complete immediately; the slot stays until
+            // finish removes it (JobTable pump parity — a late cancel still
+            // finds the slot and answers Ok).
+            rclone_complete_job(
+                &rclone,
+                &task_id,
+                transfers::JobStatus::Completed,
+                None,
+                &emitter,
+            );
+        }
+        Err(error) => {
+            let canceled = cancel.load(Ordering::Acquire);
+            let (status, detail) = if canceled {
+                (transfers::JobStatus::Canceled, None)
+            } else {
+                (transfers::JobStatus::Failed, Some(error))
+            };
+            rclone_pump_cleanup(
+                &rclone,
+                &task_id,
+                &staging,
+                status,
+                detail,
+                &emitter,
+                false,
+            );
+        }
+    }
 }
 
 impl PluginHandler for Plugin {
@@ -1010,6 +3297,16 @@ impl PluginHandler for Plugin {
         // Host → sidecar upload: `files/upload/{taskId}` frames carry an
         // 8-byte BE offset + payload chunk (ssh-sftp main.rs:666-671 shape).
         if let Some(task_id) = channel.strip_prefix("files/upload/") {
+            // F-RCLONE phase B dual-engine branch (plan §2/§7): the rclone
+            // staging table is consulted FIRST — a task registered by the
+            // rclone `files/upload/start` arm lands in its byte path, while
+            // everything else (rclone engine off, OpenDAL-era task, unknown
+            // id) falls through to the OpenDAL JobTable verbatim. The map
+            // membership check IS the engine-selection branch, so a miss can
+            // never be hijacked from the legacy path.
+            if let Some(result) = self.append_rclone_upload(task_id, &data, emitter) {
+                return result.map_err(to_plugin_error);
+            }
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.runtime
                     .block_on(self.transfers.append_upload(task_id, &data, emitter))
@@ -1315,6 +3612,49 @@ mod tests {
         // Explicit null behaves like the default.
         let response = audit_list_response(&store, &json!({ "limit": null })).unwrap();
         assert_eq!(response, json!({ "entries": [] }));
+    }
+
+    // -- Phase D rclone transfers-history persistence -------------------------
+
+    #[test]
+    fn rclone_history_persists_and_hydrates_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(dir.path().to_path_buf()));
+        let rclone = rclone::RcloneEngine::new();
+        *rclone_lock(&rclone.history) = Some(Arc::clone(&store));
+
+        let job = transfers::TransferJob {
+            task_id: "hist-1".into(),
+            connection_id: "c1".into(),
+            kind: transfers::TransferKind::Download,
+            remote_path: "/big.bin".into(),
+            total_bytes: Some(11),
+            transferred_bytes: 11,
+            status: transfers::JobStatus::Completed,
+            error: None,
+            started_at: Some(1_700_000_000_000),
+            finished_at: Some(1_700_000_000_001),
+            local_path: Some("/downloads/big.bin".into()),
+        };
+        persist_rclone_history(&rclone, &job);
+        // Non-terminal records are never persisted.
+        let mut queued = job.clone();
+        queued.task_id = "hist-2".into();
+        queued.status = transfers::JobStatus::Queued;
+        persist_rclone_history(&rclone, &queued);
+
+        let mut records = store.load_transfers();
+        assert_eq!(records.len(), 1, "only terminal records persist");
+        assert_eq!(records[0].task_id, "hist-1");
+        assert_eq!(records[0].kind, "download");
+        assert_eq!(records[0].status, "completed");
+        assert_eq!(records[0].local_path.as_deref(), Some("/downloads/big.bin"));
+
+        // Hydration twin: the record maps back onto a terminal mirror job.
+        let hydrated = rclone_job_from_record(records.remove(0));
+        assert_eq!(hydrated.status, transfers::JobStatus::Completed);
+        assert_eq!(hydrated.kind, transfers::TransferKind::Download);
+        assert_eq!(hydrated.total_bytes, Some(11));
     }
 
     #[test]

@@ -10,6 +10,8 @@ impl Mcp {
     /// optional: when they resolve to a read-only connection the write tools
     /// are excluded from the list (design §4 "不注册进工具清单"); without a
     /// resolvable connection all tools are listed and `mcp/call` re-gates.
+    /// Phase D: the connectionId lookup consults the rclone registry when the
+    /// sidecar runs the rclone engine.
     pub fn tool_definitions(&self, engine: &Engine, params: &Value) -> Value {
         let read_only = params
             .get("lifecycle")
@@ -19,8 +21,16 @@ impl Mcp {
                 params
                     .get("connectionId")
                     .and_then(Value::as_str)
-                    .and_then(|id| engine.connection(id).ok())
-                    .map(|connection| connection.read_only)
+                    .and_then(|id| {
+                        if let Some(route) = self.rclone_route() {
+                            return route
+                                .engine
+                                .registry
+                                .get(id)
+                                .map(|binding| binding.read_only);
+                        }
+                        engine.connection(id).ok().map(|connection| connection.read_only)
+                    })
             })
             .unwrap_or(false);
         self.definitions_for(read_only)

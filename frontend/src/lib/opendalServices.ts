@@ -195,6 +195,32 @@ export const CUSTOM_SERVICES: ReadonlySet<string> = new Set([
   "yandex-disk",
 ]);
 
+/**
+ * rclone 后端类型全集（`rclone config providers` on v1.75.1-dbx.1）。rclone
+ * 引擎的 opendal-custom 透传把 service 字段直接当作 rclone backend type，
+ * 因此 service 输入框必须能输入任意类型——这份清单只是 datalist 建议，
+ * 不是白名单：后端在使用时按实际 rclone 校验，新版本新增的后端可直接
+ * 手输（见 https://rclone.org/overview/）。schema 表单仍只对
+ * CUSTOM_SERVICES 提供，其余类型自动降级为纯 JSON 模式。
+ */
+export const RCLONE_BACKEND_TYPES: ReadonlySet<string> = new Set([
+  "alias", "archive", "azureblob", "azurefiles", "b2", "box", "cache", "chunker",
+  "cloudinary", "combine", "compress", "crypt", "doi", "drime", "drive", "dropbox",
+  "fichier", "filefabric", "filelu", "filen", "filescom", "ftp", "gcs", "gofile",
+  "gphotos", "hasher", "hdfs", "hidrive", "http", "huaweidrive", "iclouddrive",
+  "imagekit", "internetarchive", "internxt", "jottacloud", "koofr", "linkbox",
+  "local", "mailru", "mega", "memory", "netstorage", "onedrive", "oos", "opendrive",
+  "pcloud", "pikpak", "pixeldrain", "premiumizeme", "protondrive", "putio",
+  "qingstor", "quatrix", "s3", "seafile", "sftp", "shade", "sharefile", "sia",
+  "smb", "storj", "sugarsync", "swift", "tardigrade", "ulozto", "union", "webdav",
+  "yandex", "zoho",
+]);
+
+/** service 输入框的 datalist 建议：OpenDAL 已知服务 ∪ rclone 后端全集。 */
+export function customServiceSuggestions(): string[] {
+  return Array.from(new Set([...CUSTOM_SERVICES, ...RCLONE_BACKEND_TYPES])).sort();
+}
+
 /** 各服务常用的配置键提示（JSON 编辑器的占位示例）。 */
 export const CUSTOM_CONFIG_HINTS: Readonly<Record<string, string>> = {
   memory: "{}",
