@@ -233,14 +233,6 @@ jobs:
           node-version: "22"
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
-      - name: Install rclone (the sidecar spawns it for every engine op)
-        # Pinned: fsinfo feature reporting shifts between minor versions and
-        # the capabilities contract is asserted against 1.75.1 (dev machine).
-        run: |
-          curl -fsSL https://downloads.rclone.org/v1.75.1/rclone-v1.75.1-linux-amd64.zip -o /tmp/rclone.zip
-          unzip -o -q /tmp/rclone.zip -d /tmp/rclone-tmp
-          sudo mv /tmp/rclone-tmp/*/rclone /usr/local/bin/rclone
-          rclone version | head -1
       - uses: dtolnay/rust-toolchain@stable
       - uses: mozilla-actions/sccache-action@v0.0.7
       - uses: actions/cache@v4
