@@ -347,7 +347,11 @@ def scenario_structure(runner: Runner, base: str) -> None:
         job_id = result.get("jobId")
         if job_id:
             state = wait_job(runner, job_id)
-            assert state == "completed", f"dir rename job ended as {state}"
+            if state != "completed":
+                job = runner.call("files/transfer/status", {"jobId": job_id})
+                detail = job.get("job", {}).get("error") or job
+                raise AssertionError(f"dir rename job ended as {state}: {detail}")
+            assert state == "completed"
         entries = runner.call("files/list", {"connectionId": cid, "path": f"{base}/dir2-renamed"}).get("entries", [])
         assert any(entry["name"] == "inner.txt" for entry in entries), f"dir rename lost contents: {entries}"
         listing = runner.call("files/list", {"connectionId": cid, "path": base}).get("entries", [])

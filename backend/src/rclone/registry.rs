@@ -227,10 +227,21 @@ pub fn binding_for(connection: &StoredConnection) -> Result<RemoteBinding, Strin
     } else {
         format!("{}:", remote_name(&connection.id))
     };
+    // SMB tree-connect target: rclone takes the share as the FIRST path
+    // component of the fs string (`smb:host/share/...`). The retired
+    // OpenDAL adapter carried it separately; fold it into the visible root
+    // so every fs composition keeps working unchanged. An empty share
+    // (server-level discovery) stays unscoped — rclone cannot enumerate
+    // shares, so that scenario degrades at the ops layer.
+    let mut root = connection.root.clone();
+    if connection.protocol == "smb" && !connection.share.trim().is_empty() {
+        let share = format!("/{}", connection.share.trim().trim_matches('/'));
+        root = format!("{share}{root}");
+    }
     Ok(RemoteBinding {
         remote_fs,
         backend_type,
-        root: connection.root.clone(),
+        root,
         lock_to_root: connection.lock_to_root,
         read_only: connection.read_only,
         allow_delete: connection.allow_delete,

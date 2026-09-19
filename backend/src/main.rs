@@ -501,6 +501,37 @@ impl Plugin {
                 ensure_binding_writable(&binding)?;
                 ensure_binding_deletable(&binding)?;
                 let client = self.rclone.client_for_binding(&binding).await?;
+                // Directories move server-side (`sync/move` job): the file
+                // rename rc 404s on dirs. Same connection both sides — the
+                // dir-job machinery tracks progress/stop like copyDir.
+                let source = rclone::ops::stat(
+                    &client,
+                    &rclone::call_fs(&binding),
+                    &request.path,
+                    &binding.root,
+                    binding.lock_to_root,
+                )
+                .await?;
+                if source.kind == "dir" {
+                    let request = model::DirJobRequest {
+                        source_connection_id: request.connection_id.clone(),
+                        source_path: request.path.clone(),
+                        target_connection_id: request.connection_id.clone(),
+                        target_path: request.new_path.clone(),
+                        dry_run: Some(false),
+                        max_delete: None,
+                    };
+                    let job_id = rclone_start_dir_job(
+                        Arc::clone(&self.rclone),
+                        Arc::clone(&self.sync_jobs),
+                        &request,
+                        false,
+                        true,
+                        Some(emitter),
+                    )
+                    .await?;
+                    return Ok(json!({ "success": true, "transport": "dirJob", "jobId": job_id }));
+                }
                 rclone::ops::rename(
                     &client,
                     &rclone::call_fs(&binding),
@@ -856,6 +887,7 @@ impl Plugin {
                     Arc::clone(&self.sync_jobs),
                     &request,
                     method == "files/syncDir",
+                    false,
                     Some(emitter),
                 )
                 .await?;
@@ -1217,9 +1249,10 @@ impl Plugin {
             "mcp/settings/get" => Ok(self.mcp.settings_get()),
             "mcp/settings/set" => self.mcp.settings_set(&params),
             "files/ui/state/report" => self.mcp.report(&params),
-            _ => Err(format!(
-                "{method} is not supported by the rclone engine"
-            )),
+            // Unknown/unrouted methods keep the historical "Method not
+            // found" phrasing — the smoke suite's SKIP semantics and MCP
+            // clients match on it (not the retired OpenDAL fallthrough).
+            _ => Err(format!("Method not found: {method}")),
         }
     }
 
@@ -1718,6 +1751,7 @@ async fn rclone_start_dir_job(
     sync_jobs: Arc<std::sync::Mutex<HashMap<String, RcloneSyncRecord>>>,
     request: &model::DirJobRequest,
     sync: bool,
+    move_dir: bool,
     emitter: Option<&PluginEmitter>,
 ) -> Result<String, String> {
     let source_binding = rclone.binding(&request.source_connection_id)?;
@@ -1727,10 +1761,15 @@ async fn rclone_start_dir_job(
     rclone::ensure_same_proxy_group(&source_binding, &target_binding)?;
     // Gate order/message parity with `validate_dir_job_gates(target,
     // sync)`: the target must be writable, and sync's delete phase
-    // additionally requires allow_delete (read_only rejects both).
+    // additionally requires allow_delete (read_only rejects both). A
+    // server-side move deletes the source tree — the source needs the
+    // delete gate too (for rename, source and target are one connection).
     ensure_binding_writable(&target_binding)?;
     if sync {
         ensure_binding_deletable(&target_binding)?;
+    }
+    if move_dir {
+        ensure_binding_deletable(&source_binding)?;
     }
     // Path whitelist (Phase B convention): policy-relative remotes for the
     // sync job — source read / target write, connection
@@ -1767,7 +1806,9 @@ async fn rclone_start_dir_job(
     };
     let record = RcloneSyncRecord {
         handle: None,
-        kind: if sync {
+        kind: if move_dir {
+            rclone::sync::SyncKind::Move
+        } else if sync {
             rclone::sync::SyncKind::Sync
         } else {
             rclone::sync::SyncKind::Copy
@@ -1786,6 +1827,22 @@ async fn rclone_start_dir_job(
             source_binding.proxy.as_ref(),
         )),
     };
+    let is_move = matches!(record.kind, rclone::sync::SyncKind::Move);
+    // rclone's sync family does not auto-create the destination root on
+    // every backend (FTP answers 501 "No such directory" and the job
+    // fails); pre-create it best-effort — mkdir is idempotent elsewhere.
+    {
+        let client = rclone.client_for_binding(&target_binding).await?;
+        let _ = client
+            .call(
+                "operations/mkdir",
+                &serde_json::json!({
+                    "fs": rclone::call_fs(&target_binding),
+                    "remote": dst_rel,
+                }),
+            )
+            .await;
+    }
     rclone_lock(&rclone.jobs).insert(job_id.clone(), job.clone());
     // Initial queued event before the spawn — enqueue_dir_job
     // parity (queued is a wire-visible state there too).
@@ -1809,6 +1866,18 @@ async fn rclone_start_dir_job(
     let event_emitter = emitter.cloned();
     let event_job_id = job_id.clone();
     let mut throttle = transfers::Throttle::default();
+    // A server-side move (sync/move) relocates files but leaves the empty
+    // source directory tree behind — the Completed handler purges it
+    // (best-effort; the delete gate was checked at enqueue time).
+    let move_cleanup = if is_move {
+        Some((
+            rclone.client_for_binding(&source_binding).await?.transfer_client(),
+            rclone::call_fs(&source_binding),
+            src_rel.clone(),
+        ))
+    } else {
+        None
+    };
     let on_event: Box<dyn FnMut(rclone::sync::SyncEvent) + Send> =
         Box::new(move |event| match event {
             rclone::sync::SyncEvent::Progress {
@@ -1862,6 +1931,24 @@ async fn rclone_start_dir_job(
                     None,
                     Some(files),
                 );
+                // sync/move leaves the emptied source tree; purge it so a
+                // directory rename does not leave the old name behind.
+                if let Some((ref client, ref src_fs, ref src_rel)) = move_cleanup {
+                    let client = client.clone();
+                    let src_fs = src_fs.clone();
+                    let src_rel = src_rel.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) = client
+                            .call(
+                                "operations/purge",
+                                &serde_json::json!({ "fs": src_fs, "remote": src_rel }),
+                            )
+                            .await
+                        {
+                            eprintln!("rclone move-dir source cleanup failed: {error}");
+                        }
+                    });
+                }
             }
             rclone::sync::SyncEvent::Failed { message } => {
                 rclone_sync_terminal(
@@ -1935,7 +2022,7 @@ fn mcp_sync_starter(
         let rclone = Arc::clone(&rclone);
         let sync_jobs = Arc::clone(&sync_jobs);
         Box::pin(async move {
-            rclone_start_dir_job(rclone, sync_jobs, &request, sync, emitter.as_ref()).await
+            rclone_start_dir_job(rclone, sync_jobs, &request, sync, false, emitter.as_ref()).await
         })
     })
 }
@@ -2032,6 +2119,7 @@ fn rclone_sync_event_from(job: &transfers::TransferJob, record: &RcloneSyncRecor
         "kind": match record.kind {
             rclone::sync::SyncKind::Sync => "syncDir",
             rclone::sync::SyncKind::Copy => "copyDir",
+            rclone::sync::SyncKind::Move => "moveDir",
         },
         "remotePath": job.remote_path,
     });
@@ -2056,10 +2144,11 @@ fn rclone_sync_dir_job_value(job: &transfers::TransferJob, record: &RcloneSyncRe
         "targetConnectionId": record.dst_conn,
         "targetPath": record.dst_rel,
         "sync": matches!(record.kind, rclone::sync::SyncKind::Sync),
-        "deleteSource": false,
+        "deleteSource": matches!(record.kind, rclone::sync::SyncKind::Move),
         "kind": match record.kind {
             rclone::sync::SyncKind::Sync => "syncDir",
             rclone::sync::SyncKind::Copy => "copyDir",
+            rclone::sync::SyncKind::Move => "moveDir",
         },
         "filesDone": record.files_done,
         "filesTotal": record.files_total,
