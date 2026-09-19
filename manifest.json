@@ -749,6 +749,180 @@
           "description": "Strict requires known host keys. Tolerate accepts unknown hosts but rejects changed known keys; native SFTP does not remember new keys. Trust skips verification (the OpenDAL SFTP protocol degrades it to Tolerate)."
         },
         {
+          "key": "proxy_type",
+          "label": "Connection proxy",
+          "type": "select",
+          "binding": "config",
+          "default": "off",
+          "options": [
+            {
+              "label": "Off (direct connection)",
+              "value": "off"
+            },
+            {
+              "label": "HTTP proxy",
+              "value": "http"
+            },
+            {
+              "label": "SOCKS5 proxy",
+              "value": "socks5"
+            }
+          ],
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "ftp",
+              "sftp",
+              "sftp-native"
+            ]
+          },
+          "description": "Under the rclone engine, an HTTP or SOCKS5 proxy applies to the FTP/SFTP connection (via rclone backend options). Off, or an unsupported protocol, connects directly."
+        },
+        {
+          "key": "proxy_host",
+          "label": "Proxy host",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "placeholder": "proxy.example.com",
+          "description": "Proxy server hostname or address.",
+          "visible_when": {
+            "field": "proxy_type",
+            "one_of": [
+              "http",
+              "socks5"
+            ]
+          },
+          "required_when": {
+            "field": "proxy_type",
+            "one_of": [
+              "http",
+              "socks5"
+            ]
+          }
+        },
+        {
+          "key": "proxy_port",
+          "label": "Proxy port",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "placeholder": "8080",
+          "description": "Proxy port, an integer between 1 and 65535.",
+          "visible_when": {
+            "field": "proxy_type",
+            "one_of": [
+              "http",
+              "socks5"
+            ]
+          },
+          "required_when": {
+            "field": "proxy_type",
+            "one_of": [
+              "http",
+              "socks5"
+            ]
+          }
+        },
+        {
+          "key": "proxy_username",
+          "label": "Proxy username",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "description": "Optional proxy account; leave empty when the proxy needs no authentication.",
+          "visible_when": {
+            "field": "proxy_type",
+            "one_of": [
+              "http",
+              "socks5"
+            ]
+          }
+        },
+        {
+          "key": "proxy_password",
+          "label": "Proxy password",
+          "type": "password",
+          "binding": "secret",
+          "default": "",
+          "description": "Optional proxy password; leave empty for an anonymous proxy. Kept in the host secret binding.",
+          "visible_when": {
+            "field": "proxy_type",
+            "one_of": [
+              "http",
+              "socks5"
+            ]
+          }
+        },
+        {
+          "key": "tunnel_jump_hosts",
+          "label": "SSH tunnel jump hosts",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "placeholder": "ops@j1.example.com:2222, j2.corp",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "s3",
+              "gcs",
+              "azblob",
+              "obs",
+              "oss",
+              "cos",
+              "webdav",
+              "ftp",
+              "sftp",
+              "sftp-native",
+              "smb",
+              "opendal-custom",
+              "aliyun-drive",
+              "dropbox",
+              "gdrive",
+              "koofr",
+              "onedrive",
+              "pcloud",
+              "seafile",
+              "yandex-disk"
+            ]
+          },
+          "description": "Optional SSH jump-host chain in ssh -J syntax: comma-separated [user@]host[:port] entries with optional user@ and :port; the last hop is the login target and traffic is forwarded to the connection endpoint. Leave empty for no tunnel. Only effective under the rclone engine (DBX_FILES_ENGINE=rclone); key-based authentication only (BatchMode) — passwords cannot and will never be used. The endpoint is rewritten to a local 127.0.0.1 forwarded port (remote certificates are then validated against 127.0.0.1, which suits private-CA intranet deployments)."
+        },
+        {
+          "key": "tunnel_identity_file",
+          "label": "SSH tunnel private key",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "placeholder": "~/.ssh/id_ed25519",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "s3",
+              "gcs",
+              "azblob",
+              "obs",
+              "oss",
+              "cos",
+              "webdav",
+              "ftp",
+              "sftp",
+              "sftp-native",
+              "smb",
+              "opendal-custom",
+              "aliyun-drive",
+              "dropbox",
+              "gdrive",
+              "koofr",
+              "onedrive",
+              "pcloud",
+              "seafile",
+              "yandex-disk"
+            ]
+          },
+          "description": "Optional private key path for the tunnel; leave empty to use ssh default keys and the agent."
+        },
+        {
           "key": "root",
           "label": "Root path",
           "type": "text",
@@ -963,6 +1137,43 @@
                 "Trust": "信任任意（不安全）"
               }
             },
+            "proxy_type": {
+              "label": "连接代理",
+              "description": "rclone 引擎下，HTTP 或 SOCKS5 代理作用于 FTP/SFTP 连接（经 rclone 后端选项）。关闭或不支持代理的协议按直连处理。",
+              "options": {
+                "off": "关闭（直连）",
+                "http": "HTTP 代理",
+                "socks5": "SOCKS5 代理"
+              }
+            },
+            "proxy_host": {
+              "label": "代理主机",
+              "placeholder": "proxy.example.com",
+              "description": "代理服务器主机名或地址。"
+            },
+            "proxy_port": {
+              "label": "代理端口",
+              "placeholder": "8080",
+              "description": "代理端口，1-65535 之间的整数。"
+            },
+            "proxy_username": {
+              "label": "代理用户名",
+              "description": "代理账号可选；代理无需认证时留空。"
+            },
+            "proxy_password": {
+              "label": "代理密码",
+              "description": "代理密码可选；匿名代理留空。由宿主 secret binding 保管。"
+            },
+            "tunnel_jump_hosts": {
+              "label": "SSH 隧道跳板链",
+              "placeholder": "ops@j1.example.com:2222, j2.corp",
+              "description": "可选 SSH 跳板链（ssh -J 语法，逗号分隔 [user@]host[:port]，user@ 与 :port 可省略；最后一个为登录目标，流量转发到连接 endpoint）。留空不建隧道。仅 rclone 引擎（DBX_FILES_ENGINE=rclone）生效；仅密钥认证（BatchMode），密码无法也绝不会被使用。endpoint 会被改写为本地 127.0.0.1 转发端口（远端证书按 127.0.0.1 校验，适合私有 CA 内网部署）。"
+            },
+            "tunnel_identity_file": {
+              "label": "SSH 隧道私钥",
+              "placeholder": "~/.ssh/id_ed25519",
+              "description": "隧道使用的私钥路径（可选）；留空使用 ssh 默认密钥与 agent。"
+            },
             "access_token": { "label": "Access Token" },
             "client_id": { "label": "OAuth 客户端 ID" },
             "client_secret": { "label": "OAuth 客户端密钥" },
@@ -1144,6 +1355,43 @@
                 "Strict": "嚴格（驗證已知主機）",
                 "Trust": "信任任意（不安全）"
               }
+            },
+            "proxy_type": {
+              "label": "連線代理",
+              "description": "rclone 引擎下，HTTP 或 SOCKS5 代理作用於 FTP/SFTP 連線（經 rclone 後端選項）。關閉或不支援代理的通訊協定按直連處理。",
+              "options": {
+                "off": "關閉（直連）",
+                "http": "HTTP 代理",
+                "socks5": "SOCKS5 代理"
+              }
+            },
+            "proxy_host": {
+              "label": "代理主機",
+              "placeholder": "proxy.example.com",
+              "description": "代理伺服器主機名稱或位址。"
+            },
+            "proxy_port": {
+              "label": "代理連接埠",
+              "placeholder": "8080",
+              "description": "代理連接埠，1-65535 之間的整數。"
+            },
+            "proxy_username": {
+              "label": "代理使用者名稱",
+              "description": "代理帳戶可選；代理無需驗證時留空。"
+            },
+            "proxy_password": {
+              "label": "代理密碼",
+              "description": "代理密碼可選；匿名代理留空。由宿主 secret binding 保管。"
+            },
+            "tunnel_jump_hosts": {
+              "label": "SSH 通道跳板鏈",
+              "placeholder": "ops@j1.example.com:2222, j2.corp",
+              "description": "可選 SSH 跳板鏈（ssh -J 語法，逗號分隔 [user@]host[:port]，user@ 與 :port 可省略；最後一個為登入目標，流量轉發到連線 endpoint）。留空不建通道。僅 rclone 引擎（DBX_FILES_ENGINE=rclone）生效；僅金鑰認證（BatchMode），密碼無法也絕不會被使用。endpoint 會被改寫為本機 127.0.0.1 轉發連接埠（遠端憑證按 127.0.0.1 驗證，適合私有 CA 內網部署）。"
+            },
+            "tunnel_identity_file": {
+              "label": "SSH 通道私鑰",
+              "placeholder": "~/.ssh/id_ed25519",
+              "description": "通道使用的私鑰路徑（可選）；留空使用 ssh 預設金鑰與 agent。"
             },
             "access_token": { "label": "Access Token" },
             "client_id": { "label": "OAuth 用戶端 ID" },
@@ -1327,6 +1575,43 @@
                 "Trust": "Trust (any key, insecure)"
               }
             },
+            "proxy_type": {
+              "label": "Connection proxy",
+              "description": "Under the rclone engine, an HTTP or SOCKS5 proxy applies to the FTP/SFTP connection (via rclone backend options). Off, or an unsupported protocol, connects directly.",
+              "options": {
+                "off": "Off (direct connection)",
+                "http": "HTTP proxy",
+                "socks5": "SOCKS5 proxy"
+              }
+            },
+            "proxy_host": {
+              "label": "Proxy host",
+              "placeholder": "proxy.example.com",
+              "description": "Proxy server hostname or address."
+            },
+            "proxy_port": {
+              "label": "Proxy port",
+              "placeholder": "8080",
+              "description": "Proxy port, an integer between 1 and 65535."
+            },
+            "proxy_username": {
+              "label": "Proxy username",
+              "description": "Optional proxy account; leave empty when the proxy needs no authentication."
+            },
+            "proxy_password": {
+              "label": "Proxy password",
+              "description": "Optional proxy password; leave empty for an anonymous proxy. Kept in the host secret binding."
+            },
+            "tunnel_jump_hosts": {
+              "label": "SSH tunnel jump hosts",
+              "placeholder": "ops@j1.example.com:2222, j2.corp",
+              "description": "Optional SSH jump-host chain in ssh -J syntax: comma-separated [user@]host[:port] entries with optional user@ and :port; the last hop is the login target and traffic is forwarded to the connection endpoint. Leave empty for no tunnel. Only effective under the rclone engine (DBX_FILES_ENGINE=rclone); key-based authentication only (BatchMode) — passwords cannot and will never be used. The endpoint is rewritten to a local 127.0.0.1 forwarded port (remote certificates are then validated against 127.0.0.1, which suits private-CA intranet deployments)."
+            },
+            "tunnel_identity_file": {
+              "label": "SSH tunnel private key",
+              "placeholder": "~/.ssh/id_ed25519",
+              "description": "Optional private key path for the tunnel; leave empty to use ssh default keys and the agent."
+            },
             "access_token": { "label": "Access token" },
             "client_id": { "label": "OAuth client ID" },
             "client_secret": { "label": "OAuth client secret" },
@@ -1508,6 +1793,43 @@
                 "Strict": "Estricto (verificar known hosts)",
                 "Trust": "Confiar (cualquier clave, inseguro)"
               }
+            },
+            "proxy_type": {
+              "label": "Proxy de conexión",
+              "description": "Con el motor rclone, un proxy HTTP o SOCKS5 se aplica a la conexión FTP/SFTP (mediante opciones del backend de rclone). Desactivado, o un protocolo sin soporte de proxy, se conecta directamente.",
+              "options": {
+                "off": "Desactivado (conexión directa)",
+                "http": "Proxy HTTP",
+                "socks5": "Proxy SOCKS5"
+              }
+            },
+            "proxy_host": {
+              "label": "Host del proxy",
+              "placeholder": "proxy.example.com",
+              "description": "Nombre de host o dirección del servidor proxy."
+            },
+            "proxy_port": {
+              "label": "Puerto del proxy",
+              "placeholder": "8080",
+              "description": "Puerto del proxy, un entero entre 1 y 65535."
+            },
+            "proxy_username": {
+              "label": "Usuario del proxy",
+              "description": "Cuenta del proxy opcional; déjelo vacío si el proxy no requiere autenticación."
+            },
+            "proxy_password": {
+              "label": "Contraseña del proxy",
+              "description": "Contraseña del proxy opcional; déjela vacía para un proxy anónimo. Guardada en el binding secreto del host."
+            },
+            "tunnel_jump_hosts": {
+              "label": "Saltos del túnel SSH",
+              "placeholder": "ops@j1.example.com:2222, j2.corp",
+              "description": "Cadena opcional de saltos SSH (sintaxis ssh -J: entradas [usuario@]host[:puerto] separadas por comas, con usuario@ y :puerto opcionales; el último salto es el destino de inicio de sesión y el tráfico se reenvía al endpoint de la conexión). Déjelo vacío para no crear un túnel. Solo es efectivo con el motor rclone (DBX_FILES_ENGINE=rclone); solo autenticación por clave (BatchMode): las contraseñas no pueden y nunca se usarán. El endpoint se reescribe a un puerto local reenviado en 127.0.0.1 (los certificados remotos se validan contra 127.0.0.1, lo que se ajusta a despliegues en intranet con CA privada)."
+            },
+            "tunnel_identity_file": {
+              "label": "Clave privada del túnel SSH",
+              "placeholder": "~/.ssh/id_ed25519",
+              "description": "Ruta opcional de la clave privada para el túnel; déjela vacía para usar las claves predeterminadas de ssh y el agente."
             },
             "access_token": { "label": "Token de acceso" },
             "client_id": { "label": "ID de cliente OAuth" },
@@ -1691,6 +2013,43 @@
                 "Trust": "Fiducia (qualsiasi chiave, non sicuro)"
               }
             },
+            "proxy_type": {
+              "label": "Proxy di connessione",
+              "description": "Con il motore rclone, un proxy HTTP o SOCKS5 si applica alla connessione FTP/SFTP (tramite opzioni del backend rclone). Disattivo, o un protocollo senza supporto proxy, si connette direttamente.",
+              "options": {
+                "off": "Disattivo (connessione diretta)",
+                "http": "Proxy HTTP",
+                "socks5": "Proxy SOCKS5"
+              }
+            },
+            "proxy_host": {
+              "label": "Host del proxy",
+              "placeholder": "proxy.example.com",
+              "description": "Nome host o indirizzo del server proxy."
+            },
+            "proxy_port": {
+              "label": "Porta del proxy",
+              "placeholder": "8080",
+              "description": "Porta del proxy, un intero compreso tra 1 e 65535."
+            },
+            "proxy_username": {
+              "label": "Nome utente del proxy",
+              "description": "Account proxy facoltativo; lasciare vuoto se il proxy non richiede autenticazione."
+            },
+            "proxy_password": {
+              "label": "Password del proxy",
+              "description": "Password del proxy facoltativa; lasciare vuota per un proxy anonimo. Conservata nel binding segreto dell'host."
+            },
+            "tunnel_jump_hosts": {
+              "label": "Jump host del tunnel SSH",
+              "placeholder": "ops@j1.example.com:2222, j2.corp",
+              "description": "Catena facoltativa di jump host SSH (sintassi ssh -J: voci [utente@]host[:porta] separate da virgole, con utente@ e :porta facoltativi; l'ultimo salto è la destinazione di accesso e il traffico viene inoltrato all'endpoint della connessione). Lasciare vuoto per non creare un tunnel. Effettivo solo con il motore rclone (DBX_FILES_ENGINE=rclone); solo autenticazione a chiave (BatchMode): le password non possono e non verranno mai usate. L'endpoint viene riscritto su una porta locale inoltrata su 127.0.0.1 (i certificati remoti vengono validati su 127.0.0.1, adatto a distribuzioni in intranet con CA privata)."
+            },
+            "tunnel_identity_file": {
+              "label": "Chiave privata del tunnel SSH",
+              "placeholder": "~/.ssh/id_ed25519",
+              "description": "Percorso facoltativo della chiave privata per il tunnel; lasciare vuoto per usare le chiavi predefinite di ssh e l'agente."
+            },
             "access_token": { "label": "Token di accesso" },
             "client_id": { "label": "ID client OAuth" },
             "client_secret": { "label": "Segreto client OAuth" },
@@ -1873,6 +2232,43 @@
                 "Trust": "信頼（任意の鍵・非安全）"
               }
             },
+            "proxy_type": {
+              "label": "接続プロキシ",
+              "description": "rclone エンジンでは、HTTP または SOCKS5 プロキシが FTP/SFTP 接続に適用されます（rclone バックエンドオプション経由）。オフ、またはプロキシ非対応のプロトコルは直接接続します。",
+              "options": {
+                "off": "オフ（直接接続）",
+                "http": "HTTP プロキシ",
+                "socks5": "SOCKS5 プロキシ"
+              }
+            },
+            "proxy_host": {
+              "label": "プロキシホスト",
+              "placeholder": "proxy.example.com",
+              "description": "プロキシサーバーのホスト名またはアドレス。"
+            },
+            "proxy_port": {
+              "label": "プロキシポート",
+              "placeholder": "8080",
+              "description": "プロキシのポート番号。1〜65535 の整数。"
+            },
+            "proxy_username": {
+              "label": "プロキシユーザー名",
+              "description": "プロキシのアカウント（任意）。認証不要のプロキシでは空欄にします。"
+            },
+            "proxy_password": {
+              "label": "プロキシパスワード",
+              "description": "プロキシのパスワード（任意）。匿名プロキシは空欄にします。ホストの secret binding に保存されます。"
+            },
+            "tunnel_jump_hosts": {
+              "label": "SSH トンネルジャンプホスト",
+              "placeholder": "ops@j1.example.com:2222, j2.corp",
+              "description": "SSH ジャンプホスト連鎖（任意）。ssh -J 構文で [user@]host[:port] をカンマ区切りで指定します（user@ と :port は省略可。最後のホップがログイン先となり、接続 endpoint へトラフィックを転送）。空欄でトンネルなし。rclone エンジン（DBX_FILES_ENGINE=rclone）でのみ有効。鍵認証のみ（BatchMode）。パスワードは使用できず、決して使用されません。endpoint はローカルの 127.0.0.1 転送ポートへ書き換えられます（リモート証明書は 127.0.0.1 に対して検証されるため、プライベート CA のイントラネット構成に適します）。"
+            },
+            "tunnel_identity_file": {
+              "label": "SSH トンネル秘密鍵",
+              "placeholder": "~/.ssh/id_ed25519",
+              "description": "トンネルで使う秘密鍵のパス（任意）。空欄で ssh の既定の鍵とエージェントを使用します。"
+            },
             "access_token": { "label": "アクセストークン" },
             "client_id": { "label": "OAuth クライアント ID" },
             "client_secret": { "label": "OAuth クライアントシークレット" },
@@ -2054,6 +2450,43 @@
                 "Strict": "Estrito (verificar known hosts)",
                 "Trust": "Confiar (qualquer chave, inseguro)"
               }
+            },
+            "proxy_type": {
+              "label": "Proxy da conexão",
+              "description": "No motor rclone, um proxy HTTP ou SOCKS5 se aplica à conexão FTP/SFTP (por meio das opções do backend do rclone). Desativado, ou um protocolo sem suporte a proxy, conecta diretamente.",
+              "options": {
+                "off": "Desativado (conexão direta)",
+                "http": "Proxy HTTP",
+                "socks5": "Proxy SOCKS5"
+              }
+            },
+            "proxy_host": {
+              "label": "Host do proxy",
+              "placeholder": "proxy.example.com",
+              "description": "Nome de host ou endereço do servidor proxy."
+            },
+            "proxy_port": {
+              "label": "Porta do proxy",
+              "placeholder": "8080",
+              "description": "Porta do proxy, um inteiro entre 1 e 65535."
+            },
+            "proxy_username": {
+              "label": "Usuário do proxy",
+              "description": "Conta do proxy opcional; deixe vazio se o proxy não exige autenticação."
+            },
+            "proxy_password": {
+              "label": "Senha do proxy",
+              "description": "Senha do proxy opcional; deixe vazia para um proxy anônimo. Mantida no binding secreto do host."
+            },
+            "tunnel_jump_hosts": {
+              "label": "Saltos do túnel SSH",
+              "placeholder": "ops@j1.example.com:2222, j2.corp",
+              "description": "Cadeia opcional de jump hosts SSH (sintaxe ssh -J: entradas [usuário@]host[:porta] separadas por vírgulas, com usuário@ e :porta opcionais; o último salto é o destino de login e o tráfego é encaminhado ao endpoint da conexão). Deixe vazio para não criar túnel. Tem efeito apenas no motor rclone (DBX_FILES_ENGINE=rclone); apenas autenticação por chave (BatchMode): senhas não podem e nunca serão usadas. O endpoint é reescrito para uma porta local encaminhada em 127.0.0.1 (certificados remotos são validados contra 127.0.0.1, adequado a implantações em intranet com CA privada)."
+            },
+            "tunnel_identity_file": {
+              "label": "Chave privada do túnel SSH",
+              "placeholder": "~/.ssh/id_ed25519",
+              "description": "Caminho opcional da chave privada para o túnel; deixe vazio para usar as chaves padrão do ssh e o agente."
             },
             "access_token": { "label": "Token de acesso" },
             "client_id": { "label": "ID do cliente OAuth" },
