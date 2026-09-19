@@ -1661,6 +1661,12 @@ fn manifest_fields_are_fully_covered_by_inline_mapping() {
         if *source == "service" {
             continue; // legacy-only mapped key (see note above)
         }
+        if source.starts_with("proxy_") {
+            // MCP-only: egress proxy deliberately stays out of the form (the
+            // proxy comes from the DBX host environment); the keys remain so
+            // the proxy E2E and per-proxy rcd grouping stay drivable.
+            continue;
+        }
         assert!(
             covered.contains(source),
             "inline mapping key '{source}' has no manifest field behind it"

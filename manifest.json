@@ -983,112 +983,6 @@
           "description": "Strict verifies against known host keys; Tolerate accepts new hosts but rejects changed keys; Trust skips verification (insecure)."
         },
         {
-          "key": "proxy_type",
-          "label": "Connection proxy",
-          "type": "select",
-          "binding": "config",
-          "default": "off",
-          "options": [
-            {
-              "label": "Off (direct connection)",
-              "value": "off"
-            },
-            {
-              "label": "HTTP proxy",
-              "value": "http"
-            },
-            {
-              "label": "SOCKS5 proxy",
-              "value": "socks5"
-            }
-          ],
-          "visible_when": {
-            "field": "protocol",
-            "one_of": [
-              "ftp",
-              "sftp",
-              "sftp-native"
-            ]
-          },
-          "description": "HTTP or SOCKS5 proxy for this connection (FTP/SFTP family). Off connects directly."
-        },
-        {
-          "key": "proxy_host",
-          "label": "Proxy host",
-          "type": "text",
-          "binding": "config",
-          "default": "",
-          "placeholder": "proxy.example.com",
-          "description": "Proxy server hostname or address.",
-          "visible_when": {
-            "field": "proxy_type",
-            "one_of": [
-              "http",
-              "socks5"
-            ]
-          },
-          "required_when": {
-            "field": "proxy_type",
-            "one_of": [
-              "http",
-              "socks5"
-            ]
-          }
-        },
-        {
-          "key": "proxy_port",
-          "label": "Proxy port",
-          "type": "text",
-          "binding": "config",
-          "default": "",
-          "placeholder": "8080",
-          "description": "Proxy port, an integer between 1 and 65535.",
-          "visible_when": {
-            "field": "proxy_type",
-            "one_of": [
-              "http",
-              "socks5"
-            ]
-          },
-          "required_when": {
-            "field": "proxy_type",
-            "one_of": [
-              "http",
-              "socks5"
-            ]
-          }
-        },
-        {
-          "key": "proxy_username",
-          "label": "Proxy username",
-          "type": "text",
-          "binding": "config",
-          "default": "",
-          "description": "Optional proxy account; leave empty when the proxy needs no authentication.",
-          "visible_when": {
-            "field": "proxy_type",
-            "one_of": [
-              "http",
-              "socks5"
-            ]
-          }
-        },
-        {
-          "key": "proxy_password",
-          "label": "Proxy password",
-          "type": "password",
-          "binding": "secret",
-          "default": "",
-          "description": "Optional proxy password; leave empty for an anonymous proxy. Kept in the host secret binding.",
-          "visible_when": {
-            "field": "proxy_type",
-            "one_of": [
-              "http",
-              "socks5"
-            ]
-          }
-        },
-        {
           "key": "tunnel_jump_hosts",
           "label": "SSH tunnel jump hosts",
           "type": "text",
@@ -1519,33 +1413,6 @@
                 "Trust": "信任任意（不安全）"
               }
             },
-            "proxy_type": {
-              "label": "连接代理",
-              "description": "该连接使用的 HTTP 或 SOCKS5 代理（FTP/SFTP 系列）。关闭则直连。",
-              "options": {
-                "off": "关闭（直连）",
-                "http": "HTTP 代理",
-                "socks5": "SOCKS5 代理"
-              }
-            },
-            "proxy_host": {
-              "label": "代理主机",
-              "placeholder": "proxy.example.com",
-              "description": "代理服务器主机名或地址。"
-            },
-            "proxy_port": {
-              "label": "代理端口",
-              "placeholder": "8080",
-              "description": "代理端口，1-65535 之间的整数。"
-            },
-            "proxy_username": {
-              "label": "代理用户名",
-              "description": "代理账号可选；代理无需认证时留空。"
-            },
-            "proxy_password": {
-              "label": "代理密码",
-              "description": "代理密码可选；匿名代理留空。由宿主 secret binding 保管。"
-            },
             "tunnel_jump_hosts": {
               "label": "SSH 隧道跳板链",
               "placeholder": "ops@j1.example.com:2222, j2.corp",
@@ -1802,33 +1669,6 @@
                 "Strict": "嚴格（驗證已知主機）",
                 "Trust": "信任任意（不安全）"
               }
-            },
-            "proxy_type": {
-              "label": "連線代理",
-              "description": "該連線使用的 HTTP 或 SOCKS5 代理（FTP/SFTP 系列）。關閉則直連。",
-              "options": {
-                "off": "關閉（直連）",
-                "http": "HTTP 代理",
-                "socks5": "SOCKS5 代理"
-              }
-            },
-            "proxy_host": {
-              "label": "代理主機",
-              "placeholder": "proxy.example.com",
-              "description": "代理伺服器主機名稱或位址。"
-            },
-            "proxy_port": {
-              "label": "代理連接埠",
-              "placeholder": "8080",
-              "description": "代理連接埠，1-65535 之間的整數。"
-            },
-            "proxy_username": {
-              "label": "代理使用者名稱",
-              "description": "代理帳戶可選；代理無需驗證時留空。"
-            },
-            "proxy_password": {
-              "label": "代理密碼",
-              "description": "代理密碼可選；匿名代理留空。由宿主 secret binding 保管。"
             },
             "tunnel_jump_hosts": {
               "label": "SSH 通道跳板鏈",
@@ -2087,33 +1927,6 @@
                 "Trust": "Trust (any key, insecure)"
               }
             },
-            "proxy_type": {
-              "label": "Connection proxy",
-              "description": "HTTP or SOCKS5 proxy for this connection (FTP/SFTP family). Off connects directly.",
-              "options": {
-                "off": "Off (direct connection)",
-                "http": "HTTP proxy",
-                "socks5": "SOCKS5 proxy"
-              }
-            },
-            "proxy_host": {
-              "label": "Proxy host",
-              "placeholder": "proxy.example.com",
-              "description": "Proxy server hostname or address."
-            },
-            "proxy_port": {
-              "label": "Proxy port",
-              "placeholder": "8080",
-              "description": "Proxy port, an integer between 1 and 65535."
-            },
-            "proxy_username": {
-              "label": "Proxy username",
-              "description": "Optional proxy account; leave empty when the proxy needs no authentication."
-            },
-            "proxy_password": {
-              "label": "Proxy password",
-              "description": "Optional proxy password; leave empty for an anonymous proxy. Kept in the host secret binding."
-            },
             "tunnel_jump_hosts": {
               "label": "SSH tunnel jump hosts",
               "placeholder": "ops@j1.example.com:2222, j2.corp",
@@ -2370,33 +2183,6 @@
                 "Strict": "Estricto (verificar known hosts)",
                 "Trust": "Confiar (cualquier clave, inseguro)"
               }
-            },
-            "proxy_type": {
-              "label": "Proxy de conexión",
-              "description": "Proxy HTTP o SOCKS5 para esta conexión (familia FTP/SFTP). Desactivado conecta directamente.",
-              "options": {
-                "off": "Desactivado (conexión directa)",
-                "http": "Proxy HTTP",
-                "socks5": "Proxy SOCKS5"
-              }
-            },
-            "proxy_host": {
-              "label": "Host del proxy",
-              "placeholder": "proxy.example.com",
-              "description": "Nombre de host o dirección del servidor proxy."
-            },
-            "proxy_port": {
-              "label": "Puerto del proxy",
-              "placeholder": "8080",
-              "description": "Puerto del proxy, un entero entre 1 y 65535."
-            },
-            "proxy_username": {
-              "label": "Usuario del proxy",
-              "description": "Cuenta del proxy opcional; déjelo vacío si el proxy no requiere autenticación."
-            },
-            "proxy_password": {
-              "label": "Contraseña del proxy",
-              "description": "Contraseña del proxy opcional; déjela vacía para un proxy anónimo. Guardada en el binding secreto del host."
             },
             "tunnel_jump_hosts": {
               "label": "Saltos del túnel SSH",
@@ -2655,33 +2441,6 @@
                 "Trust": "Fiducia (qualsiasi chiave, non sicuro)"
               }
             },
-            "proxy_type": {
-              "label": "Proxy di connessione",
-              "description": "Proxy HTTP o SOCKS5 per questa connessione (famiglia FTP/SFTP). Disattivo connette direttamente.",
-              "options": {
-                "off": "Disattivo (connessione diretta)",
-                "http": "Proxy HTTP",
-                "socks5": "Proxy SOCKS5"
-              }
-            },
-            "proxy_host": {
-              "label": "Host del proxy",
-              "placeholder": "proxy.example.com",
-              "description": "Nome host o indirizzo del server proxy."
-            },
-            "proxy_port": {
-              "label": "Porta del proxy",
-              "placeholder": "8080",
-              "description": "Porta del proxy, un intero compreso tra 1 e 65535."
-            },
-            "proxy_username": {
-              "label": "Nome utente del proxy",
-              "description": "Account proxy facoltativo; lasciare vuoto se il proxy non richiede autenticazione."
-            },
-            "proxy_password": {
-              "label": "Password del proxy",
-              "description": "Password del proxy facoltativa; lasciare vuota per un proxy anonimo. Conservata nel binding segreto dell'host."
-            },
             "tunnel_jump_hosts": {
               "label": "Jump host del tunnel SSH",
               "placeholder": "ops@j1.example.com:2222, j2.corp",
@@ -2939,33 +2698,6 @@
                 "Trust": "信頼（任意の鍵・非安全）"
               }
             },
-            "proxy_type": {
-              "label": "接続プロキシ",
-              "description": "この接続で使う HTTP/SOCKS5 プロキシ（FTP/SFTP 系）。オフで直接接続します。",
-              "options": {
-                "off": "オフ（直接接続）",
-                "http": "HTTP プロキシ",
-                "socks5": "SOCKS5 プロキシ"
-              }
-            },
-            "proxy_host": {
-              "label": "プロキシホスト",
-              "placeholder": "proxy.example.com",
-              "description": "プロキシサーバーのホスト名またはアドレス。"
-            },
-            "proxy_port": {
-              "label": "プロキシポート",
-              "placeholder": "8080",
-              "description": "プロキシのポート番号。1〜65535 の整数。"
-            },
-            "proxy_username": {
-              "label": "プロキシユーザー名",
-              "description": "プロキシのアカウント（任意）。認証不要のプロキシでは空欄にします。"
-            },
-            "proxy_password": {
-              "label": "プロキシパスワード",
-              "description": "プロキシのパスワード（任意）。匿名プロキシは空欄にします。ホストの secret binding に保存されます。"
-            },
             "tunnel_jump_hosts": {
               "label": "SSH トンネルジャンプホスト",
               "placeholder": "ops@j1.example.com:2222, j2.corp",
@@ -3222,33 +2954,6 @@
                 "Strict": "Estrito (verificar known hosts)",
                 "Trust": "Confiar (qualquer chave, inseguro)"
               }
-            },
-            "proxy_type": {
-              "label": "Proxy da conexão",
-              "description": "Proxy HTTP ou SOCKS5 para esta conexão (família FTP/SFTP). Desativado conecta diretamente.",
-              "options": {
-                "off": "Desativado (conexão direta)",
-                "http": "Proxy HTTP",
-                "socks5": "Proxy SOCKS5"
-              }
-            },
-            "proxy_host": {
-              "label": "Host do proxy",
-              "placeholder": "proxy.example.com",
-              "description": "Nome de host ou endereço do servidor proxy."
-            },
-            "proxy_port": {
-              "label": "Porta do proxy",
-              "placeholder": "8080",
-              "description": "Porta do proxy, um inteiro entre 1 e 65535."
-            },
-            "proxy_username": {
-              "label": "Usuário do proxy",
-              "description": "Conta do proxy opcional; deixe vazio se o proxy não exige autenticação."
-            },
-            "proxy_password": {
-              "label": "Senha do proxy",
-              "description": "Senha do proxy opcional; deixe vazia para um proxy anônimo. Mantida no binding secreto do host."
             },
             "tunnel_jump_hosts": {
               "label": "Saltos do túnel SSH",
