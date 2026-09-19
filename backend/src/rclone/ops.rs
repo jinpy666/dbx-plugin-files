@@ -317,19 +317,17 @@ fn static_capabilities(backend_type: &str) -> Capabilities {
 fn apply_features(caps: &mut Capabilities, features: Option<&Value>) {
     let Some(features) = features else { return };
     let flag = |key: &str| features.get(key).and_then(Value::as_bool);
-    if let Some(copy) = flag("Copy") {
-        caps.copy = copy;
-    }
-    if let Some(rename) = flag("Move") {
-        caps.rename = rename;
-    }
     if let Some(presign) = flag("PublicLink") {
         caps.presign = presign;
     }
-    // `write` stays on the static `true` baseline: fsinfo's streaming flags
-    // (PutStream/PutUnchecked/OpenWriterAt) report unknown-size *streaming*
-    // support, not writability — webdav reports PutStream:false yet PUTs
-    // (and our known-size multipart uploadfile) work fine, verified e2e.
+    // `copy`/`rename` stay on the static baseline: fsinfo's Copy/Move flags
+    // advertise server-side copy *optimization*, not capability — the local
+    // backend reports Copy:false on Linux while operations/copyfile and
+    // operations/rename work fine (container smoke, all protocols). The
+    // streaming flags (PutStream/PutUnchecked/OpenWriterAt) report
+    // unknown-size upload support, not writability — webdav reports
+    // PutStream:false yet PUTs (and our known-size multipart uploadfile)
+    // work fine, verified e2e.
 }
 
 // ---------------------------------------------------------------------------
@@ -1215,17 +1213,21 @@ mod tests {
         apply_features(
             &mut caps,
             Some(&json!({
-                "Copy": true,
+                "Copy": false,
                 "Move": false,
                 "PublicLink": false,
-                "PutStream": true,
-                "OpenWriterAt": true
+                "PutStream": false,
+                "OpenWriterAt": false
             })),
         );
-        assert!(caps.copy);
-        assert!(!caps.rename, "Move=false demotes rename (OpenDAL s3 parity)");
+        // Copy/Move/streaming flags describe server-side optimization and
+        // unknown-size streaming — platform-reported false must not demote
+        // the capability baseline (local backend: Copy:false on Linux,
+        // operations/copyfile fine; webdav: PutStream:false, PUTs fine).
+        assert!(caps.copy, "fsinfo Copy=false must not demote copy");
+        assert!(caps.rename, "fsinfo Move=false must not demote rename");
+        assert!(caps.write, "streaming flags must not demote write");
         assert!(!caps.presign, "PublicLink=false demotes presign");
-        assert!(caps.write);
 
         // Missing features leave the static baseline untouched.
         let mut caps = static_capabilities("smb");
