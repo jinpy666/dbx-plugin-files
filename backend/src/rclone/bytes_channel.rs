@@ -66,30 +66,47 @@ impl UploadStaging {
     /// "unknown" and disables the strict size checks in `append`/`finish`.
     pub fn start(task_id: &str, expected_size: u64) -> Result<Self, String> {
         let dir = std::env::temp_dir().join(format!("dbx-files-upload-{}", std::process::id()));
-        std::fs::create_dir_all(&dir)
-            .map_err(|error| format!("Failed to create staging dir '{}': {error}", dir.display()))?;
-        // uuid suffix: even a retried/colliding task id must never clobber
-        // another in-flight staging file in the shared per-process dir.
-        let path = dir.join(format!(
-            "{}-{}.staging",
-            sanitize_task_id(task_id),
-            uuid::Uuid::new_v4().simple()
-        ));
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&path)
-            .map_err(|error| {
-                format!("Failed to open staging file '{}': {error}", path.display())
-            })?;
-        Ok(Self {
-            task_id: task_id.to_string(),
-            path,
-            file: Some(file),
-            received: 0,
-            expected: expected_size,
-        })
+        let cleaned_task = sanitize_task_id(task_id);
+        // Parallel staging tasks race the best-effort empty-dir sweep in
+        // `cleanup`: one task's remove_dir can delete the shared directory
+        // between another task's create_dir_all and open (Windows surfaces
+        // that as os error 3). Retry the create+open pair before giving up.
+        let mut last_error = String::new();
+        for _ in 0..3 {
+            if let Err(error) = std::fs::create_dir_all(&dir) {
+                last_error =
+                    format!("Failed to create staging dir '{}': {error}", dir.display());
+                continue;
+            }
+            // uuid suffix: even a retried/colliding task id must never clobber
+            // another in-flight staging file in the shared per-process dir.
+            let path = dir.join(format!(
+                "{}-{}.staging",
+                cleaned_task,
+                uuid::Uuid::new_v4().simple()
+            ));
+            match std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&path)
+            {
+                Ok(file) => {
+                    return Ok(Self {
+                        task_id: task_id.to_string(),
+                        path,
+                        file: Some(file),
+                        received: 0,
+                        expected: expected_size,
+                    });
+                }
+                Err(error) => {
+                    last_error =
+                        format!("Failed to open staging file '{}': {error}", path.display());
+                }
+            }
+        }
+        Err(last_error)
     }
 
     /// Appends one frame. `offset` must equal the number of bytes already
