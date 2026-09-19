@@ -82,13 +82,20 @@ class SidecarClient:
             self._chunks.put(None)
 
     @classmethod
-    def start(cls, binary: str | None = None, data_dir: str | None = None, timeout: float = 20.0) -> "SidecarClient":
+    def start(cls, binary: str | None = None, data_dir: str | None = None, timeout: float = 20.0,
+              env_updates: dict[str, str | None] | None = None) -> "SidecarClient":
         binary = binary or default_binary()
         if not os.path.exists(binary):
             raise SidecarError(f"sidecar binary not found: {binary} (set DBX_PLUGIN_SIDECAR)")
         env = dict(os.environ)
         if data_dir:
             env["DBX_PLUGIN_DATA_DIR"] = data_dir
+        # `None` 值表示从继承环境中删除该变量（负例用：显式剥掉代理变量）。
+        for key, value in (env_updates or {}).items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[key] = value
         process = subprocess.Popen(
             [binary],
             stdin=subprocess.PIPE,

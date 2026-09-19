@@ -24,6 +24,17 @@ Scenarios (one mark() line each, section = scenario name):
     6 negative-isolation    s3     -> container-net MinIO, NO proxy: connection/test
                                       must FAIL (the host cannot resolve the
                                       container network name) — the isolation proof
+    7 s3-via-host-env       s3     -> container-net MinIO from a sidecar spawned
+                                      WITH HTTP_PROXY/HTTPS_PROXY env and a
+                                      connection carrying NO proxy fields —
+                                      proves the DBX host env mechanism (sidecar
+                                      inherits host env; 'direct'-group rcd
+                                      inherits the sidecar env; rclone proxies
+                                      HTTP-family backends) end to end
+    8 host-env-unset-dies   s3     -> same connection from a sidecar with the
+                                      proxy env vars stripped: connection/test
+                                      must FAIL — proves 7's bytes really rode
+                                      the env-declared proxy
 
 Bypass-proof for 2/3 (and 6 inverted): the host cannot resolve
 dbx-proxy-minio-test / dbx-proxy-webdav-test, so any path that dodges the
@@ -66,6 +77,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).parent))
 from sidecar_client import SidecarClient, SidecarError, lifecycle_params
@@ -259,6 +271,81 @@ def run_negative_isolation(client: SidecarClient, env: dict[str, str]) -> str:
     return run_step(runner, "test-must-fail", _run)
 
 
+# 宿主代理解析里会被 Go 的 httpproxy 视为 loopback 而永不代理的目标前缀；
+# 宿主 env 场景必须用非 loopback 的容器网络名，否则 env 永远不会被消费。
+STRIPPED_PROXY_VARS = (
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+    "http_proxy", "https_proxy", "all_proxy",
+)
+
+
+def host_env_proxy_url(env: dict[str, str]) -> str:
+    host, port = split_host_port(env["DBX_PROXY_E2E_HTTP"])
+    return (f"http://{quote(env['DBX_PROXY_E2E_HTTP_USER'])}:"
+            f"{quote(env['DBX_PROXY_E2E_HTTP_PASS'])}@{host}:{port}")
+
+
+def run_host_env_scenarios(env: dict[str, str], binary: str) -> list[str]:
+    """宿主代理 env 机制（0e0eeb5b 的设计契约）：DBX 宿主把 HTTP_PROXY/
+    HTTPS_PROXY 传给 sidecar，'direct' 组 rcd 原样继承 sidecar 环境，rclone
+    据此代理 HTTP 系后端——连接上没有任何 proxy 字段。正例：带 env 的独立
+    sidecar 连容器网络名（宿主解析不了，绕过代理的路径不存在）完成全量
+    roundtrip；负例：剥掉 env 的 sidecar 同一连接必败。正负对照证明字节真的
+    经由宿主 env 指定的代理，而不是别的路径。"""
+    statuses: list[str] = []
+    inherited = {
+        "HTTP_PROXY": host_env_proxy_url(env),
+        "HTTPS_PROXY": host_env_proxy_url(env),
+        "NO_PROXY": "localhost,127.0.0.1,::1",
+    }
+
+    name = "s3-via-host-env"
+    print(f"\n==> scenario {name}")
+    client = SidecarClient.start(binary, timeout=CLIENT_TIMEOUT, env_updates=inherited)
+    pid = client.process.pid
+    try:
+        client.initialize()
+        statuses.append(scenario_roundtrip(
+            client, name,
+            s3_external(env, "DBX_PROXY_E2E_MINIO_INNET", "DBX_PROXY_E2E_BUCKET"),
+            s3_secrets(env)))
+    except Exception as error:  # noqa: BLE001 — 与 run_step 同语义，落 FAIL 继续
+        mark(name, "test-connect-roundtrip", "fail", f"{type(error).__name__}: {error}"[:200])
+        statuses.append("fail")
+    finally:
+        client.close()
+        kill_sidecar_children(pid)
+
+    name = "host-env-unset-dies"
+    print(f"\n==> scenario {name}")
+    client = SidecarClient.start(
+        binary, timeout=CLIENT_TIMEOUT,
+        env_updates={key: None for key in STRIPPED_PROXY_VARS})
+    pid = client.process.pid
+    try:
+        client.initialize()
+        runner = Runner(client, name)
+        connection = connection_payload(
+            f"proxy-e2e-{name}",
+            s3_external(env, "DBX_PROXY_E2E_MINIO_INNET", "DBX_PROXY_E2E_BUCKET"),
+            s3_secrets(env))
+
+        def _run():
+            refused = runner.expect_error("connection/test", lifecycle_params(connection))
+            if not refused:
+                raise SidecarError(
+                    "connection/test without proxy env unexpectedly succeeded — "
+                    "the host cannot resolve the container network name")
+        statuses.append(run_step(runner, "test-must-fail", _run))
+    except Exception as error:  # noqa: BLE001
+        mark(name, "test-must-fail", "fail", f"{type(error).__name__}: {error}"[:200])
+        statuses.append("fail")
+    finally:
+        client.close()
+        kill_sidecar_children(pid)
+    return statuses
+
+
 def build_scenarios(env: dict[str, str]) -> list[tuple[str, dict, dict | None]]:
     """六场景的连接参数表；一个 sidecar 进程内全部共存（混合代理分组）。"""
     http_host, http_port = split_host_port(env["DBX_PROXY_E2E_HTTP"])
@@ -386,6 +473,9 @@ def main() -> int:
     client.close()
     kill_sidecar_children(sidecar_pid)
 
+    print("\n==> host-env scenarios (DBX 宿主代理机制)")
+    statuses.extend(run_host_env_scenarios(env, binary))
+
     passed = sum(1 for status in statuses if status == "pass")
     failed = sum(1 for status in statuses if status == "fail")
     skipped = sum(1 for status in statuses if status == "skip")
@@ -396,7 +486,8 @@ def main() -> int:
     if passed == 0:
         print("SKIP: every scenario was skipped (methods not landed yet?)")
         return 3
-    print("PASS: proxy e2e green — 6 connections coexisted in one sidecar")
+    print("PASS: proxy e2e green — 6 connections coexisted in one sidecar; "
+          "host-env mechanism proven by +env/-env sidecar contrast")
     return 0
 
 
