@@ -42,14 +42,16 @@ use super::rc::RcClient;
 use crate::model::{ProxyConfig, ProxyKind, StoredConnection};
 
 /// Protocols served by the rclone engine. `sftp` and `sftp-native` both map
-/// onto the rclone `sftp` backend; `opendal-custom` is the generic pass-
-/// through that reaches every remaining rclone backend (b2, box, http,
-/// memory, alias, … — the full `rclone config providers` list), so together
-/// with the named quick protocols the form covers the whole rclone backend
-/// catalog plus local files. Only `aliyun-drive` has no rclone mapping.
-pub const SUPPORTED_PROTOCOLS: [&str; 20] = [
+/// onto the rclone `sftp` backend; the custom pass-through (`rclone-custom`,
+/// legacy alias `opendal-custom` kept for stored connections) reaches every
+/// remaining rclone backend (b2, box, http, memory, alias, … — the full
+/// `rclone config providers` list), so together with the named quick
+/// protocols the form covers the whole rclone backend catalog plus local
+/// files. Only `aliyun-drive` has no rclone mapping.
+pub const SUPPORTED_PROTOCOLS: [&str; 21] = [
     "fs", "s3", "oss", "cos", "obs", "gcs", "azblob", "webdav", "ftp", "sftp", "sftp-native", "smb",
-    "gdrive", "onedrive", "dropbox", "yandex-disk", "seafile", "koofr", "pcloud", "opendal-custom",
+    "gdrive", "onedrive", "dropbox", "yandex-disk", "seafile", "koofr", "pcloud", "rclone-custom",
+    "opendal-custom",
 ];
 
 /// Parameter keys rclone obscures at rest when `opt.obscure` is set. Only
@@ -78,8 +80,8 @@ const PASSWORD_KEYS: [&str; 6] = [
 pub struct RemoteBinding {
     pub remote_fs: String,
     /// The rclone backend type. `String` rather than `&'static str` because
-    /// the `opendal-custom` pass-through derives it from the user's `service`
-    /// field at connect time.
+    /// the custom pass-through (`rclone-custom`) derives it from the user's
+    /// `service` field at connect time.
     pub backend_type: String,
     pub root: String,
     pub lock_to_root: bool,
@@ -109,8 +111,8 @@ pub fn is_supported(protocol: &str) -> bool {
     SUPPORTED_PROTOCOLS.contains(&protocol)
 }
 
-/// The rclone backend type for a supported protocol. `opendal-custom` is
-/// absent here — its type comes from the user's `service` field and is
+/// The rclone backend type for a supported protocol. The custom pass-through
+/// is absent here — its type comes from the user's `service` field and is
 /// resolved in [`params_for`].
 fn rclone_type(protocol: &str) -> Option<String> {
     let backend: &str = match protocol {
@@ -146,10 +148,8 @@ pub fn params_for(connection: &StoredConnection) -> Result<(String, Value, bool)
 
     if protocol == "aliyun-drive" {
         return Err(
-            "protocol 'aliyun-drive' is not supported by rclone upstream and cannot be served \
-             by the rclone engine; until a custom rclone backend lands (planned follow-up), \
-             keep using the OpenDAL engine (DBX_FILES_ENGINE=opendal) for aliyun-drive \
-             connections"
+            "protocol 'aliyun-drive' is not supported: rclone upstream has no such backend; \
+             a custom rclone backend for it is planned as a follow-up"
                 .to_string(),
         );
     }
@@ -158,9 +158,11 @@ pub fn params_for(connection: &StoredConnection) -> Result<(String, Value, bool)
         // Pass-through: the user's `service` is the rclone backend type and
         // the `config` JSON becomes the whole parameter set — this is the
         // gateway to every rclone backend without a dedicated quick form.
+        // `opendal-custom` is the retired protocol value kept so stored
+        // connections keep working; the form now emits `rclone-custom`.
         // obscure is sent unconditionally: the user JSON may carry any
         // provider's IsPassword-class option and only rcd knows that set.
-        "opendal-custom" => {
+        "opendal-custom" | "rclone-custom" => {
             let backend_type = custom_rclone_type(&connection.service)?;
             (backend_type, connection.custom_config.clone(), true)
         }
@@ -228,9 +230,9 @@ pub fn binding_for(connection: &StoredConnection) -> Result<RemoteBinding, Strin
         format!("{}:", remote_name(&connection.id))
     };
     // SMB tree-connect target: rclone takes the share as the FIRST path
-    // component of the fs string (`smb:host/share/...`). The retired
-    // OpenDAL adapter carried it separately; fold it into the visible root
-    // so every fs composition keeps working unchanged. An empty share
+    // component of the fs string (`smb:host/share/...`). Fold the share
+    // into the visible root so every fs composition keeps working
+    // unchanged. An empty share
     // (server-level discovery) stays unscoped — rclone cannot enumerate
     // shares, so that scenario degrades at the ops layer.
     let mut root = connection.root.clone();
@@ -603,7 +605,7 @@ fn koofr_parameters(connection: &StoredConnection) -> Result<Value, String> {
     Ok(Value::Object(params))
 }
 
-/// `opendal-custom` pass-through: the `service` field names the rclone backend
+/// Custom pass-through (`rclone-custom`): the `service` field names the rclone backend
 /// type (validated to rclone's lowercase-alnum vocabulary; the full catalog is
 /// at https://rclone.org/overview/) and the `config` JSON object becomes the
 /// whole `config/create` parameter set. Key names inside the JSON are
@@ -683,15 +685,15 @@ fn s3_family_parameters(connection: &StoredConnection) -> Result<Value, String> 
     }
     insert_str(&mut params, "endpoint", connection.endpoint.trim());
     if connection.protocol == "s3" {
-        // rclone's default is path style (providers Default=true), which is
-        // exactly OpenDAL's default; pin it explicitly so provider-specific
-        // defaults cannot drift the semantics, and flip to virtual-host style
-        // only where the form asks for it.
+        // rclone's default is path style (providers Default=true); pin it
+        // explicitly so provider-specific defaults cannot drift the
+        // semantics, and flip to virtual-host style only where the form
+        // asks for it.
         params.insert(
             "force_path_style".to_string(),
             Value::Bool(!connection.enable_virtual_host_style),
         );
-        // The form leaves region optional; keep OpenDAL's us-east-1 default.
+        // The form leaves region optional; keep the us-east-1 default.
         let region = if connection.region.is_empty() {
             "us-east-1"
         } else {
@@ -829,7 +831,7 @@ struct HostPort {
 }
 
 /// Parses `bare host[:port]` / `scheme://[user@]host[:port]` endpoints
-/// (same shapes the OpenDAL adapters accepted; IPv6 literals bracketed).
+/// (IPv6 literals bracketed).
 fn parse_host_endpoint(
     endpoint: &str,
     schemes: &[&str],
@@ -1549,7 +1551,7 @@ mod tests {
 
     #[test]
     fn params_for_custom_passthrough_reaches_any_rclone_backend() {
-        let mut connection = fixture("opendal-custom");
+        let mut connection = fixture("rclone-custom");
         assert!(params_for(&connection).is_err(), "empty service rejected");
 
         connection.service = "Not-Valid!".into();
@@ -1569,14 +1571,27 @@ mod tests {
         connection.custom_config = serde_json::json!({ "pass": secret("mega-pass") });
         let params = param_map(&connection);
         assert_eq!(params["pass"], secret("mega-pass"));
+
+        // The retired protocol value stays an alias of the same pass-through
+        // so stored connections keep working after the form rename.
+        let mut legacy = fixture("opendal-custom");
+        legacy.service = " memory ".into();
+        legacy.custom_config = serde_json::json!({ "discard": true });
+        connection.service = " memory ".into();
+        connection.custom_config = serde_json::json!({ "discard": true });
+        assert_eq!(
+            params_for(&legacy).expect("legacy alias params"),
+            params_for(&connection).expect("params"),
+            "opendal-custom must behave exactly like rclone-custom",
+        );
     }
 
     #[test]
-    fn aliyun_drive_errors_with_migration_notice() {
+    fn aliyun_drive_errors_with_followup_notice() {
         let error = params_for(&fixture("aliyun-drive")).expect_err("aliyun-drive");
         assert!(error.contains("aliyun-drive"), "{error}");
         assert!(error.contains("rclone upstream"), "{error}");
-        assert!(error.contains("DBX_FILES_ENGINE=opendal"), "{error}");
+        assert!(!error.to_lowercase().contains("opendal"), "{error}");
     }
 
     #[test]
@@ -1601,7 +1616,7 @@ mod tests {
         for protocol in [
             "fs", "s3", "oss", "cos", "obs", "gcs", "azblob", "webdav", "ftp", "sftp",
             "sftp-native", "smb", "aliyun-drive", "gdrive", "onedrive", "dropbox", "yandex-disk",
-            "seafile", "koofr", "pcloud", "opendal-custom",
+            "seafile", "koofr", "pcloud", "rclone-custom", "opendal-custom",
         ] {
             let mut connection = fixture(protocol);
             connection.password = secrets[0].clone();
@@ -1675,7 +1690,7 @@ mod tests {
             ("seafile", "seafile"),
             ("koofr", "koofr"),
             ("pcloud", "pcloud"),
-            ("opendal-custom", "memory"),
+            ("rclone-custom", "memory"),
         ] {
             let mut connection = fixture(protocol);
             connection.access_token = secret("access");
@@ -1689,7 +1704,7 @@ mod tests {
                     connection.email = "user@example.com".into();
                     connection.password = secret("pass");
                 }
-                "opendal-custom" => connection.service = "memory".into(),
+                "rclone-custom" | "opendal-custom" => connection.service = "memory".into(),
                 _ => {}
             }
             let binding = binding_for(&connection)
@@ -1856,7 +1871,7 @@ mod tests {
             return;
         };
 
-        let mut memory = fixture("opendal-custom");
+        let mut memory = fixture("rclone-custom");
         memory.id = "CustomMem1".into();
         memory.service = "memory".into();
         memory.custom_config = Value::Object(Map::new());
@@ -1874,7 +1889,7 @@ mod tests {
         // alias composes its `remote` param with the connection root
         // (`name:root` resolves remote+root, NOT remote+root twice): an
         // empty root stays at the alias target, a relative root drills in.
-        let mut alias = fixture("opendal-custom");
+        let mut alias = fixture("rclone-custom");
         alias.id = "CustomAls1".into();
         alias.service = "alias".into();
         alias.custom_config = serde_json::json!({ "remote": dir.path().to_string_lossy() });
@@ -1898,7 +1913,7 @@ mod tests {
             "{error}"
         );
 
-        let mut unknown = fixture("opendal-custom");
+        let mut unknown = fixture("rclone-custom");
         unknown.id = "CustomBad1".into();
         unknown.service = "nosuchbackend42".into();
         unknown.custom_config = Value::Object(Map::new());
@@ -2106,7 +2121,7 @@ mod tests {
             }),
             // The custom pass-through reaches the providers catalog itself —
             // pin the mega backend as its representative.
-            maximal_case("opendal-custom", &|c: &mut StoredConnection| {
+            maximal_case("rclone-custom", &|c: &mut StoredConnection| {
                 c.service = "mega".into();
                 c.custom_config = serde_json::json!({ "user": "u", "pass": secret("pass") });
             }),
@@ -2123,11 +2138,10 @@ mod tests {
     }
 }
 
-/// Manifest-driven form × registry matrix (the rclone twin of
-/// `engine::form_matrix`): replays the checked-in connection form's host
-/// lifecycle shape against [`params_for`] so form/engine drift fails CI
-/// instead of a user's connect dialog. The engine-side matrix pins the
-/// OpenDAL builder; this one pins the rclone remote assembly.
+/// Manifest-driven form × registry matrix: replays the checked-in
+/// connection form's host lifecycle shape against [`params_for`] so
+/// form/engine drift fails CI instead of a user's connect dialog. This
+/// matrix pins the rclone remote assembly.
 ///
 /// Host semantics under test (same shapes engine::form_matrix replays):
 /// - the host submits the WHOLE `config` binding, so hidden fields keep
@@ -2346,7 +2360,7 @@ mod manifest_matrix {
             "seafile" => vec!["url", "user", "pass", "library"],
             "koofr" => vec!["endpoint", "user", "password"],
             "pcloud" => vec!["username", "password", "hostname", "token"],
-            "opendal-custom" => vec!["root"], // sample config object, passed through
+            "opendal-custom" | "rclone-custom" => vec!["root"], // sample config object, passed through
             other => panic!("no expected key table for '{other}'"),
         }
     }
@@ -2355,8 +2369,8 @@ mod manifest_matrix {
 
     /// Every protocol the form advertises must assemble into `config/create`
     /// parameters from the form-complete lifecycle shape — offline, no
-    /// network. Only `aliyun-drive` is expected to fail, with the OpenDAL
-    /// migration pointer. The PEM-content key form stays an actionable
+    /// network. Only `aliyun-drive` is expected to fail, with the follow-up
+    /// pointer. The PEM-content key form stays an actionable
     /// rejection for sftp (the matrix samples the path form instead).
     #[test]
     fn form_complete_protocols_assemble_params() {
@@ -2380,7 +2394,8 @@ mod manifest_matrix {
                     // because only rcd knows the target provider's password
                     // set.
                     let expected_obscure =
-                        protocol == "opendal-custom" || has_password_class;
+                        matches!(protocol.as_str(), "opendal-custom" | "rclone-custom")
+                            || has_password_class;
                     assert_eq!(
                         obscure, expected_obscure,
                         "{protocol}: obscure must track IsPassword-class keys"
@@ -2399,7 +2414,7 @@ mod manifest_matrix {
                         "{protocol}: rejection must be descriptive: {error}"
                     );
                     if protocol == "aliyun-drive" {
-                        assert!(error.contains("DBX_FILES_ENGINE=opendal"), "{error}");
+                        assert!(error.contains("rclone upstream"), "{error}");
                     }
                 }
             }
@@ -2407,7 +2422,7 @@ mod manifest_matrix {
     }
 
     fn rclone_type_of(protocol: &str, connection: &StoredConnection) -> String {
-        if protocol == "opendal-custom" {
+        if matches!(protocol, "opendal-custom" | "rclone-custom") {
             connection.service.trim().to_string()
         } else {
             rclone_type(protocol).expect("static protocol maps to an rclone type")

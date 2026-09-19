@@ -7,7 +7,7 @@ binary. Runs the full Phase A surface — plugin/initialize, connection
 test/connect/disconnect (including the reserved `__local__` refusal),
 files list/listPaged/stat/capabilities/size/quickPaths, the built-in
 `__local__` local filesystem (list/stat/read, no connect), one negative
-case, and one cross-engine fallback case — plus the
+case — plus the
 Phase B file surface: read/write with truncation, mkdir/copy/move/rename,
 delete/purge (root refusal), publicLink (local refuses), and the binary
 upload/download channels (§7 frames: kind 1 payload = 2B channel length +
@@ -22,9 +22,7 @@ files_scan_digest over an inline local connection and over the built-in
 `__local__` id, and files_cursor_next paging.
 
 Usage:
-  python3 scripts/rclone_engine_smoke.py <path-to-dbx-plugin-files-bin> [--engine rclone]
-  (--engine is optional; rclone is the only engine — the historical
-  `opendal` value is retired with the OpenDAL engine removal)
+  python3 scripts/rclone_engine_smoke.py <path-to-dbx-plugin-files-bin>
 
 Exit code 0 = all steps passed.
 """
@@ -70,12 +68,9 @@ def encode_binary(channel: str, data: bytes) -> bytes:
 
 
 class Sidecar:
-    def __init__(self, binary: str, engine: str | None):
+    def __init__(self, binary: str):
         env = dict(os.environ)
-        if engine:
-            env["DBX_FILES_ENGINE"] = engine
-        else:
-            env.pop("DBX_FILES_ENGINE", None)
+        env.pop("DBX_FILES_ENGINE", None)
         self.proc = subprocess.Popen(
             [binary],
             stdin=subprocess.PIPE,
@@ -186,7 +181,7 @@ class McpStdio:
 
     def __init__(self, binary: str, data_dir: str):
         env = dict(os.environ)
-        env["DBX_FILES_ENGINE"] = "rclone"
+        env.pop("DBX_FILES_ENGINE", None)
         env["DBX_PLUGIN_DATA_DIR"] = data_dir
         self.proc = subprocess.Popen(
             [binary, "--mcp"],
@@ -247,10 +242,9 @@ def unwrap_envelope(result: dict | None) -> dict:
     return json.loads(content[0]["text"]) if content else {}
 
 
-def run(binary: str, engine: str | None) -> bool:
-    label = engine or "default(rclone)"
-    print(f"== smoke: engine={label} ==")
-    sidecar = Sidecar(binary, engine)
+def run(binary: str) -> bool:
+    print("== smoke: rclone engine ==")
+    sidecar = Sidecar(binary)
     tmp = tempfile.mkdtemp(prefix="dbx-rclone-smoke-")
     try:
         # Fixtures: one file, one subdir with a file, one empty dir.
@@ -349,9 +343,9 @@ def run(binary: str, engine: str | None) -> bool:
         result, error = sidecar.call(
             "files/size", {"connectionId": "smokefs1", "path": "/"}
         )
-        # rclone operations/size counts files only (2 files / 18 bytes here);
-        # the OpenDAL engine may include directories — frontend-visible
-        # semantic difference, tracked in IMPL_PLAN_RCLONE.zh-CN.md §5.
+        # rclone operations/size counts files only (2 files / 18 bytes here;
+        # directories are excluded) — frontend-visible semantic difference,
+        # tracked in IMPL_PLAN_RCLONE.zh-CN.md §5.
         check(
             "files/size",
             error is None and (result or {}).get("count") == 2 and (result or {}).get("bytes") == 18,
@@ -635,9 +629,8 @@ def run(binary: str, engine: str | None) -> bool:
             # ------------------------------------------------------------------
             # Phase D archive surface (rclone round): zip archiveList via
             # rc-serve Range reads (central directory at the file tail),
-            # extract, compress (zip + tar.gz) and byte-level read-back. The
-            # OpenDAL engine serves tar/tar.gz only (zip is deferred there),
-            # so this section is rclone-round-only by design.
+            # extract, compress (zip + tar.gz) and byte-level read-back
+            # (zip included here by design).
             # ------------------------------------------------------------------
             archive_bin = bytes(range(256)) * 64  # 16 KiB, binary
             os.makedirs(os.path.join(tmp, "arch-src", "sub"), exist_ok=True)
@@ -1214,10 +1207,7 @@ def main() -> int:
         print(__doc__)
         return 2
     binary = sys.argv[1]
-    engine = None
-    if "--engine" in sys.argv:
-        engine = sys.argv[sys.argv.index("--engine") + 1]
-    ok = run(binary, engine)
+    ok = run(binary)
     return 0 if ok else 1
 
 

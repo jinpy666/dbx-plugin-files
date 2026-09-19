@@ -953,8 +953,8 @@ fn files_sync_is_always_listed_with_the_full_schema() {
 
 // -- standalone stdio server (`--mcp`) ---------------------------------------
 
-/// stdio 测试服务器 + rclone 引擎句柄：连接注册走 rclone registry
-/// （OpenDAL Engine 已随引擎摘除退役）。Deref 到 StdioServer 让既有
+/// stdio 测试服务器 + rclone 引擎句柄：连接注册走 rclone registry。
+/// Deref 到 StdioServer 让既有
 /// `server.mcp` / `&server` 调用点零改动。
 struct TestStdio {
     server: StdioServer,
@@ -1552,10 +1552,19 @@ fn inline_connection_schema_covers_every_mapped_key() {
     assert!(properties.contains_key("id") && properties.contains_key("name"));
     // The protocol description must enumerate every engine protocol so an
     // LLM caller can never be offered a value the engine would reject.
+    // The retired `opendal-custom` alias stays parseable for stored
+    // connections but is deliberately absent from the caller-facing list.
     let description = properties["protocol"]["description"]
         .as_str()
         .expect("protocol description");
     for protocol in crate::model::PROTOCOLS {
+        if protocol == "opendal-custom" {
+            assert!(
+                !description.contains(protocol),
+                "retired alias 'opendal-custom' must not be offered to MCP callers"
+            );
+            continue;
+        }
         assert!(
             description.contains(protocol),
             "protocol '{protocol}' missing from the inline schema description"
@@ -1864,7 +1873,7 @@ fn stdio_localfs_inline_round_trip_digest_cursor_two_phase() {
     );
 
     // 尾斜杠文件路径 delete：rclone 的 stat 不受尾斜杠影响，预览正确解析
-    // 为 "file" 并真删（旧 OpenDAL 在此静默 no-op，trap 已随引擎退役）。
+    // 为 "file" 并真删。
     let preview = unwrap_envelope(&stdio_result(
         &server,
         "tools/call",

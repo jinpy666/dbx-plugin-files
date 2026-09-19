@@ -149,7 +149,7 @@ for (const protocol of options("protocol")) {
     const current = state({ protocol, read_only });
     // Object storage (S3 / OSS): bucket+keys required; endpoint required for
     // OSS (no default endpoint) but optional for S3 (AWS default endpoint).
-    current.visible("endpoint", !["fs", "opendal-custom", "aliyun-drive", "dropbox", "gdrive", "onedrive", "yandex-disk"].includes(protocol));
+    current.visible("endpoint", !["fs", "rclone-custom", "aliyun-drive", "dropbox", "gdrive", "onedrive", "yandex-disk"].includes(protocol));
     current.required("endpoint", ["gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native", "koofr", "pcloud", "seafile"].includes(protocol));
     current.visible("bucket", ["s3", "gcs", "obs", "oss", "cos"].includes(protocol));
     // Bucket namespace (2026-09-17): s3/oss/cos/obs accept an empty bucket —
@@ -178,10 +178,10 @@ for (const protocol of options("protocol")) {
     current.required("secret_key", protocol === "cos");
     current.visible("security_token", protocol === "cos");
     current.required("security_token", false);
-    // Custom OpenDAL service descriptor.
-    current.visible("service", protocol === "opendal-custom");
-    current.required("service", protocol === "opendal-custom");
-    current.visible("config", protocol === "opendal-custom");
+    // Custom rclone backend descriptor (backend type select + parameters JSON).
+    current.visible("service", protocol === "rclone-custom");
+    current.required("service", protocol === "rclone-custom");
+    current.visible("config", protocol === "rclone-custom");
     // Remote service accounts, per protocol family.
     current.visible("username", ["webdav", "smb", "pcloud", "seafile"].includes(protocol));
     current.required("username", ["pcloud", "seafile"].includes(protocol));

@@ -31,11 +31,10 @@ pub const PROGRESS_MIN_DELTA: f64 = 0.01;
 /// JSON+base64 fallback chunk (1 MiB raw) for hosts without `host.binary`.
 pub const JSON_CHUNK_BYTES: usize = 1024 * 1024;
 
-/// Protocols understood by the engine. The quick protocols map onto a
-/// fixed OpenDAL scheme (`smb` via the custom `engine::smb` adapter,
-/// `sftp-native` via the custom `engine::sftp_native` adapter); the
-/// generic pass-through is `opendal-custom`.
-pub const PROTOCOLS: [&str; 21] = [
+/// Protocols understood by the engine. The quick protocols map onto fixed
+/// rclone backends; the generic pass-through is `rclone-custom` (the retired
+/// `opendal-custom` value stays accepted for stored connections).
+pub const PROTOCOLS: [&str; 22] = [
     "fs",
     "s3",
     "gcs",
@@ -48,6 +47,7 @@ pub const PROTOCOLS: [&str; 21] = [
     "sftp",
     "smb",
     "sftp-native",
+    "rclone-custom",
     "opendal-custom",
     "aliyun-drive",
     "dropbox",
@@ -170,13 +170,14 @@ pub struct StoredConnection {
     pub name: String,
     /// Quick protocol name; one of [`PROTOCOLS`].
     pub protocol: String,
-    /// OpenDAL root prefix (`external_config.root`); empty means default root.
+    /// Connection root (`external_config.root`); empty means default root.
     pub root: String,
     /// Reject any path escaping `root`.
     pub lock_to_root: bool,
-    /// `opendal-custom` service name (e.g. `gcs`, `memory`).
+    /// Custom pass-through backend type, i.e. the rclone backend name
+    /// (`rclone-custom` protocol; e.g. `b2`, `alias`).
     pub service: String,
-    /// `opendal-custom` config JSON object (verbatim Builder kv source).
+    /// Custom pass-through parameters (`external_config.config` JSON object).
     pub custom_config: Value,
     // --- s3 ---
     pub bucket: String,
@@ -286,9 +287,10 @@ impl StoredConnection {
             ));
         }
 
-        // opendal-custom accepts either a JSON object or a JSON string in the
-        // textarea field; anything else must parse to an object.
-        let custom_value = if protocol == "opendal-custom" {
+        // The custom pass-through (`rclone-custom`, legacy alias
+        // `opendal-custom`) accepts either a JSON object or a JSON string in
+        // the textarea field; anything else must parse to an object.
+        let custom_value = if protocol == "rclone-custom" || protocol == "opendal-custom" {
             external_config.and_then(|config| config.get("config"))
         } else {
             None // An inactive custom-service draft must not break another protocol.
@@ -388,7 +390,7 @@ impl StoredConnection {
 
     /// `true` when the protocol is the generic pass-through service form.
     pub fn is_custom(&self) -> bool {
-        self.protocol == "opendal-custom"
+        self.protocol == "rclone-custom" || self.protocol == "opendal-custom"
     }
 }
 
@@ -1226,7 +1228,7 @@ mod tests {
             "connection": {
                 "id": "c",
                 "external_config": {
-                    "protocol": "opendal-custom",
+                    "protocol": "rclone-custom",
                     "service": "memory",
                     "config": { "root": "/x" }
                 }
@@ -1239,7 +1241,7 @@ mod tests {
             "connection": {
                 "id": "c",
                 "external_config": {
-                    "protocol": "opendal-custom",
+                    "protocol": "rclone-custom",
                     "service": "memory",
                     "config": "{\"root\":\"/y\"}"
                 }
@@ -1252,7 +1254,7 @@ mod tests {
             "connection": {
                 "id": "c",
                 "external_config": {
-                    "protocol": "opendal-custom",
+                    "protocol": "rclone-custom",
                     "service": "memory",
                     "config": "not json"
                 }
@@ -2049,14 +2051,14 @@ mod tests {
             ("user", &["ftp", "sftp", "sftp-native"]),
             ("share", &["smb"]),
             ("domain", &["smb"]),
-            // password deliberately excludes `sftp`: the OpenDAL sftp service
-            // is key-only (the backend never forwards a password), password
-            // accounts belong to `sftp-native`.
+            // password deliberately excludes `sftp`: the rclone sftp backend
+            // accepts password auth, but the plain-sftp form keeps key-only
+            // semantics; password accounts belong to `sftp-native`.
             ("password", &["webdav", "ftp", "smb", "sftp-native", "koofr", "pcloud", "seafile"]),
             ("key", &["sftp", "sftp-native"]),
             ("known_hosts_strategy", &["sftp", "sftp-native"]),
-            ("service", &["opendal-custom"]),
-            ("config", &["opendal-custom"]),
+            ("service", &["rclone-custom"]),
+            ("config", &["rclone-custom"]),
             ("access_token", &["dropbox", "gdrive", "onedrive", "yandex-disk"]),
             ("client_id", &["aliyun-drive", "dropbox", "gdrive", "onedrive"]),
             ("client_secret", &["aliyun-drive", "dropbox", "gdrive", "onedrive"]),

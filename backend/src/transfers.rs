@@ -1,11 +1,8 @@
-//! Transfer wire-model layer shared by the rclone engine: job records and
+//! Transfer wire-model layer for the rclone engine: job records and
 //! lifecycle states, the progress throttle, and the binary-channel frame
-//! codec (8-byte BE offset + ≤256 KiB payload, ssh-sftp alignment).
-//!
-//! The OpenDAL JobTable this module once also housed was retired with the
-//! OpenDAL engine; the rclone engine keeps its own job mirrors
-//! (`rclone::RcloneEngine::{jobs,uploads,downloads}`) and persists history
-//! through [`crate::store::Store`] directly.
+//! codec (8-byte BE offset + ≤256 KiB payload, ssh-sftp alignment). The
+//! engine keeps its own job mirrors (`rclone::RcloneEngine::{jobs,uploads,
+//! downloads}`) and persists history through [`crate::store::Store`].
 
 use crate::model::{PROGRESS_INTERVAL_MS, PROGRESS_MIN_DELTA};
 

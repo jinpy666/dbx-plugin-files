@@ -86,7 +86,7 @@ pub(crate) fn stored_connection_from_inline(connection: &Value) -> Result<Stored
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
             "Missing protocol in connection (one of: local, fs, s3, gcs, azblob, obs, oss, cos, webdav, ftp, \
-             sftp, smb, sftp-native, opendal-custom, aliyun-drive, dropbox, gdrive, koofr, onedrive, pcloud, seafile, yandex-disk)"
+             sftp, smb, sftp-native, rclone-custom, aliyun-drive, dropbox, gdrive, koofr, onedrive, pcloud, seafile, yandex-disk)"
                 .to_string()
         })?;
     let protocol = match protocol {
@@ -182,8 +182,8 @@ pub(crate) fn stored_connection_from_inline(connection: &Value) -> Result<Stored
 pub(crate) fn inline_connection_properties() -> Value {
     json!({
     "protocol": { "type": "string",
-        "description": "Storage protocol (required): local (alias of fs), fs, s3, gcs, azblob, obs, oss, cos, webdav, ftp, sftp, smb, sftp-native, opendal-custom, aliyun-drive, dropbox, gdrive, koofr, onedrive, pcloud, seafile, yandex-disk" },
-    "root": { "type": "string", "description": "OpenDAL root prefix" },
+        "description": "Storage protocol (required): local (alias of fs), fs, s3, gcs, azblob, obs, oss, cos, webdav, ftp, sftp, smb, sftp-native, rclone-custom, aliyun-drive, dropbox, gdrive, koofr, onedrive, pcloud, seafile, yandex-disk" },
+    "root": { "type": "string", "description": "Root path; operations are confined under it" },
     "bucket": { "type": "string", "description": "Bucket (s3/gcs/obs/oss/cos); optional on s3/oss/obs/cos — leave empty to list all buckets at the connection root" },
     "container": { "type": "string", "description": "Azure Blob container (azblob)" },
     "accountName": { "type": "string", "description": "Azure Storage account name (azblob)" },
@@ -212,8 +212,8 @@ pub(crate) fn inline_connection_properties() -> Value {
     "tunnelIdentityFile": { "type": "string", "description": "Private key path for the SSH tunnel (optional; empty = ssh defaults/agent)" },
     "share": { "type": "string", "description": "Share (smb)" },
     "domain": { "type": "string", "description": "Domain (smb)" },
-    "service": { "type": "string", "description": "OpenDAL service name (opendal-custom)" },
-    "config": { "type": "object", "description": "OpenDAL service config map (opendal-custom)" },
+    "service": { "type": "string", "description": "Custom rclone backend type (rclone-custom)" },
+    "config": { "type": "object", "description": "Custom backend parameters JSON (rclone-custom)" },
     "accessToken": { "type": "string", "description": "OAuth access token (drive services; stays in process memory only)" },
     "clientId": { "type": "string", "description": "OAuth client id (drive services)" },
     "clientSecret": { "type": "string", "description": "OAuth client secret (drive services; stays in process memory only)" },

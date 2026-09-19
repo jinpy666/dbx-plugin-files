@@ -24,8 +24,8 @@ Drives the sidecar over its stdio-framed protocol (sidecar_client.py):
     confined root (root-connection-settings variant) to prove the root field
     scopes listings on a real wire
 
-The sidecar always runs the rclone engine (DBX_FILES_ENGINE=rclone, pinned
-below): rclone is the only engine. Methods the running build has not
+The sidecar always runs the rclone engine (the only engine). Methods the
+running build has not
 implemented are reported as SKIP, not FAIL — the same tolerance covers the
 engine's runtime "unsupported" refusals for legacy protocol surfaces — so
 the suite stays green across engine rollouts.
@@ -623,11 +623,10 @@ def scenario_archive(runner: Runner, base: str) -> None:
 
 
 def run_core_sections(client: SidecarClient, fs_root: str) -> None:
-    # The custom pass-through protocol: `service` names the engine backend
-    # type ("memory" → the in-memory backend, rclone memory under
-    # DBX_FILES_ENGINE=rclone) and `config` carries backend options — zero
-    # external dependencies.
-    memory_external = {"protocol": "opendal-custom", "service": "memory", "config": {}}
+    # The custom pass-through protocol: `service` names the rclone backend
+    # type ("memory" → the in-memory backend) and `config` carries backend
+    # options — zero external dependencies.
+    memory_external = {"protocol": "rclone-custom", "service": "memory", "config": {}}
     for section, external, root in (
         ("fs", {"protocol": "fs"}, fs_root),
         ("memory", memory_external, ""),
@@ -1235,9 +1234,6 @@ def scenario_sftp_native_capabilities(runner: Runner) -> None:
 
 def main() -> None:
     started = time.monotonic()
-    # rclone is the only engine: pin it for the sidecar spawned below
-    # (SidecarClient.start inherits os.environ verbatim).
-    os.environ["DBX_FILES_ENGINE"] = "rclone"
     sidecar = os.environ.get("DBX_PLUGIN_SIDECAR") or default_binary()
     if not Path(sidecar).exists():
         print("SKIP: sidecar binary not built yet (backend/target/release/dbx-plugin-files; "

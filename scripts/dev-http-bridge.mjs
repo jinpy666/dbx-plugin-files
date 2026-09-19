@@ -3,7 +3,6 @@
 //   Vite dev 页面（真实前端，ESM 直出，绕开 dev-host 8MB 单资产限制）
 //     └─ window.dbxPlugin（本进程注入的宿主页） ─HTTP→ 本桥 ─stdio 帧协议→ 真实 sidecar
 // 用法：node scripts/dev-http-bridge.mjs [sidecarBin] [port] [viteOrigin]
-// 环境变量 DBX_FILES_ENGINE 透传给 sidecar（默认 rclone）。
 import { spawn } from "node:child_process";
 import http from "node:http";
 import crypto from "node:crypto";
@@ -11,7 +10,6 @@ import crypto from "node:crypto";
 const BIN = process.argv[2] ?? "../backend/target/debug/dbx-plugin-files";
 const PORT = Number(process.argv[3] ?? 5199);
 const VITE = process.argv[4] ?? "http://127.0.0.1:5173";
-const ENGINE = process.env.DBX_FILES_ENGINE ?? "rclone";
 
 const FRAME = 5;
 let buf = Buffer.alloc(0);
@@ -37,7 +35,7 @@ function readFrames(chunk, onJson, onBinary) {
 }
 
 const sidecar = spawn(BIN, [], {
-  env: { ...process.env, DBX_FILES_ENGINE: ENGINE },
+  env: { ...process.env },
   stdio: ["pipe", "pipe", "pipe"],
 });
 sidecar.stderr.on("data", (c) => process.stderr.write("[sidecar] " + c));

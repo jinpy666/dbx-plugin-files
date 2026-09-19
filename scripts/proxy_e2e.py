@@ -4,7 +4,7 @@
 Companion to scripts/proxy_e2e.sh: the shell harness boots the throwaway
 containers (MinIO, rclone WebDAV, gost HTTP+SOCKS5 dual proxy with auth, two
 OpenSSH containers) and prints the DBX_PROXY_E2E_* environment contract. This
-driver starts ONE sidecar with DBX_FILES_ENGINE=rclone, dials every connection
+driver starts ONE sidecar, dials every connection
 into the same process (multi-connection + mixed proxy-group coexistence) and
 walks each scenario through the full wire face:
 
@@ -48,7 +48,7 @@ overridden with the optional DBX_PROXY_E2E_MINIO_ACCESS_KEY /
 DBX_PROXY_E2E_MINIO_SECRET_KEY.
 
 Usage (set the sidecar explicitly — most robust):
-    DBX_FILES_ENGINE=rclone DBX_PLUGIN_SIDECAR=backend/target/debug/dbx-plugin-files \
+    DBX_PLUGIN_SIDECAR=backend/target/debug/dbx-plugin-files \
         python3 scripts/proxy_e2e.py
 Without DBX_PLUGIN_SIDECAR the script picks a binary itself: debug build
 first, then release, then the installed plugin path. --selfcheck validates
@@ -363,8 +363,6 @@ def main() -> int:
         return 3
 
     started = time.monotonic()
-    # 子进程继承：sidecar 必须以 rclone 引擎启动（按连接代理/隧道只在该引擎实现）。
-    os.environ["DBX_FILES_ENGINE"] = "rclone"
     client = SidecarClient.start(binary, timeout=CLIENT_TIMEOUT)
     sidecar_pid = client.process.pid
     statuses: list[str] = []

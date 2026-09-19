@@ -144,9 +144,8 @@ impl Plugin {
             }
             "connection/connect" => {
                 let connection = StoredConnection::from_lifecycle_params(&params)?;
-                // Same reserved-id rule as the OpenDAL engine (engine::connect):
-                // the built-in local filesystem must never be shadowed by a
-                // host-registered connection of the same id.
+                // Reserved id: the built-in local filesystem must never be
+                // shadowed by a host-registered connection of the same id.
                 if connection.id == rclone::LOCAL_CONNECTION_ID {
                     return Err(format!(
                         "connectionId '{}' is reserved for the built-in local filesystem",
@@ -308,9 +307,9 @@ impl Plugin {
             // ------------------------------------------------------------------
             // Phase B file surface (§5 files/read|write|mkdir|rmdir|delete|
             // purge|copy|move|rename|publicLink). Gate direction and response
-            // shapes mirror the OpenDAL arms below; the connection-level
+            // shapes follow the method contract; the connection-level
             // read_only/allow_delete gates bind to the registry binding (the
-            // rclone engine keeps no StoredConnection records), while the
+            // engine keeps no StoredConnection records), while the
             // path whitelist / lock_to_root / purge-root rules are enforced
             // inside ops.rs through the shared policy layer.
             // ------------------------------------------------------------------
@@ -324,8 +323,8 @@ impl Plugin {
                 let client = self.rclone.client_for_binding(&binding).await?;
                 if method == "files/read" {
                     let request: model::ReadRequest = parse(params)?;
-                    // Same clamp as the OpenDAL arm: default 256 KiB, hard
-                    // cap MAX_PREVIEW_BYTES (2 MiB).
+                    // Clamp: default 256 KiB, hard cap MAX_PREVIEW_BYTES
+                    // (2 MiB).
                     let max_bytes = request
                         .max_bytes
                         .unwrap_or(256 * 1024)
@@ -394,8 +393,8 @@ impl Plugin {
                         .await?;
                     }
                     "files/rmdir" => {
-                        // Same double gate as the OpenDAL rmdir arm (write +
-                        // delete: read_only rejects, allow_delete rejects).
+                        // Double gate (write + delete: read_only rejects,
+                        // allow_delete rejects).
                         ensure_binding_writable(&binding)?;
                         ensure_binding_deletable(&binding)?;
                         rclone::ops::rmdir(
@@ -449,8 +448,7 @@ impl Plugin {
                 let target_binding = self.rclone.binding(&target_connection_id)?;
                 ensure_binding_writable(&target_binding)?;
                 // `move` deletes the source (copy+delete degrade semantics) —
-                // the source connection passes the delete gate too, same rule
-                // as the OpenDAL copy/move arm.
+                // the source connection passes the delete gate too.
                 if method == "files/move" {
                     ensure_binding_deletable(&source_binding)?;
                 }
@@ -495,9 +493,9 @@ impl Plugin {
             "files/rename" => {
                 let request: model::RenameRequest = parse(params)?;
                 let binding = self.rclone.binding(&request.connection_id)?;
-                // Rename removes the source path — write + delete gates, same
-                // rule as the OpenDAL rename arm (ops::rename applies the
-                // policy check_rename whitelist on both endpoints itself).
+                // Rename removes the source path — write + delete gates
+                // (ops::rename applies the policy check_rename whitelist on
+                // both endpoints itself).
                 ensure_binding_writable(&binding)?;
                 ensure_binding_deletable(&binding)?;
                 let client = self.rclone.client_for_binding(&binding).await?;
@@ -565,12 +563,11 @@ impl Plugin {
             // ------------------------------------------------------------------
             // Phase D archive surface (method-face closeout): archiveList /
             // extract / compress over the rc byte channel. Request/return
-            // shapes are field-for-field aligned with the OpenDAL arms below;
+            // shapes are field-for-field stable;
             // zip is read via rc-serve Range reads (central directory at the
             // file tail), tar/tar.gz reuse the pure `crate::archive` parsers
-            // (see rclone/archive.rs). The OpenDAL-era degrade-to-job branch
-            // is dropped here — both methods run synchronously under the same
-            // bomb guards and always answer `transport:"native"`.
+            // (see rclone/archive.rs). Both methods run synchronously under
+            // the same bomb guards and always answer `transport:"native"`.
             // ------------------------------------------------------------------
             "files/archiveList" => {
                 let request: model::ArchiveListRequest = parse(params)?;
@@ -584,8 +581,8 @@ impl Plugin {
                     binding.lock_to_root,
                 )
                 .await?;
-                // Same pagination clamp as the OpenDAL arm (default page 1 /
-                // page_size 200, slice via the shared pure paginator).
+                // Pagination clamp: default page 1 / page_size 200, slice
+                // via the shared pure paginator.
                 let total = entries.len() as u64;
                 let page = request.page.unwrap_or(1).max(1);
                 let page_size = request.page_size.unwrap_or(200).clamp(1, 1000);
@@ -638,9 +635,8 @@ impl Plugin {
                 let client = self.rclone.client_for_binding(&binding).await?;
                 let fs = rclone::call_fs(&binding);
                 // Refuse to overwrite: an existing target is never clobbered
-                // by a compression run (mirror of the OpenDAL arm's
-                // stat-first check; the gate runs here because ops::stat's
-                // not-found is an error, not a signal).
+                // by a compression run (stat-first; the gate runs here
+                // because ops::stat's not-found is an error, not a signal).
                 let target_rel = rclone_gate(
                     &binding.root,
                     binding.lock_to_root,
@@ -694,8 +690,7 @@ impl Plugin {
                     &request.remote_path,
                     crate::policy::PathPolicy::check_write,
                 )?;
-                // taskId generation copied from the OpenDAL start_upload arm
-                // (uuid v4); the staging sink carries the same id.
+                // taskId is a uuid v4; the staging sink carries the same id.
                 let task_id = uuid::Uuid::new_v4().to_string();
                 let staging =
                     rclone::bytes_channel::UploadStaging::start(&task_id, request.size)?;
@@ -773,9 +768,9 @@ impl Plugin {
                     .await?
                     .unwrap_or(0);
                 let staging = if request.save_to_local {
-                    // Same geometry as the OpenDAL start_download arm: validate
-                    // the preference dir, .part staging under the downloads
-                    // base, pre-created so an unwritable dir fails at start.
+                    // Geometry: validate the preference dir, .part staging
+                    // under the downloads base, pre-created so an unwritable
+                    // dir fails at start.
                     if let Some(download_dir) = request
                         .download_dir
                         .as_deref()
@@ -839,10 +834,9 @@ impl Plugin {
                     );
                 }
                 let _ = emitter.event("files/transfer/progress", rclone_job_progress_event(&job));
-                // Independent pump task (plan §5 allowance: the JobTable pump
-                // skeleton is welded to OpenDAL readers); the event sequence
-                // and frame format stay identical (running → throttled
-                // running events; kind-1 frames 8B BE offset + ≤256 KiB).
+                // Independent pump task; the event sequence and frame format
+                // stay identical (running → throttled running events; kind-1
+                // frames 8B BE offset + ≤256 KiB).
                 tokio::spawn(rclone_download_pump(
                     Arc::clone(&self.rclone),
                     task_id.clone(),
@@ -891,9 +885,8 @@ impl Plugin {
                     Some(emitter),
                 )
                 .await?;
-                // Same response shape as the OpenDAL syncDir/copyDir arm; the
-                // jobId doubles as the cancel/status taskId (shared namespace,
-                // exactly like the OpenDAL dir-job table).
+                // The jobId doubles as the cancel/status taskId (shared
+                // namespace with the single-file taskIds).
                 Ok(json!({ "jobId": job_id }))
             }
             "files/transfer/status" => {
@@ -1180,10 +1173,9 @@ impl Plugin {
                 Err("Transfer task was not found".to_string())
             }
             // ------------------------------------------------------------------
-            // Engine-free support surface (moved verbatim from the retired
-            // OpenDAL match — none of these methods touch a storage engine):
-            // local download capabilities/whitelists, the audit trail and the
-            // MCP tool bridge.
+            // Engine-free support surface (none of these methods touch a
+            // storage engine): local download capabilities/whitelists, the
+            // audit trail and the MCP tool bridge.
             // ------------------------------------------------------------------
             // 本机落盘能力探测：桌面端 sidecar 可直接把下载写进本机下载目录
             // （完成后 localPath 进入传输历史，面板提供 reveal/open）；web/
@@ -1251,7 +1243,7 @@ impl Plugin {
             "files/ui/state/report" => self.mcp.report(&params),
             // Unknown/unrouted methods keep the historical "Method not
             // found" phrasing — the smoke suite's SKIP semantics and MCP
-            // clients match on it (not the retired OpenDAL fallthrough).
+            // clients match on it.
             _ => Err(format!("Method not found: {method}")),
         }
     }
@@ -1741,10 +1733,9 @@ struct RcloneSyncRecord {
 /// both enqueue into the same job mirror and `files/transfer/status` stays
 /// the single poll surface.
 ///
-/// Phase C 终态语义记录（决策固化）：OpenDAL 路径的全局并发 3 + 按连接 FIFO
-/// 排队模型在 rc 异步作业上**不强制**——rclone rcd 自身对 `_async` 作业排队，
-/// 侧车不再做第二层限流。这是 rclone 模式的终态语义而非遗留缺口；并发行为
-/// 差异由 rclone 的作业调度兜底。
+/// Phase C 终态语义记录（决策固化）：rc 异步作业由 rclone rcd 自身排队，
+/// 侧车不做第二层限流（全局并发 3 + 按连接 FIFO 的旧模型不再强制）。这是
+/// 终态语义而非遗留缺口；并发行为由 rclone 的作业调度兜底。
 #[allow(clippy::too_many_arguments)]
 async fn rclone_start_dir_job(
     rclone: Arc<rclone::RcloneEngine>,
@@ -2054,12 +2045,10 @@ fn rclone_job_from_record(record: store::TransferRecord) -> transfers::TransferJ
     }
 }
 
-/// Cross-engine serialization for `transfers.json` writes: rclone-side
-/// terminal records append under this lock. The OpenDAL JobTable keeps its
-/// own write path (untouchable file), so a true cross-engine race remains
-/// possible in principle — each write is an atomic tmp+rename, so the worst
-/// case is one dropped history line, never a corrupt file. Under the rclone
-/// engine (the Phase D end state) every writer goes through here.
+/// Serialization for `transfers.json` writes: terminal records append
+/// under this lock. Each write is an atomic tmp+rename, so even a racing
+/// writer costs at most one dropped history line, never a corrupt file.
+/// Every writer goes through here.
 fn history_write_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
@@ -2517,9 +2506,8 @@ async fn rclone_download_pump(
             file.write_all(chunk)
                 .map_err(|error| format!("Failed to write staging file: {error}"))?;
         }
-        // Kind-1 download frame: 8-byte BE offset + payload chunk (the
-        // `engine::transfer::frame` shape, inlined since the OpenDAL transfer
-        // module is retired).
+        // Kind-1 download frame: 8-byte BE offset + payload chunk
+        // (≤256 KiB).
         let mut payload = Vec::with_capacity(8 + chunk.len());
         payload.extend_from_slice(&(offset as u64).to_be_bytes());
         payload.extend_from_slice(chunk);
