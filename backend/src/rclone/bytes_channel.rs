@@ -417,6 +417,11 @@ mod tests {
     struct Live {
         client: RcClient,
         fs: String,
+        /// Held for the test's lifetime: dropping `Live` (including via
+        /// panic unwinding) kills the rcd child and removes its temp
+        /// config dir — never `mem::forget` this, orphaned rcds survive
+        /// the test process on Unix.
+        _rcd: super::super::proc::RcdHandle,
         _dir: tempfile::TempDir,
     }
 
@@ -426,15 +431,15 @@ mod tests {
                 eprintln!("skipping: no rclone binary found");
                 return None;
             };
-            let handle = super::super::proc::RcdHandle::start(&binary, None)
+            let rcd = super::super::proc::RcdHandle::start(&binary, None)
                 .await
                 .expect("rcd should spawn");
-            let client = handle.client();
-            std::mem::forget(handle); // tests are process-exit scoped
+            let client = rcd.client();
             let dir = tempfile::tempdir().expect("tempdir");
             Some(Live {
                 client,
                 fs: dir.path().to_string_lossy().to_string(),
+                _rcd: rcd,
                 _dir: dir,
             })
         }

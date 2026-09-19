@@ -1,10 +1,9 @@
 //! rc-backed archive surface (`files/archiveList` / `files/extract` /
 //! `files/compress`, F-RCLONE Phase D method-surface closeout).
 //!
-//! The OpenDAL engine serves these methods from `crate::archive` (tar/tar.gz
-//! only). This module keeps the wire shapes byte-identical while moving the
-//! storage byte channel to the rc engine, and adds the zip format the OpenDAL
-//! path explicitly deferred (Phase 2 there):
+//! Wire shapes stay identical to the earlier method face, the storage byte
+//! channel is the rc engine, and the zip format is included (deferred there
+//! as Phase 2):
 //!
 //! - **zip reading never downloads the payload window.** The central
 //!   directory lives at the file tail, so the flow is: stat → tail Range
@@ -15,7 +14,7 @@
 //!   deflate stream is wrapped in a synthetic gzip header/trailer whose
 //!   CRC32/ISIZE come from the zip entry itself, so integrity verification
 //!   runs against the archive's own checksums at zero extra code.
-//! - **tar / tar.gz** keep the exact OpenDAL semantics: whole-file read
+//! - **tar / tar.gz**: whole-file read
 //!   (1 GiB cap) + the pure `crate::archive::list_entries` /
 //!   `extract_entries` parsers. Pure helpers reused verbatim:
 //!   `sanitize_entry_path` (zip-slip guard), `paginate`, `tar_entry_header`,
@@ -23,11 +22,9 @@
 //! - **writes** (extract entries, compress output) go through
 //!   [`super::ops::write_bytes`] (rc `operations/uploadfile` + `movefile`,
 //!   parents auto-created).
-//! - **Degrade-to-job is dropped in rclone mode**: the OpenDAL arms fall
-//!   back to a transfers job past 10 entries / 8 MiB; the rclone engine has
-//!   no per-entry job machinery, so extract/compress run synchronously under
-//!   the same bomb guards (entry count / payload caps) and always answer
-//!   `{success, transport:"native", jobId:null}`. rclone-mode requests are
+//! - **No degrade-to-job**: extract/compress run synchronously under
+//!   the bomb guards (entry count / payload caps) and always answer
+//!   `{success, transport:"native", jobId:null}`. Requests are
 //!   not wrapped in the per-connection wall-clock budget (`handle_request`
 //!   routes rclone arms before `block_on_timed`), which is what keeps the
 //!   synchronous path viable.
@@ -188,7 +185,7 @@ async fn read_file_capped(
 // ---------------------------------------------------------------------------
 
 /// stat-first gate shared by all three methods: missing path and directory
-/// targets refuse with the OpenDAL archive arms' message texts, and the file
+/// targets refuse with the stat error text, and the file
 /// size must stay inside [`tar::MAX_ARCHIVE_FILE_BYTES`].
 async fn stat_archive(
     client: &RcClient,
@@ -235,8 +232,8 @@ enum OpenArchive {
 }
 
 /// stat → detect by magic → open. `PK` dispatches to the zip path; every
-/// other head goes down the tar/tar.gz path (whole-file read, exact OpenDAL
-/// parser semantics).
+/// other head goes down the tar/tar.gz path (whole-file read, pure parser
+/// semantics).
 async fn open_archive(
     client: &RcClient,
     fs: &str,
@@ -254,11 +251,11 @@ async fn open_archive(
 }
 
 // ---------------------------------------------------------------------------
-// Public operations (wire shapes mirror the OpenDAL arms in main.rs)
+// Public operations
 // ---------------------------------------------------------------------------
 
 /// `files/archiveList` entry walk (archive order; pagination happens at the
-/// call site with `tar::paginate`, same clamps as the OpenDAL arm).
+/// call site with `tar::paginate`).
 pub async fn archive_list(
     client: &RcClient,
     fs: &str,
@@ -360,8 +357,7 @@ struct CompressPlanEntry {
 /// `files/compress`: packs same-connection `sources` (files and/or
 /// directories) into `target_path` (`.tar`, `.tar.gz`, `.tgz` or `.zip`;
 /// the suffix check belongs to the wiring arm). The overwrite refusal and
-/// the empty-paths check also live in the wiring arm, mirroring the OpenDAL
-/// arm's ordering.
+/// the empty-paths check also live in the wiring arm, in that order.
 pub async fn compress(
     client: &RcClient,
     fs: &str,
@@ -483,8 +479,7 @@ async fn plan_compress(
 }
 
 /// Assembles a plain/gzipped tar from the plan (`tar::tar_entry_header` +
-/// `TAR_END` + `gzip_stored_wrap` — the exact OpenDAL in-memory builder's
-/// byte stream, with the reads served through rc).
+/// `TAR_END` + `gzip_stored_wrap`, with the reads served through rc).
 async fn build_tar(
     client: &RcClient,
     fs: &str,
@@ -1173,10 +1168,14 @@ mod tests {
     // -- live-process tests (skipped without a local rclone binary) ----------
 
     /// One live rcd + a tempdir fs (same pattern as ops.rs/bytes_channel.rs).
+    /// `_rcd` is held for the test's lifetime: dropping `Live` (including via
+    /// panic unwinding) kills the rcd child and removes its temp config dir —
+    /// never `mem::forget` this, orphaned rcds survive the test process.
     struct Live {
         client: RcClient,
         fs: String,
         root: std::path::PathBuf,
+        _rcd: super::super::proc::RcdHandle,
         _dir: tempfile::TempDir,
     }
 
@@ -1186,16 +1185,16 @@ mod tests {
                 eprintln!("skipping: no rclone binary found");
                 return None;
             };
-            let handle = super::super::proc::RcdHandle::start(&binary, None)
+            let rcd = super::super::proc::RcdHandle::start(&binary, None)
                 .await
                 .expect("rcd should spawn");
-            let client = handle.client();
-            std::mem::forget(handle);
+            let client = rcd.client();
             let dir = tempfile::tempdir().expect("tempdir");
             Some(Live {
                 client,
                 fs: dir.path().to_string_lossy().to_string(),
                 root: dir.path().to_path_buf(),
+                _rcd: rcd,
                 _dir: dir,
             })
         }
@@ -1337,13 +1336,13 @@ mod tests {
             .expect_err("locked root escape must refuse");
         assert!(error.contains("escapes the connection root"), "{error}");
 
-        // Missing archive → the OpenDAL-style stat error.
+        // Missing archive → the stat error.
         let error = archive_list(&live.client, &live.fs, "missing.zip", "", false)
             .await
             .expect_err("missing archive");
         assert!(error.contains("path does not exist"), "{error}");
 
-        // A directory target refuses like the OpenDAL arm.
+        // A directory target refuses.
         std::fs::create_dir_all(live.abs("adir")).expect("mkdir");
         let error = archive_list(&live.client, &live.fs, "adir", "", false)
             .await
