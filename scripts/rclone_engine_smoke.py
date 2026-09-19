@@ -22,7 +22,9 @@ files_scan_digest over an inline local connection and over the built-in
 `__local__` id, and files_cursor_next paging.
 
 Usage:
-  python3 scripts/rclone_engine_smoke.py <path-to-dbx-plugin-files-bin> [--engine rclone|opendal]
+  python3 scripts/rclone_engine_smoke.py <path-to-dbx-plugin-files-bin> [--engine rclone]
+  (--engine is optional; rclone is the only engine — the historical
+  `opendal` value is retired with the OpenDAL engine removal)
 
 Exit code 0 = all steps passed.
 """
@@ -246,7 +248,7 @@ def unwrap_envelope(result: dict | None) -> dict:
 
 
 def run(binary: str, engine: str | None) -> bool:
-    label = engine or "default(opendal)"
+    label = engine or "default(rclone)"
     print(f"== smoke: engine={label} ==")
     sidecar = Sidecar(binary, engine)
     tmp = tempfile.mkdtemp(prefix="dbx-rclone-smoke-")

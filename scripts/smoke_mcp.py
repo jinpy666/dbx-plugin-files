@@ -42,9 +42,9 @@ them (MinIO / mod_dav / pyftpdlib / OpenSSH / Samba / russh password target):
     R5  smb (Samba, share-scoped)     DBX_FILES_SMB_HOST/PORT/SHARE/USER/PASSWORD
     R6  sftp-native (russh password)  DBX_FILES_SFTP_NATIVE_HOST/PORT/USER/PASSWORD
     R7  oss (env-gated; no OSS-API-compatible test container exists —
-        MinIO speaks S3, not the Aliyun OSS API OpenDAL's oss service
-        speaks; set DBX_FILES_OSS_ENDPOINT/BUCKET/ACCESS_KEY/SECRET_KEY
-        against a real OSS endpoint to enable)
+        MinIO speaks the S3 API only, not the OSS-API surface the oss
+        protocol targets; set DBX_FILES_OSS_ENDPOINT/BUCKET/ACCESS_KEY/
+        SECRET_KEY against a real OSS endpoint to enable)
 
     Every R section runs the full agent loop over inline credentials:
     files_write/mkdir -> files_scan_digest (aggregate) -> files_cursor_next
@@ -52,11 +52,11 @@ them (MinIO / mod_dav / pyftpdlib / OpenSSH / Samba / russh password target):
     executes) -> files_purge two-phase; deletions are verified by re-digest
     matched counts (the MCP face never reads file bodies). Each connection
     pins its protocol-specialized auth/path shape: R4 proves keyfile-only
-    auth end to end (no password travels at all — OpenDAL 0.57's sftp
-    service has none), R5 pins the share-scoped endpoint + secret-bound
-    password over the custom adapter's recursive purge, R6 proves password
-    auth the OpenDAL sftp service cannot do, R7 (when enabled) proves the
-    s3-shaped secret binding lands on the oss `access_key_secret` key. The
+    auth end to end (no password travels at all — this section pins the
+    keyfile form), R5 pins the share-scoped endpoint + secret-bound
+    password over the recursive purge, R6 proves the dedicated password
+    form, R7 (when enabled) proves the s3-shaped secret binding lands on
+    the oss credential keys. The
     loop builds its tree under a unique writable `base` directory (never a
     connection root): home-restricted SSH servers cannot materialize a root
     at filesystem / (R4/R6 first-run finding, see the R section comment).
@@ -587,12 +587,13 @@ def m12_clamp(client: SidecarClient) -> str:
             os.close(fd)
 
         budget = 100_000
-        # Clamp semantics (verified here on a real tree): the entry that
-        # oversteps the budget is counted in `scanned` (that is how the walk
-        # knows the tree is bigger) but never kept, so scanned == min(count,
-        # budget + 1) while matched == min(count, budget).
+        # Clamp semantics (verified here on a real tree): matched never
+        # exceeds the budget. The `scanned` accounting differs by engine
+        # dispatch: the rclone-mode walker clamps at exactly `budget`, the
+        # historical walker counted the budget-overstepping entry too
+        # (budget + 1) — both prove truncation, so accept either.
         digest = call_tool(client, "files_scan_digest", connectionId=conn_id, path="/flat")
-        assert digest["scanned"] == min(count, budget + 1), digest
+        assert digest["scanned"] in (min(count, budget), min(count, budget + 1)), digest
         assert digest["matched"] == min(count, budget), digest
         assert digest["scanTruncated"] is (count > budget), digest
         if count > 10_000:
@@ -665,11 +666,11 @@ def m13_ttl_realtime(client: SidecarClient) -> str:
 # Shared loop (below). The loop builds every tree under a unique `base`
 # directory through the MCP write tools themselves (files_mkdir is mkdir -p
 # on every backend) instead of scoping a connection `root`: home-restricted
-# SSH servers cannot materialize a root at filesystem / — R4 found the
-# OpenDAL 0.57 sftp service silently swallowing PermissionDenied while
+# SSH servers cannot materialize a root at filesystem / — R4 found an
+# earlier sftp backend silently swallowing PermissionDenied while
 # auto-creating a missing root (is_sftp_protocol_error treats ANY protocol
 # error as "already exists"), surfacing later as a confusing NoSuchFile on
-# write; the sftp-native adapter reports the same PermissionDenied honestly.
+# write; honest backends report the same PermissionDenied up front.
 # Base-under-a-writable-area is the shape the framed smoke proves per
 # protocol, and the unique fresh base keeps the exact matched counts
 # deterministic.
@@ -805,12 +806,10 @@ def r4_remote_sftp(_client: SidecarClient) -> str:
             "(scripts/container_smoke.sh provides them)")
     user = os.environ.get("DBX_FILES_SFTP_USER", "tester")
     port = os.environ.get("DBX_FILES_SFTP_PORT", "22")
-    # Protocol specialization (P-FILES ③): OpenDAL 0.57's sftp service is
-    # keyfile-only — the engine deliberately never forwards a password, so
-    # this inline payload carries NO password at all. The endpoint must be
-    # the ssh:// URI form (the openssh crate extracts user/port from the URI
-    # only) and known_hosts "accept" tolerates the container's ephemeral
-    # host key.
+    # Protocol specialization (P-FILES ③): this section pins the keyfile
+    # form — the inline payload carries NO password at all. The endpoint
+    # uses the ssh:// URI form (bare host:port also parses) and known_hosts
+    # "accept" tolerates the container's ephemeral host key.
     connection = {"protocol": "sftp", "endpoint": f"ssh://{user}@{host}:{port}",
                   "user": user, "key": key, "knownHostsStrategy": "accept"}
     # linuxserver/openssh-server: USER_NAME's home is /config (writable). The
@@ -855,8 +854,8 @@ def r6_remote_sftp_native(_client: SidecarClient) -> str:
             "enable (scripts/container_smoke.sh provides them)")
     port = os.environ.get("DBX_FILES_SFTP_NATIVE_PORT", "22")
     # Protocol specialization (dual-stack decision 2026-08-31): sftp-native
-    # exists because OpenDAL's sftp service cannot do password auth — so the
-    # password form is THE shape under test here. Bare `user@host:port`
+    # is the dedicated password-form face — so the password form is THE
+    # shape under test here. Bare `user@host:port`
     # endpoint (ssh:// also accepted), default host-key strategy Tolerate
     # (accept-new) fits the container's ephemeral key.
     connection = {"protocol": "sftp-native", "endpoint": f"{user}@{host}:{port}",
@@ -880,13 +879,13 @@ def r7_remote_oss(_client: SidecarClient) -> str:
     secret = os.environ.get("DBX_FILES_OSS_SECRET_KEY")
     if not (endpoint and bucket and access and secret):
         raise SkipScenario(
-            "no OSS-API-compatible test container exists (MinIO speaks the S3 "
-            "API only, not the Aliyun OSS API OpenDAL's oss service speaks); "
-            "set DBX_FILES_OSS_ENDPOINT/BUCKET/ACCESS_KEY/SECRET_KEY against "
-            "a real OSS endpoint to enable")
-    # Protocol specialization: oss reuses the s3-shaped inline fields, but
-    # the secret lands on OpenDAL's `access_key_secret` key (never
-    # `secret_access_key`) and no region is forwarded.
+            "no OSS-API-compatible test container exists in this harness "
+            "(MinIO speaks the S3 API only, not the OSS-API surface the oss "
+            "protocol targets); set DBX_FILES_OSS_ENDPOINT/BUCKET/"
+            "ACCESS_KEY/SECRET_KEY against a real OSS endpoint to enable")
+    # Protocol specialization: oss reuses the s3-shaped inline fields (the
+    # engine maps the s3 family onto the s3 credential parameters) and no
+    # region is forwarded.
     connection = {"protocol": "oss", "endpoint": endpoint, "bucket": bucket,
                   "accessKeyId": access, "secretAccessKey": secret}
     return run_remote_stdio_roundtrip(connection, "oss")
@@ -1216,12 +1215,15 @@ def s4_stdio_two_phase_delete(_client: SidecarClient) -> str:
         )
         assert "unknown or already used" in error, error
 
-        # 目录 rename 降级 job 需要工作台事件通道：stdio 明确报错不假死。
+        # 目录 rename 在 stdio 下必须明确报错不假死：或是引擎运行时拒绝
+        # （rclone 引擎对目录 rename 报 "is a directory not a file"），或是
+        # 降级 job 需要工作台事件通道的 standalone stdio 拒绝（历史引擎）。
         session.call_tool("files_mkdir", connection=connection, path="/adir")
         error = session.call_tool_error(
             "files_rename", connection=connection, path="/adir", newPath="/adir2"
         )
-        assert "standalone stdio" in error, error
+        lowered = error.lower()
+        assert "standalone stdio" in lowered or ("directory" in lowered and "not a file" in lowered), error
         return "preview -> tamper invalidates -> confirm executes -> disk verified -> replay refused"
     finally:
         session.close()
@@ -1617,6 +1619,10 @@ def main() -> int:
     # repo-relative fallback lacks the .exe suffix — the 2026-09-15 Windows
     # candidate run failed exactly there (WinError 2 on process spawn).
     os.environ["DBX_PLUGIN_SIDECAR"] = binary
+    # rclone is the only engine: pin it for every sidecar process spawned by
+    # this script (the long-lived client below and each StdioSession — both
+    # inherit os.environ at spawn time).
+    os.environ["DBX_FILES_ENGINE"] = "rclone"
 
     # 隔离数据目录：mcp-settings.json 与 audit.jsonl 不污染真实插件数据。
     data_dir = tempfile.mkdtemp(prefix="dbx-files-mcp-smoke-")
