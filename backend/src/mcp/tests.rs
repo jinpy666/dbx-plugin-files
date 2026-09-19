@@ -28,6 +28,18 @@ fn fixture(value: &str) -> String {
     format!("fixture::{value}")
 }
 
+/// Live-rcd guard for tests that dispatch through the engine's local
+/// backend: `__local__`/inline-localfs tool calls spawn a real rcd, which
+/// needs an rclone binary on PATH (the container-smoke job installs one;
+/// bare dev machines may not have it).
+fn require_rclone_binary() -> bool {
+    if crate::rclone::proc::resolve_binary().is_none() {
+        eprintln!("skipping: no rclone binary on PATH");
+        return false;
+    }
+    true
+}
+
 fn mcp() -> Mcp {
     Mcp::new(std::env::temp_dir().join(format!(
         "dbx-files-mcp-test-{}",
@@ -1653,6 +1665,9 @@ fn manifest_fields_are_fully_covered_by_inline_mapping() {
 /// rename stdio refusal and the missing/unknown connectionId guidance.
 #[test]
 fn stdio_localfs_inline_round_trip_digest_cursor_two_phase() {
+    if !require_rclone_binary() {
+        return;
+    }
     let (server, dir) = stdio_server();
     // The fs root is separate from the plugin data dir: the audit trail
     // must not land inside the scanned tree.
@@ -2442,6 +2457,9 @@ fn file_target_path_combines_shape_and_root_gates() {
 
 #[test]
 fn purge_and_delete_root_red_line_survives_bypass_spellings() {
+    if !require_rclone_binary() {
+        return;
+    }
     let (server, dir) = stdio_server();
     let fsroot = dir.path().join("fsroot-redline");
     let data = fsroot.join("data");
@@ -2481,6 +2499,9 @@ fn purge_and_delete_root_red_line_survives_bypass_spellings() {
 
 #[test]
 fn tilde_and_percent_and_unicode_are_literal_never_expanded() {
+    if !require_rclone_binary() {
+        return;
+    }
     let (server, dir) = stdio_server();
     let fsroot = dir.path().join("fsroot-literal");
     std::fs::create_dir_all(&fsroot).unwrap();
@@ -2595,6 +2616,9 @@ fn missing_required_enumerates_every_business_gap() {
 
 #[test]
 fn missing_required_flows_through_tool_dispatch() {
+    if !require_rclone_binary() {
+        return;
+    }
     let (server, dir) = stdio_server();
     // stdio 连接门先于业务参数校验（§3.7，call_tool 拦截）：完全空参先
     // 报连接寻址指引——顺序张力为登记设计，核对器 CONNECTION_GATE_RE
@@ -2683,6 +2707,9 @@ fn normalized_format_is_case_insensitive_and_lists_legal_values() {
 
 #[test]
 fn depth_error_spells_the_legal_range_inline() {
+    if !require_rclone_binary() {
+        return;
+    }
     let (server, dir) = stdio_server();
     let fsroot = dir.path().join("fsroot");
     std::fs::create_dir_all(&fsroot).unwrap();

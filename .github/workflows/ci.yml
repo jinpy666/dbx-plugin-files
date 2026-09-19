@@ -92,7 +92,13 @@ jobs:
       - name: Install native dependencies
         # No keyring/dbus in this dependency tree; nasm builds aws-lc-sys from
         # source on Linux (pkg-config covers its transitive build probes).
-        run: sudo apt-get update && sudo apt-get install -y pkg-config nasm
+        run: sudo apt-get update && sudo apt-get install -y pkg-config nasm unzip
+      - name: Install rclone (the sidecar spawns it for every engine op)
+        run: |
+          curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.zip -o /tmp/rclone.zip
+          unzip -o -q /tmp/rclone.zip -d /tmp/rclone-tmp
+          sudo mv /tmp/rclone-tmp/*/rclone /usr/local/bin/rclone
+          rclone version | head -1
       - uses: dtolnay/rust-toolchain@stable
       - uses: mozilla-actions/sccache-action@v0.0.7
       - uses: actions/cache@v4
@@ -125,7 +131,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install native dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config nasm
+        run: sudo apt-get update && sudo apt-get install -y pkg-config nasm unzip
+      - name: Install rclone (the sidecar spawns it for every engine op)
+        run: |
+          curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.zip -o /tmp/rclone.zip
+          unzip -o -q /tmp/rclone.zip -d /tmp/rclone-tmp
+          sudo mv /tmp/rclone-tmp/*/rclone /usr/local/bin/rclone
+          rclone version | head -1
       - uses: dtolnay/rust-toolchain@stable
       - uses: mozilla-actions/sccache-action@v0.0.7
       - uses: actions/cache@v4
@@ -208,7 +220,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install native dependencies
         if: matrix.os == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y pkg-config nasm
+        run: sudo apt-get update && sudo apt-get install -y pkg-config nasm unzip
       - uses: pnpm/action-setup@v6
         with:
           version: 11.24.0
@@ -217,6 +229,12 @@ jobs:
           node-version: "22"
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Install rclone (the sidecar spawns it for every engine op)
+        run: |
+          curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.zip -o /tmp/rclone.zip
+          unzip -o -q /tmp/rclone.zip -d /tmp/rclone-tmp
+          sudo mv /tmp/rclone-tmp/*/rclone /usr/local/bin/rclone
+          rclone version | head -1
       - uses: dtolnay/rust-toolchain@stable
       - uses: mozilla-actions/sccache-action@v0.0.7
       - uses: actions/cache@v4
