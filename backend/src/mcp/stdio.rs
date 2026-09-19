@@ -113,6 +113,12 @@ pub(crate) fn stored_connection_from_inline(connection: &Value) -> Result<Stored
         ("share", "share"),
         ("domain", "domain"),
         ("knownHostsStrategy", "known_hosts_strategy"),
+        ("proxyType", "proxy_type"),
+        ("proxyHost", "proxy_host"),
+        ("proxyPort", "proxy_port"),
+        ("proxyUsername", "proxy_username"),
+        ("tunnelJumpHosts", "tunnel_jump_hosts"),
+        ("tunnelIdentityFile", "tunnel_identity_file"),
         ("readOnly", "read_only"),
         ("allowDelete", "allow_delete"),
         ("lockToRoot", "lock_to_root"),
@@ -141,6 +147,7 @@ pub(crate) fn stored_connection_from_inline(connection: &Value) -> Result<Stored
         ("accessToken", "access_token"),
         ("clientSecret", "client_secret"),
         ("refreshToken", "refresh_token"),
+        ("proxyPassword", "proxy_password"),
     ] {
         if let Some(value) = map.get(inline_key).and_then(Value::as_str) {
             secrets.insert(secret_key.to_string(), json!(value));
@@ -196,6 +203,13 @@ pub(crate) fn inline_connection_properties() -> Value {
     "password": { "type": "string", "description": "Password (webdav/ftp/smb/sftp-native; stays in process memory only)" },
     "key": { "type": "string", "description": "Private key (sftp/sftp-native; stays in process memory only)" },
     "knownHostsStrategy": { "type": "string", "description": "known_hosts strategy (sftp/sftp-native)" },
+    "proxyType": { "type": "string", "description": "Proxy kind: off (default), http, socks5 (ftp/sftp-native/sftp; other protocols dial direct)" },
+    "proxyHost": { "type": "string", "description": "Proxy host (required when proxyType is http/socks5)" },
+    "proxyPort": { "type": "string", "description": "Proxy port 1-65535 (required when proxyType is http/socks5)" },
+    "proxyUsername": { "type": "string", "description": "Proxy username (optional; empty = anonymous)" },
+    "proxyPassword": { "type": "string", "description": "Proxy password (optional; stays in process memory only)" },
+    "tunnelJumpHosts": { "type": "string", "description": "SSH tunnel jump chain, ssh -J syntax: comma-separated [user@]host[:port]; the last entry is the login target. Key auth only; rclone engine only; empty = no tunnel" },
+    "tunnelIdentityFile": { "type": "string", "description": "Private key path for the SSH tunnel (optional; empty = ssh defaults/agent)" },
     "share": { "type": "string", "description": "Share (smb)" },
     "domain": { "type": "string", "description": "Domain (smb)" },
     "service": { "type": "string", "description": "OpenDAL service name (opendal-custom)" },
@@ -642,17 +656,26 @@ impl StdioServer {
                 // may fail on protocols OpenDAL cannot build but rclone
                 // serves.
                 if let Some(route) = self.mcp.rclone_route() {
-                    let client = route
+                    let connection = route
                         .engine
-                        .client()
+                        .prepare(&connection.id, &connection)
                         .await
                         .map_err(|error| format!("Failed to reach the rclone engine: {error}"))?;
-                    crate::rclone::registry::connect(
+                    let client = route
+                        .engine
+                        .client_for(&connection)
+                        .await
+                        .map_err(|error| format!("Failed to reach the rclone engine: {error}"))?;
+                    if let Err(error) = crate::rclone::registry::connect(
                         &route.engine.registry,
                         &client,
                         &connection,
                     )
-                    .await?;
+                    .await
+                    {
+                        route.engine.release_tunnel(&connection.id).await;
+                        return Err(error);
+                    }
                     let _ = self.engine.connect(connection.clone());
                 } else {
                     self.engine.connect(connection.clone())?;

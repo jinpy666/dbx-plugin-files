@@ -185,6 +185,17 @@ fn sample_value(key: &str, protocol: &str) -> Value {
         "config" => json!(format!("{{\"root\":{}}}", serde_json::json!(matrix_root()))),
         "root" => json!(matrix_root()),
         "known_hosts_strategy" => json!("Tolerate"),
+        // Proxy fields ship default "off"; the dependent host/port/username/
+        // password samples stay inert because the flat parser short-circuits
+        // on the off type (hidden-field superset semantics, see below).
+        "proxy_type" => json!("off"),
+        "proxy_host" => json!("127.0.0.1"),
+        "proxy_port" => json!("1080"),
+        "proxy_username" => json!("proxyuser"),
+        "proxy_password" => json!("proxy-pw"),
+        // Ships default "": no tunnel unless the user types a jump chain.
+        "tunnel_jump_hosts" => json!(""),
+        "tunnel_identity_file" => json!(""),
         "timeout_secs" => json!(30),
         "read_only" => json!(false),
         "allow_delete" => json!(true),

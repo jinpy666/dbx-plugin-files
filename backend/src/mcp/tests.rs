@@ -1527,6 +1527,12 @@ fn inline_connection_schema_covers_every_mapped_key() {
         "share",
         "domain",
         "knownHostsStrategy",
+        "proxyType",
+        "proxyHost",
+        "proxyPort",
+        "proxyUsername",
+        "tunnelJumpHosts",
+        "tunnelIdentityFile",
         "readOnly",
         "allowDelete",
         "lockToRoot",
@@ -1549,6 +1555,7 @@ fn inline_connection_schema_covers_every_mapped_key() {
         "accessToken",
         "clientSecret",
         "refreshToken",
+        "proxyPassword",
     ];
     for key in mapped {
         assert!(
@@ -1618,6 +1625,12 @@ fn manifest_fields_are_fully_covered_by_inline_mapping() {
         ("share", "share"),
         ("domain", "domain"),
         ("known_hosts_strategy", "knownHostsStrategy"),
+        ("proxy_type", "proxyType"),
+        ("proxy_host", "proxyHost"),
+        ("proxy_port", "proxyPort"),
+        ("proxy_username", "proxyUsername"),
+        ("tunnel_jump_hosts", "tunnelJumpHosts"),
+        ("tunnel_identity_file", "tunnelIdentityFile"),
         ("read_only", "readOnly"),
         ("allow_delete", "allowDelete"),
         ("lock_to_root", "lockToRoot"),
@@ -1641,6 +1654,7 @@ fn manifest_fields_are_fully_covered_by_inline_mapping() {
         ("access_token", "accessToken"),
         ("client_secret", "clientSecret"),
         ("refresh_token", "refreshToken"),
+        ("proxy_password", "proxyPassword"),
     ];
     let mut covered: Vec<&str> = Vec::new();
     for field in fields {

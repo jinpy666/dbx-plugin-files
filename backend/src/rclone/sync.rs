@@ -454,7 +454,7 @@ mod tests {
             eprintln!("skipping: no rclone binary found");
             return;
         };
-        let rcd = RcdHandle::start(&binary).await.expect("rcd spawn");
+        let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
         let (src, dst) = sandbox();
         let (on_event, mut rx) = event_channel();
         let handle = start_job(
@@ -490,7 +490,7 @@ mod tests {
             eprintln!("skipping: no rclone binary found");
             return;
         };
-        let rcd = RcdHandle::start(&binary).await.expect("rcd spawn");
+        let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
         let (src, dst) = sandbox();
         write_file(&dst.path().join("stale.txt"), "to be mirrored away");
         let (on_event, mut rx) = event_channel();
@@ -516,7 +516,7 @@ mod tests {
             eprintln!("skipping: no rclone binary found");
             return;
         };
-        let rcd = RcdHandle::start(&binary).await.expect("rcd spawn");
+        let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
         let (src, dst) = sandbox();
         let mut job = params(SyncKind::Sync, src.path(), dst.path());
         job.dry_run = true;
@@ -537,7 +537,7 @@ mod tests {
             eprintln!("skipping: no rclone binary found");
             return;
         };
-        let rcd = RcdHandle::start(&binary).await.expect("rcd spawn");
+        let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
         let (src, dst) = sandbox();
         write_file(&dst.path().join("stale1.txt"), "s1");
         write_file(&dst.path().join("stale2.txt"), "s2");
@@ -561,7 +561,7 @@ mod tests {
             eprintln!("skipping: no rclone binary found");
             return;
         };
-        let rcd = RcdHandle::start(&binary).await.expect("rcd spawn");
+        let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
         let (src, dst) = sandbox();
         write_file(&dst.path().join("stale.txt"), "keep me");
         let mut job = params(SyncKind::Sync, src.path(), dst.path());
@@ -583,7 +583,7 @@ mod tests {
             eprintln!("skipping: no rclone binary found");
             return;
         };
-        let rcd = RcdHandle::start(&binary).await.expect("rcd spawn");
+        let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
         // Enough files that the job plausibly outlives the stop call.
         let src = tempfile::tempdir().expect("src tempdir");
         let dst = tempfile::tempdir().expect("dst tempdir");
@@ -610,7 +610,7 @@ mod tests {
             eprintln!("skipping: no rclone binary found");
             return;
         };
-        let rcd = RcdHandle::start(&binary).await.expect("rcd spawn");
+        let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
         let (src, dst) = sandbox();
         let (on_event, mut rx) = event_channel();
         let handle = start_job(

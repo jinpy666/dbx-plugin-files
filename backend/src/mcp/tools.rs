@@ -145,16 +145,28 @@ impl Mcp {
             // the rclone registry (the OpenDAL engine table is not consulted
             // by any tool in that mode).
             if let Some(route) = self.rclone_route() {
-                let client = route
+                let connection = route
                     .engine
-                    .client()
+                    .prepare(&connection.id, &connection)
                     .await
                     .map_err(|error| format!("Failed to reach the rclone engine: {error}"))?;
-                crate::rclone::registry::connect(&route.engine.registry, &client, &connection)
+                let client = route
+                    .engine
+                    .client_for(&connection)
                     .await
-                    .map_err(|error| {
-                        format!("Failed to register the forwarded connection lifecycle: {error}")
-                    })?;
+                    .map_err(|error| format!("Failed to reach the rclone engine: {error}"))?;
+                if let Err(error) = crate::rclone::registry::connect(
+                    &route.engine.registry,
+                    &client,
+                    &connection,
+                )
+                .await
+                {
+                    route.engine.release_tunnel(&connection.id).await;
+                    return Err(format!(
+                        "Failed to register the forwarded connection lifecycle: {error}"
+                    ));
+                }
             } else {
                 engine.connect(connection).map_err(|error| {
                     format!("Failed to register the forwarded connection lifecycle: {error}")
@@ -731,7 +743,7 @@ impl Mcp {
     ) -> Result<Value, String> {
         let connection_id = required_str(arguments, "connectionId")?;
         let binding = rclone_binding(route, connection_id)?;
-        let client = route.engine.client().await?;
+        let client = route.engine.client_for_binding(&binding).await?;
         let start = normalize_slashes(match optional_str(arguments, "path")? {
             Some(raw) => raw,
             None => "/",
@@ -820,11 +832,11 @@ impl Mcp {
     ) -> Result<Value, String> {
         let connection_id = required_str(arguments, "connectionId")?;
         let binding = rclone_binding(route, connection_id)?;
-        let client = route.engine.client().await?;
+        let client = route.engine.client_for_binding(&binding).await?;
         let payload = crate::rclone::ops::quick_paths(
             &client,
             &crate::rclone::call_fs(&binding),
-            binding.backend_type,
+            &binding.backend_type,
             &binding.root,
         )
         .await?;
@@ -876,7 +888,7 @@ impl Mcp {
                 MAX_INLINE_WRITE_BYTES
             ));
         }
-        let client = route.engine.client().await?;
+        let client = route.engine.client_for_binding(&binding).await?;
         let remote = crate::engine::ops::policy::PathPolicy::from_parts(
             &binding.root,
             binding.lock_to_root,
@@ -916,7 +928,7 @@ impl Mcp {
         ensure_binding_writable(&binding)?;
         let raw = required_str(arguments, "path")?;
         validate_path_shape(raw, "path")?;
-        let client = route.engine.client().await?;
+        let client = route.engine.client_for_binding(&binding).await?;
         crate::rclone::ops::mkdir(
             &client,
             &crate::rclone::call_fs(&binding),
@@ -948,7 +960,7 @@ impl Mcp {
         ensure_binding_deletable(&binding)?;
         let path = file_target_path(required_str(arguments, "path")?, "path")?;
         let new_path = file_target_path(required_str(arguments, "newPath")?, "newPath")?;
-        let client = route.engine.client().await?;
+        let client = route.engine.client_for_binding(&binding).await?;
         crate::rclone::ops::rename(
             &client,
             &crate::rclone::call_fs(&binding),
@@ -981,7 +993,7 @@ impl Mcp {
         if tool == "files_purge" {
             refuse_root_purge_root(&binding.root, path)?;
         }
-        let client = route.engine.client().await?;
+        let client = route.engine.client_for_binding(&binding).await?;
         let fs = crate::rclone::call_fs(&binding);
         // Preview before any deletion (identical shape to the OpenDAL arm).
         let preview = match crate::rclone::ops::stat(

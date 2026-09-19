@@ -1186,7 +1186,7 @@ mod tests {
                 eprintln!("skipping: no rclone binary found");
                 return None;
             };
-            let handle = super::super::proc::RcdHandle::start(&binary)
+            let handle = super::super::proc::RcdHandle::start(&binary, None)
                 .await
                 .expect("rcd should spawn");
             let client = handle.client();

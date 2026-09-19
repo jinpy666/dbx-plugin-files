@@ -8,6 +8,11 @@
 //! `operationId` falls back to a local uuid on Host API 1.0 (ssh-sftp
 //! main.rs:694 pattern).
 
+// The inline MCP connection schema (mcp::stdio::inline_connection_properties)
+// is one large `json!` literal — the default 128-depth macro recursion limit
+// no longer fits it.
+#![recursion_limit = "256"]
+
 mod archive;
 mod engine;
 mod local_downloads;
@@ -109,6 +114,9 @@ impl Plugin {
         // relying on the lazy first-write path.
         runtime.block_on(transfers.load_history(&store));
         let rclone = Arc::new(rclone::RcloneEngine::new());
+        // Keepalive watchdog: proactive crash respawn + re-registration and
+        // idle proxy-group reaping (DBX_FILES_RCLONE_KEEPALIVE_SECS, 0=off).
+        rclone.start_keepalive();
         {
             // Phase D transfers-history persistence: the engine appends
             // terminal single-file jobs to the same transfers.json, and the
@@ -169,7 +177,13 @@ impl Plugin {
         match method {
             "connection/test" => {
                 let connection = StoredConnection::from_lifecycle_params(&params)?;
-                let client = self.rclone.client().await?;
+                // The ::test key keeps a probe from disrupting the live
+                // forwarder of an already-connected same-id connection.
+                let connection = self
+                    .rclone
+                    .prepare(&format!("{}::test", connection.id), &connection)
+                    .await?;
+                let client = self.rclone.client_for(&connection).await?;
                 rclone::registry::test_connection(&client, &connection).await?;
                 Ok(Some(json!({
                     "success": true,
@@ -187,8 +201,31 @@ impl Plugin {
                         engine::LOCAL_CONNECTION_ID
                     ));
                 }
-                let client = self.rclone.client().await?;
-                rclone::registry::connect(&self.rclone.registry, &client, &connection).await?;
+                // A reconnect that changed its proxy config now lives in a
+                // different rcd group; the stale remote in the old group's
+                // config would leak until that rcd dies — pre-delete it
+                // through the old group first.
+                if let Some(old) = self.rclone.registry.get(&connection.id) {
+                    let same_group = old.proxy.as_ref().map(|proxy| proxy.group_key())
+                        == connection.proxy.as_ref().map(|proxy| proxy.group_key());
+                    if !same_group {
+                        if let Ok(old_client) = self.rclone.client_for_binding(&old).await {
+                            let _ = old_client
+                                .config_delete(&rclone::registry::remote_name(&connection.id))
+                                .await;
+                        }
+                    }
+                }
+                let connection = self.rclone.prepare(&connection.id, &connection).await?;
+                let client = self.rclone.client_for(&connection).await?;
+                if let Err(error) =
+                    rclone::registry::connect(&self.rclone.registry, &client, &connection).await
+                {
+                    // A failed connect must not leave a half-established
+                    // forwarder behind for this id.
+                    self.rclone.release_tunnel(&connection.id).await;
+                    return Err(error);
+                }
                 Ok(Some(json!({ "success": true })))
             }
             "connection/disconnect" => {
@@ -199,13 +236,33 @@ impl Plugin {
                     .filter(|value| !value.is_empty())
                     .ok_or("Missing connection id")?
                     .to_string();
-                let client = self.rclone.client().await?;
+                // Route by the registered binding's proxy group so
+                // `config/delete` hits the rcd that actually holds the
+                // remote; an unknown id is already disconnected.
+                let Some(binding) = self.rclone.registry.get(&connection_id) else {
+                    return Ok(Some(json!({ "success": true })));
+                };
+                let client = self.rclone.client_for_binding(&binding).await?;
                 rclone::registry::disconnect(&self.rclone.registry, &client, &connection_id)
                     .await?;
+                // Tear down the tunnel forwarder(s) alongside the remote.
+                self.rclone.release_tunnel(&connection_id).await;
+                // Idle-group teardown: when this was the group's last
+                // connection and no async work is in flight, stop its rcd.
+                // Groups still draining work are reaped by the keepalive
+                // sweep once the work settles.
+                let group = rclone::registry::group_key_of(binding.proxy.as_ref());
+                self.rclone.shutdown_group_if_idle(&group).await;
                 Ok(Some(json!({ "success": true })))
             }
             "files/list" | "files/listPaged" | "files/stat" | "files/size" => {
-                let client = self.rclone.client().await?;
+                let connection_id = params
+                    .get("connectionId")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .ok_or("Missing connectionId")?
+                    .to_string();
+                let client = self.rclone.client_for_id(&connection_id).await?;
                 match method {
                     "files/list" => {
                         let request: model::ListRequest = parse(params)?;
@@ -271,9 +328,9 @@ impl Plugin {
             "files/capabilities" => {
                 let connection_id = connection_id_param(&params)?.to_string();
                 let binding = self.rclone.binding(&connection_id)?;
-                let client = self.rclone.client().await?;
+                let client = self.rclone.client_for_binding(&binding).await?;
                 let capabilities =
-                    rclone::ops::capabilities(&client, &rclone::call_fs(&binding), binding.backend_type)
+                    rclone::ops::capabilities(&client, &rclone::call_fs(&binding), &binding.backend_type)
                         .await?;
                 let mut payload =
                     serde_json::to_value(capabilities).map_err(|error| error.to_string())?;
@@ -285,11 +342,11 @@ impl Plugin {
             "files/quickPaths" => {
                 let connection_id = connection_id_param(&params)?.to_string();
                 let binding = self.rclone.binding(&connection_id)?;
-                let client = self.rclone.client().await?;
+                let client = self.rclone.client_for_binding(&binding).await?;
                 let payload = rclone::ops::quick_paths(
                     &client,
                     &rclone::call_fs(&binding),
-                    binding.backend_type,
+                    &binding.backend_type,
                     &binding.root,
                 )
                 .await?;
@@ -312,7 +369,7 @@ impl Plugin {
                     .unwrap_or_default()
                     .to_string();
                 let binding = self.rclone.binding(&request_connection_id)?;
-                let client = self.rclone.client().await?;
+                let client = self.rclone.client_for_binding(&binding).await?;
                 if method == "files/read" {
                     let request: model::ReadRequest = parse(params)?;
                     // Same clamp as the OpenDAL arm: default 256 KiB, hard
@@ -370,7 +427,7 @@ impl Plugin {
             "files/mkdir" | "files/rmdir" | "files/delete" | "files/purge" => {
                 let request: model::PathRequest = parse(params)?;
                 let binding = self.rclone.binding(&request.connection_id)?;
-                let client = self.rclone.client().await?;
+                let client = self.rclone.client_for_binding(&binding).await?;
                 let fs = rclone::call_fs(&binding);
                 match method {
                     "files/mkdir" => {
@@ -445,7 +502,10 @@ impl Plugin {
                 if method == "files/move" {
                     ensure_binding_deletable(&source_binding)?;
                 }
-                let client = self.rclone.client().await?;
+                // Server-side copy/move runs both fs strings inside one rcd,
+                // so the two connections must share a proxy group.
+                rclone::ensure_same_proxy_group(&source_binding, &target_binding)?;
+                let client = self.rclone.client_for_binding(&source_binding).await?;
                 let src_fs = rclone::call_fs(&source_binding);
                 let dst_fs = rclone::call_fs(&target_binding);
                 if method == "files/copy" {
@@ -488,7 +548,7 @@ impl Plugin {
                 // policy check_rename whitelist on both endpoints itself).
                 ensure_binding_writable(&binding)?;
                 ensure_binding_deletable(&binding)?;
-                let client = self.rclone.client().await?;
+                let client = self.rclone.client_for_binding(&binding).await?;
                 rclone::ops::rename(
                     &client,
                     &rclone::call_fs(&binding),
@@ -504,7 +564,7 @@ impl Plugin {
             "files/publicLink" => {
                 let request: model::PublicLinkRequest = parse(params)?;
                 let binding = self.rclone.binding(&request.connection_id)?;
-                let client = self.rclone.client().await?;
+                let client = self.rclone.client_for_binding(&binding).await?;
                 // `expire_secs` is ignored: rc `operations/publiclink` takes
                 // no expiry parameter (backends without public links surface
                 // rclone's own error text through ops::public_link).
@@ -532,7 +592,7 @@ impl Plugin {
             "files/archiveList" => {
                 let request: model::ArchiveListRequest = parse(params)?;
                 let binding = self.rclone.binding(&request.connection_id)?;
-                let client = self.rclone.client().await?;
+                let client = self.rclone.client_for_binding(&binding).await?;
                 let entries = rclone::archive::archive_list(
                     &client,
                     &rclone::call_fs(&binding),
@@ -555,7 +615,7 @@ impl Plugin {
                 // Extract writes the target tree but never deletes the source
                 // archive → read_only gate applies, allow_delete does not.
                 ensure_binding_writable(&binding)?;
-                let client = self.rclone.client().await?;
+                let client = self.rclone.client_for_binding(&binding).await?;
                 rclone::archive::extract(
                     &client,
                     &rclone::call_fs(&binding),
@@ -592,7 +652,7 @@ impl Plugin {
                         request.target_path
                     ));
                 }
-                let client = self.rclone.client().await?;
+                let client = self.rclone.client_for_binding(&binding).await?;
                 let fs = rclone::call_fs(&binding);
                 // Refuse to overwrite: an existing target is never clobbered
                 // by a compression run (mirror of the OpenDAL arm's
@@ -679,6 +739,11 @@ impl Plugin {
                             remote,
                             declared_size: request.size,
                             throttle: transfers::Throttle::default(),
+                            _work: self
+                                .rclone
+                                .start_work(&rclone::registry::group_key_of(
+                                    binding.proxy.as_ref(),
+                                )),
                         },
                     );
                 }
@@ -701,7 +766,7 @@ impl Plugin {
             "files/download/start" => {
                 let request: model::DownloadStartRequest = parse(params)?;
                 let binding = self.rclone.binding(&request.connection_id)?;
-                let client = self.rclone.client().await?;
+                let client = self.rclone.client_for_binding(&binding).await?;
                 let remote = rclone_gate(
                     &binding.root,
                     binding.lock_to_root,
@@ -786,6 +851,11 @@ impl Plugin {
                             cancel: cancel.clone(),
                             pump_done: pump_done.clone(),
                             staging: staging.clone(),
+                            _work: self
+                                .rclone
+                                .start_work(&rclone::registry::group_key_of(
+                                    binding.proxy.as_ref(),
+                                )),
                         },
                     );
                 }
@@ -797,6 +867,7 @@ impl Plugin {
                 tokio::spawn(rclone_download_pump(
                     Arc::clone(&self.rclone),
                     task_id.clone(),
+                    request.connection_id.clone(),
                     fs,
                     remote,
                     size,
@@ -888,7 +959,9 @@ impl Plugin {
                     let sync_jobs = rclone_lock(&self.sync_jobs);
                     sync_jobs.get(&request.job_id).cloned()
                 }) {
-                    let client = self.rclone.client().await?;
+                    // Status polling must hit the rcd group that owns the
+                    // jobid — the source connection's group.
+                    let client = self.rclone.client_for_id(&record.src_conn).await?;
                     if let Ok(Some(_stats)) = rclone::sync::query_status(&client, &handle).await {
                         let probe = transfers::TransferJob {
                             task_id: request.job_id.clone(),
@@ -1089,10 +1162,13 @@ impl Plugin {
                             } else {
                                 match record.handle.as_ref() {
                                     Some(handle) => {
-                                        Some(Ok(rclone::sync::SyncJobHandle {
-                                            jobid: handle.jobid,
-                                            group: handle.group.clone(),
-                                        }))
+                                        Some(Ok((
+                                            rclone::sync::SyncJobHandle {
+                                                jobid: handle.jobid,
+                                                group: handle.group.clone(),
+                                            },
+                                            record.src_conn.clone(),
+                                        )))
                                     }
                                     // start_job has not returned its handle
                                     // yet (a millisecond-scale window).
@@ -1105,8 +1181,8 @@ impl Plugin {
                     }
                 };
                 if let Some(stop) = sync_stop {
-                    let handle = stop?;
-                    let client = self.rclone.client().await?;
+                    let (handle, src_conn) = stop?;
+                    let client = self.rclone.client_for_id(&src_conn).await?;
                     rclone::sync::stop_job(&client, &handle).await?;
                     rclone_sync_terminal(
                         &self.rclone.jobs,
@@ -1197,8 +1273,14 @@ impl Plugin {
         };
         // Transfer-path client (plan finding #11): no wall-clock timeout —
         // the staged upload streams the whole file through one HTTP body and
-        // would die inside the default client's 30s.
-        let client = self.rclone.client().await?.transfer_client();
+        // would die inside the default client's 30s. Routed to the owning
+        // connection's proxy group (the staging entry carries fs/remote
+        // only; the group lives on the connection).
+        let connection_id = rclone_lock(&self.rclone.jobs)
+            .get(task_id)
+            .map(|job| job.connection_id.clone())
+            .ok_or("Upload task was not found")?;
+        let client = self.rclone.client_for_id(&connection_id).await?.transfer_client();
         let outcome = task.staging.finish(&client, &task.fs, &task.remote, None).await;
         match outcome {
             Ok(_uploaded) => {
@@ -2350,6 +2432,10 @@ struct RcloneSyncRecord {
     max_delete: Option<u64>,
     files_done: u64,
     files_total: Option<u64>,
+    /// In-flight marker for the source connection's proxy group: dropped
+    /// with the record on terminal removal, releasing the idle-group
+    /// teardown hold. Clones share the guard's done flag.
+    work: rclone::WorkGuard,
 }
 
 /// Starts one rclone dir job (`files/syncDir`|`files/copyDir` semantics).
@@ -2371,6 +2457,9 @@ async fn rclone_start_dir_job(
 ) -> Result<String, String> {
     let source_binding = rclone.binding(&request.source_connection_id)?;
     let target_binding = rclone.binding(&request.target_connection_id)?;
+    // Server-side mirror runs both fs strings inside one rcd, so the two
+    // connections must share a proxy group (same rule as files/copy).
+    rclone::ensure_same_proxy_group(&source_binding, &target_binding)?;
     // Gate order/message parity with `validate_dir_job_gates(target,
     // sync)`: the target must be writable, and sync's delete phase
     // additionally requires allow_delete (read_only rejects both).
@@ -2426,6 +2515,11 @@ async fn rclone_start_dir_job(
         max_delete: request.max_delete,
         files_done: 0,
         files_total: None,
+        // Source and target share one proxy group (enforced above), so the
+        // source group's key tracks the rcd the job runs on.
+        work: rclone.start_work(&rclone::registry::group_key_of(
+            source_binding.proxy.as_ref(),
+        )),
     };
     rclone_lock(&rclone.jobs).insert(job_id.clone(), job.clone());
     // Initial queued event before the spawn — enqueue_dir_job
@@ -2530,7 +2624,7 @@ async fn rclone_start_dir_job(
     // Plan finding #11: the transfer client drops the wall-clock
     // timeout — long mirror runs would die inside the 30s default.
     let started = rclone::sync::start_job(
-        rclone.client().await?.transfer_client(),
+        rclone.client_for_binding(&source_binding).await?.transfer_client(),
         rclone::sync::SyncJobParams {
             task_id: job_id.clone(),
             kind: if sync {
@@ -2990,6 +3084,7 @@ impl Drop for RclonePumpDoneGuard {
 async fn rclone_download_pump(
     rclone: Arc<rclone::RcloneEngine>,
     task_id: String,
+    connection_id: String,
     fs: String,
     remote: String,
     size: u64,
@@ -3035,8 +3130,13 @@ async fn rclone_download_pump(
         None => None,
     };
     // Transfer-path client (plan finding #11): no wall-clock timeout, the
-    // pump streams the whole object through one GET body.
-    let client = match rclone.client().await.map(|client| client.transfer_client()) {
+    // pump streams the whole object through one GET body. Routed to the
+    // owning connection's proxy group.
+    let client = match rclone
+        .client_for_id(&connection_id)
+        .await
+        .map(|client| client.transfer_client())
+    {
         Ok(client) => client,
         Err(error) => {
             rclone_pump_cleanup(

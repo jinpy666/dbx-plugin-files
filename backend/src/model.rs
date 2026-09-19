@@ -59,6 +59,108 @@ pub const PROTOCOLS: [&str; 21] = [
     "yandex-disk",
 ];
 
+/// Egress proxy protocol of a connection. Maps onto the rclone ftp/sftp
+/// per-remote `http_proxy` / `socks_proxy` options (plain options on
+/// v1.75.1 — not `IsPassword` keys, so no obscuring ever applies).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyKind {
+    /// HTTP CONNECT proxy (`http://[user[:pass]@]host:port`).
+    Http,
+    /// SOCKS5 proxy (`[user[:pass]@]host:port`).
+    Socks5,
+}
+
+/// A validated per-connection egress proxy parsed from
+/// `external_config.proxy`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProxyConfig {
+    pub kind: ProxyKind,
+    pub host: String,
+    pub port: u16,
+    /// Proxy authentication user; empty means anonymous.
+    pub username: String,
+    /// Proxy authentication password. Secret: never write it to logs,
+    /// events, or any persisted output (see [`Self::group_key`]).
+    pub password: String,
+}
+
+impl ProxyConfig {
+    /// Renders the rclone backend-option value: `http://[user[:pass]@]host:port`
+    /// for [`ProxyKind::Http`] and `[user[:pass]@]host:port` for
+    /// [`ProxyKind::Socks5`]. Reserved URL characters inside the userinfo
+    /// (`:`, `@`, `/`, `%`, …) are percent-encoded; the `@` segment is
+    /// omitted entirely without credentials (a password without a username
+    /// has no userinfo shape and is dropped).
+    pub fn url(&self) -> String {
+        let authority = format!("{}:{}", self.host, self.port);
+        let userinfo = if self.username.is_empty() {
+            String::new()
+        } else if self.password.is_empty() {
+            format!("{}@", percent_encode_userinfo(&self.username))
+        } else {
+            format!(
+                "{}:{}@",
+                percent_encode_userinfo(&self.username),
+                percent_encode_userinfo(&self.password)
+            )
+        };
+        match self.kind {
+            ProxyKind::Http => format!("http://{userinfo}{authority}"),
+            ProxyKind::Socks5 => format!("{userinfo}{authority}"),
+        }
+    }
+
+    /// In-process grouping key for the engine's per-proxy rcd routing: the
+    /// full [`Self::url`], so two connections share an rcd only when their
+    /// proxy endpoint *and* credentials match exactly. The key lives only
+    /// in process memory — never write it to logs, events, or any
+    /// persisted output: it embeds the proxy password.
+    pub fn group_key(&self) -> String {
+        self.url()
+    }
+}
+
+/// One jump host of an SSH tunnel chain (DBX jumpHosts shape, key auth
+/// only). `port == 0` means the ssh default (22).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JumpHost {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+}
+
+/// SSH tunnel protection for a connection: the sidecar keeps a
+/// `ssh -N -L` local forwarder alive and rewrites the connection endpoint
+/// to `127.0.0.1:<port>` (see `rclone::tunnel`). Key authentication only —
+/// `password`-shaped fields are rejected at parse time so a secret can
+/// never reach argv or a config file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TunnelConfig {
+    /// Ordered jump chain; the LAST hop is the ssh login target and the
+    /// forward destination (`target_host:target_port` — derived from the
+    /// connection endpoint) must be reachable from its network.
+    pub jump_hosts: Vec<JumpHost>,
+    /// Optional explicit private key; empty = ssh defaults / agent.
+    pub identity_file: String,
+}
+
+/// Minimal percent-encoding for a URL userinfo component: every byte
+/// outside the RFC 3986 `unreserved` set is escaped as `%XX`. Covers the
+/// reserved characters (`:`, `@`, `/`, `%`, `?`, `#`, …) and non-ASCII
+/// bytes; handwritten to avoid pulling in a URL crate.
+fn percent_encode_userinfo(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(*byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push_str(&format!("{byte:02X}"));
+        }
+    }
+    encoded
+}
+
 /// A validated connection parsed from lifecycle params. Secret fields
 /// (`password`, `secret_access_key`, `secret_id`, `secret_key`,
 /// `security_token`) are kept in memory only.
@@ -129,6 +231,14 @@ pub struct StoredConnection {
     /// Private key content or path (`connection_secrets.key`; legacy config fallback).
     pub key: String,
     pub known_hosts_strategy: String,
+    // --- egress proxy (ftp/sftp backend options; engine per-proxy rcd grouping) ---
+    /// Optional proxy (`external_config.proxy`); `None` when absent or null.
+    pub proxy: Option<ProxyConfig>,
+    // --- SSH tunnel (engine keeps a local `ssh -N -L` forwarder; the
+    // endpoint is rewritten to 127.0.0.1:<port>) ---
+    /// Optional jump chain (`external_config.tunnel`); `None` when absent
+    /// or null. Key authentication only.
+    pub tunnel: Option<TunnelConfig>,
     // --- smb ---
     /// Optional share name (`external_config.share`). Empty enables SMB
     /// server-level share discovery; a path's first component then selects
@@ -212,6 +322,9 @@ impl StoredConnection {
             .filter(|value| *value > 0)
             .unwrap_or(0);
 
+        let proxy = parse_proxy(external_config, connection_secrets)?;
+        let tunnel = parse_tunnel(external_config, &protocol)?;
+
         Ok(Self {
             id,
             name,
@@ -254,6 +367,8 @@ impl StoredConnection {
                 optional_string(external_config, "key")
             },
             known_hosts_strategy: optional_string(external_config, "known_hosts_strategy"),
+            proxy,
+            tunnel,
             share: optional_string(external_config, "share"),
             domain: optional_string(external_config, "domain"),
             // 只读门禁收敛：连接表单 read_only（插件特定配置项）∥ 宿主标准
@@ -568,6 +683,351 @@ fn bool_field(object: Option<&serde_json::Map<String, Value>>, key: &str, defaul
         },
         Some(_) => default,
     }
+}
+
+/// Parses the optional `external_config.proxy` object into a
+/// [`ProxyConfig`]; absent or `null` yields `Ok(None)`. The password
+/// prefers the secret store (`connection_secrets.proxy_password`) and
+/// falls back to the form-direct `proxy.password`. Strict by contract: no
+/// protocol-default port guessing, an explicit integer in `1..=65535` is
+/// mandatory. Every error carries the field path
+/// (`external_config.proxy.…`) so the host form can point at the input.
+fn parse_proxy(
+    external_config: Option<&serde_json::Map<String, Value>>,
+    connection_secrets: Option<&serde_json::Map<String, Value>>,
+) -> Result<Option<ProxyConfig>, String> {
+    // The declared form fields are flat (`proxy_type`/`proxy_host`/…) because
+    // the host assembles `external_config` as a flat key/value map; the
+    // nested `proxy` object stays the richer API-level shape and wins when
+    // both are present.
+    if let Some(value) = external_config.and_then(|config| config.get("proxy")) {
+        if !value.is_null() {
+            let proxy = value
+                .as_object()
+                .ok_or_else(|| "external_config.proxy must be a JSON object".to_string())?;
+            return proxy_from_object(proxy, connection_secrets).map(Some);
+        }
+    }
+    proxy_from_flat(external_config, connection_secrets)
+}
+
+/// Nested-object shape (`external_config.proxy.{type,host,port,username,
+/// password}`); see [`parse_proxy`] for precedence.
+fn proxy_from_object(
+    proxy: &serde_json::Map<String, Value>,
+    connection_secrets: Option<&serde_json::Map<String, Value>>,
+) -> Result<ProxyConfig, String> {
+    let kind = match proxy.get("type").and_then(Value::as_str).map(str::trim) {
+        None | Some("") => {
+            return Err(
+                "external_config.proxy.type is required; expected \"http\" or \"socks5\""
+                    .to_string(),
+            )
+        }
+        Some(kind) => match kind.to_ascii_lowercase().as_str() {
+            "http" => ProxyKind::Http,
+            "socks5" => ProxyKind::Socks5,
+            other => {
+                return Err(format!(
+                    "external_config.proxy.type '{other}' is unsupported; expected \
+                     \"http\" or \"socks5\""
+                ))
+            }
+        },
+    };
+    let host = proxy
+        .get("host")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "external_config.proxy.host is required and must be a non-empty string".to_string()
+        })?;
+    let port = proxy
+        .get("port")
+        .filter(|value| !value.is_null())
+        .and_then(Value::as_u64)
+        .and_then(|value| u16::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| {
+            "external_config.proxy.port is required and must be an integer in 1..=65535"
+                .to_string()
+        })?;
+    let username = optional_string(Some(proxy), "username");
+    // Secret precedence: the secret store wins over the form-direct fallback.
+    let password =
+        if connection_secrets.is_some_and(|secrets| secrets.contains_key("proxy_password")) {
+            secret_string(connection_secrets, "proxy_password")
+        } else {
+            optional_string(Some(proxy), "password")
+        };
+    Ok(ProxyConfig {
+        kind,
+        host: host.to_string(),
+        port,
+        username,
+        password,
+    })
+}
+
+/// Flat declared-form shape: `proxy_type`/`proxy_host`/`proxy_port`/
+/// `proxy_username` in `external_config` plus `proxy_password` in
+/// `connection_secrets` (secret binding only — no form-direct fallback
+/// here). `off`/empty type yields `None`; an explicit http/socks5 type
+/// validates like the nested object, with errors carrying the flat field
+/// paths the form renders.
+fn proxy_from_flat(
+    external_config: Option<&serde_json::Map<String, Value>>,
+    connection_secrets: Option<&serde_json::Map<String, Value>>,
+) -> Result<Option<ProxyConfig>, String> {
+    let Some(config) = external_config else {
+        return Ok(None);
+    };
+    let kind = match config
+        .get("proxy_type")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+    {
+        "" | "off" => return Ok(None),
+        kind => match kind.to_ascii_lowercase().as_str() {
+            "http" => ProxyKind::Http,
+            "socks5" => ProxyKind::Socks5,
+            other => {
+                return Err(format!(
+                    "external_config.proxy_type '{other}' is unsupported; expected \
+                     \"off\", \"http\" or \"socks5\""
+                ))
+            }
+        },
+    };
+    let host = config
+        .get("proxy_host")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "external_config.proxy_host is required and must be a non-empty string".to_string()
+        })?;
+    let port = match config.get("proxy_port") {
+        None | Some(Value::Null) => {
+            return Err(
+                "external_config.proxy_port is required and must be an integer in 1..=65535"
+                    .to_string(),
+            )
+        }
+        Some(Value::Number(number)) => number.as_u64().and_then(|value| u16::try_from(value).ok()),
+        // The declared field is a text input — the wire value is a string.
+        Some(Value::String(raw)) => raw.trim().parse::<u16>().ok(),
+        Some(_) => None,
+    }
+    .filter(|value| *value > 0)
+    .ok_or_else(|| {
+        "external_config.proxy_port is required and must be an integer in 1..=65535".to_string()
+    })?;
+    let username = optional_string(Some(config), "proxy_username");
+    let password = secret_string(connection_secrets, "proxy_password");
+    Ok(Some(ProxyConfig {
+        kind,
+        host: host.to_string(),
+        port,
+        username,
+        password,
+    }))
+}
+
+/// SSH tunnel spec (`external_config.tunnel`): a non-empty jump chain in
+/// DBX jumpHosts shape plus an optional identity file. Key authentication
+/// only — a `password`-shaped field anywhere in the spec is rejected with
+/// an actionable error so a secret can never reach argv or an ssh config.
+/// The tunnel does not apply to the built-in local filesystem (`fs` has no
+/// remote endpoint to forward).
+///
+/// The declared form submits the flat pair `tunnel_jump_hosts` (ssh -J
+/// grammar, see [`parse_jump_chain`]) + `tunnel_identity_file`; the nested
+/// object is the richer API-level shape and wins when both are present.
+fn parse_tunnel(
+    external_config: Option<&serde_json::Map<String, Value>>,
+    protocol: &str,
+) -> Result<Option<TunnelConfig>, String> {
+    if let Some(value) = external_config.and_then(|config| config.get("tunnel")) {
+        if !value.is_null() {
+            return parse_tunnel_object(value, protocol).map(Some);
+        }
+    }
+    parse_tunnel_flat(external_config, protocol)
+}
+
+fn parse_tunnel_object(value: &Value, protocol: &str) -> Result<TunnelConfig, String> {
+    if protocol == "fs" {
+        return Err(
+            "external_config.tunnel applies to remote connections only; the local \
+             filesystem has no endpoint to forward"
+                .to_string(),
+        );
+    }
+    let tunnel = value
+        .as_object()
+        .ok_or_else(|| "external_config.tunnel must be a JSON object".to_string())?;
+    if let Some(known) = tunnel
+        .keys()
+        .find(|key| key.eq_ignore_ascii_case("password") || key.eq_ignore_ascii_case("pass"))
+    {
+        return Err(format!(
+            "external_config.tunnel.{known} is not supported: ssh tunnels are key-\
+             authenticated only (BatchMode) — provision a key or agent on the jump host"
+        ));
+    }
+    let hops = tunnel
+        .get("jump_hosts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            "external_config.tunnel.jump_hosts is required and must be a non-empty array"
+                .to_string()
+        })?;
+    if hops.is_empty() {
+        return Err(
+            "external_config.tunnel.jump_hosts must list at least one jump host".to_string(),
+        );
+    }
+    let mut jump_hosts = Vec::with_capacity(hops.len());
+    for (index, hop) in hops.iter().enumerate() {
+        let hop = hop.as_object().ok_or_else(|| {
+            format!("external_config.tunnel.jump_hosts[{index}] must be an object")
+        })?;
+        if let Some(known) = hop
+            .keys()
+            .find(|key| key.eq_ignore_ascii_case("password") || key.eq_ignore_ascii_case("pass"))
+        {
+            return Err(format!(
+                "external_config.tunnel.jump_hosts[{index}].{known} is not supported: \
+                 ssh tunnels are key-authenticated only (BatchMode) — provision a key \
+                 or agent on the jump host"
+            ));
+        }
+        let host = hop
+            .get("host")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "external_config.tunnel.jump_hosts[{index}].host is required and must \
+                     be a non-empty string"
+                )
+            })?;
+        let port = hop
+            .get("port")
+            .filter(|value| !value.is_null())
+            .and_then(Value::as_u64)
+            .and_then(|value| u16::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(0); // 0 = ssh default (22)
+        let username = optional_string(Some(hop), "username");
+        jump_hosts.push(JumpHost {
+            host: host.to_string(),
+            port,
+            username,
+        });
+    }
+    let identity_file = optional_string(Some(tunnel), "identity_file");
+    Ok(TunnelConfig {
+        jump_hosts,
+        identity_file,
+    })
+}
+
+/// Flat declared-form shape: `tunnel_jump_hosts` (ssh -J grammar string)
+/// plus `tunnel_identity_file`. An absent/empty chain means "no tunnel";
+/// the chain drives — an identity file alone never enables a tunnel.
+fn parse_tunnel_flat(
+    external_config: Option<&serde_json::Map<String, Value>>,
+    protocol: &str,
+) -> Result<Option<TunnelConfig>, String> {
+    let Some(config) = external_config else {
+        return Ok(None);
+    };
+    let chain = optional_string(Some(config), "tunnel_jump_hosts");
+    let chain = chain.trim();
+    if chain.is_empty() {
+        return Ok(None);
+    }
+    if protocol == "fs" {
+        return Err(
+            "external_config.tunnel_jump_hosts applies to remote connections only; the \
+             local filesystem has no endpoint to forward"
+                .to_string(),
+        );
+    }
+    let identity_file = optional_string(Some(config), "tunnel_identity_file");
+    Ok(Some(TunnelConfig {
+        jump_hosts: parse_jump_chain(chain)?,
+        identity_file,
+    }))
+}
+
+/// ssh -J grammar: comma-separated `[user@]host[:port]` entries; the last
+/// entry is the ssh login target. Bracketed IPv6 literals are supported
+/// (`[2001:db8::1]:22`); a bare (unbracketed) IPv6 host is not a valid
+/// entry. A missing port means the ssh default. Errors carry the flat
+/// field path (`external_config.tunnel_jump_hosts[i]`) the form renders.
+fn parse_jump_chain(value: &str) -> Result<Vec<JumpHost>, String> {
+    let mut hops = Vec::new();
+    for (index, entry) in value.split(',').enumerate() {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            return Err(format!(
+                "external_config.tunnel_jump_hosts[{index}] is empty; expected \
+                 [user@]host[:port]"
+            ));
+        }
+        let (username, rest) = match entry.split_once('@') {
+            Some((user, rest)) => (user.trim().to_string(), rest.trim()),
+            None => (String::new(), entry),
+        };
+        let (host, port_raw) = if let Some(inner) = rest.strip_prefix('[') {
+            let (host, tail) = inner
+                .split_once(']')
+                .ok_or_else(|| {
+                    format!(
+                        "external_config.tunnel_jump_hosts[{index}] has an unterminated \
+                         IPv6 bracket"
+                    )
+                })?
+                ;
+            (host, tail.strip_prefix(':'))
+        } else {
+            match rest.rsplit_once(':') {
+                Some((host, tail)) if tail.is_empty() => (host, None),
+                Some((host, tail)) => (host, Some(tail)),
+                None => (rest, None),
+            }
+        };
+        if host.is_empty() {
+            return Err(format!(
+                "external_config.tunnel_jump_hosts[{index}] has no host"
+            ));
+        }
+        let port = match port_raw {
+            None => 0, // ssh default (22)
+            Some(raw) => raw
+                .parse::<u16>()
+                .ok()
+                .filter(|value| *value > 0)
+                .ok_or_else(|| {
+                    format!(
+                        "external_config.tunnel_jump_hosts[{index}] has an invalid port \
+                         '{raw}' (expected 1..=65535)"
+                    )
+                })?,
+        };
+        hops.push(JumpHost {
+            host: host.to_string(),
+            port,
+            username,
+        });
+    }
+    Ok(hops)
 }
 
 #[cfg(test)]
@@ -907,6 +1367,490 @@ mod tests {
         .unwrap();
         assert_eq!(minimal.share, "");
         assert_eq!(minimal.domain, "");
+    }
+
+    // -- egress proxy (external_config.proxy) ------------------------------------
+
+    #[test]
+    fn parses_http_proxy_with_secret_password() {
+        let connection = StoredConnection::from_lifecycle_params(&json!({
+            "connection": {
+                "id": "conn-ftp-proxy",
+                "external_config": {
+                    "protocol": "ftp",
+                    "endpoint": "ftp://files.example.com",
+                    "proxy": {
+                        "type": "http",
+                        "host": "proxy.example.com",
+                        "port": 3128,
+                        "username": "proxyuser"
+                    }
+                },
+                "connection_secrets": { "proxy_password": fixture("proxy-pass") }
+            }
+        }))
+        .unwrap();
+        let proxy = connection.proxy.as_ref().expect("proxy parsed");
+        assert_eq!(proxy.kind, ProxyKind::Http);
+        assert_eq!(proxy.host, "proxy.example.com");
+        assert_eq!(proxy.port, 3128);
+        assert_eq!(proxy.username, "proxyuser");
+        assert_eq!(
+            proxy.password,
+            fixture("proxy-pass"),
+            "password comes from the secret store"
+        );
+    }
+
+    #[test]
+    fn parses_socks5_proxy_with_form_password_fallback() {
+        let connection = StoredConnection::from_lifecycle_params(&json!({
+            "connection": {
+                "id": "conn-sftp-proxy",
+                "external_config": {
+                    "protocol": "sftp",
+                    "proxy": {
+                        "type": "SOCKS5",
+                        "host": "10.0.0.1",
+                        "port": 1080,
+                        "password": fixture("form-direct")
+                    }
+                },
+                "connection_secrets": {}
+            }
+        }))
+        .unwrap();
+        let proxy = connection.proxy.expect("proxy parsed");
+        assert_eq!(proxy.kind, ProxyKind::Socks5);
+        assert_eq!(proxy.host, "10.0.0.1");
+        assert_eq!(proxy.port, 1080);
+        assert_eq!(proxy.username, "", "username optional");
+        assert_eq!(
+            proxy.password,
+            fixture("form-direct"),
+            "form-direct proxy.password is the fallback"
+        );
+    }
+
+    #[test]
+    fn secret_proxy_password_overrides_form_fallback() {
+        let connection = StoredConnection::from_lifecycle_params(&json!({
+            "connection": {
+                "id": "c",
+                "external_config": {
+                    "protocol": "ftp",
+                    "proxy": {
+                        "type": "http",
+                        "host": "proxy.example.com",
+                        "port": 8080,
+                        "password": fixture("form-direct")
+                    }
+                },
+                "connection_secrets": { "proxy_password": fixture("secret-store") }
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            connection.proxy.as_ref().expect("proxy").password,
+            fixture("secret-store"),
+            "connection_secrets.proxy_password wins over proxy.password"
+        );
+    }
+
+    #[test]
+    fn proxy_field_errors_carry_field_paths() {
+        let build = |proxy: Value| {
+            StoredConnection::from_lifecycle_params(&json!({
+                "connection": {
+                    "id": "c",
+                    "external_config": { "protocol": "ftp", "proxy": proxy }
+                }
+            }))
+        };
+        let unsupported = build(json!({ "type": "socks4", "host": "h", "port": 1080 }))
+            .unwrap_err();
+        assert!(
+            unsupported.contains("proxy.type") && unsupported.contains("socks4"),
+            "{unsupported}"
+        );
+        let missing_type = build(json!({ "host": "h", "port": 1080 })).unwrap_err();
+        assert!(missing_type.contains("proxy.type"), "{missing_type}");
+
+        let missing_host = build(json!({ "type": "http", "port": 8080 })).unwrap_err();
+        assert!(missing_host.contains("proxy.host"), "{missing_host}");
+        let blank_host = build(json!({ "type": "http", "host": "  ", "port": 8080 }))
+            .unwrap_err();
+        assert!(blank_host.contains("proxy.host"), "{blank_host}");
+
+        let missing_port = build(json!({ "type": "http", "host": "h" })).unwrap_err();
+        assert!(missing_port.contains("proxy.port"), "{missing_port}");
+        let zero_port = build(json!({ "type": "http", "host": "h", "port": 0 })).unwrap_err();
+        assert!(zero_port.contains("proxy.port"), "{zero_port}");
+        let huge_port =
+            build(json!({ "type": "http", "host": "h", "port": 70_000 })).unwrap_err();
+        assert!(huge_port.contains("proxy.port"), "{huge_port}");
+        let text_port =
+            build(json!({ "type": "http", "host": "h", "port": "8080" })).unwrap_err();
+        assert!(text_port.contains("proxy.port"), "{text_port}");
+
+        let not_object = build(json!("http://proxy:8080")).unwrap_err();
+        assert!(
+            not_object.contains("proxy") && not_object.contains("object"),
+            "{not_object}"
+        );
+    }
+
+    #[test]
+    fn absent_or_null_proxy_stays_none() {
+        let absent = StoredConnection::from_lifecycle_params(&json!({
+            "connection": {
+                "id": "c",
+                "external_config": { "protocol": "ftp", "endpoint": "ftp://h" }
+            }
+        }))
+        .unwrap();
+        assert!(absent.proxy.is_none());
+
+        let null = StoredConnection::from_lifecycle_params(&json!({
+            "connection": {
+                "id": "c",
+                "external_config": { "protocol": "ftp", "proxy": null }
+            }
+        }))
+        .unwrap();
+        assert!(null.proxy.is_none());
+    }
+
+    #[test]
+    fn proxy_url_and_group_key_formats() {
+        let anonymous = ProxyConfig {
+            kind: ProxyKind::Http,
+            host: "proxy.example.com".to_string(),
+            port: 8080,
+            username: String::new(),
+            password: String::new(),
+        };
+        assert_eq!(anonymous.url(), "http://proxy.example.com:8080");
+        assert_eq!(
+            anonymous.group_key(),
+            anonymous.url(),
+            "group key is the full url"
+        );
+
+        let user_only = ProxyConfig {
+            kind: ProxyKind::Http,
+            host: "proxy.example.com".to_string(),
+            port: 8080,
+            username: "proxyuser".to_string(),
+            password: String::new(),
+        };
+        assert_eq!(user_only.url(), "http://proxyuser@proxy.example.com:8080");
+
+        let user_pass = ProxyConfig {
+            kind: ProxyKind::Socks5,
+            host: "10.0.0.1".to_string(),
+            port: 1080,
+            username: "proxyuser".to_string(),
+            password: fixture("proxy-pass"),
+        };
+        assert_eq!(
+            user_pass.url(),
+            // fixture values contain `::`, so the userinfo password must
+            // travel percent-encoded (`:` → %3A) — pinned literally here.
+            "proxyuser:fixture%3A%3Aproxy-pass@10.0.0.1:1080",
+            "socks5 has no scheme prefix"
+        );
+
+        let reserved = ProxyConfig {
+            kind: ProxyKind::Http,
+            host: "proxy.example.com".to_string(),
+            port: 443,
+            username: "us:er@1/%".to_string(),
+            password: "pa:ss/w#rd ?".to_string(),
+        };
+        assert_eq!(
+            reserved.url(),
+            "http://us%3Aer%401%2F%25:pa%3Ass%2Fw%23rd%20%3F@proxy.example.com:443",
+            "URL-reserved characters percent-encode"
+        );
+    }
+
+    #[test]
+    fn parses_flat_form_proxy_shape() {
+        // The declared form submits flat keys; the secret binding routes the
+        // password into connection_secrets.
+        let params = json!({
+            "connection": {
+                "id": "c",
+                "external_config": {
+                    "protocol": "ftp",
+                    "proxy_type": "http",
+                    "proxy_host": " proxy.example.com ",
+                    "proxy_port": "8080",
+                    "proxy_username": "proxyuser"
+                },
+                "connection_secrets": { "proxy_password": fixture("form-pass") }
+            }
+        });
+        let connection = StoredConnection::from_lifecycle_params(&params).unwrap();
+        let proxy = connection.proxy.expect("flat http proxy");
+        assert_eq!(proxy.kind, ProxyKind::Http);
+        assert_eq!(proxy.host, "proxy.example.com", "host trims");
+        assert_eq!(proxy.port, 8080, "text port parses");
+        assert_eq!(proxy.username, "proxyuser");
+        assert_eq!(proxy.password, fixture("form-pass"));
+
+        // Numeric wire port (older host payload) and socks5 kind.
+        let socks = json!({
+            "connection": {
+                "id": "c",
+                "external_config": {
+                    "protocol": "sftp",
+                    "proxy_type": "socks5",
+                    "proxy_host": "10.0.0.1",
+                    "proxy_port": 1080
+                }
+            }
+        });
+        let connection = StoredConnection::from_lifecycle_params(&socks).unwrap();
+        let proxy = connection.proxy.expect("flat socks5 proxy");
+        assert_eq!(proxy.kind, ProxyKind::Socks5);
+        assert_eq!(proxy.port, 1080);
+        assert_eq!(proxy.username, "");
+        assert_eq!(proxy.password, "");
+    }
+
+    #[test]
+    fn flat_proxy_off_or_absent_is_none() {
+        for external in [
+            json!({ "protocol": "ftp", "proxy_type": "off" }),
+            json!({ "protocol": "ftp", "proxy_type": "" }),
+            json!({ "protocol": "ftp" }),
+        ] {
+            let params = json!({ "connection": { "id": "c", "external_config": external } });
+            let connection = StoredConnection::from_lifecycle_params(&params).unwrap();
+            assert!(connection.proxy.is_none(), "{external}");
+        }
+    }
+
+    #[test]
+    fn flat_proxy_errors_carry_flat_field_paths() {
+        let bad_type = json!({
+            "connection": {
+                "id": "c",
+                "external_config": { "protocol": "ftp", "proxy_type": "socks4", "proxy_host": "h", "proxy_port": "1" }
+            }
+        });
+        let error = StoredConnection::from_lifecycle_params(&bad_type).unwrap_err();
+        assert!(error.contains("external_config.proxy_type"), "{error}");
+
+        let missing_host = json!({
+            "connection": {
+                "id": "c",
+                "external_config": { "protocol": "ftp", "proxy_type": "http", "proxy_port": "1" }
+            }
+        });
+        let error = StoredConnection::from_lifecycle_params(&missing_host).unwrap_err();
+        assert!(error.contains("external_config.proxy_host"), "{error}");
+
+        let bad_port = json!({
+            "connection": {
+                "id": "c",
+                "external_config": { "protocol": "ftp", "proxy_type": "http", "proxy_host": "h", "proxy_port": "0" }
+            }
+        });
+        let error = StoredConnection::from_lifecycle_params(&bad_port).unwrap_err();
+        assert!(error.contains("external_config.proxy_port"), "{error}");
+
+        let missing_port = json!({
+            "connection": {
+                "id": "c",
+                "external_config": { "protocol": "ftp", "proxy_type": "http", "proxy_host": "h" }
+            }
+        });
+        let error = StoredConnection::from_lifecycle_params(&missing_port).unwrap_err();
+        assert!(error.contains("external_config.proxy_port"), "{error}");
+    }
+
+    #[test]
+    fn parses_tunnel_jump_chain() {
+        let params = json!({
+            "connection": {
+                "id": "c",
+                "external_config": {
+                    "protocol": "s3",
+                    "endpoint": "https://s3.internal.example:443",
+                    "tunnel": {
+                        "jump_hosts": [
+                            { "host": " j1.example.com ", "port": 2222, "username": "ops" },
+                            { "host": "j2.corp" }
+                        ],
+                        "identity_file": "~/.ssh/dbx-jump"
+                    }
+                }
+            }
+        });
+        let connection = StoredConnection::from_lifecycle_params(&params).unwrap();
+        let tunnel = connection.tunnel.expect("tunnel spec");
+        assert_eq!(tunnel.jump_hosts.len(), 2);
+        assert_eq!(tunnel.jump_hosts[0].host, "j1.example.com", "host trims");
+        assert_eq!(tunnel.jump_hosts[0].port, 2222);
+        assert_eq!(tunnel.jump_hosts[0].username, "ops");
+        assert_eq!(tunnel.jump_hosts[1].port, 0, "missing port = ssh default");
+        assert_eq!(tunnel.jump_hosts[1].username, "");
+        assert_eq!(tunnel.identity_file, "~/.ssh/dbx-jump");
+    }
+
+    #[test]
+    fn tunnel_absent_or_null_is_none() {
+        for external in [json!({ "protocol": "s3" }), json!({ "protocol": "s3", "tunnel": null })] {
+            let params = json!({ "connection": { "id": "c", "external_config": external } });
+            let connection = StoredConnection::from_lifecycle_params(&params).unwrap();
+            assert!(connection.tunnel.is_none(), "{external}");
+        }
+    }
+
+    #[test]
+    fn tunnel_rejects_passwords_empty_chain_and_fs_protocol() {
+        let password_field = json!({
+            "connection": {
+                "id": "c",
+                "external_config": {
+                    "protocol": "s3",
+                    "tunnel": { "jump_hosts": [ { "host": "j1", "password": fixture("pw") } ] }
+                }
+            }
+        });
+        let error = StoredConnection::from_lifecycle_params(&password_field).unwrap_err();
+        assert!(
+            error.contains("jump_hosts[0].password") && error.contains("key"),
+            "{error}"
+        );
+
+        let empty_chain = json!({
+            "connection": {
+                "id": "c",
+                "external_config": { "protocol": "s3", "tunnel": { "jump_hosts": [] } }
+            }
+        });
+        let error = StoredConnection::from_lifecycle_params(&empty_chain).unwrap_err();
+        assert!(error.contains("at least one jump host"), "{error}");
+
+        let fs_tunnel = json!({
+            "connection": {
+                "id": "c",
+                "external_config": {
+                    "protocol": "fs",
+                    "tunnel": { "jump_hosts": [ { "host": "j1" } ] }
+                }
+            }
+        });
+        let error = StoredConnection::from_lifecycle_params(&fs_tunnel).unwrap_err();
+        assert!(error.contains("remote connections only"), "{error}");
+    }
+
+    #[test]
+    fn parses_flat_form_tunnel_chain() {
+        let params = json!({
+            "connection": {
+                "id": "c",
+                "external_config": {
+                    "protocol": "s3",
+                    "endpoint": "https://s3.internal.example:443",
+                    "tunnel_jump_hosts": " ops@j1.example.com:2222 , j2.corp , [2001:db8::9]:2200 ",
+                    "tunnel_identity_file": "~/.ssh/dbx-jump"
+                }
+            }
+        });
+        let connection = StoredConnection::from_lifecycle_params(&params).unwrap();
+        let tunnel = connection.tunnel.expect("flat tunnel spec");
+        assert_eq!(tunnel.jump_hosts.len(), 3);
+        assert_eq!(tunnel.jump_hosts[0].username, "ops");
+        assert_eq!(tunnel.jump_hosts[0].host, "j1.example.com");
+        assert_eq!(tunnel.jump_hosts[0].port, 2222);
+        assert_eq!(tunnel.jump_hosts[1].host, "j2.corp");
+        assert_eq!(tunnel.jump_hosts[1].port, 0, "missing port = ssh default");
+        assert_eq!(tunnel.jump_hosts[2].host, "2001:db8::9", "bracketed IPv6");
+        assert_eq!(tunnel.jump_hosts[2].port, 2200);
+        assert_eq!(tunnel.identity_file, "~/.ssh/dbx-jump");
+    }
+
+    #[test]
+    fn flat_tunnel_empty_chain_is_none_even_with_identity() {
+        for chain in [Some(""), Some("   "), None] {
+            let mut external = json!({ "protocol": "s3", "tunnel_identity_file": "~/.ssh/k" });
+            if let Some(chain) = chain {
+                external["tunnel_jump_hosts"] = json!(chain);
+            }
+            let params = json!({ "connection": { "id": "c", "external_config": external } });
+            let connection = StoredConnection::from_lifecycle_params(&params).unwrap();
+            assert!(
+                connection.tunnel.is_none(),
+                "the chain drives — an identity file alone never enables a tunnel"
+            );
+        }
+    }
+
+    #[test]
+    fn nested_tunnel_wins_over_flat_fields() {
+        let params = json!({
+            "connection": {
+                "id": "c",
+                "external_config": {
+                    "protocol": "s3",
+                    "tunnel_jump_hosts": "flat-host",
+                    "tunnel": { "jump_hosts": [ { "host": "nested-host", "port": 2223 } ] }
+                }
+            }
+        });
+        let connection = StoredConnection::from_lifecycle_params(&params).unwrap();
+        let tunnel = connection.tunnel.expect("nested wins");
+        assert_eq!(tunnel.jump_hosts.len(), 1);
+        assert_eq!(tunnel.jump_hosts[0].host, "nested-host");
+        assert_eq!(tunnel.jump_hosts[0].port, 2223);
+    }
+
+    #[test]
+    fn flat_tunnel_chain_errors_carry_flat_paths() {
+        let case = |chain: &str| {
+            let params = json!({
+                "connection": {
+                    "id": "c",
+                    "external_config": { "protocol": "s3", "tunnel_jump_hosts": chain }
+                }
+            });
+            StoredConnection::from_lifecycle_params(&params).unwrap_err()
+        };
+        let error = case("a@b, ,c");
+        assert!(error.contains("tunnel_jump_hosts[1] is empty"), "{error}");
+        let error = case("b:70000");
+        assert!(error.contains("tunnel_jump_hosts[0] has an invalid port"), "{error}");
+        let error = case("[::1:22");
+        assert!(error.contains("unterminated IPv6 bracket"), "{error}");
+        let error = case("b:abc");
+        assert!(error.contains("tunnel_jump_hosts[0] has an invalid port"), "{error}");
+
+        // A trailing colon is tolerated as "port omitted".
+        let params = json!({
+            "connection": {
+                "id": "c",
+                "external_config": { "protocol": "s3", "tunnel_jump_hosts": "b:" }
+            }
+        });
+        let connection = StoredConnection::from_lifecycle_params(&params).unwrap();
+        assert_eq!(connection.tunnel.expect("tolerated chain").jump_hosts[0].host, "b");
+        let error = case("b:abc");
+        assert!(error.contains("tunnel_jump_hosts[0] has an invalid port"), "{error}");
+
+        // fs + non-empty flat chain is rejected like the nested shape.
+        let params = json!({
+            "connection": {
+                "id": "c",
+                "external_config": { "protocol": "fs", "tunnel_jump_hosts": "j1" }
+            }
+        });
+        let error = StoredConnection::from_lifecycle_params(&params).unwrap_err();
+        assert!(error.contains("remote connections only"), "{error}");
     }
 
     #[test]

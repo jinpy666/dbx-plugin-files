@@ -29,6 +29,45 @@ pub struct RcdEndpoint {
     pub pass: String,
 }
 
+/// Environment overrides applied to an rcd child for one proxy group.
+///
+/// `Some(value)` sets the variable; `None` removes it from the child env.
+/// Values may embed proxy credentials — they live only in process memory
+/// and the child env; never log them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RcdEnv {
+    pub http_proxy: Option<String>,
+    pub https_proxy: Option<String>,
+    pub no_proxy: Option<String>,
+}
+
+impl RcdEnv {
+    /// Applies the overrides to `command`. Go's net/http honors both the
+    /// canonical uppercase names and the lowercase variants, so a set
+    /// writes both spellings and a removal drops both — a proxy-group
+    /// child must never fall back to a stale sidecar proxy. Operates on
+    /// the std command (wrapped into the tokio command by [`RcdHandle::start`])
+    /// so tests can assert on `get_envs`.
+    fn apply_to(&self, command: &mut std::process::Command) {
+        for (upper, lower, value) in [
+            ("HTTP_PROXY", "http_proxy", &self.http_proxy),
+            ("HTTPS_PROXY", "https_proxy", &self.https_proxy),
+            ("NO_PROXY", "no_proxy", &self.no_proxy),
+        ] {
+            match value {
+                Some(value) => {
+                    command.env(upper, value.as_str());
+                    command.env(lower, value.as_str());
+                }
+                None => {
+                    command.env_remove(upper);
+                    command.env_remove(lower);
+                }
+            }
+        }
+    }
+}
+
 /// A running `rclone rcd` child plus its private config directory.
 ///
 /// Dropping the handle kills the child and removes the temp config dir, so a
@@ -58,7 +97,14 @@ impl RcdHandle {
     /// `binary` must have passed [`probe_version`]. The config file starts
     /// empty — remotes are registered per connection through
     /// `config/create`, keeping credentials out of argv/env.
-    pub async fn start(binary: &Path) -> Result<Self, String> {
+    ///
+    /// `env` picks the child's proxy environment: `None` inherits the
+    /// sidecar environment untouched (today's behavior; the "direct"
+    /// group). `Some(overrides)` keeps the inherited environment but
+    /// replaces the proxy variables — `Some(value)` sets the variable in
+    /// both uppercase and lowercase spellings, `None` removes both, so
+    /// each proxy group needs its own rcd process (env is process-level).
+    pub async fn start(binary: &Path, env: Option<&RcdEnv>) -> Result<Self, String> {
         let port = free_loopback_port()?;
         let temp_dir = std::env::temp_dir().join(format!(
             "dbx-files-rclone-{}-{}",
@@ -77,7 +123,8 @@ impl RcdHandle {
             pass: Uuid::new_v4().simple().to_string(),
         };
 
-        let mut child = Command::new(binary)
+        let mut std_command = std::process::Command::new(binary);
+        std_command
             .arg("rcd")
             .arg(format!("--rc-addr=127.0.0.1:{port}"))
             .arg(format!("--rc-user={}", endpoint.user))
@@ -88,7 +135,11 @@ impl RcdHandle {
             .arg("--log-level=INFO")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        if let Some(env) = env {
+            env.apply_to(&mut std_command);
+        }
+        let mut child = Command::from(std_command)
             .kill_on_drop(true)
             .spawn()
             .map_err(|error| format!("Failed to spawn {}: {error}", binary.display()))?;
@@ -155,15 +206,18 @@ impl Drop for RcdHandle {
     }
 }
 
-/// Owns at most one rcd for the sidecar and respawns it after crashes.
+/// Owns one rcd per proxy group and respawns groups after crashes.
 ///
-/// Process-wide single instance by design (the engine holds one); all rcd
-/// interaction goes through [`RcdSupervisor::client`], which transparently
-/// (re)starts the process and never returns a client bound to a dead rcd.
+/// Process-wide single instance by design (the engine holds one); keys are
+/// opaque here — the engine picks them, by convention `"direct"` for the
+/// inherited-environment process or `ProxyConfig::group_key()` for a proxy
+/// group. Env overrides are spawn-time only: once a group's rcd is up,
+/// later [`RcdSupervisor::client_for`] calls with a different `RcdEnv`
+/// reuse the running process instead of restarting it.
 #[derive(Debug, Default)]
 pub struct RcdSupervisor {
     binary: Option<PathBuf>,
-    handle: Option<RcdHandle>,
+    handles: std::collections::HashMap<String, RcdHandle>,
 }
 
 impl RcdSupervisor {
@@ -171,11 +225,21 @@ impl RcdSupervisor {
         Self::default()
     }
 
-    /// Returns a live client, spawning or respawning rcd as needed.
-    pub async fn client(&mut self) -> Result<RcClient, String> {
-        if let Some(handle) = self.handle.as_mut() {
+    /// Returns a live client for proxy group `key`, spawning or respawning
+    /// that group's rcd with `env` as needed. A crashed rcd fails
+    /// [`RcdHandle::is_running`] and the next call rebuilds the group; a
+    /// live process is reused regardless of any `env` change (overrides
+    /// only take effect at spawn time). The bool is `true` when the rcd was
+    /// (re)spawned by this call — the caller replays group registrations on
+    /// respawn, because a fresh rcd starts from an empty temp config.
+    pub async fn client_for(
+        &mut self,
+        key: &str,
+        env: Option<&RcdEnv>,
+    ) -> Result<(RcClient, bool), String> {
+        if let Some(handle) = self.handles.get_mut(key) {
             if handle.is_running() {
-                return Ok(handle.client());
+                return Ok((handle.client(), false));
             }
         }
         let binary = match self.binary.clone() {
@@ -186,10 +250,16 @@ impl RcdSupervisor {
                     .to_string()
             })?,
         };
-        let handle = RcdHandle::start(&binary).await?;
+        let handle = RcdHandle::start(&binary, env).await?;
         let client = handle.client();
-        self.handle = Some(handle);
-        Ok(client)
+        self.handles.insert(key.to_string(), handle);
+        Ok((client, true))
+    }
+
+    /// Back-compat entry for the inherited-environment group; equivalent
+    /// to `client_for("direct", None)`.
+    pub async fn client(&mut self) -> Result<RcClient, String> {
+        self.client_for("direct", None).await.map(|(client, _)| client)
     }
 
     /// Overrides binary resolution (tests, explicit configuration).
@@ -197,11 +267,24 @@ impl RcdSupervisor {
         self.binary = Some(binary);
     }
 
-    /// Stops rcd and forgets it. Remotes registered in its config die with
-    /// the temp dir — `connection/disconnect` uses this only when the whole
-    /// engine has no live connections left.
+    /// Stops and forgets ONE group's rcd (idle-group teardown / keepalive
+    /// reaping). `true` when a handle existed and was killed; a group whose
+    /// rcd is already gone is a no-op success. The dropped handle's Drop
+    /// kills the child.
+    pub fn shutdown_group(&mut self, key: &str) -> bool {
+        self.handles.remove(key).is_some()
+    }
+
+    /// Group keys with live handles (keepalive sweep inputs).
+    pub fn group_keys(&self) -> Vec<String> {
+        self.handles.keys().cloned().collect()
+    }
+
+    /// Stops every group's rcd and forgets it. Remotes registered in the
+    /// configs die with the temp dirs — `connection/disconnect` uses this
+    /// only when the whole engine has no live connections left.
     pub fn shutdown(&mut self) {
-        self.handle = None;
+        self.handles.clear();
     }
 }
 
@@ -406,7 +489,9 @@ mod tests {
             eprintln!("skipping: no rclone binary found");
             return;
         };
-        let handle = RcdHandle::start(&binary).await.expect("rcd should spawn");
+        let handle = RcdHandle::start(&binary, None)
+            .await
+            .expect("rcd should spawn");
         let client = handle.client();
         client.noop().await.expect("noopauth");
         let version = client.version().await.expect("core/version");
@@ -462,5 +547,149 @@ mod tests {
             assert!(error.contains("older than the required"), "{error}");
         }
         let _ = &dir;
+    }
+
+    #[test]
+    fn rcd_env_sets_and_removes_both_spellings() {
+        let env = RcdEnv {
+            http_proxy: Some("http://user:secret@127.0.0.1:8080".to_string()),
+            https_proxy: None,
+            no_proxy: Some("127.0.0.1,localhost".to_string()),
+        };
+        let mut command = std::process::Command::new("true");
+        env.apply_to(&mut command);
+        let envs: std::collections::HashMap<&std::ffi::OsStr, Option<&std::ffi::OsStr>> = command
+            .get_envs()
+            .map(|(key, value)| (key, value))
+            .collect();
+        // Set: uppercase canonical name + lowercase variant, both carrying
+        // the same value (Go reads either).
+        for name in ["HTTP_PROXY", "http_proxy"] {
+            assert_eq!(
+                envs.get(std::ffi::OsStr::new(name)).copied().flatten(),
+                Some(std::ffi::OsStr::new("http://user:secret@127.0.0.1:8080")),
+                "{name} must be set"
+            );
+        }
+        for name in ["NO_PROXY", "no_proxy"] {
+            assert_eq!(
+                envs.get(std::ffi::OsStr::new(name)).copied().flatten(),
+                Some(std::ffi::OsStr::new("127.0.0.1,localhost")),
+                "{name} must be set"
+            );
+        }
+        // Remove: both spellings dropped so the child cannot inherit a
+        // stale sidecar proxy. `get_envs` records an explicit removal as
+        // `Some(None)` (key listed, value cleared) — flattening yields
+        // `None` for both that shape and an absent key.
+        for name in ["HTTPS_PROXY", "https_proxy"] {
+            assert_eq!(
+                envs.get(std::ffi::OsStr::new(name)).copied().flatten(),
+                None,
+                "{name} must be removed"
+            );
+        }
+    }
+
+    /// Proxy-group rcd stays healthy with env overrides pointing at a
+    /// dead proxy. The rc API binds and is probed on 127.0.0.1 loopback
+    /// from the sidecar, so the child's `https_proxy` (port 1 always
+    /// refuses) cannot affect startup — exactly the isolation the HTTP
+    /// backends will rely on when they dial through the proxy.
+    #[tokio::test]
+    async fn proxy_group_rcd_spawns_healthy_and_groups_stay_separate() {
+        let Some(binary) = resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let mut supervisor = RcdSupervisor::new();
+        supervisor.set_binary(binary);
+        let env = RcdEnv {
+            https_proxy: Some("http://127.0.0.1:1".to_string()),
+            ..RcdEnv::default()
+        };
+        let proxied = supervisor
+            .client_for("proxy-dead", Some(&env))
+            .await
+            .expect("proxy-group rcd should spawn healthy")
+            .0;
+        proxied
+            .noop()
+            .await
+            .expect("loopback rc API reachable despite dead proxy env");
+        let proxied_endpoint = supervisor
+            .handles
+            .get("proxy-dead")
+            .expect("group registered")
+            .endpoint()
+            .base_url
+            .clone();
+
+        // Same key with different env: the live process is reused, never
+        // respawned (overrides are spawn-time only).
+        supervisor
+            .client_for("proxy-dead", None)
+            .await
+            .expect("second call should reuse the group");
+        assert_eq!(
+            supervisor
+                .handles
+                .get("proxy-dead")
+                .expect("group still registered")
+                .endpoint()
+                .base_url,
+            proxied_endpoint,
+            "same key must not respawn a live rcd"
+        );
+
+        // A different key gets its own process with its own endpoint.
+        let other = supervisor
+            .client_for("other-group", None)
+            .await
+            .expect("second group should spawn")
+            .0;
+        other.noop().await.expect("second group reachable");
+        let other_endpoint = supervisor
+            .handles
+            .get("other-group")
+            .expect("second group registered")
+            .endpoint()
+            .base_url
+            .clone();
+        assert_ne!(
+            proxied_endpoint, other_endpoint,
+            "distinct keys must map to distinct rcd processes"
+        );
+
+        // Idle-group teardown: one key stops one group, the other survives;
+        // repeated shutdowns are no-ops.
+        assert_eq!(supervisor.group_keys().len(), 2);
+        assert!(supervisor.shutdown_group("other-group"));
+        assert!(!supervisor.group_keys().contains(&"other-group".to_string()));
+        assert!(!supervisor.shutdown_group("other-group"), "idempotent");
+        assert!(supervisor.group_keys().contains(&"proxy-dead".to_string()));
+
+        // shutdown clears every group; Drop kills the children.
+        supervisor.shutdown();
+        assert!(supervisor.handles.is_empty(), "shutdown clears all groups");
+    }
+
+    /// The `client()` compat entry must keep working and must land in the
+    /// conventional "direct" group with no env overrides.
+    #[tokio::test]
+    async fn client_compat_entry_maps_to_direct_group() {
+        let Some(binary) = resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let mut supervisor = RcdSupervisor::new();
+        supervisor.set_binary(binary);
+        let client = supervisor.client().await.expect("compat client entry");
+        client.noop().await.expect("noopauth");
+        assert!(
+            supervisor.handles.contains_key("direct"),
+            "client() must register the direct group"
+        );
+        assert_eq!(supervisor.handles.len(), 1, "client() spawns one group");
     }
 }
