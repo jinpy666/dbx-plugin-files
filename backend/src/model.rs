@@ -33,9 +33,11 @@ pub const JSON_CHUNK_BYTES: usize = 1024 * 1024;
 
 /// Quick protocols with a dedicated parameter assembly. Every other form
 /// protocol is a [`GENERIC_PROTOCOLS`] value whose backend type is the
-/// protocol value itself. The retired `rclone-custom`/`opendal-custom`
-/// pass-through values stay accepted for stored connections.
-pub const PROTOCOLS: [&str; 74] = [
+/// protocol value itself; `rclone-custom` is the free-form escape hatch
+/// (stored `service` + JSON parameters). Stored connections from the
+/// OpenDAL era (`opendal-custom`) are normalized onto `rclone-custom` at
+/// parse time — the alias never reaches the engine.
+pub const PROTOCOLS: [&str; 73] = [
     "fs",
     "s3",
     "gcs",
@@ -49,7 +51,6 @@ pub const PROTOCOLS: [&str; 74] = [
     "smb",
     "sftp-native",
     "rclone-custom",
-    "opendal-custom",
     "aliyun-drive",
     "dropbox",
     "gdrive",
@@ -350,6 +351,14 @@ impl StoredConnection {
         if protocol.is_empty() {
             return Err("Missing protocol in external_config".to_string());
         }
+        // OpenDAL-era stored connections carry `opendal-custom`; normalize
+        // onto the current pass-through value so the retired alias never
+        // reaches the engine or the protocol lists.
+        let protocol = if protocol == "opendal-custom" {
+            "rclone-custom".to_string()
+        } else {
+            protocol
+        };
         if !PROTOCOLS.contains(&protocol.as_str()) {
             return Err(format!(
                 "Unsupported protocol '{protocol}'; expected one of {}",
@@ -357,12 +366,10 @@ impl StoredConnection {
             ));
         }
 
-        // The custom pass-through (`rclone-custom`, legacy alias
-        // `opendal-custom`) and every generic protocol accept either a JSON
-        // object or a JSON string in the textarea field; anything else must
-        // parse to an object.
+        // The `rclone-custom` escape hatch and every generic protocol accept
+        // either a JSON object or a JSON string in the textarea field;
+        // anything else must parse to an object.
         let custom_value = if protocol == "rclone-custom"
-            || protocol == "opendal-custom"
             || GENERIC_PROTOCOLS.contains(&protocol.as_str())
         {
             external_config.and_then(|config| config.get("config"))
@@ -463,11 +470,10 @@ impl StoredConnection {
     }
 
     /// `true` when the protocol carries its parameters through the `config`
-    /// JSON field: the generic rclone backends and the retired pass-through
-    /// aliases.
+    /// JSON field: the generic rclone backends and the `rclone-custom`
+    /// escape hatch.
     pub fn is_custom(&self) -> bool {
         self.protocol == "rclone-custom"
-            || self.protocol == "opendal-custom"
             || GENERIC_PROTOCOLS.contains(&self.protocol.as_str())
     }
 }
@@ -1339,6 +1345,26 @@ mod tests {
             }
         }));
         assert!(invalid.is_err());
+    }
+
+    #[test]
+    fn normalizes_retired_opendal_custom_protocol() {
+        let connection = StoredConnection::from_lifecycle_params(&json!({
+            "connection": {
+                "id": "legacy",
+                "external_config": {
+                    "protocol": "opendal-custom",
+                    "service": "memory",
+                    "config": { "root": "/x" }
+                }
+            }
+        }))
+        .expect("legacy alias parses");
+        assert_eq!(
+            connection.protocol, "rclone-custom",
+            "the retired OpenDAL alias is normalized at parse time"
+        );
+        assert_eq!(connection.custom_config["root"], "/x");
     }
 
     #[test]

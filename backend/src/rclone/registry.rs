@@ -44,9 +44,8 @@ use crate::model::{ProxyConfig, ProxyKind, StoredConnection};
 /// Protocol support lives in [`crate::model::PROTOCOLS`]: the quick
 /// protocols map onto fixed rclone backends, every
 /// [`crate::model::GENERIC_PROTOCOLS`] value IS the rclone backend type, and
-/// the retired pass-through aliases (`rclone-custom`, legacy
-/// `opendal-custom`) reach arbitrary backends via the stored `service`
-/// field. Only `aliyun-drive` has no rclone mapping.
+/// the `rclone-custom` escape hatch reaches arbitrary backends via the
+/// stored `service` field. Only `aliyun-drive` has no rclone mapping.
 
 /// Parameter keys rclone obscures at rest when `opt.obscure` is set. Only
 /// `IsPassword`-marked keys are actually transformed (verified on v1.75.1);
@@ -153,14 +152,15 @@ pub fn params_for(connection: &StoredConnection) -> Result<(String, Value, bool)
     }
 
     let (backend_type, parameters, obscure) = match connection.protocol.as_str() {
-        // Pass-through: the stored `service` is the rclone backend type and
-        // the `config` JSON becomes the whole parameter set. `opendal-custom`
-        // is the retired protocol value kept so stored connections keep
-        // working; the form no longer emits either alias — every rclone
-        // backend is a first-class protocol now.
+        // Pass-through escape hatch: the stored `service` is the rclone
+        // backend type and the `config` JSON becomes the whole parameter
+        // set. The form no longer emits it — every rclone backend is a
+        // first-class protocol now; stored connections from before the
+        // flattening still arrive here, with the retired `opendal-custom`
+        // value normalized onto `rclone-custom` at parse time.
         // obscure is sent unconditionally: the user JSON may carry any
         // provider's IsPassword-class option and only rcd knows that set.
-        "opendal-custom" | "rclone-custom" => {
+        "rclone-custom" => {
             let backend_type = custom_rclone_type(&connection.service)?;
             (backend_type, connection.custom_config.clone(), true)
         }
@@ -1614,16 +1614,8 @@ mod tests {
 
         // The retired protocol value stays an alias of the same pass-through
         // so stored connections keep working after the form rename.
-        let mut legacy = fixture("opendal-custom");
-        legacy.service = " memory ".into();
-        legacy.custom_config = serde_json::json!({ "discard": true });
         connection.service = " memory ".into();
         connection.custom_config = serde_json::json!({ "discard": true });
-        assert_eq!(
-            params_for(&legacy).expect("legacy alias params"),
-            params_for(&connection).expect("params"),
-            "opendal-custom must behave exactly like rclone-custom",
-        );
     }
 
     #[test]
@@ -1656,7 +1648,7 @@ mod tests {
         for protocol in [
             "fs", "s3", "oss", "cos", "obs", "gcs", "azblob", "webdav", "ftp", "sftp",
             "sftp-native", "smb", "aliyun-drive", "gdrive", "onedrive", "dropbox", "yandex-disk",
-            "seafile", "koofr", "pcloud", "rclone-custom", "opendal-custom",
+            "seafile", "koofr", "pcloud", "rclone-custom",
         ] {
             let mut connection = fixture(protocol);
             connection.password = secrets[0].clone();
@@ -1744,7 +1736,7 @@ mod tests {
                     connection.email = "user@example.com".into();
                     connection.password = secret("pass");
                 }
-                "rclone-custom" | "opendal-custom" => connection.service = "memory".into(),
+                "rclone-custom" => connection.service = "memory".into(),
                 _ => {}
             }
             let binding = binding_for(&connection)
@@ -2405,7 +2397,7 @@ mod manifest_matrix {
             "seafile" => vec!["url", "user", "pass", "library"],
             "koofr" => vec!["endpoint", "user", "password"],
             "pcloud" => vec!["username", "password", "hostname", "token"],
-            "opendal-custom" | "rclone-custom" => vec!["root"], // sample config object, passed through
+            "rclone-custom" => vec!["root"], // sample config object, passed through
             p if crate::model::GENERIC_PROTOCOLS.contains(&p) => vec!["root"], // ditto
             other => panic!("no expected key table for '{other}'"),
         }
@@ -2439,10 +2431,8 @@ mod manifest_matrix {
                     // keys; the pass-through aliases and the generic backends
                     // send it unconditionally because only rcd knows the
                     // target provider's password set.
-                    let expected_obscure = matches!(
-                        protocol.as_str(),
-                        "opendal-custom" | "rclone-custom"
-                    ) || crate::model::GENERIC_PROTOCOLS.contains(&protocol.as_str())
+                    let expected_obscure = protocol == "rclone-custom"
+                        || crate::model::GENERIC_PROTOCOLS.contains(&protocol.as_str())
                         || has_password_class;
                     assert_eq!(
                         obscure, expected_obscure,
@@ -2470,7 +2460,7 @@ mod manifest_matrix {
     }
 
     fn rclone_type_of(protocol: &str, connection: &StoredConnection) -> String {
-        if matches!(protocol, "opendal-custom" | "rclone-custom") {
+        if protocol == "rclone-custom" {
             connection.service.trim().to_string()
         } else {
             rclone_type(protocol).expect("static protocol maps to an rclone type")

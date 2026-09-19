@@ -3,20 +3,19 @@ name = "dbx-plugin-files"
 version = "0.1.59"
 edition = "2021"
 license = "MIT"
-description = "DBX files plugin sidecar: Apache OpenDAL storage engine"
+description = "DBX files plugin sidecar: rclone-backed storage engine"
 
 [workspace]
 
 [dependencies]
 base64 = "0.23"
 dbx-plugin-sdk = "0.1.0"
-# OpenDAL was retired: the rclone engine (managed `rclone rcd` + rc HTTP
-# API) is the sole storage engine; the opendal/smb2/russh dependency set
-# below it left with backend/src/engine/.
+# The rclone engine (managed `rclone rcd` + rc HTTP API) is the sole
+# storage engine; the retired opendal/smb2/russh dependency set left with
+# backend/src/engine/. No OpenDAL dependencies remain.
 
 
-# `stream` gates `Part::file` (upload staging streams from disk); it used to
-# arrive transitively via the opendal feature graph.
+# `stream` gates `Part::file` (upload staging streams from disk).
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "multipart", "stream"] }
 # reqwest powers the rc HTTP client (rclone engine) and the SSH tunnel
 # health probes; chrono serves the rclone archive layer's mtime windows.
