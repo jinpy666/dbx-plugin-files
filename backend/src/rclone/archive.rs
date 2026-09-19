@@ -48,7 +48,7 @@ use serde_json::Value;
 use super::ops;
 use super::rc::RcClient;
 use crate::archive as tar;
-use crate::engine::ops::policy::PathPolicy;
+use crate::policy::PathPolicy;
 use crate::model::FileEntry;
 
 // ---------------------------------------------------------------------------

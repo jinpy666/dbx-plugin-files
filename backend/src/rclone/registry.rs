@@ -469,7 +469,7 @@ impl Registry {
         keys
     }
 
-    fn insert(&self, id: &str, binding: RemoteBinding, registration: RemoteRegistration) {
+    pub(crate) fn insert(&self, id: &str, binding: RemoteBinding, registration: RemoteRegistration) {
         self.lock().insert(
             id.to_string(),
             RegistryEntry {

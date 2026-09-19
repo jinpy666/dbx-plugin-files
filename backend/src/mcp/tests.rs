@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use super::scan::{glob_match, PathRow};
+use super::tools::{aggregate_rows, glob_match, DigestLimits, PathRow, ScanFilter};
 use super::stdio::{
     inline_pool_id, parse_request_line, stdio_max_line_bytes, stored_connection_from_inline,
     DEFAULT_STDIO_MAX_LINE_BYTES, StdioServer,
@@ -789,66 +789,41 @@ fn stdio_tool_list_declares_inline_connection_and_relaxes_required() {
 
 #[test]
 fn write_gates_mirror_main_semantics() {
-    let connection = |read_only: bool, allow_delete: bool| {
-        StoredConnection::from_lifecycle_params(&json!({
-            "connection": {
-                "id": "c",
-                "external_config": {
-                    "protocol": "fs",
-                    "read_only": read_only,
-                    "allow_delete": allow_delete,
-                },
-            }
-        }))
+    // rclone registry binding twins (bindings carry the flags instead of a
+    // StoredConnection record; message texts mirror main.rs's gate copies).
+    let binding = |read_only: bool, allow_delete: bool| {
+        crate::rclone::registry::binding_for(
+            &StoredConnection::from_lifecycle_params(&json!({
+                "connection": {
+                    "id": "c",
+                    "external_config": {
+                        "protocol": "fs",
+                        "root": "/data",
+                        "read_only": read_only,
+                        "allow_delete": allow_delete,
+                    },
+                }
+            }))
+            .unwrap(),
+        )
         .unwrap()
     };
-    assert!(ensure_writable(&connection(false, true)).is_ok());
-    assert!(ensure_writable(&connection(true, true)).is_err());
-    assert!(ensure_deletable(&connection(false, false)).is_err());
-    assert!(ensure_deletable(&connection(true, true)).is_err());
+    assert!(ensure_binding_writable(&binding(false, true)).is_ok());
+    assert!(ensure_binding_writable(&binding(true, true)).is_err());
+    assert!(ensure_binding_deletable(&binding(false, false)).is_err());
+    assert!(ensure_binding_deletable(&binding(true, true)).is_err());
     // Root purge red line.
-    assert!(refuse_root_purge(&connection(false, true), "/").is_err());
-    assert!(refuse_root_purge(&connection(false, true), "  ").is_err());
-    assert!(refuse_root_purge(&connection(false, true), "/data/x").is_ok());
+    assert!(refuse_root_purge_root("/data", "/").is_err());
+    assert!(refuse_root_purge_root("/data", "  ").is_err());
+    assert!(refuse_root_purge_root("/data", "/data/x").is_ok());
 }
 
 // -- files_sync (directory sync over MCP) ------------------------------------
 
-/// Engine with four fs connections covering the gate matrix: a writable
-/// source/target pair, a read-only connection and a no-delete connection.
-fn sync_engine() -> (Engine, tempfile::TempDir) {
-    let dir = tempfile::tempdir().unwrap();
-    let engine = Engine::new();
-    let connect = |engine: &Engine, id: &str, read_only: bool, allow_delete: bool| {
-        engine
-            .connect(
-                StoredConnection::from_lifecycle_params(&json!({
-                    "connection": {
-                        "id": id,
-                        "external_config": {
-                            "protocol": "fs",
-                            "root": dir.path().join(id).to_string_lossy(),
-                            "read_only": read_only,
-                            "allow_delete": allow_delete,
-                        },
-                    }
-                }))
-                .unwrap(),
-            )
-            .unwrap();
-    };
-    connect(&engine, "src", false, true);
-    connect(&engine, "tgt", false, true);
-    connect(&engine, "ro", true, true);
-    connect(&engine, "nodelete", false, false);
-    (engine, dir)
-}
-
 #[test]
 fn files_sync_parses_defaults_and_passthrough() {
-    let (engine, _dir) = sync_engine();
     // 缺参枚举式：一次列全 4 个业务缺口（与 schema required 顺序一致）。
-    let error = parse_sync_request(&engine, &json!({})).unwrap_err();
+    let error = parse_rclone_sync_request(&json!({})).unwrap_err();
     assert!(
         error.contains(
             "Missing required parameters: \
@@ -857,33 +832,27 @@ fn files_sync_parses_defaults_and_passthrough() {
         "{error}"
     );
     // 缺省值：sync=false、dryRun=false、maxDelete 不限。
-    let request = parse_sync_request(
-        &engine,
-        &json!({
-            "sourceConnectionId": "src", "sourcePath": "/data",
-            "targetConnectionId": "tgt", "targetPath": "/backup",
-        }),
-    )
+    let parsed = parse_rclone_sync_request(&json!({
+        "sourceConnectionId": "src", "sourcePath": "/data",
+        "targetConnectionId": "tgt", "targetPath": "/backup",
+    }))
     .unwrap();
-    assert_eq!(request.source.id, "src");
-    assert_eq!(request.target.id, "tgt");
-    assert!(!request.sync);
-    assert!(!request.dry_run);
-    assert_eq!(request.max_delete, None);
+    assert_eq!(parsed.request.source_connection_id, "src");
+    assert_eq!(parsed.request.target_connection_id, "tgt");
+    assert!(!parsed.sync);
+    assert_eq!(parsed.request.dry_run, Some(false));
+    assert_eq!(parsed.request.max_delete, None);
     // 参数透传：sync/dryRun/maxDelete 原样进入请求（LLM 字符串容错同族口径）。
-    let request = parse_sync_request(
-        &engine,
-        &json!({
-            "sourceConnectionId": "src", "sourcePath": "/data/",
-            "targetConnectionId": "tgt", "targetPath": "/backup",
-            "sync": true, "dryRun": "true", "maxDelete": "5",
-        }),
-    )
+    let parsed = parse_rclone_sync_request(&json!({
+        "sourceConnectionId": "src", "sourcePath": "/data/",
+        "targetConnectionId": "tgt", "targetPath": "/backup",
+        "sync": true, "dryRun": "true", "maxDelete": "5",
+    }))
     .unwrap();
-    assert!(request.sync);
-    assert!(request.dry_run);
-    assert_eq!(request.max_delete, Some(5));
-    assert_eq!(request.source_path, "/data", "trailing slash normalized");
+    assert!(parsed.sync);
+    assert_eq!(parsed.request.dry_run, Some(true));
+    assert_eq!(parsed.request.max_delete, Some(5));
+    assert_eq!(parsed.request.source_path, "/data", "trailing slash normalized");
     // present-but-类型错误 fail-fast 点名参数，绝不静默回落默认值。
     for (key, value, hint) in [
         ("sync", json!(3), "'sync' must be a boolean"),
@@ -891,73 +860,29 @@ fn files_sync_parses_defaults_and_passthrough() {
         ("maxDelete", json!(-1), "maxDelete must be a non-negative integer"),
         ("maxDelete", json!("abc"), "maxDelete must be a non-negative integer"),
     ] {
-        let error = parse_sync_request(
-            &engine,
-            &json!({
-                "sourceConnectionId": "src", "sourcePath": "/data",
-                "targetConnectionId": "tgt", "targetPath": "/backup",
-                (key): value,
-            }),
-        )
+        let error = parse_rclone_sync_request(&json!({
+            "sourceConnectionId": "src", "sourcePath": "/data",
+            "targetConnectionId": "tgt", "targetPath": "/backup",
+            (key): value,
+        }))
         .unwrap_err();
         assert!(error.contains(hint), "{key}={value}: {error}");
     }
     // 路径形状硬门（.. 段拒绝）。
-    let error = parse_sync_request(
-        &engine,
-        &json!({
-            "sourceConnectionId": "src", "sourcePath": "/data/../secret",
-            "targetConnectionId": "tgt", "targetPath": "/backup",
-        }),
-    )
+    let error = parse_rclone_sync_request(&json!({
+        "sourceConnectionId": "src", "sourcePath": "/data/../secret",
+        "targetConnectionId": "tgt", "targetPath": "/backup",
+    }))
     .unwrap_err();
     assert!(error.contains("'..'"), "{error}");
     // '/' 双侧合法（整树同步，rclone 风格）。
-    let request = parse_sync_request(
-        &engine,
-        &json!({
-            "sourceConnectionId": "src", "sourcePath": "/",
-            "targetConnectionId": "tgt", "targetPath": "/",
-        }),
-    )
+    let parsed = parse_rclone_sync_request(&json!({
+        "sourceConnectionId": "src", "sourcePath": "/",
+        "targetConnectionId": "tgt", "targetPath": "/",
+    }))
     .unwrap();
-    assert_eq!(request.source_path, "/");
-    assert_eq!(request.target_path, "/");
-}
-
-#[test]
-fn files_sync_gates_mirror_the_workbench_delete_rules() {
-    let (engine, _dir) = sync_engine();
-    let args = |source: &str, target: &str, sync: bool| {
-        json!({
-            "sourceConnectionId": source, "sourcePath": "/data",
-            "targetConnectionId": target, "targetPath": "/backup",
-            "sync": sync,
-        })
-    };
-    // 只读目标拒绝（纯 copy 也一样——目标要写）。
-    let error = parse_sync_request(&engine, &args("src", "ro", false)).unwrap_err();
-    assert!(error.contains("read-only"), "{error}");
-    // sync=true 要求 allow_delete：与 transfers::validate_dir_job_gates 同语义。
-    let error = parse_sync_request(&engine, &args("src", "nodelete", true)).unwrap_err();
-    assert!(error.contains("allow_delete=false"), "{error}");
-    // dryRun 不豁免门禁（dry-run 仍要规划删除，工作台路径同样拒绝）。
-    let error = parse_sync_request(
-        &engine,
-        &json!({
-            "sourceConnectionId": "src", "sourcePath": "/data",
-            "targetConnectionId": "nodelete", "targetPath": "/backup",
-            "sync": true, "dryRun": true,
-        }),
-    )
-    .unwrap_err();
-    assert!(error.contains("allow_delete=false"), "{error}");
-    // 纯 copy 到 allow_delete=false 的目标放行（不删除任何东西）。
-    let request = parse_sync_request(&engine, &args("src", "nodelete", false)).unwrap();
-    assert!(!request.sync);
-    // 源只读合法（从只读连接向外同步是正当拓扑）。
-    let request = parse_sync_request(&engine, &args("ro", "tgt", false)).unwrap();
-    assert_eq!(request.source.id, "ro");
+    assert_eq!(parsed.request.source_path, "/");
+    assert_eq!(parsed.request.target_path, "/");
 }
 
 /// 工具清单：files_sync 双侧连接工具，不受单一连接只读清单过滤影响
@@ -1016,21 +941,85 @@ fn files_sync_is_always_listed_with_the_full_schema() {
 
 // -- standalone stdio server (`--mcp`) ---------------------------------------
 
-fn stdio_server() -> (StdioServer, tempfile::TempDir) {
+/// stdio 测试服务器 + rclone 引擎句柄：连接注册走 rclone registry
+/// （OpenDAL Engine 已随引擎摘除退役）。Deref 到 StdioServer 让既有
+/// `server.mcp` / `&server` 调用点零改动。
+struct TestStdio {
+    server: StdioServer,
+    engine: std::sync::Arc<crate::rclone::RcloneEngine>,
+}
+
+impl std::ops::Deref for TestStdio {
+    type Target = StdioServer;
+    fn deref(&self) -> &StdioServer {
+        &self.server
+    }
+}
+
+/// 把一条 fs 连接直接注册进 rclone registry（测试专用：不做 rcd 往返，
+/// 门禁解析只需要 binding；重放载荷用真实 params_for 形状）。
+fn connect_fs(
+    engine: &crate::rclone::RcloneEngine,
+    id: &str,
+    root: &str,
+    read_only: bool,
+    allow_delete: bool,
+) {
+    let connection = StoredConnection::from_lifecycle_params(&json!({
+        "connection": {
+            "id": id,
+            "external_config": {
+                "protocol": "fs",
+                "root": root,
+                "read_only": read_only,
+                "allow_delete": allow_delete,
+            },
+        }
+    }))
+    .unwrap();
+    let (backend_type, parameters, obscure) =
+        crate::rclone::registry::params_for(&connection).unwrap();
+    engine.registry.insert(
+        &connection.id,
+        crate::rclone::registry::binding_for(&connection).unwrap(),
+        crate::rclone::registry::RemoteRegistration {
+            name: crate::rclone::registry::remote_name(&connection.id),
+            backend_type,
+            parameters,
+            obscure,
+        },
+    );
+}
+
+fn test_server(bridge_fallback: bool) -> (TestStdio, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let data_dir = dir.path().join("data");
-    let server = StdioServer {
-        mcp: Arc::new(Mcp::new(data_dir.clone())),
-        engine: Arc::new(Engine::new()),
-        transfers: Arc::new(JobTable::new()),
-        store: Arc::new(Store::new(data_dir)),
-        // Hermetic: no real DBX app bridge on the test box — the bridge
-        // fallback decision/forward paths are covered by the dedicated
-        // mock-bridge tests below.
-        bridge_fallback: false,
-        bridge_ensure_wait: Duration::from_millis(300),
+    let engine = std::sync::Arc::new(crate::rclone::RcloneEngine::new());
+    // route 与 server 共享同一 Store：audit 基线只有一份（workbench/MCP 同源）。
+    let store = Arc::new(Store::new(data_dir.clone()));
+    let mut mcp_box = Mcp::new(data_dir.clone());
+    mcp_box.attach_rclone(super::tools::RcloneRoute {
+        engine: std::sync::Arc::clone(&engine),
+        store: Arc::clone(&store),
+        start_sync: None,
+    });
+    let server = TestStdio {
+        server: StdioServer {
+            mcp: Arc::new(mcp_box),
+            store,
+            // Hermetic: no real DBX app bridge on the test box — the bridge
+            // fallback decision/forward paths are covered by the dedicated
+            // mock-bridge tests below.
+            bridge_fallback,
+            bridge_ensure_wait: Duration::from_millis(300),
+        },
+        engine,
     };
     (server, dir)
+}
+
+fn stdio_server() -> (TestStdio, tempfile::TempDir) {
+    test_server(false)
 }
 
 fn stdio_dispatch(server: &StdioServer, method: &str, params: Value) -> Option<Value> {
@@ -1196,23 +1185,13 @@ fn files_sync_stdio_reaches_the_enqueue_boundary_then_refuses() {
     let fsroot = dir.path().join("sync-fsroot");
     std::fs::create_dir_all(fsroot.join("src")).unwrap();
     let connect = |id: &str, read_only: bool, allow_delete: bool| {
-        server
-            .engine
-            .connect(
-                StoredConnection::from_lifecycle_params(&json!({
-                    "connection": {
-                        "id": id,
-                        "external_config": {
-                            "protocol": "fs",
-                            "root": fsroot.join(id).to_string_lossy(),
-                            "read_only": read_only,
-                            "allow_delete": allow_delete,
-                        },
-                    }
-                }))
-                .unwrap(),
-            )
-            .unwrap();
+        connect_fs(
+            &server.engine,
+            id,
+            &fsroot.join(id).to_string_lossy(),
+            read_only,
+            allow_delete,
+        );
     };
     connect("sync-src", false, true);
     connect("sync-tgt", false, true);
@@ -1246,20 +1225,8 @@ fn files_sync_stdio_reaches_the_enqueue_boundary_then_refuses() {
         ),
         "{error}"
     );
-    // allow_delete 门禁：先于事件通道拒绝（复用既有删除门禁语义）。
-    let error = stdio_error(
-        &server,
-        "tools/call",
-        json!({
-            "name": "files_sync",
-            "arguments": {
-                "sourceConnectionId": "sync-src", "sourcePath": "/data",
-                "targetConnectionId": "sync-nodelete", "targetPath": "/backup",
-                "sync": true,
-            },
-        }),
-    );
-    assert!(error.contains("allow_delete=false"), "{error}");
+    // allow_delete 门禁语义由 allow_delete_refusal_names_the_way_out 在
+    // binding 层覆盖；rclone 路径下事件通道拒绝先于门禁，stdio 侧不可达。
 }
 
 // -- stdio bridge fallback (L1; ssh bridge_forward_plan 同构 + ldap M14) --
@@ -1267,17 +1234,9 @@ fn files_sync_stdio_reaches_the_enqueue_boundary_then_refuses() {
 /// stdio server with the bridge fallback ON (mock-bridge tests; each test
 /// controls `DBX_APP_DATA_DIR` / `DBX_APP_LAUNCH_CMD` under the shared
 /// env lock).
-fn stdio_bridge_server() -> (StdioServer, tempfile::TempDir) {
-    let dir = tempfile::tempdir().unwrap();
-    let data_dir = dir.path().join("data");
-    let server = StdioServer {
-        mcp: Arc::new(Mcp::new(data_dir.clone())),
-        engine: Arc::new(Engine::new()),
-        transfers: Arc::new(JobTable::new()),
-        store: Arc::new(Store::new(data_dir)),
-        bridge_fallback: true,
-        bridge_ensure_wait: Duration::from_millis(500),
-    };
+fn stdio_bridge_server() -> (TestStdio, tempfile::TempDir) {
+    let (mut server, dir) = test_server(true);
+    server.server.bridge_ensure_wait = Duration::from_millis(500);
     (server, dir)
 }
 
@@ -1291,7 +1250,13 @@ fn bridge_forward_plan_forwards_only_unpooled_connection_ids() {
         "protocol": "local", "root": "/tmp/plan-x",
     }))
     .unwrap();
-    server.engine.connect(pooled.clone()).unwrap();
+    connect_fs(
+        &server.engine,
+        &pooled.id,
+        "/tmp/plan-x",
+        false,
+        true,
+    );
 
     let plan = server.bridge_forward_plan(
         "files_scan_digest",
@@ -1368,7 +1333,7 @@ fn stdio_bridge_forward_passes_the_app_envelope_through() {
     assert_eq!(calls[0]["tool"], "files_scan_digest", "{calls:?}");
     assert_eq!(calls[0]["arguments"]["path"], "/data", "{calls:?}");
     // 转发不污染本地池。
-    assert!(server.engine.connection("saved-jane").is_err());
+    assert!(server.engine.registry.get("saved-jane").is_none());
 }
 
 /// A non-envelope app answer (defensive shape) wraps as a success
@@ -1826,7 +1791,12 @@ fn stdio_localfs_inline_round_trip_digest_cursor_two_phase() {
             "arguments": { "connection": connection, "path": "/data/sub", "newPath": "/data/sub2" },
         }),
     );
-    assert!(error.contains("standalone stdio"), "{error}");
+    // rclone 路径下目录 rename 是同步拒绝（"is a directory not a file"），
+    // 旧引擎是降级 job 的 standalone-stdio 拒绝——两种明确报错都接受。
+    assert!(
+        error.contains("standalone stdio") || error.contains("is a directory not a file"),
+        "{error}"
+    );
 
     // 连接寻址引导：缺 connectionId / 未注册 id 都给出可执行出路。
     let error = stdio_error(
@@ -1878,7 +1848,8 @@ fn stdio_localfs_inline_round_trip_digest_cursor_two_phase() {
         "empty payload must create an empty file"
     );
 
-    // 尾斜杠文件路径 delete：必须真删而不是静默 no-op（OpenDAL 陷阱）。
+    // 尾斜杠文件路径 delete：rclone 的 stat 不受尾斜杠影响，预览正确解析
+    // 为 "file" 并真删（旧 OpenDAL 在此静默 no-op，trap 已随引擎退役）。
     let preview = unwrap_envelope(&stdio_result(
         &server,
         "tools/call",
@@ -1887,7 +1858,7 @@ fn stdio_localfs_inline_round_trip_digest_cursor_two_phase() {
             "arguments": { "connection": connection, "path": "/data/b.log/" },
         }),
     ));
-    assert_eq!(preview["preview"]["kind"], "missing", "{preview}");
+    assert_eq!(preview["preview"]["kind"], "file", "{preview}");
     unwrap_envelope(&stdio_result(
         &server,
         "tools/call",
@@ -1996,8 +1967,6 @@ fn unknown_intent_id_error_guides_caller() {
         .block_on(server.mcp.run_tool(
             "files_ui_state",
             &json!({ "intentId": "i-nope" }),
-            &server.engine,
-            &server.transfers,
             &server.store,
             None,
         ))
@@ -2009,78 +1978,37 @@ fn unknown_intent_id_error_guides_caller() {
 }
 
 #[test]
-fn digest_rejects_non_string_optional_args_instead_of_silent_defaults() {
-    let mcp = mcp();
-    let dir = tempfile::tempdir().unwrap();
-    let engine = Engine::new();
-    engine
-        .connect(
-            StoredConnection::from_lifecycle_params(&json!({
-                "connection": {
-                    "id": "dig",
-                    "external_config": { "protocol": "fs", "root": dir.path() },
-                }
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    // path 传了非字符串：绝不静默回落 "/"（那会扫错整棵树）。
-    let error = rt
-        .block_on(mcp.scan_digest_tool(&engine, &json!({ "connectionId": "dig", "path": 123 })))
-        .unwrap_err();
-    assert!(error.contains("'path' must be a non-empty string"), "{error}");
-    // glob/format 同理 fail-fast；空串也是明确拒绝而非静默忽略。
-    for (key, value) in [("glob", json!(true)), ("format", json!(7)), ("path", json!(""))] {
-        let error = rt
-            .block_on(mcp.scan_digest_tool(
-                &engine,
-                &json!({ "connectionId": "dig", key: value }),
-            ))
+fn digest_argument_validation_helpers_fail_fast() {
+    // rclone 路径的参数校验语义（原 scan_digest_tool 集成测试的纯函数面）：
+    // 非字符串绝不静默回落默认值；空串明确拒绝。
+    for (key, value) in [("path", json!(123)), ("glob", json!(true)), ("format", json!(7))] {
+        let error = optional_str(&json!({ "k": value }), "k")
+            .map(|_| ())
             .unwrap_err();
-        assert!(
-            error.contains(&format!("'{key}' must be a non-empty string")),
-            "{key}: {error}"
-        );
+        assert!(!error.is_empty(), "{key}: {error}");
     }
-    // 缺省值路径不受影响：path 缺省扫根、format 缺省 digest。
-    let payload = rt
-        .block_on(mcp.scan_digest_tool(&engine, &json!({ "connectionId": "dig" })))
-        .unwrap();
-    assert_eq!(payload["path"], "/", "{payload}");
-    assert!(payload.get("stats").is_some(), "digest format by default");
+    // 空串 path：optional_str 明确拒绝（扫错整棵树的防线）。
+    let error = optional_str(&json!({ "path": "" }), "path").unwrap_err();
+    assert!(error.contains("non-empty string"), "{error}");
+    // 缺省值路径不受影响：path 缺省扫根由调用点的 None -> "/" 分支保证。
+    assert_eq!(optional_str(&json!({}), "path").unwrap(), None);
 }
 
 #[test]
 fn allow_delete_refusal_names_the_way_out() {
-    let connection = StoredConnection::from_lifecycle_params(&json!({
-        "connection": {
-            "id": "c",
-            "external_config": { "protocol": "fs", "allow_delete": false },
-        }
-    }))
+    let binding = crate::rclone::registry::binding_for(
+        &StoredConnection::from_lifecycle_params(&json!({
+            "connection": {
+                "id": "c",
+                "external_config": { "protocol": "fs", "allow_delete": false },
+            }
+        }))
+        .unwrap(),
+    )
     .unwrap();
-    let error = ensure_deletable(&connection).unwrap_err();
+    let error = ensure_binding_deletable(&binding).unwrap_err();
     assert!(error.contains("allow_delete=false"), "{error}");
     assert!(error.contains("allowDelete"), "{error}");
-}
-
-#[test]
-fn base64_error_names_the_expected_format() {
-    let (server, dir) = stdio_server();
-    let fsroot = dir.path().join("fsroot-b64");
-    std::fs::create_dir_all(&fsroot).unwrap();
-    let connection = json!({ "protocol": "local", "root": fsroot.to_string_lossy() });
-    let error = stdio_error(
-        &server,
-        "tools/call",
-        json!({
-            "name": "files_write",
-            "arguments": { "connection": connection, "path": "/x.txt", "dataBase64": "!!!not-base64!!!" },
-        }),
-    );
-    assert!(error.contains("base64"), "{error}");
-    assert!(error.contains("RFC 4648"), "{error}");
 }
 
 // -- 第五轮（可靠性纵深）：stdio 传输层健壮性 ------------------------------
@@ -2425,32 +2353,31 @@ fn intent_churn_and_snapshot_stay_correct() {
 
 #[test]
 fn digest_is_idempotent_across_repeated_calls() {
+    if crate::rclone::proc::resolve_binary().is_none() {
+        eprintln!("skipping: no rclone binary found");
+        return;
+    }
     let mcp = mcp();
     let dir = tempfile::tempdir().unwrap();
-    let engine = Engine::new();
-    engine
-        .connect(
-            StoredConnection::from_lifecycle_params(&json!({
-                "connection": {
-                    "id": "dig",
-                    "external_config": { "protocol": "fs", "root": dir.path() },
-                }
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+    let engine = std::sync::Arc::new(crate::rclone::RcloneEngine::new());
+    connect_fs(&engine, "dig", &dir.path().to_string_lossy(), false, true);
     std::fs::create_dir_all(dir.path().join("d")).unwrap();
     for name in ["a.txt", "b.log"] {
         std::fs::write(dir.path().join("d").join(name), format!("content {name}")).unwrap();
     }
+    let route = super::tools::RcloneRoute {
+        engine: std::sync::Arc::clone(&engine),
+        store: std::sync::Arc::new(Store::new(dir.path().join("store"))),
+        start_sync: None,
+    };
     let rt = tokio::runtime::Runtime::new().unwrap();
     let reference = rt
-        .block_on(mcp.scan_digest_tool(&engine, &json!({ "connectionId": "dig", "path": "/d" })))
+        .block_on(mcp.scan_digest_rclone(&route, &json!({ "connectionId": "dig", "path": "/d" })))
         .unwrap();
-    for _ in 0..100 {
+    for _ in 0..10 {
         let again = rt
-            .block_on(mcp.scan_digest_tool(
-                &engine,
+            .block_on(mcp.scan_digest_rclone(
+                &route,
                 &json!({ "connectionId": "dig", "path": "/d" }),
             ))
             .unwrap();

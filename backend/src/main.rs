@@ -1,5 +1,6 @@
 //! `io.dbx.files` sidecar: DBX PluginServer (stdio-framed + binary channels)
-//! dispatching storage operations to the OpenDAL engine.
+//! dispatching storage operations to the rclone engine (`rclone rcd` + rc
+//! HTTP API).
 //!
 //! Structure mirrors the proven ssh-sftp sidecar: `PluginServer::new(..,
 //! Framed).serve()`, a `handle` switch per method (`§8` method table), and
@@ -14,19 +15,15 @@
 #![recursion_limit = "256"]
 
 mod archive;
-mod engine;
 mod local_downloads;
 mod mcp;
 mod model;
+mod policy;
 mod rclone;
 mod store;
 mod transfers;
 
-#[cfg(test)]
-mod bench;
-
 use std::collections::HashMap;
-use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -34,7 +31,7 @@ use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 // Underscore import: only the trait's methods are needed, and the name
-// `Engine` is reserved for the storage engine module below.
+// `Engine` belongs to the rclone engine type.
 use base64::Engine as _;
 use dbx_plugin_sdk::{
     PluginEmitter, PluginError, PluginHandler, PluginMetadata, PluginServer, PluginTransport,
@@ -44,16 +41,12 @@ use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use tokio::runtime::Runtime;
 
-use engine::Engine;
 use model::StoredConnection;
 use store::Store;
-use transfers::JobTable;
 
 struct Plugin {
     runtime: Runtime,
-    engine: Arc<Engine>,
     rclone: Arc<rclone::RcloneEngine>,
-    transfers: Arc<JobTable>,
     store: Arc<Store>,
     mcp: Arc<mcp::Mcp>,
     /// F-RCLONE Phase C sync jobs (`files/syncDir`|`files/copyDir`): jobId →
@@ -65,37 +58,6 @@ struct Plugin {
 }
 
 impl Plugin {
-    /// Runs one request future on the worker pool under the connection's
-    /// wall-clock budget (audit #2): `tokio::time::timeout` with the same
-    /// value logic as `Engine::timeout` — the connection's `timeout_secs`
-    /// floored at 1s, or [`DEFAULT_REQUEST_TIMEOUT_SECS`] when the call site
-    /// has no connection record (in-memory transfer queries, task-scoped
-    /// finish/cancel). Without the wrapper, hung requests pin worker threads
-    /// forever and a few of them wedge the whole sidecar; now the caller
-    /// gets a readable timeout error instead of a silent hang.
-    fn block_on_timed<T, E, F>(&self, connection: Option<&StoredConnection>, future: F) -> Result<T, String>
-    where
-        E: std::fmt::Display,
-        F: Future<Output = Result<T, E>>,
-    {
-        let timeout = request_timeout(connection);
-        // timeout 的 Sleep 计时器要在 runtime 上下文内注册：构造必须发生在
-        // block_on 的 async 块里，否则 worker 线程上 Handle::current() 直接
-        // panic "there is no reactor running"（真实容器冒烟抓到的回归）。
-        match self.runtime.block_on(async move {
-            tokio::time::timeout(timeout, future).await
-        }) {
-            Ok(Ok(value)) => Ok(value),
-            // Engine errors (String or opendal::Error) flatten to the sidecar's
-            // String business-error channel, exactly as the bare `?` did.
-            Ok(Err(error)) => Err(error.to_string()),
-            Err(_elapsed) => Err(format!(
-                "request timed out after {}s",
-                timeout.as_secs()
-            )),
-        }
-    }
-
     fn new() -> Result<Self, String> {
         let data_dir = Store::default_dir();
         std::fs::create_dir_all(&data_dir).map_err(|error| {
@@ -107,12 +69,6 @@ impl Plugin {
         let runtime =
             Runtime::new().map_err(|error| format!("Failed to create async runtime: {error}"))?;
         let store = Arc::new(Store::new(data_dir.clone()));
-        let transfers = Arc::new(JobTable::new());
-        // P-FILES ①c (X-A handover ④): hydrate the persisted transfer history
-        // at startup (M3-F3-4 hook). Behavior is unchanged — `list` reads the
-        // store fresh — but the in-memory mirror is now wired instead of
-        // relying on the lazy first-write path.
-        runtime.block_on(transfers.load_history(&store));
         let rclone = Arc::new(rclone::RcloneEngine::new());
         // Keepalive watchdog: proactive crash respawn + re-registration and
         // idle proxy-group reaping (DBX_FILES_RCLONE_KEEPALIVE_SECS, 0=off).
@@ -135,45 +91,41 @@ impl Plugin {
         let sync_jobs: Arc<std::sync::Mutex<HashMap<String, RcloneSyncRecord>>> =
             Arc::new(std::sync::Mutex::new(HashMap::new()));
         let mut mcp = mcp::Mcp::new(data_dir);
-        // F-RCLONE Phase D: when the rclone engine is selected, the MCP
-        // storage tools route through it too (same registry, same gates).
-        // The sync starter closure shares the workbench syncDir job mirror,
-        // so `files/transfer/status` stays the single poll surface.
-        if rclone::RcloneEngine::enabled() {
-            mcp.attach_rclone(mcp::RcloneRoute {
-                engine: Arc::clone(&rclone),
-                store: Arc::clone(&store),
-                start_sync: Some(mcp_sync_starter(
-                    Arc::clone(&rclone),
-                    Arc::clone(&sync_jobs),
-                )),
-            });
-        }
+        // The rclone engine is the only engine: the MCP storage tools route
+        // through it too (same registry, same gates). The sync starter
+        // closure shares the workbench syncDir job mirror, so
+        // `files/transfer/status` stays the single poll surface.
+        mcp.attach_rclone(mcp::RcloneRoute {
+            engine: Arc::clone(&rclone),
+            store: Arc::clone(&store),
+            start_sync: Some(mcp_sync_starter(
+                Arc::clone(&rclone),
+                Arc::clone(&sync_jobs),
+            )),
+        });
         let mcp = Arc::new(mcp);
         Ok(Self {
             runtime,
-            engine: Arc::new(Engine::new()),
             rclone,
-            transfers,
             store,
             mcp,
             sync_jobs,
         })
     }
 
-    /// F-RCLONE dual-engine route (docs/IMPL_PLAN_RCLONE.zh-CN.md §2/§5/§7):
-    /// methods the rclone engine implements are answered by it when selected
-    /// via `DBX_FILES_ENGINE=rclone`; `Ok(None)` lets the OpenDAL engine
-    /// serve everything else during the transition. Phase B adds the file
-    /// surface plus the binary upload/download channel wiring; every Phase B
-    /// arm mirrors the field-for-field response shape (and gate direction) of
-    /// its OpenDAL counterpart below.
-    async fn try_handle_rclone(
+    /// The request route (docs/IMPL_PLAN_RCLONE.zh-CN.md §2/§5/§7, Phase D
+    /// end state): every storage method is answered by the rclone engine;
+    /// the engine-free support methods (`files/local/*`, `files/audit/list`,
+    /// the MCP surface) are answered inline. Storage methods the rclone
+    /// engine does not implement fall to the terminal `_` arm with an
+    /// explicit unsupported error — there is no second engine to fall back
+    /// to anymore.
+    async fn handle_request_via_rclone(
         &self,
         method: &str,
         params: Value,
         emitter: &PluginEmitter,
-    ) -> Result<Option<Value>, String> {
+    ) -> Result<Value, String> {
         match method {
             "connection/test" => {
                 let connection = StoredConnection::from_lifecycle_params(&params)?;
@@ -185,20 +137,20 @@ impl Plugin {
                     .await?;
                 let client = self.rclone.client_for(&connection).await?;
                 rclone::registry::test_connection(&client, &connection).await?;
-                Ok(Some(json!({
+                Ok(json!({
                     "success": true,
                     "message": "Storage backend reachable"
-                })))
+                }))
             }
             "connection/connect" => {
                 let connection = StoredConnection::from_lifecycle_params(&params)?;
                 // Same reserved-id rule as the OpenDAL engine (engine::connect):
                 // the built-in local filesystem must never be shadowed by a
                 // host-registered connection of the same id.
-                if connection.id == engine::LOCAL_CONNECTION_ID {
+                if connection.id == rclone::LOCAL_CONNECTION_ID {
                     return Err(format!(
                         "connectionId '{}' is reserved for the built-in local filesystem",
-                        engine::LOCAL_CONNECTION_ID
+                        rclone::LOCAL_CONNECTION_ID
                     ));
                 }
                 // A reconnect that changed its proxy config now lives in a
@@ -226,7 +178,7 @@ impl Plugin {
                     self.rclone.release_tunnel(&connection.id).await;
                     return Err(error);
                 }
-                Ok(Some(json!({ "success": true })))
+                Ok(json!({ "success": true }))
             }
             "connection/disconnect" => {
                 let connection_id = params
@@ -240,7 +192,7 @@ impl Plugin {
                 // `config/delete` hits the rcd that actually holds the
                 // remote; an unknown id is already disconnected.
                 let Some(binding) = self.rclone.registry.get(&connection_id) else {
-                    return Ok(Some(json!({ "success": true })));
+                    return Ok(json!({ "success": true }));
                 };
                 let client = self.rclone.client_for_binding(&binding).await?;
                 rclone::registry::disconnect(&self.rclone.registry, &client, &connection_id)
@@ -253,7 +205,7 @@ impl Plugin {
                 // sweep once the work settles.
                 let group = rclone::registry::group_key_of(binding.proxy.as_ref());
                 self.rclone.shutdown_group_if_idle(&group).await;
-                Ok(Some(json!({ "success": true })))
+                Ok(json!({ "success": true }))
             }
             "files/list" | "files/listPaged" | "files/stat" | "files/size" => {
                 let connection_id = params
@@ -277,7 +229,7 @@ impl Plugin {
                             binding.lock_to_root,
                         )
                         .await?;
-                        Ok(Some(json!({ "entries": entries })))
+                        Ok(json!({ "entries": entries }))
                     }
                     "files/listPaged" => {
                         let request: model::ListPagedRequest = parse(params)?;
@@ -293,7 +245,7 @@ impl Plugin {
                             binding.lock_to_root,
                         )
                         .await?;
-                        Ok(Some(json!({ "entries": entries, "total": total })))
+                        Ok(json!({ "entries": entries, "total": total }))
                     }
                     "files/stat" => {
                         let request: model::PathRequest = parse(params)?;
@@ -307,7 +259,7 @@ impl Plugin {
                             binding.lock_to_root,
                         )
                         .await?;
-                        Ok(Some(json!({ "entry": entry })))
+                        Ok(json!({ "entry": entry }))
                     }
                     _ => {
                         let request: model::PathRequest = parse(params)?;
@@ -321,7 +273,7 @@ impl Plugin {
                             binding.lock_to_root,
                         )
                         .await?;
-                        Ok(Some(json!({ "count": count, "bytes": bytes })))
+                        Ok(json!({ "count": count, "bytes": bytes }))
                     }
                 }
             }
@@ -337,7 +289,7 @@ impl Plugin {
                 if let Some(object) = payload.as_object_mut() {
                     object.insert("readOnly".to_string(), serde_json::Value::Bool(binding.read_only));
                 }
-                Ok(Some(payload))
+                Ok(payload)
             }
             "files/quickPaths" => {
                 let connection_id = connection_id_param(&params)?.to_string();
@@ -350,7 +302,7 @@ impl Plugin {
                     &binding.root,
                 )
                 .await?;
-                Ok(Some(payload))
+                Ok(payload)
             }
 
             // ------------------------------------------------------------------
@@ -382,7 +334,7 @@ impl Plugin {
                         &binding.root,
                         binding.lock_to_root,
                         &request.path,
-                        engine::ops::policy::PathPolicy::check_read,
+                        crate::policy::PathPolicy::check_read,
                     )?;
                     let (data, truncated) = rclone::ops::read_prefix(
                         &client,
@@ -391,10 +343,10 @@ impl Plugin {
                         max_bytes,
                     )
                     .await?;
-                    Ok(Some(json!({
+                    Ok(json!({
                         "dataBase64": BASE64_STANDARD.encode(data),
                         "truncated": truncated
-                    })))
+                    }))
                 } else {
                     let request: model::WriteRequest = parse(params)?;
                     ensure_binding_writable(&binding)?;
@@ -402,7 +354,7 @@ impl Plugin {
                         &binding.root,
                         binding.lock_to_root,
                         &request.path,
-                        engine::ops::policy::PathPolicy::check_write,
+                        crate::policy::PathPolicy::check_write,
                     )?;
                     let data = BASE64_STANDARD
                         .decode(request.data_base64.as_bytes())
@@ -421,7 +373,7 @@ impl Plugin {
                         &data,
                     )
                     .await?;
-                    Ok(Some(json!({ "success": true })))
+                    Ok(json!({ "success": true }))
                 }
             }
             "files/mkdir" | "files/rmdir" | "files/delete" | "files/purge" => {
@@ -481,7 +433,7 @@ impl Plugin {
                         self.audit_id(&request.connection_id, method, &request.path, "ok")?;
                     }
                 }
-                Ok(Some(json!({ "success": true })))
+                Ok(json!({ "success": true }))
             }
             "files/copy" | "files/move" => {
                 let request: model::CopyMoveRequest = parse(params)?;
@@ -534,11 +486,11 @@ impl Plugin {
                 self.audit_id(&request.connection_id, method, &request.source_path, "ok")?;
                 // rc operations/copyfile|movefile answer synchronously — no
                 // degraded job, so `transport` is always "native".
-                Ok(Some(json!({
+                Ok(json!({
                     "success": true,
                     "transport": "native",
                     "jobId": Option::<String>::None,
-                })))
+                }))
             }
             "files/rename" => {
                 let request: model::RenameRequest = parse(params)?;
@@ -559,7 +511,7 @@ impl Plugin {
                 )
                 .await?;
                 self.audit_id(&request.connection_id, method, &request.path, "ok")?;
-                Ok(Some(json!({ "success": true, "transport": "native", "jobId": Option::<String>::None })))
+                Ok(json!({ "success": true, "transport": "native", "jobId": Option::<String>::None }))
             }
             "files/publicLink" => {
                 let request: model::PublicLinkRequest = parse(params)?;
@@ -576,7 +528,7 @@ impl Plugin {
                     binding.lock_to_root,
                 )
                 .await?;
-                Ok(Some(json!({ "url": url })))
+                Ok(json!({ "url": url }))
             }
 
             // ------------------------------------------------------------------
@@ -607,7 +559,7 @@ impl Plugin {
                 let page = request.page.unwrap_or(1).max(1);
                 let page_size = request.page_size.unwrap_or(200).clamp(1, 1000);
                 let (start, end) = archive::paginate(total, page, page_size);
-                Ok(Some(json!({ "entries": &entries[start..end], "total": total })))
+                Ok(json!({ "entries": &entries[start..end], "total": total }))
             }
             "files/extract" => {
                 let request: model::ExtractRequest = parse(params)?;
@@ -626,11 +578,11 @@ impl Plugin {
                 )
                 .await?;
                 self.audit_id(&request.connection_id, method, &request.path, "ok")?;
-                Ok(Some(json!({
+                Ok(json!({
                     "success": true,
                     "transport": "native",
                     "jobId": Option::<String>::None,
-                })))
+                }))
             }
             "files/compress" => {
                 let request: model::CompressRequest = parse(params)?;
@@ -662,7 +614,7 @@ impl Plugin {
                     &binding.root,
                     binding.lock_to_root,
                     &request.target_path,
-                    engine::ops::policy::PathPolicy::check_write,
+                    crate::policy::PathPolicy::check_write,
                 )?;
                 if !target_rel.trim_matches('/').is_empty() {
                     let stat = client
@@ -688,11 +640,11 @@ impl Plugin {
                 )
                 .await?;
                 self.audit_id(&request.connection_id, method, &request.target_path, "ok")?;
-                Ok(Some(json!({
+                Ok(json!({
                     "success": true,
                     "transport": "native",
                     "jobId": Option::<String>::None,
-                })))
+                }))
             }
 
             // ------------------------------------------------------------------
@@ -709,7 +661,7 @@ impl Plugin {
                     &binding.root,
                     binding.lock_to_root,
                     &request.remote_path,
-                    engine::ops::policy::PathPolicy::check_write,
+                    crate::policy::PathPolicy::check_write,
                 )?;
                 // taskId generation copied from the OpenDAL start_upload arm
                 // (uuid v4); the staging sink carries the same id.
@@ -750,18 +702,14 @@ impl Plugin {
                 // Initial queued event, identical payload shape to the
                 // JobTable's start_upload emission.
                 let _ = emitter.event("files/transfer/progress", rclone_job_progress_event(&job));
-                Ok(Some(json!({ "taskId": task_id })))
+                Ok(json!({ "taskId": task_id }))
             }
             "files/upload/finish" => {
                 let request: model::TaskRequest = parse(params)?;
-                // Branch order is the job-table membership check itself: a
-                // task the rclone engine never started belongs to the OpenDAL
-                // JobTable (dual-engine transition, plan §2).
-                if !rclone_lock(&self.rclone.jobs).contains_key(&request.task_id) {
-                    return Ok(None);
-                }
+                // A task the engine never started is an error here — there is
+                // no second engine's job table to fall through to.
                 self.finish_rclone_upload(&request.task_id, emitter).await?;
-                Ok(Some(json!({ "success": true })))
+                Ok(json!({ "success": true }))
             }
             "files/download/start" => {
                 let request: model::DownloadStartRequest = parse(params)?;
@@ -771,7 +719,7 @@ impl Plugin {
                     &binding.root,
                     binding.lock_to_root,
                     &request.remote_path,
-                    engine::ops::policy::PathPolicy::check_read,
+                    crate::policy::PathPolicy::check_read,
                 )?;
                 let fs = rclone::call_fs(&binding);
                 // stat-first (missing object / directory), then the size
@@ -876,23 +824,20 @@ impl Plugin {
                     pump_done,
                     emitter.clone(),
                 ));
-                Ok(Some(json!({ "taskId": task_id, "size": size })))
+                Ok(json!({ "taskId": task_id, "size": size }))
             }
             "files/download/finish" => {
                 let request: model::TaskRequest = parse(params)?;
-                if !rclone_lock(&self.rclone.jobs).contains_key(&request.task_id) {
-                    return Ok(None);
-                }
                 let local_path = self
                     .finish_rclone_download(&request.task_id, emitter)
                     .await?;
-                // Response shape identical to the OpenDAL finish arm:
+                // Response shape identical to the retired JobTable finish arm:
                 // `{success, taskId}` plus `localPath` for saveToLocal runs.
                 let mut response = json!({ "success": true, "taskId": request.task_id });
                 if let Some(local_path) = local_path {
                     response["localPath"] = json!(local_path);
                 }
-                Ok(Some(response))
+                Ok(response)
             }
             // ------------------------------------------------------------------
             // Phase C dir sync (§5/§6): syncDir/copyDir run as rclone sync
@@ -900,8 +845,7 @@ impl Plugin {
             // gates mirroring `validate_dir_job_gates`, a pollable `jobId`
             // response, progress events in the exact `emit_dir_progress`
             // DirJob shape. `files/transfer/status` and the transfers/* panel
-            // methods answer from the rclone job mirrors first and fall
-            // through to the OpenDAL engine on a miss (plan §2 branch order).
+            // methods answer from the rclone job mirrors.
             // ------------------------------------------------------------------
             "files/syncDir" | "files/copyDir" => {
                 let request: model::DirJobRequest = parse(params)?;
@@ -918,12 +862,12 @@ impl Plugin {
                 // Same response shape as the OpenDAL syncDir/copyDir arm; the
                 // jobId doubles as the cancel/status taskId (shared namespace,
                 // exactly like the OpenDAL dir-job table).
-                Ok(Some(json!({ "jobId": job_id })))
+                Ok(json!({ "jobId": job_id }))
             }
             "files/transfer/status" => {
                 let request: model::JobRequest = parse(params)?;
-                // rclone mirrors first (single-file + sync jobs), OpenDAL
-                // arm on a miss. Lock order jobs → sync_jobs everywhere.
+                // rclone mirrors first (single-file + sync jobs). Lock order
+                // jobs → sync_jobs everywhere.
                 let answer = {
                     let jobs = rclone_lock(&self.rclone.jobs);
                     let sync_jobs = rclone_lock(&self.sync_jobs);
@@ -941,7 +885,7 @@ impl Plugin {
                     }
                 };
                 if let Some(answer) = answer {
-                    return Ok(Some(answer));
+                    return Ok(answer);
                 }
                 // Mirror miss but a sync handle survives: query_status as the
                 // fallback — a live rclone job still reports as running.
@@ -962,7 +906,7 @@ impl Plugin {
                     // Status polling must hit the rcd group that owns the
                     // jobid — the source connection's group.
                     let client = self.rclone.client_for_id(&record.src_conn).await?;
-                    if let Ok(Some(_stats)) = rclone::sync::query_status(&client, &handle).await {
+                    if let Ok(_stats) = rclone::sync::query_status(&client, &handle).await {
                         let probe = transfers::TransferJob {
                             task_id: request.job_id.clone(),
                             connection_id: record.src_conn.clone(),
@@ -976,13 +920,15 @@ impl Plugin {
                             finished_at: None,
                             local_path: None,
                         };
-                        return Ok(Some(json!({
+                        return Ok(json!({
                             "job": rclone_sync_dir_job_value(&probe, &record),
                             "kind": "dirJob",
-                        })));
+                        }));
                     }
                 }
-                Ok(None)
+                // Same not-found message the retired JobTable status answered
+                // with on a mirror miss.
+                Err(format!("Unknown jobId '{}'", request.job_id))
             }
             "files/transfers/list" => {
                 let request: model::TransfersListRequest = parse(params)?;
@@ -1020,7 +966,7 @@ impl Plugin {
                 // list_merged parity: oldest start first.
                 entries.sort_by_key(|(started_at, _)| *started_at);
                 let jobs_out: Vec<Value> = entries.into_iter().map(|(_, value)| value).collect();
-                Ok(Some(json!({ "jobs": jobs_out })))
+                Ok(json!({ "jobs": jobs_out }))
             }
             "files/transfers/clear" => {
                 let request: model::TransfersListRequest = parse(params)?;
@@ -1064,7 +1010,7 @@ impl Plugin {
                         sync_jobs.remove(&id);
                     }
                 }
-                Ok(Some(json!({ "cleared": cleared })))
+                Ok(json!({ "cleared": cleared }))
             }
             "files/transfers/delete" => {
                 let request: model::TaskRequest = parse(params)?;
@@ -1092,7 +1038,7 @@ impl Plugin {
                 if record_gone && removed == 0 {
                     removed = 1;
                 }
-                Ok(Some(json!({ "removed": removed })))
+                Ok(json!({ "removed": removed }))
             }
             "files/transfer/cancel" => {
                 let request: model::TaskRequest = parse(params)?;
@@ -1108,7 +1054,9 @@ impl Plugin {
                         || sync_jobs.contains_key(task_id)
                 };
                 if !ours {
-                    return Ok(None);
+                    // Same not-found message the retired JobTable cancel
+                    // answered for ids absent from every table.
+                    return Err("Transfer task was not found".to_string());
                 }
                 // Upload: abort the staging file and drop the slot.
                 if let Some(task) = rclone_lock(&self.rclone.uploads).remove(task_id) {
@@ -1120,7 +1068,7 @@ impl Plugin {
                         None,
                         emitter,
                     );
-                    return Ok(Some(json!({ "success": true })));
+                    return Ok(json!({ "success": true }));
                 }
                 // Download: raise the flag but keep the slot — the pump owns
                 // the cleanup while it lives (issue#4 mirror); a pump that
@@ -1140,7 +1088,7 @@ impl Plugin {
                         None,
                         emitter,
                     );
-                    return Ok(Some(json!({ "success": true })));
+                    return Ok(json!({ "success": true }));
                 }
                 // Phase C sync job (branch order preserved: uploads →
                 // downloads → sync). A settled mirror answers not-found like
@@ -1193,13 +1141,85 @@ impl Plugin {
                         None,
                         None,
                     );
-                    return Ok(Some(json!({ "success": true })));
+                    return Ok(json!({ "success": true }));
                 }
                 // Only a terminal record remains: the JobTable's cancel
                 // answers not-found once the slots are gone — mirror it.
                 Err("Transfer task was not found".to_string())
             }
-            _ => Ok(None),
+            // ------------------------------------------------------------------
+            // Engine-free support surface (moved verbatim from the retired
+            // OpenDAL match — none of these methods touch a storage engine):
+            // local download capabilities/whitelists, the audit trail and the
+            // MCP tool bridge.
+            // ------------------------------------------------------------------
+            // 本机落盘能力探测：桌面端 sidecar 可直接把下载写进本机下载目录
+            // （完成后 localPath 进入传输历史，面板提供 reveal/open）；web/
+            // docker 模式探测失败或 canSaveLocal=false 时前端回退宿主
+            // fileTransfer 保存或浏览器 <a download>。
+            "files/local/capabilities" => {
+                let data_dir = Store::default_dir();
+                let downloads_dir = local_downloads::downloads_base_dir(
+                    None,
+                    |key| std::env::var_os(key),
+                    &data_dir,
+                );
+                Ok(json!({
+                    "canSaveLocal": local_downloads::can_save_local(|key| std::env::var_os(key)),
+                    "downloadsDir": downloads_dir.to_string_lossy(),
+                    "platform": local_downloads::platform_name(),
+                }))
+            }
+            // Validate a user-selected local download directory without
+            // creating it. The frontend uses this before persisting the
+            // preference; start_download repeats the check for stale prefs.
+            "files/local/validate-directory" => {
+                let path = params
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .ok_or("Missing path")?;
+                let path = local_downloads::validate_download_dir(path)?;
+                Ok(json!({ "valid": true, "path": path.to_string_lossy() }))
+            }
+            // 在文件管理器中定位已完成的下载。只允许 reveal 传输历史里记录过
+            // 的 localPath，不能成为任意路径打开原语。
+            "files/local/reveal" => {
+                let path = params
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .ok_or("Missing path")?;
+                let history = self.store.load_transfers();
+                local_downloads::reveal_validated(&history, std::path::Path::new(path))?;
+                Ok(json!({ "success": true }))
+            }
+            // 在默认应用中打开已完成的本机下载；同样只允许打开传输历史中记录
+            // 过的路径，避免把这个按钮变成任意本机路径执行入口。
+            "files/local/open" => {
+                let path = params
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .ok_or("Missing path")?;
+                let history = self.store.load_transfers();
+                local_downloads::open_validated(&history, std::path::Path::new(path))?;
+                Ok(json!({ "success": true }))
+            }
+            "files/audit/list" => audit_list_response(&self.store, &params),
+
+            // ------------------------------------------------------------------
+            // MCP tool surface (shared/IMPL_PLAN_PLUGIN_MCP §2; ssh mcp.rs
+            // skeleton parity): discovery / execution / settings, plus the
+            // frontend-side intent report channel (design §1).
+            // ------------------------------------------------------------------
+            "mcp/tools" => Ok(self.mcp.tool_definitions(&params)),
+            "mcp/call" => Ok(self.mcp.call(&self.store, emitter, &params).await?),
+            "mcp/settings/get" => Ok(self.mcp.settings_get()),
+            "mcp/settings/set" => self.mcp.settings_set(&params),
+            "files/ui/state/report" => self.mcp.report(&params),
+            _ => Err(format!(
+                "{method} is not supported by the rclone engine"
+            )),
         }
     }
 
@@ -1436,773 +1456,13 @@ impl Plugin {
         params: Value,
         emitter: &PluginEmitter,
     ) -> Result<Value, String> {
-        // F-RCLONE dual-engine route: opt-in via DBX_FILES_ENGINE=rclone,
-        // unimplemented methods fall through to the OpenDAL engine.
-        if rclone::RcloneEngine::enabled() {
-            if let Some(routed) = self
-                .runtime
-                .block_on(self.try_handle_rclone(method, params.clone(), emitter))?
-            {
-                return Ok(routed);
-            }
-        }
-        match method {
-            // ------------------------------------------------------------------
-            // Lifecycle (M0 §3.2)
-            // ------------------------------------------------------------------
-            "connection/test" => {
-                let connection = StoredConnection::from_lifecycle_params(&params)?;
-                let _operation_id = operation_id(&params);
-                self.runtime
-                    .block_on(self.engine.test(&connection))?;
-                Ok(json!({
-                    "success": true,
-                    "message": "Storage backend reachable"
-                }))
-            }
-            "connection/connect" => {
-                let connection = StoredConnection::from_lifecycle_params(&params)?;
-                self.engine.connect(connection)?;
-                Ok(json!({ "success": true }))
-            }
-            "connection/disconnect" => {
-                let connection_id = params
-                    .get("connection")
-                    .and_then(|value| value.get("id"))
-                    .and_then(Value::as_str)
-                    .filter(|value| !value.is_empty())
-                    .ok_or("Missing connection id")?
-                    .to_string();
-                // Cancel the connection's transfer jobs first (M0 §3.2). The
-                // F-C transfer layer is still a `todo!()` stub, but until jobs
-                // exist the table is empty and there is genuinely nothing to
-                // cancel — so a stub panic is swallowed here to keep
-                // disconnect idempotent-successful per the lifecycle contract.
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    self.runtime
-                        .block_on(self.transfers.cancel_connection_jobs(&connection_id, emitter))
-                }));
-                self.engine.disconnect(&connection_id)?;
-                Ok(json!({ "success": true }))
-            }
-
-            // ------------------------------------------------------------------
-            // Browse & metadata (§8.1)
-            // ------------------------------------------------------------------
-            "files/list" => {
-                let request: model::ListRequest = parse(params)?;
-                let connection = self.engine.connection(&request.connection_id)?;
-                let operator = self.engine.operator(&request.connection_id)?;
-                let entries = self.block_on_timed(
-                    Some(&connection),
-                    engine::ops::list(&operator, &request.path, request.recurse),
-                )?;
-                Ok(json!({ "entries": entries }))
-            }
-            "files/listPaged" => {
-                let request: model::ListPagedRequest = parse(params)?;
-                let connection = self.engine.connection(&request.connection_id)?;
-                let operator = self.engine.operator(&request.connection_id)?;
-                let (entries, total) = self.block_on_timed(
-                    Some(&connection),
-                    engine::ops::list_paged(
-                        &operator,
-                        &request.path,
-                        request.page,
-                        request.page_size,
-                    ),
-                )?;
-                Ok(json!({ "entries": entries, "total": total }))
-            }
-            "files/stat" => {
-                let request: model::PathRequest = parse(params)?;
-                let connection = self.engine.connection(&request.connection_id)?;
-                let operator = self.engine.operator(&request.connection_id)?;
-                let entry =
-                    self.block_on_timed(Some(&connection), engine::ops::stat(&operator, &request.path))?;
-                Ok(json!({ "entry": entry }))
-            }
-            "files/quickPaths" => {
-                let connection_id = connection_id_param(&params)?.to_string();
-                let operator = self.engine.operator(&connection_id)?;
-                let connection = self.engine.connection(&connection_id)?;
-                let payload =
-                    self.block_on_timed(Some(&connection), engine::ops::quick_paths(&operator, &connection))?;
-                Ok(payload)
-            }
-            "files/capabilities" => {
-                let connection_id = connection_id_param(&params)?.to_string();
-                let operator = self.engine.operator(&connection_id)?;
-                // Single-logic projection of `info().capability()`
-                // (F-B handover item ③: the inline copy is gone; the wire
-                // shape is unchanged).
-                let capabilities = engine::ops::capabilities(&operator)?;
-                let mut payload =
-                    serde_json::to_value(capabilities).map_err(|error| error.to_string())?;
-                // 策略层只读门禁（连接表单 read_only ∥ 宿主标准 read_only）
-                // 透出给前端，驱动写操作的禁用态。
-                let read_only = self.engine.connection(&connection_id)?.read_only;
-                if let Some(object) = payload.as_object_mut() {
-                    object.insert("readOnly".to_string(), serde_json::Value::Bool(read_only));
-                }
-                Ok(payload)
-            }
-            "files/size" => {
-                let request: model::PathRequest = parse(params)?;
-                let connection = self.engine.connection(&request.connection_id)?;
-                let operator = self.engine.operator(&request.connection_id)?;
-                let (count, bytes) =
-                    self.block_on_timed(Some(&connection), engine::ops::size(&operator, &request.path))?;
-                Ok(json!({ "count": count, "bytes": bytes }))
-            }
-            "files/publicLink" => {
-                let request: model::PublicLinkRequest = parse(params)?;
-                let connection = self.engine.connection(&request.connection_id)?;
-                let operator = self.engine.operator(&request.connection_id)?;
-                let expire_secs = request.expire_secs.unwrap_or(3600).max(1);
-                let url = self.block_on_timed(
-                    Some(&connection),
-                    engine::ops::public_link(&operator, &request.path, expire_secs),
-                )?;
-                Ok(json!({ "url": url }))
-            }
-
-            // ------------------------------------------------------------------
-            // Read/write & structure (§8.2)
-            // ------------------------------------------------------------------
-            "files/read" => {
-                let request: model::ReadRequest = parse(params)?;
-                let connection = self.engine.connection(&request.connection_id)?;
-                let operator = self.engine.operator(&request.connection_id)?;
-                let max_bytes = request
-                    .max_bytes
-                    .unwrap_or(256 * 1024)
-                    .clamp(1, model::MAX_PREVIEW_BYTES as u64) as usize;
-                let (data, truncated) = self.block_on_timed(
-                    Some(&connection),
-                    engine::ops::read(&operator, &request.path, max_bytes),
-                )?;
-                Ok(json!({
-                    "dataBase64": BASE64_STANDARD.encode(data),
-                    "truncated": truncated
-                }))
-            }
-            "files/write" => {
-                let request: model::WriteRequest = parse(params)?;
-                let connection = self.engine.connection(&request.connection_id)?;
-                ensure_writable(&connection)?;
-                let operator = self.engine.operator(&request.connection_id)?;
-                let data = BASE64_STANDARD
-                    .decode(request.data_base64.as_bytes())
-                    .map_err(|error| format!("Invalid base64 file data: {error}"))?;
-                if data.len() > model::MAX_INLINE_WRITE_BYTES {
-                    return Err(format!(
-                        "Inline write payload of {} bytes exceeds {}; use the upload channel",
-                        data.len(),
-                        model::MAX_INLINE_WRITE_BYTES
-                    ));
-                }
-                self.block_on_timed(
-                    Some(&connection),
-                    engine::ops::write(&operator, &request.path, data),
-                )?;
-                Ok(json!({ "success": true }))
-            }
-            "files/mkdir" => {
-                let request: model::PathRequest = parse(params)?;
-                let connection = self.engine.connection(&request.connection_id)?;
-                ensure_writable(&connection)?;
-                let operator = self.engine.operator(&request.connection_id)?;
-                self.block_on_timed(
-                    Some(&connection),
-                    engine::ops::mkdir(&operator, &request.path),
-                )?;
-                Ok(json!({ "success": true }))
-            }
-            "files/rmdir" => {
-                let request: model::PathRequest = parse(params)?;
-                let connection = self.engine.connection(&request.connection_id)?;
-                ensure_writable(&connection)?;
-                ensure_deletable(&connection)?;
-                let operator = self.engine.operator(&request.connection_id)?;
-                self.block_on_timed(
-                    Some(&connection),
-                    engine::ops::rmdir(&operator, &request.path),
-                )?;
-                Ok(json!({ "success": true }))
-            }
-            "files/delete" => {
-                let request: model::PathRequest = parse(params)?;
-                let connection = self.engine.connection(&request.connection_id)?;
-                ensure_deletable(&connection)?;
-                let operator = self.engine.operator(&request.connection_id)?;
-                self.block_on_timed(
-                    Some(&connection),
-                    engine::ops::delete(&operator, &request.path),
-                )?;
-                self.audit(&connection, method, &request.path, "ok")?;
-                Ok(json!({ "success": true }))
-            }
-            "files/purge" => {
-                let request: model::PathRequest = parse(params)?;
-                let connection = self.engine.connection(&request.connection_id)?;
-                ensure_deletable(&connection)?;
-                refuse_root_purge(&connection, &request.path)?;
-                let operator = self.engine.operator(&request.connection_id)?;
-                self.block_on_timed(
-                    Some(&connection),
-                    engine::ops::purge(&operator, &request.path),
-                )?;
-                self.audit(&connection, method, &request.path, "ok")?;
-                Ok(json!({ "success": true }))
-            }
-            "files/copy" | "files/move" => {
-                let request: model::CopyMoveRequest = parse(params)?;
-                let connection = self.engine.connection(&request.connection_id)?;
-                ensure_writable(&connection)?;
-                // `move` implicitly deletes the source after the copy (§8.2
-                // degrade), so it also passes the delete gate — same rule as
-                // policy::PathPolicy::check_rename.
-                if method == "files/move" {
-                    ensure_deletable(&connection)?;
-                }
-                let source_connection_id = request
-                    .source_connection_id
-                    .unwrap_or_else(|| request.connection_id.clone());
-                let target_connection_id = request
-                    .target_connection_id
-                    .unwrap_or_else(|| request.connection_id.clone());
-                let source = self.engine.operator(&source_connection_id)?;
-                let target = self.engine.operator(&target_connection_id)?;
-                // §8.2 decision tree (X-A ③ + rclone `--server-side-across-configs`
-                // parity 2026-09-17): the engine's identity verdict (same
-                // Operator instance, or config-equivalent fingerprints) + native
-                // capability → server-side copy/rename executed inline;
-                // everything else degrades to a real async read→write job on
-                // the JobTable — the response carries a pollable `jobId`
-                // (previously `null`; see docs/PROGRESS-XA.zh-CN.md §2).
-                let identity = self
-                    .engine
-                    .backend_identity(&source_connection_id, &target_connection_id)?;
-                let native = if method == "files/copy" {
-                    engine::ops::native_copy_available(
-                        &source,
-                        &target,
-                        &request.source_path,
-                        &request.target_path,
-                        identity,
-                    )
-                } else {
-                    engine::ops::native_move_available(
-                        &source,
-                        &target,
-                        &request.source_path,
-                        &request.target_path,
-                        identity,
-                    )
-                };
-                let (transport, job_id) = if native {
-                    let outcome = if method == "files/copy" {
-                        self.block_on_timed(
-                            Some(&connection),
-                            engine::ops::copy(
-                                &source,
-                                &target,
-                                &request.source_path,
-                                &request.target_path,
-                                identity,
-                            ),
-                        )?
-                    } else {
-                        self.block_on_timed(
-                            Some(&connection),
-                            engine::ops::move_path(
-                                &source,
-                                &target,
-                                &request.source_path,
-                                &request.target_path,
-                                identity,
-                            ),
-                        )?
-                    };
-                    let transport = match outcome.transport {
-                        engine::ops::CopyTransport::Native => "native",
-                        engine::ops::CopyTransport::Job => "job",
-                    };
-                    (transport, outcome.job_id)
-                } else {
-                    let source_connection = self.engine.connection(&source_connection_id)?;
-                    let target_connection = self.engine.connection(&target_connection_id)?;
-                    let kind = if method == "files/move" {
-                        transfers::DirJobKind::Move
-                    } else {
-                        transfers::DirJobKind::Copy
-                    };
-                    let job_id = self.block_on_timed(
-                        Some(&connection),
-                        self.transfers.enqueue_copy_job(
-                            &source_connection,
-                            &source,
-                            &target_connection,
-                            &target,
-                            &request.source_path,
-                            &request.target_path,
-                            method == "files/move",
-                            kind,
-                            identity,
-                            emitter,
-                        ),
-                    )?;
-                    ("job", Some(job_id))
-                };
-                self.audit(&connection, method, &request.source_path, "ok")?;
-                Ok(json!({
-                    "success": true,
-                    "transport": transport,
-                    "jobId": job_id,
-                }))
-            }
-            "files/rename" => {
-                let request: model::RenameRequest = parse(params)?;
-                let connection = self.engine.connection(&request.connection_id)?;
-                ensure_writable(&connection)?;
-                // Rename removes the source path (native rename or the
-                // copy+delete degrade), so the delete gate applies — same
-                // rule as policy::PathPolicy::check_rename.
-                ensure_deletable(&connection)?;
-                let operator = self.engine.operator(&request.connection_id)?;
-                // P-FILES ②: OpenDAL `Operator::rename` validates FILE paths
-                // only, so a directory rename degrades to a copy + source
-                // delete async job (progress visible, cancellable) — the same
-                // engine path as a degraded `files/move`. The response shape
-                // matches copy/move (`transport`/`jobId`) so the frontend can
-                // wait for the terminal state before refreshing.
-                let source_is_dir = self.block_on_timed(
-                    Some(&connection),
-                    engine::ops::is_dir_path(&operator, &request.path),
-                )?;
-                if source_is_dir {
-                    let job_id = self.block_on_timed(
-                        Some(&connection),
-                        self.transfers.enqueue_copy_job(
-                            &connection,
-                            &operator,
-                            &connection,
-                            &operator,
-                            &request.path,
-                            &request.new_path,
-                            true,
-                            transfers::DirJobKind::Rename,
-                            self.engine
-                                .backend_identity(&connection.id, &connection.id)?,
-                            emitter,
-                        ),
-                    )?;
-                    self.audit(&connection, method, &request.path, "ok")?;
-                    return Ok(json!({
-                        "success": true,
-                        "transport": "job",
-                        "jobId": Some(job_id),
-                    }));
-                }
-                self.block_on_timed(
-                    Some(&connection),
-                    engine::ops::rename(&operator, &request.path, &request.new_path),
-                )?;
-                self.audit(&connection, method, &request.path, "ok")?;
-                Ok(json!({ "success": true, "transport": "native", "jobId": Option::<String>::None }))
-            }
-
-            // ------------------------------------------------------------------
-            // Archives (B-ARCHIVE route): tar / tar.gz listing + extraction.
-            // zip is explicitly Phase 2; contract per PROGRESS-A-FILES §3.
-            // ------------------------------------------------------------------
-            "files/archiveList" => {
-                let request: model::ArchiveListRequest = parse(params)?;
-                let connection = self.engine.connection(&request.connection_id)?;
-                let operator = self.engine.operator(&request.connection_id)?;
-                // Read gate only: listing never touches storage outside the
-                // archive file itself (root whitelist via the policy layer).
-                let gate = engine::ops::Gate::from_connection(&connection);
-                let archive_path = gate.readable_path(&request.path, false)?;
-                let raw = self.block_on_timed(
-                    Some(&connection),
-                    archive::read_archive(&operator, &archive_path),
-                )?;
-                let entries = archive::list_entries(&raw, &archive::DEFAULT_LIMITS)?;
-                let total = entries.len() as u64;
-                let page = request.page.unwrap_or(1).max(1);
-                let page_size = request.page_size.unwrap_or(200).clamp(1, 1000);
-                let (start, end) = archive::paginate(total, page, page_size);
-                Ok(json!({ "entries": &entries[start..end], "total": total }))
-            }
-            "files/extract" => {
-                let request: model::ExtractRequest = parse(params)?;
-                let connection = self.engine.connection(&request.connection_id)?;
-                // Extract writes the target tree but never deletes the source
-                // archive → read_only gate applies, allow_delete does not.
-                ensure_writable(&connection)?;
-                let operator = self.engine.operator(&request.connection_id)?;
-                let gate = engine::ops::Gate::from_connection(&connection);
-                let archive_path = gate.readable_path(&request.path, false)?;
-                let target_path = gate.ensure_writable_path(&request.target_path, true)?;
-                let raw = self.block_on_timed(
-                    Some(&connection),
-                    archive::read_archive(&operator, &archive_path),
-                )?;
-                let plan = archive::extract_entries(&raw, &archive::DEFAULT_LIMITS)?;
-                let payload_bytes: u64 = plan.iter().map(|entry| entry.size).sum();
-                if plan.len() <= archive::MAX_SYNC_EXTRACT_ENTRIES
-                    && payload_bytes <= archive::MAX_SYNC_EXTRACT_BYTES
-                {
-                    // Small package: run synchronously and report `{success}`.
-                    let never_canceled = std::sync::atomic::AtomicBool::new(false);
-                    self.block_on_timed(
-                        Some(&connection),
-                        archive::write_entries(
-                            &operator,
-                            plan,
-                            &target_path,
-                            &never_canceled,
-                            |_, _| {},
-                        ),
-                    )?;
-                    self.audit(&connection, method, &request.path, "ok")?;
-                    return Ok(json!({
-                        "success": true,
-                        "transport": "native",
-                        "jobId": Option::<String>::None,
-                    }));
-                }
-                // Big package: degrade to a real async job (progress/cancel/
-                // status reuse the dir-job table, same semantics as copy/move).
-                let job_id = self.block_on_timed(
-                    Some(&connection),
-                    self.transfers.enqueue_extract_job(
-                        &connection,
-                        &operator,
-                        &archive_path,
-                        &target_path,
-                        emitter,
-                    ),
-                )?;
-                self.audit(&connection, method, &request.path, "ok")?;
-                Ok(json!({
-                    "success": true,
-                    "transport": "job",
-                    "jobId": job_id,
-                }))
-            }
-            "files/compress" => {
-                let request: model::CompressRequest = parse(params)?;
-                let connection = self.engine.connection(&request.connection_id)?;
-                ensure_writable(&connection)?;
-                let operator = self.engine.operator(&request.connection_id)?;
-                let gate = engine::ops::Gate::from_connection(&connection);
-                if request.paths.is_empty() {
-                    return Err("paths must not be empty".to_string());
-                }
-                // Archive file (not a directory): no trailing-slash rewrite.
-                let target_path = gate.ensure_writable_path(&request.target_path, false)?;
-                let gzip = if target_path.to_lowercase().ends_with(".tar.gz")
-                    || target_path.to_lowercase().ends_with(".tgz")
-                {
-                    true
-                } else if target_path.to_lowercase().ends_with(".tar") {
-                    false
-                } else {
-                    return Err(format!(
-                        "Archive target '{target_path}' must end with .tar, .tar.gz or .tgz"
-                    ));
-                };
-                // Refuse to overwrite: an existing target is never clobbered
-                // by a compression run (the caller picks another name).
-                if self
-                    .block_on_timed(Some(&connection), operator.stat(&target_path))
-                    .is_ok()
-                {
-                    return Err(format!("Archive target '{target_path}' already exists"));
-                }
-                for source in &request.paths {
-                    gate.readable_path(source, false)?;
-                }
-                let plan = self.block_on_timed(
-                    Some(&connection),
-                    archive::plan_compress(&operator, &request.paths),
-                )?;
-                let payload_bytes: u64 = plan.iter().map(|entry| entry.size).sum();
-                if plan.len() <= archive::MAX_SYNC_EXTRACT_ENTRIES
-                    && payload_bytes <= archive::MAX_SYNC_EXTRACT_BYTES
-                {
-                    let data = self.block_on_timed(
-                        Some(&connection),
-                        archive::build_archive(&operator, &plan, gzip),
-                    )?;
-                    self.block_on_timed(
-                        Some(&connection),
-                        operator.write(&target_path, data),
-                    )
-                    .map_err(|error| {
-                        format!("Failed to write archive '{target_path}': {error}")
-                    })?;
-                    self.audit(&connection, method, &request.target_path, "ok")?;
-                    return Ok(json!({
-                        "success": true,
-                        "transport": "native",
-                        "jobId": Option::<String>::None,
-                    }));
-                }
-                let job_id = self.block_on_timed(
-                    Some(&connection),
-                    self.transfers.enqueue_compress_job(
-                        &connection,
-                        &operator,
-                        plan,
-                        &target_path,
-                        gzip,
-                        emitter,
-                    ),
-                )?;
-                self.audit(&connection, method, &request.target_path, "ok")?;
-                Ok(json!({
-                    "success": true,
-                    "transport": "job",
-                    "jobId": job_id,
-                }))
-            }
-
-            // ------------------------------------------------------------------
-            // Large transfers over binary channels (§8.3)
-            // ------------------------------------------------------------------
-            "files/upload/start" => {
-                let request: model::UploadStartRequest = parse(params)?;
-                let connection = self.engine.connection(&request.connection_id)?;
-                ensure_writable(&connection)?;
-                let operator = self.engine.operator(&request.connection_id)?;
-                let task_id = self.block_on_timed(
-                    Some(&connection),
-                    self.transfers.start_upload(
-                        &connection,
-                        &operator,
-                        &request.remote_path,
-                        request.size,
-                        emitter,
-                    ),
-                )?;
-                Ok(json!({ "taskId": task_id }))
-            }
-            "files/upload/finish" => {
-                let request: model::TaskRequest = parse(params)?;
-                // Task-scoped: no connection record is loaded, so the default
-                // budget applies.
-                self.block_on_timed(
-                    None,
-                    self.transfers.finish_upload(&request.task_id, emitter),
-                )?;
-                Ok(json!({ "success": true }))
-            }
-            "files/download/start" => {
-                let request: model::DownloadStartRequest = parse(params)?;
-                let connection = self.engine.connection(&request.connection_id)?;
-                let operator = self.engine.operator(&request.connection_id)?;
-                let (task_id, size) = self.block_on_timed(
-                    Some(&connection),
-                    self.transfers.start_download(
-                        &connection,
-                        &operator,
-                        &request.remote_path,
-                        request.save_to_local,
-                        request.download_dir.as_deref(),
-                        emitter,
-                    ),
-                )?;
-                Ok(json!({ "taskId": task_id, "size": size }))
-            }
-            "files/download/finish" => {
-                let request: model::TaskRequest = parse(params)?;
-                // saveToLocal 完成的下载在此改名落盘并带回 localPath（历史同
-                // 步记录）；web/docker 等本地落盘关闭时为 None。
-                let local_path = self.block_on_timed(
-                    None,
-                    self.transfers.finish_download(&request.task_id, emitter),
-                )?;
-                let mut response = json!({ "success": true, "taskId": request.task_id });
-                if let Some(local_path) = local_path {
-                    response["localPath"] = json!(local_path);
-                }
-                Ok(response)
-            }
-
-            // ------------------------------------------------------------------
-            // Directory sync & job queries (§8.4)
-            // ------------------------------------------------------------------
-            "files/syncDir" | "files/copyDir" => {
-                let request: model::DirJobRequest = parse(params)?;
-                let source = self.engine.connection(&request.source_connection_id)?;
-                let target = self.engine.connection(&request.target_connection_id)?;
-                let source_operator = self.engine.operator(&request.source_connection_id)?;
-                let target_operator = self.engine.operator(&request.target_connection_id)?;
-                // Config-equivalent connections (same fingerprint) let the dir
-                // job use per-file server-side copies (rclone
-                // --server-side-across-configs); distinct backends stream.
-                let identity = self.engine.backend_identity(
-                    &request.source_connection_id,
-                    &request.target_connection_id,
-                )?;
-                let job_id = self.block_on_timed(
-                    Some(&source),
-                    self.transfers.enqueue_dir_job(
-                        &source,
-                        &source_operator,
-                        &target,
-                        &target_operator,
-                        &request.source_path,
-                        &request.target_path,
-                        method == "files/syncDir",
-                        // rclone 对齐的 dryRun / maxDelete（均可选，缺省关/不限）。
-                        request.dry_run.unwrap_or(false),
-                        request.max_delete,
-                        identity,
-                        emitter,
-                    ),
-                )?;
-                Ok(json!({ "jobId": job_id }))
-            }
-            "files/transfers/list" => {
-                let request: model::TransfersListRequest = parse(params)?;
-                // P-FILES ①a: unified view — single-file jobs + history +
-                // dir jobs (syncDir/copyDir/degraded copy/move/rename).
-                let jobs = self.block_on_timed(
-                    None,
-                    self.transfers
-                        .list_merged(&self.store, request.connection_id.as_deref()),
-                )?;
-                Ok(json!({ "jobs": jobs }))
-            }
-            "files/transfers/clear" => {
-                // P-FILES ⑥: drop finished transfer history (all connections
-                // or scoped by optional connectionId). Queued/running jobs
-                // are never touched.
-                let request: model::TransfersListRequest = parse(params)?;
-                let cleared = self.block_on_timed(
-                    None,
-                    self.transfers
-                        .clear(&self.store, request.connection_id.as_deref()),
-                )?;
-                Ok(json!({ "cleared": cleared }))
-            }
-            "files/transfers/delete" => {
-                // 传输面板单条删除：按 taskId 移除已结束的记录（内存 + 持久化
-                // transfers.json）；活动任务拒绝，先取消再删。
-                let request: model::TaskRequest = parse(params)?;
-                let removed = self.block_on_timed(
-                    None,
-                    self.transfers.delete_record(&self.store, &request.task_id),
-                )?;
-                Ok(json!({ "removed": removed }))
-            }
-            // 本机落盘能力探测：桌面端 sidecar 可直接把下载写进本机下载目录
-            // （完成后 localPath 进入传输历史，面板提供 reveal/open）；web/
-            // docker 模式探测失败或 canSaveLocal=false 时前端回退宿主
-            // fileTransfer 保存或浏览器 <a download>。
-            "files/local/capabilities" => {
-                let data_dir = Store::default_dir();
-                let downloads_dir = local_downloads::downloads_base_dir(
-                    None,
-                    |key| std::env::var_os(key),
-                    &data_dir,
-                );
-                Ok(json!({
-                    "canSaveLocal": local_downloads::can_save_local(|key| std::env::var_os(key)),
-                    "downloadsDir": downloads_dir.to_string_lossy(),
-                    "platform": local_downloads::platform_name(),
-                }))
-            }
-            // Validate a user-selected local download directory without
-            // creating it. The frontend uses this before persisting the
-            // preference; start_download repeats the check for stale prefs.
-            "files/local/validate-directory" => {
-                let path = params
-                    .get("path")
-                    .and_then(Value::as_str)
-                    .ok_or("Missing path")?;
-                let path = local_downloads::validate_download_dir(path)?;
-                Ok(json!({ "valid": true, "path": path.to_string_lossy() }))
-            }
-            // 在文件管理器中定位已完成的下载。只允许 reveal 传输历史里记录过
-            // 的 localPath，不能成为任意路径打开原语。
-            "files/local/reveal" => {
-                let path = params
-                    .get("path")
-                    .and_then(Value::as_str)
-                    .filter(|value| !value.is_empty())
-                    .ok_or("Missing path")?;
-                let history = self.store.load_transfers();
-                local_downloads::reveal_validated(&history, std::path::Path::new(path))?;
-                Ok(json!({ "success": true }))
-            }
-            // 在默认应用中打开已完成的本机下载；同样只允许打开传输历史中记录
-            // 过的路径，避免把这个按钮变成任意本机路径执行入口。
-            "files/local/open" => {
-                let path = params
-                    .get("path")
-                    .and_then(Value::as_str)
-                    .filter(|value| !value.is_empty())
-                    .ok_or("Missing path")?;
-                let history = self.store.load_transfers();
-                local_downloads::open_validated(&history, std::path::Path::new(path))?;
-                Ok(json!({ "success": true }))
-            }
-            "files/transfer/status" => {
-                let request: model::JobRequest = parse(params)?;
-                if let Some(job) = self.block_on_timed(None, self.transfers.status(&request.job_id))? {
-                    return Ok(json!({ "job": job, "kind": "transfer" }));
-                }
-                let dir_job = self
-                    .block_on_timed(None, self.transfers.dir_status(&request.job_id))?
-                    .ok_or(format!("Unknown jobId '{}'", request.job_id))?;
-                Ok(json!({ "job": dir_job, "kind": "dirJob" }))
-            }
-            "files/transfer/cancel" => {
-                let request: model::TaskRequest = parse(params)?;
-                self.block_on_timed(None, self.transfers.cancel(&request.task_id, emitter))?;
-                Ok(json!({ "success": true }))
-            }
-            "files/audit/list" => audit_list_response(&self.store, &params),
-
-            // ------------------------------------------------------------------
-            // MCP tool surface (shared/IMPL_PLAN_PLUGIN_MCP §2; ssh mcp.rs
-            // skeleton parity): discovery / execution / settings, plus the
-            // frontend-side intent report channel (design §1).
-            // ------------------------------------------------------------------
-            "mcp/tools" => Ok(self.mcp.tool_definitions(&self.engine, &params)),
-            "mcp/call" => Ok(self.runtime.block_on(self.mcp.call(
-                &self.engine,
-                &self.transfers,
-                &self.store,
-                emitter,
-                &params,
-            ))?),
-            "mcp/settings/get" => Ok(self.mcp.settings_get()),
-            "mcp/settings/set" => self.mcp.settings_set(&params),
-            "files/ui/state/report" => self.mcp.report(&params),
-            _ => Err(format!("Method not found: {method}")),
-        }
+        // The rclone engine is the only engine: every request is routed
+        // through it (storage methods) or answered inline (support methods).
+        self.runtime
+            .block_on(self.handle_request_via_rclone(method, params, emitter))
     }
 
-    /// Appends an audit line for a completed write-ish operation. Failures to
-    /// audit are logged to stderr but never fail the operation itself.
-    fn audit(
-        &self,
-        connection: &StoredConnection,
-        action: &str,
-        target: &str,
-        result: &str,
-    ) -> Result<(), String> {
-        self.audit_id(&connection.id, action, target, result)
-    }
-
-    /// Connection-id-keyed audit twin used by the rclone arms (the rclone
+    /// Connection-id-keyed audit used by the rclone arms (the rclone
     /// registry keeps bindings, not StoredConnection records).
     fn audit_id(
         &self,
@@ -2226,28 +1486,25 @@ impl Plugin {
         Ok(())
     }
 
-    /// Dual-engine upload-frame router for `handle_binary`: `Some(Ok/Err)`
-    /// when the frame belongs to an rclone staging task (handled here),
-    /// `None` when the frame must keep flowing into the OpenDAL JobTable.
-    /// Membership is checked before anything else — the branch order the
-    /// transition contract requires (plan §7: 先查 rclone staging 表).
+    /// rclone upload-frame ingest for `handle_binary`, `JobTable::append_upload`
+    /// semantics twin: strict 8-byte BE offset continuity (misaligned frame =
+    /// hard error), declared-size guard, throttled `files/transfer/progress`.
+    /// A staging write failure consumes the slot and lands the job `Failed`
+    /// with the stored detail, exactly like the retired writer-failure path.
     fn append_rclone_upload(
         &self,
         task_id: &str,
         data: &[u8],
         emitter: &PluginEmitter,
-    ) -> Option<Result<(), String>> {
+    ) -> Result<(), String> {
         if !rclone_lock(&self.rclone.uploads).contains_key(task_id) {
-            return None;
+            return Err("Upload task was not found".to_string());
         }
-        Some(self.append_rclone_upload_inner(task_id, data, emitter))
+        self.append_rclone_upload_inner(task_id, data, emitter)
     }
 
-    /// rclone upload-frame ingest, `JobTable::append_upload` semantics twin:
-    /// strict 8-byte BE offset continuity (misaligned frame = hard error),
-    /// declared-size guard, throttled `files/transfer/progress`. A staging
-    /// write failure consumes the slot and lands the job `Failed` with the
-    /// stored detail, exactly like the OpenDAL writer-failure path.
+    /// Staging-table mutation half of [`Plugin::append_rclone_upload`] (the
+    /// membership check runs before anything else).
     fn append_rclone_upload_inner(
         &self,
         task_id: &str,
@@ -2356,6 +1613,11 @@ fn audit_list_response(store: &Store, params: &Value) -> Result<Value, String> {
     Ok(json!({ "entries": entries }))
 }
 
+/// Connection-level write gate on a StoredConnection — the message-identical
+/// sibling of [`ensure_binding_writable`]. Production arms gate on the rclone
+/// registry binding, so this copy stays test-only: the gate-parity tests pin
+/// its semantics against the shared policy layer.
+#[cfg(test)]
 fn ensure_writable(connection: &StoredConnection) -> Result<(), String> {
     if connection.read_only {
         Err("Connection is read-only; write operations are rejected".to_string())
@@ -2369,6 +1631,8 @@ fn ensure_writable(connection: &StoredConnection) -> Result<(), String> {
 /// `allow_delete` independently rejects delete-class ops. Same rule as
 /// `policy::PathPolicy::check_delete` / `Gate::ensure_deletable_path`, so
 /// main.rs and the policy layer share one semantic (F-B handover item ①).
+/// Test-only twin of [`ensure_binding_deletable`] (see [`ensure_writable`]).
+#[cfg(test)]
 fn ensure_deletable(connection: &StoredConnection) -> Result<(), String> {
     if connection.read_only {
         Err("Connection is read-only; delete operations are rejected".to_string())
@@ -2380,8 +1644,9 @@ fn ensure_deletable(connection: &StoredConnection) -> Result<(), String> {
 }
 
 /// Caller-side root-purge guard (§8.2: `files/purge` must refuse the
-/// connection root and `/`). `engine/ops.rs::purge` re-checks once F-B fills
-/// the stub — defense in depth, exactly as the F-B contract comment requires.
+/// connection root and `/`). Test-only StoredConnection wrapper of
+/// [`refuse_purge_of_root`] (the production arms pass the binding root).
+#[cfg(test)]
 fn refuse_root_purge(connection: &StoredConnection, path: &str) -> Result<(), String> {
     refuse_purge_of_root(&connection.root, path)
 }
@@ -2474,13 +1739,13 @@ async fn rclone_start_dir_job(
         &source_binding.root,
         source_binding.lock_to_root,
         &request.source_path,
-        engine::ops::policy::PathPolicy::check_read,
+        crate::policy::PathPolicy::check_read,
     )?;
     let dst_rel = rclone_gate(
         &target_binding.root,
         target_binding.lock_to_root,
         &request.target_path,
-        engine::ops::policy::PathPolicy::check_write,
+        crate::policy::PathPolicy::check_write,
     )?;
     let job_id = uuid::Uuid::new_v4().to_string();
     let job = transfers::TransferJob {
@@ -2879,9 +2144,9 @@ fn rclone_gate(
     root: &str,
     lock_to_root: bool,
     path: &str,
-    check: fn(&engine::ops::policy::PathPolicy, &str) -> Result<engine::ops::policy::ResolvedPath, String>,
+    check: fn(&crate::policy::PathPolicy, &str) -> Result<crate::policy::ResolvedPath, String>,
 ) -> Result<String, String> {
-    let policy = engine::ops::policy::PathPolicy::from_parts(root, lock_to_root, false, true);
+    let policy = crate::policy::PathPolicy::from_parts(root, lock_to_root, false, true);
     check(&policy, path).map(|resolved| resolved.relative)
 }
 
@@ -3163,7 +2428,12 @@ async fn rclone_download_pump(
             file.write_all(chunk)
                 .map_err(|error| format!("Failed to write staging file: {error}"))?;
         }
-        let payload = engine::transfer::frame(offset, chunk);
+        // Kind-1 download frame: 8-byte BE offset + payload chunk (the
+        // `engine::transfer::frame` shape, inlined since the OpenDAL transfer
+        // module is retired).
+        let mut payload = Vec::with_capacity(8 + chunk.len());
+        payload.extend_from_slice(&(offset as u64).to_be_bytes());
+        payload.extend_from_slice(chunk);
         emitter
             .binary(&channel, &payload)
             .map_err(|error| format!("Failed to push download frame: {error:?}"))?;
@@ -3297,19 +2567,12 @@ impl PluginHandler for Plugin {
         // Host → sidecar upload: `files/upload/{taskId}` frames carry an
         // 8-byte BE offset + payload chunk (ssh-sftp main.rs:666-671 shape).
         if let Some(task_id) = channel.strip_prefix("files/upload/") {
-            // F-RCLONE phase B dual-engine branch (plan §2/§7): the rclone
-            // staging table is consulted FIRST — a task registered by the
-            // rclone `files/upload/start` arm lands in its byte path, while
-            // everything else (rclone engine off, OpenDAL-era task, unknown
-            // id) falls through to the OpenDAL JobTable verbatim. The map
-            // membership check IS the engine-selection branch, so a miss can
-            // never be hijacked from the legacy path.
-            if let Some(result) = self.append_rclone_upload(task_id, &data, emitter) {
-                return result.map_err(to_plugin_error);
-            }
+            // The rclone staging table membership IS the engine-selection
+            // check (there is no second engine); an unknown id is the same
+            // "Upload task was not found" error the retired JobTable path
+            // answered with.
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.runtime
-                    .block_on(self.transfers.append_upload(task_id, &data, emitter))
+                self.append_rclone_upload(task_id, &data, emitter)
             }));
             return match outcome {
                 Ok(result) => result.map_err(to_plugin_error),
@@ -3351,33 +2614,6 @@ fn connection_id_param(params: &Value) -> Result<&str, String> {
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "Missing connectionId".to_string())
-}
-
-/// Fallback request budget when the call site has no connection record in
-/// hand; mirrors the `StoredConnection::timeout_secs` model default.
-const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 30;
-
-/// Per-request wall-clock budget: `timeout_secs` floored at 1s — the same
-/// value logic as `Engine::timeout` — with the model default when no
-/// connection record is available at the call site.
-fn request_timeout(connection: Option<&StoredConnection>) -> Duration {
-    Duration::from_secs(
-        connection
-            .map(|connection| connection.timeout_secs.max(1))
-            .unwrap_or(DEFAULT_REQUEST_TIMEOUT_SECS),
-    )
-}
-
-/// Host API 1.1 passes `operationId` to correlate connection lifecycle calls;
-/// on Host API 1.0 it is absent, so a locally generated id is used instead.
-/// The id only needs to stay stable between a challenge prompt and its resolve.
-fn operation_id(params: &Value) -> String {
-    params
-        .get("operationId")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
 }
 
 fn to_plugin_error(error: String) -> PluginError {
@@ -3430,16 +2666,6 @@ mod tests {
     }
 
     #[test]
-    fn operation_id_falls_back_to_uuid() {
-        let with_id = operation_id(&json!({ "operationId": "op-1" }));
-        assert_eq!(with_id, "op-1");
-        let fallback = operation_id(&json!({}));
-        assert_eq!(fallback.len(), 36, "uuid v4 shape: {fallback}");
-        let empty = operation_id(&json!({ "operationId": "" }));
-        assert_eq!(empty.len(), 36);
-    }
-
-    #[test]
     fn read_only_gate_blocks_writes_and_deletes() {
         let connection = StoredConnection::from_lifecycle_params(&json!({
             "connection": {
@@ -3474,7 +2700,7 @@ mod tests {
     /// `read_only` rejects deletes too).
     #[test]
     fn gates_match_policy_layer_semantics() {
-        use engine::ops::policy::PathPolicy;
+        use crate::policy::PathPolicy;
         for read_only in [false, true] {
             for allow_delete in [false, true] {
                 let connection =

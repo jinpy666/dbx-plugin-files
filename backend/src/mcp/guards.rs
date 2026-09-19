@@ -3,8 +3,7 @@
 // full decision surface without importing main)
 // ---------------------------------------------------------------------------
 
-use crate::engine::Engine;
-use crate::model::{DirJobRequest, StoredConnection};
+use crate::model::DirJobRequest;
 use crate::store::{AuditRecord, Store};
 
 use serde_json::Value;
@@ -14,30 +13,8 @@ use super::{
     MCP_SOURCE,
 };
 
-pub(crate) fn ensure_writable(connection: &StoredConnection) -> Result<(), String> {
-    if connection.read_only {
-        Err("Connection is read-only; write operations are rejected".to_string())
-    } else {
-        Ok(())
-    }
-}
-
-pub(crate) fn ensure_deletable(connection: &StoredConnection) -> Result<(), String> {
-    if connection.read_only {
-        Err("Connection is read-only; delete operations are rejected".to_string())
-    } else if !connection.allow_delete {
-        Err(
-            "Connection disallows delete operations (allow_delete=false); enable allowDelete \
-             on the connection (or use a connection that allows it) to run delete/purge"
-                .to_string(),
-        )
-    } else {
-        Ok(())
-    }
-}
-
-// -- rclone-mode twins (bindings carry the flags instead of connection
-//    records; message texts identical to the copies above) -------------------
+// -- connection gates (bindings carry the flags; the message texts mirror the
+//    StoredConnection twins pinned by main.rs's gate-parity tests) ----------
 
 pub(crate) fn ensure_binding_writable(
     binding: &crate::rclone::registry::RemoteBinding,
@@ -65,13 +42,8 @@ pub(crate) fn ensure_binding_deletable(
     }
 }
 
-/// Same root refusal as main.rs `files/purge` (§8.2 red line).
-pub(crate) fn refuse_root_purge(connection: &StoredConnection, path: &str) -> Result<(), String> {
-    refuse_root_purge_root(&connection.root, path)
-}
-
-/// Root-string twin of [`refuse_root_purge`] for the rclone arms (the
-/// message text is identical to main.rs `refuse_purge_of_root`).
+/// Root refusal for the rclone arms, message-identical to main.rs
+/// `refuse_purge_of_root` (§8.2 red line).
 pub(crate) fn refuse_root_purge_root(root: &str, path: &str) -> Result<(), String> {
     fn core(path: &str) -> String {
         path.trim().trim_matches('/').to_string()
@@ -91,12 +63,6 @@ pub(crate) fn refuse_root_purge_root(root: &str, path: &str) -> Result<(), Strin
 }
 
 /// MCP-write audit: same AuditRecord baseline, `source:"mcp"` (design §4).
-pub(crate) fn audit_mcp(store: &Store, connection: &StoredConnection, action: &str, target: &str, result: &str) {
-    audit_mcp_id(store, &connection.id, action, target, result);
-}
-
-/// Connection-id-keyed audit twin used by the rclone arms (the rclone
-/// registry keeps bindings, not StoredConnection records).
 pub(crate) fn audit_mcp_id(store: &Store, connection_id: &str, action: &str, target: &str, result: &str) {
     let record = AuditRecord {
         time: crate::store::format_rfc3339(crate::store::unix_millis_now() as i64),
@@ -121,65 +87,6 @@ pub(crate) fn audit_mcp_id(store: &Store, connection_id: &str, action: &str, tar
 pub(crate) const SYNC_STDIO_UNAVAILABLE: &str = "files_sync runs as an async progress job over the DBX event \
      channel, which is unavailable in standalone stdio mode; call it through the DBX MCP bridge \
      (dbx_call_plugin_tool) or use the DBX workbench transfers pane";
-
-/// Everything `files_sync` validates and resolves BEFORE the async job
-/// machinery is touched. Built by [`parse_sync_request`] (pure + unit-tested);
-/// the `files_sync` arm only feeds it to [`JobTable::enqueue_dir_job`], which
-/// re-runs the target gates as defense in depth.
-#[derive(Debug)]
-pub(crate) struct SyncRequest {
-    pub(crate) source: StoredConnection,
-    pub(crate) source_path: String,
-    pub(crate) target: StoredConnection,
-    pub(crate) target_path: String,
-    pub(crate) sync: bool,
-    pub(crate) dry_run: bool,
-    pub(crate) max_delete: Option<u64>,
-}
-
-/// Validates a `files_sync` call end to end at the synchronous layer:
-/// missing-parameter enumeration (schema `required` order), LLM-tolerant flag
-/// parsing, target gates, and path-shape hard gates.
-///
-/// Gate semantics mirror the workbench `files/syncDir` path
-/// (`transfers::validate_dir_job_gates`): the TARGET must be writable, and
-/// `sync=true` additionally requires `allow_delete` — a dry run included,
-/// because its plan still proposes deletions (enqueue re-checks the same).
-/// The SOURCE connection may be read-only: copying FROM a read-only source is
-/// a legitimate topology (nothing is ever written to the source).
-pub(crate) fn parse_sync_request(engine: &Engine, arguments: &Value) -> Result<SyncRequest, String> {
-    missing_required(
-        arguments,
-        &["sourceConnectionId", "sourcePath", "targetConnectionId", "targetPath"],
-    )?;
-    let source = engine.connection(required_str(arguments, "sourceConnectionId")?)?;
-    let target = engine.connection(required_str(arguments, "targetConnectionId")?)?;
-    let sync = bool_arg_or(arguments, "sync", false)?;
-    let dry_run = bool_arg_or(arguments, "dryRun", false)?;
-    let max_delete = numeric_arg_u64(arguments, "maxDelete")?;
-    // Gates before path validation — caller-side parameter errors (wrong
-    // flag types) and permission walls surface before spelling nitpicks,
-    // same ordering as files_delete/files_rename.
-    ensure_writable(&target)?;
-    if sync {
-        ensure_deletable(&target)?;
-    }
-    // '/' is legitimate on both sides (whole-tree sync, rclone style);
-    // only the shape gates apply.
-    let source_path = normalize_slashes(required_str(arguments, "sourcePath")?);
-    let target_path = normalize_slashes(required_str(arguments, "targetPath")?);
-    validate_path_shape(&source_path, "sourcePath")?;
-    validate_path_shape(&target_path, "targetPath")?;
-    Ok(SyncRequest {
-        source,
-        source_path,
-        target,
-        target_path,
-        sync,
-        dry_run,
-        max_delete,
-    })
-}
 
 /// Boolean argument with a default (absent/null → `default`), LLM string
 /// tolerance for the intent spellings (`"true"/"1"/"yes"/"on"` and inverses —
@@ -207,14 +114,15 @@ fn bool_arg_or(arguments: &Value, key: &str, default: bool) -> Result<bool, Stri
 
 /// rclone-mode twin of [`SyncRequest`]: connection ids instead of records
 /// (the rclone registry resolves them inside the starter).
+#[derive(Debug)]
 pub(crate) struct RcloneSyncRequest {
     pub(crate) request: DirJobRequest,
     pub(crate) sync: bool,
 }
 
-/// Pure parse twin of [`parse_sync_request`] without the engine lookups:
-/// missing-parameter enumeration, LLM-tolerant flags, path normalization and
-/// path-shape hard gates. The binding gates run in the shared starter.
+/// Pure parse for `files_sync` (id-level validation only): missing-parameter
+/// enumeration, LLM-tolerant flags, path normalization and path-shape hard
+/// gates. The binding gates run in the shared workbench starter.
 pub(crate) fn parse_rclone_sync_request(arguments: &Value) -> Result<RcloneSyncRequest, String> {
     missing_required(
         arguments,

@@ -71,7 +71,7 @@
 
 use serde_json::{json, Value};
 
-use crate::engine::ops::policy::PathPolicy;
+use crate::policy::PathPolicy;
 use crate::model::{Capabilities, FileEntry};
 
 use super::rc::RcClient;
