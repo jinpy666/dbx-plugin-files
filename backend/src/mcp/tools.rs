@@ -33,7 +33,7 @@ pub const UI_TOOLS: [&str; 4] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Phase D: rclone-mode dispatch (`DBX_FILES_ENGINE=rclone`)
+// Phase D: rclone dispatch (the only engine since Phase D landed)
 // ---------------------------------------------------------------------------
 
 /// Owned starter for one rclone dir sync job (workbench
@@ -63,7 +63,7 @@ pub struct RcloneRoute {
 
 /// Resolves the connection reference to an rclone binding via the shared
 /// engine resolver: `__local__` maps onto the rclone `local` backend rooted
-/// at `/` (OpenDAL engine parity for the built-in filesystem); anything else
+/// at `/` (the built-in filesystem); anything else
 /// must be a connected registry id.
 fn rclone_binding(
     route: &RcloneRoute,
@@ -100,8 +100,7 @@ impl RcloneSyncArgs {
 
 /// Number of path segments `path` sits below `start` (both MCP-absolute;
 /// `start` "/" is the root). The rclone scan enumerates recursively in one
-/// rc call, so the depth cap is emulated by segment counting instead of the
-/// per-level OpenDAL walk.
+/// rc call, so the depth cap is emulated by segment counting.
 fn depth_below(start: &str, path: &str) -> usize {
     let start = start.trim_matches('/');
     let base_len = if start.is_empty() {
@@ -391,7 +390,7 @@ pub(crate) fn normalized_format(raw: Option<&str>) -> Result<String, String> {
 
 impl Mcp {
     /// `files_scan_digest` over the rclone engine: one recursive
-    /// `operations/list` replaces the per-directory OpenDAL walk; the
+    /// `operations/list` walk; the
     /// depth/entry budgets and the digest/cursor contract are unchanged.
     pub(crate) async fn scan_digest_rclone(
         &self,
@@ -424,8 +423,7 @@ impl Mcp {
         let mut walk = WalkState::new(filter);
         for entry in entries {
             // Entries deeper than the cap exist in the recursive listing but
-            // are neither counted nor matched (the OpenDAL walk never visits
-            // them).
+            // are neither counted nor matched.
             if depth_below(&start, &entry.path) > depth as usize {
                 continue;
             }
@@ -599,8 +597,8 @@ impl Mcp {
     }
 
     /// `files_rename` over the rclone engine (rc `operations/movefile`).
-    /// Deviation from the OpenDAL path, recorded for the handoff report:
-    /// directory renames do not degrade to an async copy+delete job here —
+    /// Recorded deviation: directory renames do not degrade to an async
+    /// copy+delete job here —
     /// the rclone engine carries no per-entry dir-job machinery, so the call
     /// goes to rclone's movefile and surfaces rclone's own answer/error.
     pub(crate) async fn files_rename_rclone(
@@ -634,7 +632,7 @@ impl Mcp {
     /// `files_delete` / `files_purge` over the rclone engine: identical
     /// two-phase preview/confirm flow, preview built from the rclone stat,
     /// execution via `ops::delete_file` / `ops::purge` (both idempotent on
-    /// missing paths like the OpenDAL engine).
+    /// missing paths).
     pub(crate) async fn files_delete_rclone(
         &self,
         route: &RcloneRoute,
@@ -652,7 +650,7 @@ impl Mcp {
         }
         let client = route.engine.client_for_binding(&binding).await?;
         let fs = crate::rclone::call_fs(&binding);
-        // Preview before any deletion (identical shape to the OpenDAL arm).
+        // Preview before any deletion.
         let preview = match crate::rclone::ops::stat(
             &client,
             &fs,
@@ -670,7 +668,7 @@ impl Mcp {
                 "size": entry.size,
             }),
             // rclone delete/purge are idempotent for missing paths: preview
-            // as absent instead of failing the flow (OpenDAL arm parity).
+            // as absent instead of failing the flow.
             Err(_) => json!({
                 "tool": tool,
                 "connectionId": connection_id,
@@ -694,8 +692,8 @@ impl Mcp {
         };
         self.confirm_verify(token, &arguments_without_token(arguments))?;
         // rclone ops trim slash spellings internally; the bare validated path
-        // is the delete target (the dir-marker dance exists for OpenDAL
-        // prefix backends only).
+        // is the delete target (the dir-marker spelling matters for prefix
+        // backends only).
         let action = if tool == "files_delete" {
             crate::rclone::ops::delete_file(
                 &client,
@@ -724,8 +722,8 @@ impl Mcp {
     /// `files_sync` over the rclone engine: the pure parse twin validates
     /// arguments, then the injected starter enqueues through the workbench
     /// syncDir path (same binding gates, same job mirror, same DirJob wire
-    /// shape). Response keys are identical to the OpenDAL arm; the jobId is
-    /// pollable via `files/transfer/status` on the rclone mirrors.
+    /// shape). The jobId is pollable via `files/transfer/status` on the
+    /// rclone mirrors.
     pub(crate) async fn files_sync_rclone(
         &self,
         route: &RcloneRoute,
@@ -734,8 +732,8 @@ impl Mcp {
     ) -> Result<Value, String> {
         let parsed = parse_rclone_sync_request(arguments)?;
         // The dir job reports through the DBX event channel +
-        // `files/transfer/status`; standalone stdio has neither (OpenDAL-arm
-        // parity for the refusal).
+        // `files/transfer/status`; standalone stdio has neither, hence the
+        // refusal.
         let Some(emitter) = emitter else {
             return Err(SYNC_STDIO_UNAVAILABLE.to_string());
         };
@@ -841,9 +839,8 @@ pub(crate) fn unknown_tool_message(name: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Digest scan: filter, aggregate (moved from the retired scan.rs — the
-// rclone walk in `scan_digest_rclone` feeds pre-enumerated entries through
-// the same pure filter/aggregate layer; the OpenDAL walk is gone)
+// Digest scan: filter, aggregate (the rclone walk in `scan_digest_rclone`
+// feeds pre-enumerated entries through the pure filter/aggregate layer)
 // ---------------------------------------------------------------------------
 
 /// One matched entry retained for aggregation/cursor materialization.

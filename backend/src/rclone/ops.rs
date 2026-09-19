@@ -1,10 +1,9 @@
 //! rc-backed storage operations (F-RCLONE phase A, Agent B).
 //!
-//! Implements the OpenDAL storage-method surface of `engine/ops.rs` on top of
+//! Implements the storage-method surface on top of
 //! the rc HTTP API: `list` / `list_paged` / `stat` / `size` /
-//! `capabilities` / `quick_paths`. Output shapes are field-for-field aligned
-//! with the OpenDAL engine (`model::FileEntry`, `model::Capabilities`), so the
-//! frontend contract is untouched by the engine swap.
+//! `capabilities` / `quick_paths`. Output shapes are the wire contract
+//! (`model::FileEntry`, `model::Capabilities`) the frontend is built on.
 //!
 //! Contract: docs/IMPL_PLAN_RCLONE.zh-CN.md §5 (method mapping) and §12
 //! (file ownership). Only this file may be modified by the ops task.
@@ -45,8 +44,8 @@
 //!   `{srcFs, srcRemote, dstFs, dstRemote}`) and answer `{}` on success.
 //!   `mkdir` is mkdir -p (one call creates the whole parent chain) and
 //!   idempotent; `rmdir` refuses missing/non-empty with rc's own stat errors;
-//!   `deletefile` 404s on missing objects while the OpenDAL engine's delete
-//!   is idempotent → stat-first tolerance here; `purge` recurses but 500s on
+//!   `deletefile` 404s on missing objects while the method face is
+//!   idempotent → stat-first tolerance here; `purge` recurses but 500s on
 //!   missing paths → same tolerance. `copyfile`/`movefile` overwrite an
 //!   existing destination (verified).
 //! - `operations/uploadfile` writes the multipart part to
@@ -64,8 +63,7 @@
 //!   before matching). `Range: bytes=0-{max}` is inclusive; a 200-or-206
 //!   body longer than `max_bytes` proves truncation without parsing
 //!   Content-Range. A GET on a directory answers 500 JSON (or an HTML
-//!   listing for the bare fs), so reads stat first and refuse directories
-//!   like the OpenDAL engine.
+//!   listing for the bare fs), so reads stat first and refuse directories.
 
 #![allow(dead_code)]
 
@@ -109,7 +107,7 @@ fn fs_with_path(fs: &str, remote: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Path gating (crate::engine::policy — same whitelist as the OpenDAL engine)
+// Path gating (crate::policy)
 // ---------------------------------------------------------------------------
 
 /// Read-side gate shared by every op: sanitizes the request path and, when
@@ -129,9 +127,8 @@ fn gate_read(root: &str, lock_to_root: bool, path: &str) -> Result<String, Strin
 /// `files/list`: `path`, `recurse?` → `{entries:[FileEntry]}`.
 ///
 /// Non-recursive by default; recursion is `opt: {"recurse": true}` (no
-/// maxDepth — matches the unbounded OpenDAL `list_with(...).recursive(true)`).
-/// The listed prefix's own marker entry is filtered and entries are sorted by
-/// path, mirroring `engine::ops::list_raw`.
+/// maxDepth — unbounded). The listed prefix's own marker entry is filtered
+/// and entries are sorted by path.
 pub async fn list(
     client: &RcClient,
     fs: &str,
@@ -167,9 +164,9 @@ pub async fn list(
 
 /// `files/listPaged`: `path`, `page`, `pageSize` → `{entries, total}`.
 ///
-/// Same in-memory slice as the OpenDAL engine (1-based page, empty slice past
-/// the end, `total` always the real count) with one new guard: the full
-/// enumeration must stay within [`LIST_PAGED_MAX`] or the call errors.
+/// In-memory slice semantics: 1-based page, empty slice past the end,
+/// `total` always the real count. One guard: the full enumeration must stay
+/// within [`LIST_PAGED_MAX`] or the call errors.
 pub async fn list_paged(
     client: &RcClient,
     fs: &str,
@@ -215,8 +212,7 @@ fn page_window(total: usize, page: u64, page_size: u64) -> (usize, usize) {
 /// `files/stat`: `path` → `{entry}`.
 ///
 /// `{"item": null}` (and a missing `item` key) maps to the existing
-/// NotFound error semantics/style — `Failed to stat '<path>': <reason>` —
-/// matching what OpenDAL backends surfaced through `main.rs`.
+/// NotFound error semantics/style — `Failed to stat '<path>': <reason>`.
 pub async fn stat(
     client: &RcClient,
     fs: &str,
@@ -271,8 +267,8 @@ pub async fn size(
 /// `files/capabilities` → `Capabilities{scheme, list, write, read, stat,
 /// delete, createDir, copy, rename, presign}`.
 ///
-/// `scheme` is the backend type itself (the rclone type replaces the OpenDAL
-/// scheme string). The static matrix is conservative: basic browse/write ops
+/// `scheme` is the rclone backend type itself. The static matrix is
+/// conservative: basic browse/write ops
 /// for every backend, server-side copy/rename advertised for fs + object
 /// stores, presign only for object stores. `operations/fsinfo` (the live
 /// feature source — `backend/features` 404s on stock rcd) overrides the
@@ -417,8 +413,7 @@ async fn is_dir_remote(client: &RcClient, fs: &str, path: &str) -> Result<bool, 
 //
 // Gate split: the connection-level `read_only` / `allow_delete` gates are
 // enforced by the wiring layer (`main.rs::ensure_writable` /
-// `ensure_deletable`, same rule as the OpenDAL call sites) BEFORE these ops
-// run. The ops layer therefore builds its PathPolicy with the connection
+// `ensure_deletable`) BEFORE these ops run. The ops layer therefore builds its PathPolicy with the connection
 // flags at their permissive defaults and only enforces what is structural
 // here: the path whitelist, `lock_to_root`, and `purge`'s hard refusal of the
 // connection root (defense in depth — the wiring re-checks both).
@@ -456,7 +451,7 @@ fn gate_purge(root: &str, lock_to_root: bool, path: &str) -> Result<String, Stri
 /// `files/read` byte layer: reads at most `max_bytes` bytes, returns
 /// `(data, truncated)`.
 ///
-/// Flow mirrors the OpenDAL `engine::ops::read`: stat first (missing → the
+/// Flow: stat first (missing → the
 /// read-style error, directory → `it is a directory`), then fetch bytes via
 /// the rc-serve channel with `Range: bytes=0-{max_bytes}` (INCLUSIVE end, so
 /// `max_bytes + 1` bytes are requested). A body of exactly `max_bytes + 1`
@@ -705,9 +700,9 @@ pub async fn rmdir(
         .map_err(|error| format!("Failed to remove directory '{relative}': {error}"))
 }
 
-/// `files/delete` (§5: `operations/deletefile`): delete gate + OpenDAL
-/// idempotency parity — rc 404s a missing object while the engine's delete is
-/// a silent no-op, so a missing path (stat `item: null`) succeeds.
+/// `files/delete` (§5: `operations/deletefile`): delete gate + idempotency —
+/// rc 404s a missing object while the method face treats a missing path
+/// (stat `item: null`) as success.
 pub async fn delete_file(
     client: &RcClient,
     fs: &str,
@@ -737,8 +732,8 @@ pub async fn delete_file(
 }
 
 /// `files/purge` (§5: `operations/purge`): `check_purge` gate (root red line
-/// included, defense in depth against the wiring's own refusal) + OpenDAL
-/// idempotency parity for missing paths.
+/// included, defense in depth against the wiring's own refusal) + idempotent
+/// missing-path tolerance.
 pub async fn purge(
     client: &RcClient,
     fs: &str,
@@ -764,8 +759,8 @@ pub async fn purge(
 /// `files/copy` single-file byte path (§5: `operations/copyfile`, keys
 /// `srcFs`/`srcRemote`/`dstFs`/`dstRemote` — live-pinned). The source is
 /// read-semantics and passes through ungated (the wiring's connection-level
-/// `ensure_writable` covers the request; same direction as the OpenDAL
-/// `files/copy` arm), the destination goes through [`gate_write`].
+/// `ensure_writable` covers the request), the destination goes through
+/// [`gate_write`].
 /// Overwrite-on-existing destination is rclone's own behavior.
 pub async fn copy_file(
     client: &RcClient,
@@ -795,9 +790,8 @@ pub async fn copy_file(
 
 /// `files/move` single-file byte path (§5: `operations/movefile`): identical
 /// gating and parameter shape to [`copy_file`]. The wiring layer additionally
-/// owes this op the connection-level delete gate (the source disappears —
-/// same rule as the OpenDAL `files/move` arm's `ensure_deletable`); this
-/// layer's signature carries no gate flags by design.
+/// owes this op the connection-level delete gate (the source disappears);
+/// this layer's signature carries no gate flags by design.
 pub async fn move_file(
     client: &RcClient,
     src_fs: &str,
@@ -892,8 +886,7 @@ pub async fn public_link(
 /// Maps one rc item into a `FileEntry`. Live-pinned keys: `Path`, `Name`,
 /// `Size`, `ModTime` (RFC3339 string), `IsDir`; anything missing stays
 /// `None` (serde skip) per the frontend contract. `path` carries the leading
-/// `/` exactly like `engine::ops::entry_from_opendal`; dirs never carry
-/// `size` (OpenDAL parity — rc reports inode sizes on local).
+/// `/`; dirs never carry `size` (rc reports inode sizes on local).
 fn entry_from_item(item: &Value) -> FileEntry {
     let raw_path = item
         .get("Path")
@@ -1141,7 +1134,7 @@ mod tests {
         });
         let entry = entry_from_item(&dir);
         assert_eq!(entry.kind, "dir");
-        assert_eq!(entry.size, None, "dirs never carry size (OpenDAL parity)");
+        assert_eq!(entry.size, None, "dirs never carry size");
         assert!(entry.modified_at.is_some());
 
         // Missing ModTime / Name → derived or skipped fields.
@@ -1286,6 +1279,10 @@ mod tests {
     struct Live {
         client: RcClient,
         fs: String,
+        /// 持有到测试结束：`Live` 被 drop（含 panic 展开）时杀掉 rcd 子进程
+        /// 并删除临时配置目录——不能 `mem::forget`，Unix 上孤儿 rcd 会比测试
+        /// 进程活得更久。
+        _rcd: super::super::proc::RcdHandle,
         _dir: tempfile::TempDir,
     }
 
@@ -1295,11 +1292,10 @@ mod tests {
                 eprintln!("skipping: no rclone binary found");
                 return None;
             };
-            let handle = super::super::proc::RcdHandle::start(&binary, None)
+            let rcd = super::super::proc::RcdHandle::start(&binary, None)
                 .await
                 .expect("rcd should spawn");
-            let client = handle.client();
-            std::mem::forget(handle); // tests are process-exit scoped; keep rcd alive
+            let client = rcd.client();
             let dir = tempfile::tempdir().expect("tempdir");
             std::fs::create_dir_all(dir.path().join("sub")).unwrap();
             std::fs::create_dir_all(dir.path().join("empty-dir")).unwrap();
@@ -1309,6 +1305,7 @@ mod tests {
             Some(Live {
                 client,
                 fs: local_fs_string(dir.path().to_string_lossy().as_ref()),
+                _rcd: rcd,
                 _dir: dir,
             })
         }
@@ -1757,7 +1754,7 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("Failed to rename"), "{error}");
 
-        // delete：幂等（第二次删除缺失路径仍 Ok，OpenDAL parity）。
+        // delete：幂等（第二次删除缺失路径仍 Ok）。
         delete_file(&live.client, &live.fs, "chain/renamed.txt", "", false)
             .await
             .unwrap();
@@ -1787,7 +1784,7 @@ mod tests {
             assert!(error.contains("refusing to purge"), "{path}: {error}");
         }
 
-        // purge 缺失路径：幂等 Ok（OpenDAL parity，stat-first 容忍）。
+        // purge 缺失路径：幂等 Ok（stat-first 容忍）。
         purge(&live.client, &live.fs, "chain/nest", "", false)
             .await
             .unwrap();

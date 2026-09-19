@@ -953,8 +953,8 @@ fn files_sync_is_always_listed_with_the_full_schema() {
 
 // -- standalone stdio server (`--mcp`) ---------------------------------------
 
-/// stdio 测试服务器 + rclone 引擎句柄：连接注册走 rclone registry
-/// （OpenDAL Engine 已随引擎摘除退役）。Deref 到 StdioServer 让既有
+/// stdio 测试服务器 + rclone 引擎句柄：连接注册走 rclone registry。
+/// Deref 到 StdioServer 让既有
 /// `server.mcp` / `&server` 调用点零改动。
 struct TestStdio {
     server: StdioServer,
@@ -1550,8 +1550,9 @@ fn inline_connection_schema_covers_every_mapped_key() {
         .collect();
     assert_eq!(extra.len(), 2, "undeclared schema keys: {extra:?}");
     assert!(properties.contains_key("id") && properties.contains_key("name"));
-    // The protocol description must enumerate every engine protocol so an
-    // LLM caller can never be offered a value the engine would reject.
+    // The protocol description is built from PROTOCOLS itself, so it can
+    // never offer a value the engine would reject; pin the equality and the
+    // `local` alias spelling.
     let description = properties["protocol"]["description"]
         .as_str()
         .expect("protocol description");
@@ -1561,6 +1562,7 @@ fn inline_connection_schema_covers_every_mapped_key() {
             "protocol '{protocol}' missing from the inline schema description"
         );
     }
+    assert!(description.contains("local (alias of fs)"), "{description}");
 }
 
 /// Manifest↔MCP leg of the contract triangle: every connection-provider
@@ -1612,6 +1614,10 @@ fn manifest_fields_are_fully_covered_by_inline_mapping() {
         ("allow_delete", "allowDelete"),
         ("lock_to_root", "lockToRoot"),
         ("timeout_secs", "timeoutSecs"),
+        // `service` is a legacy-only mapped key: the retired pass-through
+        // aliases still parse it for stored connections, but the form no
+        // longer carries a `service` field (generic backends are first-class
+        // protocols now) — allowed past the manifest-coverage direction.
         ("service", "service"),
         ("config", "config"),
         ("client_id", "clientId"),
@@ -1652,6 +1658,15 @@ fn manifest_fields_are_fully_covered_by_inline_mapping() {
         covered.push(key);
     }
     for (source, _) in config_map.iter().chain(secret_map) {
+        if *source == "service" {
+            continue; // legacy-only mapped key (see note above)
+        }
+        if source.starts_with("proxy_") {
+            // MCP-only: egress proxy deliberately stays out of the form (the
+            // proxy comes from the DBX host environment); the keys remain so
+            // the proxy E2E and per-proxy rcd grouping stay drivable.
+            continue;
+        }
         assert!(
             covered.contains(source),
             "inline mapping key '{source}' has no manifest field behind it"
@@ -1864,7 +1879,7 @@ fn stdio_localfs_inline_round_trip_digest_cursor_two_phase() {
     );
 
     // 尾斜杠文件路径 delete：rclone 的 stat 不受尾斜杠影响，预览正确解析
-    // 为 "file" 并真删（旧 OpenDAL 在此静默 no-op，trap 已随引擎退役）。
+    // 为 "file" 并真删。
     let preview = unwrap_envelope(&stdio_result(
         &server,
         "tools/call",

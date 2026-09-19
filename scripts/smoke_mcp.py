@@ -1619,10 +1619,6 @@ def main() -> int:
     # repo-relative fallback lacks the .exe suffix — the 2026-09-15 Windows
     # candidate run failed exactly there (WinError 2 on process spawn).
     os.environ["DBX_PLUGIN_SIDECAR"] = binary
-    # rclone is the only engine: pin it for every sidecar process spawned by
-    # this script (the long-lived client below and each StdioSession — both
-    # inherit os.environ at spawn time).
-    os.environ["DBX_FILES_ENGINE"] = "rclone"
 
     # 隔离数据目录：mcp-settings.json 与 audit.jsonl 不污染真实插件数据。
     data_dir = tempfile.mkdtemp(prefix="dbx-files-mcp-smoke-")

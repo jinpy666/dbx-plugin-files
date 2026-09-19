@@ -110,7 +110,6 @@ const SECRET_FIELDS = new Set([
   "access_token",
   "client_secret",
   "refresh_token",
-  "proxy_password",
 ]);
 for (const field of fields) {
   if (field.type === "password") {
@@ -132,6 +131,12 @@ for (const key of SECRET_FIELDS) {
 }
 
 const options = (key) => byKey[key].options.map((option) => option.value);
+// Protocols with a dedicated quick form; every other protocol value is a
+// generic rclone backend entering its parameters through the JSON field.
+const ENDPOINT_PROTOCOLS = ["s3", "gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp", "sftp-native", "smb", "koofr", "pcloud", "seafile"];
+const QUICK_PROTOCOLS = new Set(["fs", "aliyun-drive", "dropbox", "gdrive", "onedrive", "yandex-disk", ...ENDPOINT_PROTOCOLS]);
+const GENERIC_PROTOCOLS = options("protocol").filter((value) => !QUICK_PROTOCOLS.has(value));
+assert(GENERIC_PROTOCOLS.length > 0, "generic rclone protocol options must exist");
 let scenarios = 0;
 function state(overrides) {
   scenarios++;
@@ -149,7 +154,7 @@ for (const protocol of options("protocol")) {
     const current = state({ protocol, read_only });
     // Object storage (S3 / OSS): bucket+keys required; endpoint required for
     // OSS (no default endpoint) but optional for S3 (AWS default endpoint).
-    current.visible("endpoint", !["fs", "opendal-custom", "aliyun-drive", "dropbox", "gdrive", "onedrive", "yandex-disk"].includes(protocol));
+    current.visible("endpoint", ENDPOINT_PROTOCOLS.includes(protocol));
     current.required("endpoint", ["gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native", "koofr", "pcloud", "seafile"].includes(protocol));
     current.visible("bucket", ["s3", "gcs", "obs", "oss", "cos"].includes(protocol));
     // Bucket namespace (2026-09-17): s3/oss/cos/obs accept an empty bucket —
@@ -178,10 +183,9 @@ for (const protocol of options("protocol")) {
     current.required("secret_key", protocol === "cos");
     current.visible("security_token", protocol === "cos");
     current.required("security_token", false);
-    // Custom OpenDAL service descriptor.
-    current.visible("service", protocol === "opendal-custom");
-    current.required("service", protocol === "opendal-custom");
-    current.visible("config", protocol === "opendal-custom");
+    // Generic rclone backends (no quick form) enter their parameters as one
+    // JSON object; every other protocol hides it.
+    current.visible("config", GENERIC_PROTOCOLS.includes(protocol));
     // Remote service accounts, per protocol family.
     current.visible("username", ["webdav", "smb", "pcloud", "seafile"].includes(protocol));
     current.required("username", ["pcloud", "seafile"].includes(protocol));
@@ -192,21 +196,19 @@ for (const protocol of options("protocol")) {
     current.required("password", ["koofr", "pcloud", "seafile"].includes(protocol));
     current.visible("key", ["sftp", "sftp-native"].includes(protocol));
     current.visible("known_hosts_strategy", ["sftp", "sftp-native"].includes(protocol));
-    // Egress proxy (rclone engine, 2026-09-19): the selector shows for the
-    // FTP/SFTP family only. The dependent host/port/user/password fields stay
-    // hidden at the default proxy_type=off — dedicated scenarios below cover
-    // the visible/required states once a proxy type is picked.
-    current.visible("proxy_type", ["ftp", "sftp", "sftp-native"].includes(protocol));
-    current.required("proxy_type", false);
+    // Egress proxy: deliberately absent from the form — the proxy comes from
+    // the DBX host environment (HTTP_PROXY/HTTPS_PROXY inherited by the rcd
+    // "direct" group). The legacy via-DBX-SSH fields must not reappear either.
+    current.visible("proxy_type", false);
     current.visible("proxy_host", false);
-    current.required("proxy_host", false);
     current.visible("proxy_port", false);
-    current.required("proxy_port", false);
     current.visible("proxy_username", false);
     current.visible("proxy_password", false);
-    // SSH tunnel (rclone engine, 2026-09-19): the flat ssh -J pair is shown
-    // for every protocol except fs and is never required. The dedicated
-    // tunnel scenarios below re-check the boundary states.
+    current.visible("connection_mode", false);
+    current.visible("dbx_ssh_connection", false);
+    // SSH tunnel (rclone engine): the flat ssh -J pair is shown for every
+    // protocol except fs and is never required; dedicated scenarios below
+    // re-check the boundary states.
     current.visible("tunnel_jump_hosts", protocol !== "fs");
     current.required("tunnel_jump_hosts", false);
     current.visible("tunnel_identity_file", protocol !== "fs");
@@ -223,57 +225,10 @@ for (const protocol of options("protocol")) {
     current.required("repo_name", protocol === "seafile");
     // Read-only hides (never removes) the delete toggle.
     current.visible("allow_delete", !read_only);
-    // Legacy via-DBX-SSH fields must not reappear in the form.
-    current.visible("connection_mode", false);
-    current.visible("dbx_ssh_connection", false);
   }
 }
 
-// Egress proxy regression scenarios (rclone engine connection proxy).
-//
-// (a) FTP + HTTP proxy: the dependent proxy fields become visible once a
-// proxy type is picked; host and port are conditionally required while the
-// credentials stay optional (anonymous proxies are legitimate).
-const ftpProxy = state({ protocol: "ftp", read_only: false, proxy_type: "http" });
-ftpProxy.visible("proxy_type", true);
-ftpProxy.visible("proxy_host", true);
-ftpProxy.required("proxy_host", true);
-ftpProxy.visible("proxy_port", true);
-ftpProxy.required("proxy_port", true);
-ftpProxy.visible("proxy_username", true);
-ftpProxy.required("proxy_username", false);
-ftpProxy.visible("proxy_password", true);
-ftpProxy.required("proxy_password", false);
-
-// (b) S3 never surfaces proxy fields: proxy_type itself is hidden by the
-// protocol gate, and the visible_when chain (proxy_host -> proxy_type ->
-// protocol) hides every dependent field even when a stale proxy_type leaks
-// in from a saved state.
-const s3Proxy = state({ protocol: "s3", read_only: false, proxy_type: "http" });
-s3Proxy.visible("proxy_type", false);
-s3Proxy.visible("proxy_host", false);
-s3Proxy.required("proxy_host", false);
-s3Proxy.visible("proxy_port", false);
-s3Proxy.required("proxy_port", false);
-s3Proxy.visible("proxy_username", false);
-s3Proxy.required("proxy_username", false);
-s3Proxy.visible("proxy_password", false);
-s3Proxy.required("proxy_password", false);
-
-// (c) SFTP with proxy off: host/port are neither visible nor required, and
-// no dependent proxy field leaks into the form.
-const sftpOff = state({ protocol: "sftp", read_only: false, proxy_type: "off" });
-sftpOff.visible("proxy_type", true);
-sftpOff.visible("proxy_host", false);
-sftpOff.required("proxy_host", false);
-sftpOff.visible("proxy_port", false);
-sftpOff.required("proxy_port", false);
-sftpOff.visible("proxy_username", false);
-sftpOff.required("proxy_username", false);
-sftpOff.visible("proxy_password", false);
-sftpOff.required("proxy_password", false);
-
-// SSH tunnel contract (rclone engine, flat ssh -J fields, 2026-09-19): the
+// SSH tunnel contract (rclone engine, flat ssh -J fields): the
 // visible_when gate must target protocol and cover exactly the protocol
 // option set minus fs (the generic loop above already asserts target
 // precedence and that every gate value is a real protocol option).

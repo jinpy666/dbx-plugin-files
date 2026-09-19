@@ -320,9 +320,6 @@ done
 # 冒烟所需环境写入运行时临时 env 文件后 source（无字面凭据；跑完随临时目录删除）
 ENV_FILE="$TMPDIR_SMOKE/smoke.env"
 {
-  # rclone 是唯一引擎：脚本内部也会自行钉定，这里在 harness 层显式声明，
-  # 防止外部遗留 DBX_FILES_ENGINE=opendal 串进来。
-  printf 'DBX_FILES_ENGINE=rclone\n'
   printf 'DBX_FILES_S3_ENDPOINT=http://127.0.0.1:%s\n' "$MINIO_PORT"
   printf 'DBX_FILES_S3_BUCKET=%s\n' "$MINIO_BUCKET"
   printf 'DBX_FILES_S3_BUCKET2=%s\n' "$MINIO_BUCKET2"

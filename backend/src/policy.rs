@@ -56,7 +56,8 @@ pub struct ResolvedPath {
     /// Canonical absolute path within the backend-visible space (leading
     /// `/`, no trailing slash; `/` denotes the root itself).
     pub absolute: String,
-    /// Operator-relative path handed to OpenDAL (`""` denotes the root).
+    /// Operator-relative path handed to the storage backend (`""` denotes
+    /// the root).
     pub relative: String,
 }
 
@@ -801,7 +802,7 @@ mod tests {
         let resolved = policy.resolve("/etc/x").expect("unlocked absolute pass");
         assert_eq!(resolved.absolute, "/etc/x");
         // Physically confined by the Operator root; the engine hands the
-        // operator-relative remainder to OpenDAL.
+        // operator-relative remainder to the backend.
         assert_eq!(resolved.relative, "etc/x");
     }
 

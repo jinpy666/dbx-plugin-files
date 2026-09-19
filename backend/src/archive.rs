@@ -905,7 +905,7 @@ pub fn paginate(total: u64, page: u64, page_size: u64) -> (usize, usize) {
 /// slash). `size` is the walk-time content length (0 when the backend does
 /// not report it) for budget checks; written headers always carry the actual
 /// byte count. Built by the engine-side compress planners (rclone
-/// `archive.rs::compress_sources` mirrors the retired OpenDAL planner).
+/// `archive.rs::compress_sources`).
 #[derive(Debug, Clone)]
 pub struct TarPlanEntry {
     pub source_path: String,

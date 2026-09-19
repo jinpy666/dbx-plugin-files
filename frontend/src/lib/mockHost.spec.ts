@@ -159,7 +159,7 @@ describe("mockHost query and lifecycle contracts", () => {
     await expect(api.invoke("connection/test", { connection: { id: "  " } })).rejects.toThrow("Missing connection id");
     await expect(api.invoke("connection/connect", { connection: { id: "x" } })).rejects.toThrow("Missing protocol in external_config");
     await expect(api.invoke("connection/connect", { connection: { id: "x", external_config: { protocol: "unknown" } } })).rejects.toThrow("Unsupported protocol");
-    await expect(api.invoke("connection/connect", { connection: { id: "x", external_config: { protocol: "opendal-custom", service: "memory", config: "[]" } } })).rejects.toThrow("Service config JSON must be an object");
+    await expect(api.invoke("connection/connect", { connection: { id: "x", external_config: { protocol: "rclone-custom", service: "memory", config: "[]" } } })).rejects.toThrow("Service config JSON must be an object");
     await expect(api.invoke("connection/connect", connection("__local__"))).rejects.toThrow("reserved for the built-in local filesystem");
   });
 

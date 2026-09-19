@@ -241,9 +241,9 @@ impl<T> LruTable<T> {
 
 /// All MCP in-process state: settings mirror + intent table + snapshot +
 /// cursor sessions + confirm tokens. Shared behind `Arc` from `Plugin`.
-/// `rclone` carries the Phase D engine route: `Some` when the sidecar runs
-/// `DBX_FILES_ENGINE=rclone`, and every storage-touching tool then dispatches
-/// through [`super::tools::RcloneRoute`] instead of the OpenDAL `Engine`.
+/// `rclone` carries the Phase D engine route: always `Some` on the storage
+/// sidecar, and every storage-touching tool then dispatches through
+/// [`super::tools::RcloneRoute`].
 pub struct Mcp {
     settings: RwLock<McpSettings>,
     settings_path: PathBuf,
@@ -269,8 +269,8 @@ impl Mcp {
         }
     }
 
-    /// Wires the rclone route (Phase D): called by `main.rs` / stdio when
-    /// `RcloneEngine::enabled()` before the `Arc` wrap.
+    /// Wires the rclone route (Phase D): called by `main.rs` / stdio at
+    /// startup, before the `Arc` wrap.
     pub fn attach_rclone(&mut self, route: super::tools::RcloneRoute) {
         self.rclone = Some(std::sync::Arc::new(route));
     }

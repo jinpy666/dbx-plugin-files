@@ -1,6 +1,6 @@
 //! rclone rcd engine foundation (F-RCLONE phase A).
 //!
-//! Replaces the OpenDAL protocol layer with a managed `rclone rcd`
+//! Storage runs through a managed `rclone rcd`
 //! subprocess: the sidecar spawns rcd on `127.0.0.1:<ephemeral>` with a
 //! random session credential and an isolated temp config, then performs all
 //! storage work through the rc HTTP API (`rc.rs`). Endpoint set and the
@@ -11,8 +11,7 @@
 //! the sidecar resolves the binary (bundle → PATH), waits for health,
 //! detects crashes and respawns lazily, and tears the process down on drop.
 //! Storage backends themselves are rclone's problem — SMB, SFTP password
-//! auth and bucket enumeration all come for free, retiring the three custom
-//! OpenDAL adapters.
+//! auth and bucket enumeration all come for free, with no custom adapters.
 
 pub mod archive;
 pub mod bytes_channel;
@@ -47,8 +46,8 @@ pub(crate) struct UploadTask {
     pub(crate) _work: WorkGuard,
 }
 
-/// Phase B download pump slot (the `transfers::DownloadSlot` twin without the
-/// OpenDAL reader): pump coordination flags plus the save_to_local `.part`
+/// Phase B download pump slot (the `transfers::DownloadSlot` twin): pump
+/// coordination flags plus the save_to_local `.part`
 /// staging path. `cancel` is cooperative — the pump observes it between
 /// chunks and owns the cleanup while it lives; `pump_done` is settled by a
 /// drop guard on every pump exit path so `finish`'s grace wait always
@@ -72,8 +71,8 @@ pub const LOCAL_CONNECTION_ID: &str = "__local__";
 
 /// Synthesized connection record behind [`LOCAL_CONNECTION_ID`]: an fs
 /// connection rooted at `/` with default gates (writable, deletable,
-/// unlocked root) — identical to the retired OpenDAL engine's synthesized
-/// record, so policy/quick-path behavior stays uniform.
+/// unlocked root); policy and quick-path behavior are uniform with every
+/// other fs connection.
 pub fn local_connection() -> crate::model::StoredConnection {
     crate::model::StoredConnection::from_lifecycle_params(&serde_json::json!({
         "connection": {
@@ -92,31 +91,28 @@ pub struct RcloneEngine {
     pub supervisor: tokio::sync::Mutex<RcdSupervisor>,
     pub registry: registry::Registry,
     /// Phase B upload staging sinks keyed by taskId (`files/upload/start`
-    /// inserts, `finish`/`cancel`/append-failure remove). `handle_binary`'s
-    /// dual-engine branch reads membership FIRST — a miss falls through to
-    /// the OpenDAL JobTable, so this map is also the engine-selection check.
+    /// inserts, `finish`/`cancel`/append-failure remove). `handle_binary`
+    /// reads membership FIRST — a miss falls through to the download-map
+    /// check, so this map is also the frame-routing check.
     /// std Mutex: every hold is a short sync section; nothing awaits under
     /// the lock.
     pub uploads: std::sync::Mutex<std::collections::HashMap<String, UploadTask>>,
     /// Phase B download pump slots keyed by taskId.
     pub downloads: std::sync::Mutex<std::collections::HashMap<String, DownloadTask>>,
-    /// Phase B single-file job records with the exact `TransferJob` payload
-    /// shape the OpenDAL JobTable carries (progress events, terminal finish
-    /// replay). Kept after terminal states, like the JobTable, so a late
-    /// finish replays the stored outcome instead of reporting not-found.
+    /// Phase B single-file job records with the full `TransferJob` payload
+    /// (progress events, terminal finish replay). Kept after terminal states
+    /// so a late finish replays the stored outcome instead of reporting
+    /// not-found.
     pub jobs: std::sync::Mutex<std::collections::HashMap<String, crate::transfers::TransferJob>>,
     /// Phase D transfers-history persistence: hydrated `Option<Arc<Store>>`
     /// (set once by `Plugin::new`). Terminal single-file jobs are appended to
-    /// the same `transfers.json` the OpenDAL JobTable writes — the reveal/
-    /// open local-download whitelist and the restart-safe panel history
-    /// therefore work identically under both engines. Dir jobs (syncDir/
-    /// copyDir) stay memory-only: `TransferRecord.kind` is
+    /// the shared `transfers.json`, so the reveal/open local-download
+    /// whitelist and the restart-safe panel history keep working. Dir jobs
+    /// (syncDir/copyDir) stay memory-only: `TransferRecord.kind` is
     /// upload|download only, and the wire-visible DirJob shape has no
-    /// persisted counterpart. Concurrency: writes are serialized on the
-    /// rclone side by [`crate::history_write_lock`]; the OpenDAL JobTable
-    /// keeps its own write path (each write is an atomic tmp+rename, so a
-    /// cross-engine race costs at most one dropped history line, never a
-    /// corrupt file).
+    /// persisted counterpart. Concurrency: writes are serialized by
+    /// [`crate::history_write_lock`] (each write is an atomic tmp+rename, so
+    /// a race costs at most one dropped history line, never a corrupt file).
     pub history: std::sync::Mutex<Option<std::sync::Arc<crate::store::Store>>>,
     /// Local `ssh -N -L` forwarders keyed by connection id (tunnel channel:
     /// `prepare` establishes and rewrites the endpoint, `release_tunnel`
@@ -192,13 +188,6 @@ impl RcloneEngine {
         }
     }
 
-    /// The rclone engine is opt-in; the default stays OpenDAL until Phase D
-    /// retires it.
-    pub fn enabled() -> bool {
-        std::env::var("DBX_FILES_ENGINE")
-            .map(|value| value.trim().eq_ignore_ascii_case("rclone"))
-            .unwrap_or(false)
-    }
 
     /// Live rc client, spawning or respawning rcd as needed.
     pub async fn client(&self) -> Result<RcClient, String> {
@@ -207,10 +196,9 @@ impl RcloneEngine {
 
     /// Connection-id → binding lookup shared by the workbench route and the
     /// MCP route. Folds in the built-in `__local__` connection (the
-    /// dual-pane local column): the synthesized root-`/` fs connection,
-    /// identical to the OpenDAL operator-table rule
-    /// (`engine::local_connection`). The binding is never registered — local
-    /// fs stays config-free, so a rcd respawn cannot orphan it.
+    /// dual-pane local column): the synthesized root-`/` fs connection. The
+    /// binding is never registered — local fs stays config-free, so a rcd
+    /// respawn cannot orphan it.
     pub fn binding(&self, connection_id: &str) -> Result<registry::RemoteBinding, String> {
         if connection_id == LOCAL_CONNECTION_ID {
             return registry::binding_for(&local_connection());

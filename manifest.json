@@ -5,7 +5,7 @@
   "name": "Files Studio",
   "version": "0.1.59",
   "publisher": "jinpy",
-  "description": "A unified file workspace for local folders, S3-compatible storage, Azure Blob, Google Cloud Storage, Huawei OBS, Tencent COS, WebDAV, FTP, SFTP, SMB/CIFS, and other OpenDAL services.",
+  "description": "A unified file workspace for local folders, S3-compatible storage, Azure Blob, Google Cloud Storage, Huawei OBS, Tencent COS, WebDAV, FTP, SFTP, SMB/CIFS, and other rclone storage backends.",
   "source": "https://github.com/jinpy666/dbx-plugin-files",
   "homepage": "https://github.com/jinpy666/dbx-plugin-files",
   "icon": "assets/plugin.svg",
@@ -36,7 +36,7 @@
       "label": "Storage",
       "icon": "assets/plugin.svg",
       "database_type": "storage",
-      "description": "Storage connection through Apache OpenDAL: local filesystem, S3/MinIO, Azure Blob, Google Cloud Storage, Huawei OBS, Tencent COS, WebDAV, FTP, SFTP, or any compiled OpenDAL service.",
+      "description": "Storage connection backed by rclone: local filesystem, S3/MinIO, Azure Blob, Google Cloud Storage, Huawei OBS, Alibaba OSS, Tencent COS, WebDAV, FTP, SFTP, SMB/CIFS, or any other rclone backend.",
       "fields": [
         {
           "key": "display_name",
@@ -103,10 +103,6 @@
               "value": "smb"
             },
             {
-              "label": "OpenDAL custom service",
-              "value": "opendal-custom"
-            },
-            {
               "label": "Alibaba Drive",
               "value": "aliyun-drive"
             },
@@ -137,6 +133,214 @@
             {
               "label": "Yandex Disk",
               "value": "yandex-disk"
+            },
+            {
+              "label": "Alias",
+              "value": "alias"
+            },
+            {
+              "label": "Archive",
+              "value": "archive"
+            },
+            {
+              "label": "Azure Files",
+              "value": "azurefiles"
+            },
+            {
+              "label": "Backblaze B2",
+              "value": "b2"
+            },
+            {
+              "label": "Box",
+              "value": "box"
+            },
+            {
+              "label": "Chunker",
+              "value": "chunker"
+            },
+            {
+              "label": "Cloudinary",
+              "value": "cloudinary"
+            },
+            {
+              "label": "Combine",
+              "value": "combine"
+            },
+            {
+              "label": "Compress",
+              "value": "compress"
+            },
+            {
+              "label": "Crypt",
+              "value": "crypt"
+            },
+            {
+              "label": "DOI",
+              "value": "doi"
+            },
+            {
+              "label": "Drime",
+              "value": "drime"
+            },
+            {
+              "label": "1Fichier",
+              "value": "fichier"
+            },
+            {
+              "label": "Enterprise File Fabric",
+              "value": "filefabric"
+            },
+            {
+              "label": "FileLu",
+              "value": "filelu"
+            },
+            {
+              "label": "Filen",
+              "value": "filen"
+            },
+            {
+              "label": "Files.com",
+              "value": "filescom"
+            },
+            {
+              "label": "Gofile",
+              "value": "gofile"
+            },
+            {
+              "label": "Google Photos",
+              "value": "gphotos"
+            },
+            {
+              "label": "Hasher",
+              "value": "hasher"
+            },
+            {
+              "label": "HDFS",
+              "value": "hdfs"
+            },
+            {
+              "label": "HiDrive",
+              "value": "hidrive"
+            },
+            {
+              "label": "HTTP",
+              "value": "http"
+            },
+            {
+              "label": "Huawei Drive",
+              "value": "huaweidrive"
+            },
+            {
+              "label": "iCloud Drive",
+              "value": "iclouddrive"
+            },
+            {
+              "label": "ImageKit",
+              "value": "imagekit"
+            },
+            {
+              "label": "Internet Archive",
+              "value": "internetarchive"
+            },
+            {
+              "label": "Internxt",
+              "value": "internxt"
+            },
+            {
+              "label": "Jottacloud",
+              "value": "jottacloud"
+            },
+            {
+              "label": "Linkbox",
+              "value": "linkbox"
+            },
+            {
+              "label": "Mail.ru Cloud",
+              "value": "mailru"
+            },
+            {
+              "label": "Mega",
+              "value": "mega"
+            },
+            {
+              "label": "Akamai NetStorage",
+              "value": "netstorage"
+            },
+            {
+              "label": "Oracle Object Storage",
+              "value": "oos"
+            },
+            {
+              "label": "OpenDrive",
+              "value": "opendrive"
+            },
+            {
+              "label": "PikPak",
+              "value": "pikpak"
+            },
+            {
+              "label": "Pixeldrain",
+              "value": "pixeldrain"
+            },
+            {
+              "label": "premiumize.me",
+              "value": "premiumizeme"
+            },
+            {
+              "label": "Proton Drive",
+              "value": "protondrive"
+            },
+            {
+              "label": "Put.io",
+              "value": "putio"
+            },
+            {
+              "label": "QingStor",
+              "value": "qingstor"
+            },
+            {
+              "label": "Maytech Quatrix",
+              "value": "quatrix"
+            },
+            {
+              "label": "Shade",
+              "value": "shade"
+            },
+            {
+              "label": "Citrix ShareFile",
+              "value": "sharefile"
+            },
+            {
+              "label": "Sia",
+              "value": "sia"
+            },
+            {
+              "label": "Storj",
+              "value": "storj"
+            },
+            {
+              "label": "SugarSync",
+              "value": "sugarsync"
+            },
+            {
+              "label": "OpenStack Swift",
+              "value": "swift"
+            },
+            {
+              "label": "Tardigrade",
+              "value": "tardigrade"
+            },
+            {
+              "label": "Uloz.to",
+              "value": "ulozto"
+            },
+            {
+              "label": "Union",
+              "value": "union"
+            },
+            {
+              "label": "Zoho WorkDrive",
+              "value": "zoho"
             }
           ]
         },
@@ -147,7 +351,7 @@
           "binding": "config",
           "default": "",
           "placeholder": "https://storage.example.com",
-          "description": "S3/GCS/Azure Blob/OBS/OSS/COS/WebDAV: https://host (TLS) or http://host. FTP: ftp://host:21 or ftps://host:21 (explicit TLS; implicit TLS on 990 is unsupported). SFTP: ssh://user@host:22. SMB: host:445. Set the root separately.",
+          "description": "Service address: https://host for object storage and WebDAV; ftp(s)://host[:21] for FTP; ssh://user@host[:22] for SFTP; host[:445] for SMB.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
@@ -187,38 +391,68 @@
           }
         },
         {
-          "key": "service",
-          "label": "OpenDAL service name",
-          "type": "text",
-          "binding": "config",
-          "default": "",
-          "placeholder": "gcs / azblob / oss / memory",
-          "description": "Any compiled OpenDAL service, e.g. gcs, azblob, oss, memory.",
-          "visible_when": {
-            "field": "protocol",
-            "one_of": [
-              "opendal-custom"
-            ]
-          },
-          "required_when": {
-            "field": "protocol",
-            "one_of": [
-              "opendal-custom"
-            ]
-          }
-        },
-        {
           "key": "config",
-          "label": "Service config (JSON)",
+          "label": "Parameters (JSON)",
           "type": "textarea",
           "binding": "config",
           "default": "{}",
-          "placeholder": "{ \"root\": \"/tmp\", \"bucket\": \"demo\" }",
-          "description": "JSON object passed verbatim as OpenDAL Builder key/values, e.g. {\"root\":\"/tmp\",\"bucket\":\"demo\"}.",
+          "placeholder": "{ \"endpoint\": \"https://host\", \"user\": \"me\" }",
+          "description": "JSON object with the selected backend's options; see rclone's docs for each backend's keys.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
-              "opendal-custom"
+              "alias",
+              "archive",
+              "azurefiles",
+              "b2",
+              "box",
+              "chunker",
+              "cloudinary",
+              "combine",
+              "compress",
+              "crypt",
+              "doi",
+              "drime",
+              "fichier",
+              "filefabric",
+              "filelu",
+              "filen",
+              "filescom",
+              "gofile",
+              "gphotos",
+              "hasher",
+              "hdfs",
+              "hidrive",
+              "http",
+              "huaweidrive",
+              "iclouddrive",
+              "imagekit",
+              "internetarchive",
+              "internxt",
+              "jottacloud",
+              "linkbox",
+              "mailru",
+              "mega",
+              "netstorage",
+              "oos",
+              "opendrive",
+              "pikpak",
+              "pixeldrain",
+              "premiumizeme",
+              "protondrive",
+              "putio",
+              "qingstor",
+              "quatrix",
+              "shade",
+              "sharefile",
+              "sia",
+              "storj",
+              "sugarsync",
+              "swift",
+              "tardigrade",
+              "ulozto",
+              "union",
+              "zoho"
             ]
           }
         },
@@ -363,8 +597,8 @@
           "type": "text",
           "binding": "config",
           "default": "",
-          "placeholder": "my-bucket (leave empty to list all buckets)",
-          "description": "Object storage bucket name. Optional: leave empty to list all buckets at the connection root and switch between them.",
+          "placeholder": "my-bucket",
+          "description": "Bucket name. Leave empty to list all buckets at the connection root.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
@@ -388,8 +622,8 @@
           "type": "text",
           "binding": "config",
           "default": "",
-          "placeholder": "my-container (leave empty to list all containers)",
-          "description": "Azure Blob container name. Optional: leave empty to list all containers at the connection root and switch between them.",
+          "placeholder": "my-container",
+          "description": "Azure Blob container. Leave empty to list all containers at the connection root.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
@@ -466,7 +700,7 @@
           "binding": "config",
           "default": "",
           "placeholder": "https://www.googleapis.com/auth/devstorage.read_write",
-          "description": "Optional Google OAuth scope; leave empty for the OpenDAL default.",
+          "description": "Optional Google OAuth scope; leave empty for the default.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
@@ -501,7 +735,7 @@
               "s3"
             ]
           },
-          "description": "Address the bucket as a virtual hostname (bucket.s3.region.amazonaws.com) instead of a path-style URL; enable when the provider requires it."
+          "description": "Address buckets as virtual hostnames (bucket.host) instead of path-style URLs; enable when the provider requires it."
         },
         {
           "key": "access_key_id",
@@ -610,7 +844,7 @@
           "binding": "config",
           "default": "",
           "placeholder": "media",
-          "description": "Optional SMB share name. Leave empty to list server shares; share/sub/path connects to the share and uses the sub-path as the root.",
+          "description": "Optional SMB share; leave empty to list server shares. share/sub/path uses the sub-path as the root.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
@@ -650,7 +884,7 @@
           "binding": "config",
           "default": "",
           "placeholder": "anonymous",
-          "description": "FTP: empty means anonymous. SFTP: enter the SSH login user or include user@ in the endpoint. This field takes precedence.",
+          "description": "FTP: empty = anonymous. SFTP: SSH login user (user@ in the endpoint also works).",
           "visible_when": {
             "field": "protocol",
             "one_of": [
@@ -681,7 +915,7 @@
           "type": "password",
           "binding": "secret",
           "default": "",
-          "description": "Login password: WebDAV/FTP/SMB basic or password login (empty user = anonymous FTP); SFTP (native) password auth with keyboard-interactive fallback. OpenDAL SFTP is key-only — use SFTP (native) for password accounts.",
+          "description": "Login password (WebDAV/FTP/SMB; FTP with empty user = anonymous). Native SFTP accepts passwords; plain SFTP is key-only.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
@@ -710,7 +944,7 @@
           "binding": "secret",
           "default": "",
           "placeholder": "~/.ssh/id_ed25519",
-          "description": "OpenDAL SFTP: key file path on the DBX machine. Native SFTP also accepts PEM content, used when Password is empty. Encrypted keys are unsupported. Saved with connection secrets.",
+          "description": "Private key path on the DBX machine (e.g. ~/.ssh/id_ed25519). Native SFTP also accepts PEM content when the password is empty. Encrypted keys are unsupported.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
@@ -746,113 +980,7 @@
               "sftp-native"
             ]
           },
-          "description": "Strict requires known host keys. Tolerate accepts unknown hosts but rejects changed known keys; native SFTP does not remember new keys. Trust skips verification (the OpenDAL SFTP protocol degrades it to Tolerate)."
-        },
-        {
-          "key": "proxy_type",
-          "label": "Connection proxy",
-          "type": "select",
-          "binding": "config",
-          "default": "off",
-          "options": [
-            {
-              "label": "Off (direct connection)",
-              "value": "off"
-            },
-            {
-              "label": "HTTP proxy",
-              "value": "http"
-            },
-            {
-              "label": "SOCKS5 proxy",
-              "value": "socks5"
-            }
-          ],
-          "visible_when": {
-            "field": "protocol",
-            "one_of": [
-              "ftp",
-              "sftp",
-              "sftp-native"
-            ]
-          },
-          "description": "Under the rclone engine, an HTTP or SOCKS5 proxy applies to the FTP/SFTP connection (via rclone backend options). Off, or an unsupported protocol, connects directly."
-        },
-        {
-          "key": "proxy_host",
-          "label": "Proxy host",
-          "type": "text",
-          "binding": "config",
-          "default": "",
-          "placeholder": "proxy.example.com",
-          "description": "Proxy server hostname or address.",
-          "visible_when": {
-            "field": "proxy_type",
-            "one_of": [
-              "http",
-              "socks5"
-            ]
-          },
-          "required_when": {
-            "field": "proxy_type",
-            "one_of": [
-              "http",
-              "socks5"
-            ]
-          }
-        },
-        {
-          "key": "proxy_port",
-          "label": "Proxy port",
-          "type": "text",
-          "binding": "config",
-          "default": "",
-          "placeholder": "8080",
-          "description": "Proxy port, an integer between 1 and 65535.",
-          "visible_when": {
-            "field": "proxy_type",
-            "one_of": [
-              "http",
-              "socks5"
-            ]
-          },
-          "required_when": {
-            "field": "proxy_type",
-            "one_of": [
-              "http",
-              "socks5"
-            ]
-          }
-        },
-        {
-          "key": "proxy_username",
-          "label": "Proxy username",
-          "type": "text",
-          "binding": "config",
-          "default": "",
-          "description": "Optional proxy account; leave empty when the proxy needs no authentication.",
-          "visible_when": {
-            "field": "proxy_type",
-            "one_of": [
-              "http",
-              "socks5"
-            ]
-          }
-        },
-        {
-          "key": "proxy_password",
-          "label": "Proxy password",
-          "type": "password",
-          "binding": "secret",
-          "default": "",
-          "description": "Optional proxy password; leave empty for an anonymous proxy. Kept in the host secret binding.",
-          "visible_when": {
-            "field": "proxy_type",
-            "one_of": [
-              "http",
-              "socks5"
-            ]
-          }
+          "description": "Strict verifies against known host keys; Tolerate accepts new hosts but rejects changed keys; Trust skips verification (insecure)."
         },
         {
           "key": "tunnel_jump_hosts",
@@ -875,7 +1003,6 @@
               "sftp",
               "sftp-native",
               "smb",
-              "opendal-custom",
               "aliyun-drive",
               "dropbox",
               "gdrive",
@@ -883,10 +1010,62 @@
               "onedrive",
               "pcloud",
               "seafile",
-              "yandex-disk"
+              "yandex-disk",
+              "alias",
+              "archive",
+              "azurefiles",
+              "b2",
+              "box",
+              "chunker",
+              "cloudinary",
+              "combine",
+              "compress",
+              "crypt",
+              "doi",
+              "drime",
+              "fichier",
+              "filefabric",
+              "filelu",
+              "filen",
+              "filescom",
+              "gofile",
+              "gphotos",
+              "hasher",
+              "hdfs",
+              "hidrive",
+              "http",
+              "huaweidrive",
+              "iclouddrive",
+              "imagekit",
+              "internetarchive",
+              "internxt",
+              "jottacloud",
+              "linkbox",
+              "mailru",
+              "mega",
+              "netstorage",
+              "oos",
+              "opendrive",
+              "pikpak",
+              "pixeldrain",
+              "premiumizeme",
+              "protondrive",
+              "putio",
+              "qingstor",
+              "quatrix",
+              "shade",
+              "sharefile",
+              "sia",
+              "storj",
+              "sugarsync",
+              "swift",
+              "tardigrade",
+              "ulozto",
+              "union",
+              "zoho"
             ]
           },
-          "description": "Optional SSH jump-host chain in ssh -J syntax: comma-separated [user@]host[:port] entries with optional user@ and :port; the last hop is the login target and traffic is forwarded to the connection endpoint. Leave empty for no tunnel. Only effective under the rclone engine (DBX_FILES_ENGINE=rclone); key-based authentication only (BatchMode) — passwords cannot and will never be used. The endpoint is rewritten to a local 127.0.0.1 forwarded port (remote certificates are then validated against 127.0.0.1, which suits private-CA intranet deployments)."
+          "description": "Optional SSH jump chain (ssh -J syntax): comma-separated [user@]host[:port]; the last hop is the login target. Key-based auth only; rclone engine only."
         },
         {
           "key": "tunnel_identity_file",
@@ -909,7 +1088,6 @@
               "sftp",
               "sftp-native",
               "smb",
-              "opendal-custom",
               "aliyun-drive",
               "dropbox",
               "gdrive",
@@ -917,7 +1095,59 @@
               "onedrive",
               "pcloud",
               "seafile",
-              "yandex-disk"
+              "yandex-disk",
+              "alias",
+              "archive",
+              "azurefiles",
+              "b2",
+              "box",
+              "chunker",
+              "cloudinary",
+              "combine",
+              "compress",
+              "crypt",
+              "doi",
+              "drime",
+              "fichier",
+              "filefabric",
+              "filelu",
+              "filen",
+              "filescom",
+              "gofile",
+              "gphotos",
+              "hasher",
+              "hdfs",
+              "hidrive",
+              "http",
+              "huaweidrive",
+              "iclouddrive",
+              "imagekit",
+              "internetarchive",
+              "internxt",
+              "jottacloud",
+              "linkbox",
+              "mailru",
+              "mega",
+              "netstorage",
+              "oos",
+              "opendrive",
+              "pikpak",
+              "pixeldrain",
+              "premiumizeme",
+              "protondrive",
+              "putio",
+              "qingstor",
+              "quatrix",
+              "shade",
+              "sharefile",
+              "sia",
+              "storj",
+              "sugarsync",
+              "swift",
+              "tardigrade",
+              "ulozto",
+              "union",
+              "zoho"
             ]
           },
           "description": "Optional private key path for the tunnel; leave empty to use ssh default keys and the agent."
@@ -981,18 +1211,18 @@
       "type": "workbench",
       "id": "io.dbx.files.workbench",
       "label": "Files Workbench",
-      "description": "Browse, transfer, and sync files across OpenDAL storage backends.",
+      "description": "Browse, transfer, and sync files across connected storage services.",
       "icon": "assets/plugin.svg"
     }
   ],
   "localizations": {
     "zh-CN": {
       "name": "Files Studio",
-          "description": "统一管理本地文件夹、S3 兼容存储、腾讯云 COS、WebDAV、FTP、SFTP、SMB/CIFS 及其他 OpenDAL 服务的文件工作台。",
+      "description": "统一管理本地文件夹、S3 兼容存储、腾讯云 COS、WebDAV、FTP、SFTP、SMB/CIFS 及其他 rclone 存储后端的文件工作台。",
       "contributions": {
         "io.dbx.files.connection": {
           "label": "存储",
-          "description": "经 Apache OpenDAL 的存储连接：本地文件系统、S3/MinIO、阿里云 OSS、腾讯云 COS、WebDAV、FTP、SFTP、SMB/CIFS 或任意已编译的 OpenDAL 服务。",
+          "description": "基于 rclone 的存储连接：本地文件系统、S3/MinIO、阿里云 OSS、腾讯云 COS、Azure Blob、Google Cloud Storage、华为云 OBS、WebDAV、FTP、SFTP、SMB/CIFS 或任意其他 rclone 后端。",
           "fields": {
             "display_name": {
               "label": "连接名称"
@@ -1009,7 +1239,6 @@
                 "ftp": "FTP",
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
-                "opendal-custom": "OpenDAL 自定义服务",
                 "sftp-native": "SFTP（原生）",
                 "oss": "阿里云 OSS",
                 "cos": "腾讯云 COS",
@@ -1020,7 +1249,59 @@
                 "onedrive": "OneDrive",
                 "pcloud": "pCloud",
                 "seafile": "Seafile",
-                "yandex-disk": "Yandex Disk"
+                "yandex-disk": "Yandex Disk",
+                "alias": "Alias",
+                "archive": "Archive",
+                "azurefiles": "Azure Files",
+                "b2": "Backblaze B2",
+                "box": "Box",
+                "chunker": "Chunker",
+                "cloudinary": "Cloudinary",
+                "combine": "Combine",
+                "compress": "Compress",
+                "crypt": "Crypt",
+                "doi": "DOI",
+                "drime": "Drime",
+                "fichier": "1Fichier",
+                "filefabric": "Enterprise File Fabric",
+                "filelu": "FileLu",
+                "filen": "Filen",
+                "filescom": "Files.com",
+                "gofile": "Gofile",
+                "gphotos": "Google 相册",
+                "hasher": "Hasher",
+                "hdfs": "HDFS",
+                "hidrive": "HiDrive",
+                "http": "HTTP",
+                "huaweidrive": "华为云盘",
+                "iclouddrive": "iCloud 云盘",
+                "imagekit": "ImageKit",
+                "internetarchive": "Internet Archive",
+                "internxt": "Internxt",
+                "jottacloud": "Jottacloud",
+                "linkbox": "Linkbox",
+                "mailru": "Mail.ru Cloud",
+                "mega": "Mega",
+                "netstorage": "Akamai NetStorage",
+                "oos": "Oracle Object Storage",
+                "opendrive": "OpenDrive",
+                "pikpak": "PikPak",
+                "pixeldrain": "Pixeldrain",
+                "premiumizeme": "premiumize.me",
+                "protondrive": "Proton Drive",
+                "putio": "Put.io",
+                "qingstor": "QingStor",
+                "quatrix": "Maytech Quatrix",
+                "shade": "Shade",
+                "sharefile": "Citrix ShareFile",
+                "sia": "Sia",
+                "storj": "Storj",
+                "sugarsync": "SugarSync",
+                "swift": "OpenStack Swift",
+                "tardigrade": "Tardigrade",
+                "ulozto": "Uloz.to",
+                "union": "Union",
+                "zoho": "Zoho WorkDrive"
               }
             },
             "root": {
@@ -1032,20 +1313,15 @@
               "label": "锁定在根路径内",
               "description": "拒绝任何超出所配置根路径的操作。"
             },
-            "service": {
-              "label": "OpenDAL 服务名",
-              "placeholder": "gcs / azblob / oss / memory",
-              "description": "任意已编译的 OpenDAL 服务，如 gcs、azblob、oss、memory。"
-            },
             "config": {
-              "label": "服务配置（JSON）",
-              "placeholder": "{ \"root\": \"/tmp\", \"bucket\": \"demo\" }",
-              "description": "以 JSON 对象原样传入 OpenDAL Builder 键值，如 {\"root\":\"/tmp\",\"bucket\":\"demo\"}。"
+              "label": "参数（JSON）",
+              "placeholder": "{ \"endpoint\": \"https://host\", \"user\": \"me\" }",
+              "description": "所选协议的连接参数（JSON 对象）；各键名见 rclone 文档。"
             },
             "container": {
               "label": "容器",
-              "placeholder": "my-container（留空则列出全部容器）",
-              "description": "Azure Blob 容器名称。可选：留空时在连接根目录列出全部容器，可随时切换使用。"
+              "placeholder": "my-container",
+              "description": "Azure Blob 容器名称；留空则在连接根目录列出全部容器。"
             },
             "account_name": {
               "label": "账户名称",
@@ -1064,22 +1340,22 @@
             "scope": {
               "label": "OAuth 作用域",
               "placeholder": "https://www.googleapis.com/auth/devstorage.read_write",
-              "description": "可选的 Google OAuth 作用域；留空使用 OpenDAL 默认值。"
+              "description": "可选的 Google OAuth 作用域；留空使用默认值。"
             },
             "bucket": {
               "label": "存储桶",
-              "placeholder": "my-bucket（留空则列出全部存储桶）",
-              "description": "对象存储桶名称。可选：留空时在连接根目录列出全部存储桶，可随时切换使用。"
+              "placeholder": "my-bucket",
+              "description": "存储桶名称；留空则在连接根目录列出全部存储桶。"
             },
             "endpoint": {
               "label": "端点",
               "placeholder": "http://127.0.0.1:9000",
-              "description": "S3/OSS/WebDAV：http(s)://host，HTTPS 启用 TLS。FTP：ftp://host:21 或 ftps://host:21（显式 TLS，不支持 990 隐式 TLS）。SFTP：ssh://user@host:22。SMB：host:445。根目录另行填写。"
+              "description": "服务地址：对象存储/WebDAV 用 https://host；FTP 用 ftp(s)://host[:21]；SFTP 用 ssh://user@host[:22]；SMB 用 host[:445]。"
             },
             "share": {
               "label": "共享名",
               "placeholder": "media",
-              "description": "SMB 共享名可选。留空可列出服务器共享；共享名/子路径形式会连接共享并将子路径作为根目录。"
+              "description": "SMB 共享名可选；留空则列出服务器共享。共享名/子路径形式以子路径为根目录。"
             },
             "region": {
               "label": "区域",
@@ -1117,70 +1393,62 @@
             "user": {
               "label": "用户",
               "placeholder": "anonymous",
-              "description": "FTP 留空为匿名登录。SFTP 请填写 SSH 登录用户，或在地址中使用 user@；此字段优先。"
+              "description": "FTP 留空为匿名；SFTP 填 SSH 登录用户（地址中带 user@ 亦可）。"
             },
             "password": {
               "label": "密码",
-              "description": "登录密码：WebDAV/FTP/SMB 基本或密码登录（FTP 用户留空即匿名）；SFTP（原生）密码认证，失败自动回退 keyboard-interactive。OpenDAL SFTP 仅支持密钥——密码账号请用 SFTP（原生）。"
+              "description": "登录密码（WebDAV/FTP/SMB；FTP 用户留空即匿名）。SFTP（原生）支持密码；SFTP 仅支持密钥。"
             },
             "key": {
               "label": "私钥或私钥路径",
               "placeholder": "~/.ssh/id_ed25519",
-              "description": "OpenDAL SFTP 填写 DBX 所在机器上的私钥路径；原生 SFTP 也可粘贴 PEM 内容，仅在密码为空时使用。不支持加密私钥。此项作为连接凭据安全保存。"
+              "description": "DBX 所在机器上的私钥路径（如 ~/.ssh/id_ed25519）。SFTP（原生）在密码为空时也可粘贴 PEM 内容。不支持加密私钥。"
             },
             "known_hosts_strategy": {
               "label": "Known Hosts 策略",
-              "description": "Strict 仅接受已知主机密钥；Tolerate 接受未知主机，但拒绝已知密钥变化，原生 SFTP 不记住新密钥；Trust 跳过验证（OpenDAL SFTP 协议下会降级为 Tolerate）。",
+              "description": "Strict 校验已知主机密钥；Tolerate 接受新主机但拒绝密钥变化；Trust 跳过验证（不安全）。",
               "options": {
                 "Tolerate": "宽容（记住新主机）",
                 "Strict": "严格（校验已知主机）",
                 "Trust": "信任任意（不安全）"
               }
             },
-            "proxy_type": {
-              "label": "连接代理",
-              "description": "rclone 引擎下，HTTP 或 SOCKS5 代理作用于 FTP/SFTP 连接（经 rclone 后端选项）。关闭或不支持代理的协议按直连处理。",
-              "options": {
-                "off": "关闭（直连）",
-                "http": "HTTP 代理",
-                "socks5": "SOCKS5 代理"
-              }
-            },
-            "proxy_host": {
-              "label": "代理主机",
-              "placeholder": "proxy.example.com",
-              "description": "代理服务器主机名或地址。"
-            },
-            "proxy_port": {
-              "label": "代理端口",
-              "placeholder": "8080",
-              "description": "代理端口，1-65535 之间的整数。"
-            },
-            "proxy_username": {
-              "label": "代理用户名",
-              "description": "代理账号可选；代理无需认证时留空。"
-            },
-            "proxy_password": {
-              "label": "代理密码",
-              "description": "代理密码可选；匿名代理留空。由宿主 secret binding 保管。"
-            },
             "tunnel_jump_hosts": {
               "label": "SSH 隧道跳板链",
               "placeholder": "ops@j1.example.com:2222, j2.corp",
-              "description": "可选 SSH 跳板链（ssh -J 语法，逗号分隔 [user@]host[:port]，user@ 与 :port 可省略；最后一个为登录目标，流量转发到连接 endpoint）。留空不建隧道。仅 rclone 引擎（DBX_FILES_ENGINE=rclone）生效；仅密钥认证（BatchMode），密码无法也绝不会被使用。endpoint 会被改写为本地 127.0.0.1 转发端口（远端证书按 127.0.0.1 校验，适合私有 CA 内网部署）。"
+              "description": "可选 SSH 跳板链（ssh -J 语法）：逗号分隔 [user@]host[:port]，最后一个为登录目标。仅支持密钥认证；仅 rclone 引擎。"
             },
             "tunnel_identity_file": {
               "label": "SSH 隧道私钥",
               "placeholder": "~/.ssh/id_ed25519",
               "description": "隧道使用的私钥路径（可选）；留空使用 ssh 默认密钥与 agent。"
             },
-            "access_token": { "label": "Access Token" },
-            "client_id": { "label": "OAuth 客户端 ID" },
-            "client_secret": { "label": "OAuth 客户端密钥" },
-            "refresh_token": { "label": "OAuth 刷新令牌" },
-            "drive_type": { "label": "云盘类型", "options": { "resource": "资源盘", "share": "共享盘", "backup": "备份盘" } },
-            "email": { "label": "账户邮箱" },
-            "repo_name": { "label": "资料库名称" },
+            "access_token": {
+              "label": "Access Token"
+            },
+            "client_id": {
+              "label": "OAuth 客户端 ID"
+            },
+            "client_secret": {
+              "label": "OAuth 客户端密钥"
+            },
+            "refresh_token": {
+              "label": "OAuth 刷新令牌"
+            },
+            "drive_type": {
+              "label": "云盘类型",
+              "options": {
+                "resource": "资源盘",
+                "share": "共享盘",
+                "backup": "备份盘"
+              }
+            },
+            "email": {
+              "label": "账户邮箱"
+            },
+            "repo_name": {
+              "label": "资料库名称"
+            },
             "read_only": {
               "label": "只读",
               "description": "拒绝该连接上的所有写操作。"
@@ -1195,23 +1463,23 @@
             },
             "enable_virtual_host_style": {
               "label": "虚拟主机风格",
-              "description": "以虚拟主机名（bucket.s3.region.amazonaws.com）而非路径风格 URL 寻址存储桶；服务商要求时开启。"
+              "description": "以虚拟主机名（bucket.host）而非路径风格 URL 寻址存储桶；服务商要求时开启。"
             }
           }
         },
         "io.dbx.files.workbench": {
           "label": "文件工作台",
-          "description": "在 OpenDAL 存储后端之间浏览、传输与同步文件。"
+          "description": "在已连接的存储服务之间浏览、传输与同步文件。"
         }
       }
     },
     "zh-TW": {
       "name": "Files Studio",
-      "description": "統一管理本機資料夾、S3 相容儲存、WebDAV、FTP、SFTP、SMB/CIFS 及其他 OpenDAL 服務的檔案工作台。",
+      "description": "統一管理本機資料夾、S3 相容儲存、WebDAV、FTP、SFTP、SMB/CIFS 及其他 rclone 儲存後端的檔案工作台。",
       "contributions": {
         "io.dbx.files.connection": {
           "label": "儲存",
-          "description": "經 Apache OpenDAL 的儲存連線：本機檔案系統、S3/MinIO、阿里雲 OSS、WebDAV、FTP、SFTP、SMB/CIFS 或任意已編譯的 OpenDAL 服務。",
+          "description": "基於 rclone 的儲存連線：本機檔案系統、S3/MinIO、阿里雲 OSS、騰訊雲 COS、Azure Blob、Google Cloud Storage、華為雲 OBS、WebDAV、FTP、SFTP、SMB/CIFS 或任意其他 rclone 後端。",
           "fields": {
             "display_name": {
               "label": "連線名稱"
@@ -1228,7 +1496,6 @@
                 "ftp": "FTP",
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
-                "opendal-custom": "OpenDAL 自訂服務",
                 "sftp-native": "SFTP（原生）",
                 "oss": "阿里雲 OSS",
                 "cos": "騰訊雲 COS",
@@ -1239,7 +1506,59 @@
                 "onedrive": "OneDrive",
                 "pcloud": "pCloud",
                 "seafile": "Seafile",
-                "yandex-disk": "Yandex Disk"
+                "yandex-disk": "Yandex Disk",
+                "alias": "Alias",
+                "archive": "Archive",
+                "azurefiles": "Azure Files",
+                "b2": "Backblaze B2",
+                "box": "Box",
+                "chunker": "Chunker",
+                "cloudinary": "Cloudinary",
+                "combine": "Combine",
+                "compress": "Compress",
+                "crypt": "Crypt",
+                "doi": "DOI",
+                "drime": "Drime",
+                "fichier": "1Fichier",
+                "filefabric": "Enterprise File Fabric",
+                "filelu": "FileLu",
+                "filen": "Filen",
+                "filescom": "Files.com",
+                "gofile": "Gofile",
+                "gphotos": "Google 相簿",
+                "hasher": "Hasher",
+                "hdfs": "HDFS",
+                "hidrive": "HiDrive",
+                "http": "HTTP",
+                "huaweidrive": "華為雲盤",
+                "iclouddrive": "iCloud 雲盤",
+                "imagekit": "ImageKit",
+                "internetarchive": "Internet Archive",
+                "internxt": "Internxt",
+                "jottacloud": "Jottacloud",
+                "linkbox": "Linkbox",
+                "mailru": "Mail.ru Cloud",
+                "mega": "Mega",
+                "netstorage": "Akamai NetStorage",
+                "oos": "Oracle Object Storage",
+                "opendrive": "OpenDrive",
+                "pikpak": "PikPak",
+                "pixeldrain": "Pixeldrain",
+                "premiumizeme": "premiumize.me",
+                "protondrive": "Proton Drive",
+                "putio": "Put.io",
+                "qingstor": "QingStor",
+                "quatrix": "Maytech Quatrix",
+                "shade": "Shade",
+                "sharefile": "Citrix ShareFile",
+                "sia": "Sia",
+                "storj": "Storj",
+                "sugarsync": "SugarSync",
+                "swift": "OpenStack Swift",
+                "tardigrade": "Tardigrade",
+                "ulozto": "Uloz.to",
+                "union": "Union",
+                "zoho": "Zoho WorkDrive"
               }
             },
             "root": {
@@ -1251,20 +1570,15 @@
               "label": "鎖定在根路徑內",
               "description": "拒絕任何超出所設定根路徑的操作。"
             },
-            "service": {
-              "label": "OpenDAL 服務名稱",
-              "placeholder": "gcs / azblob / oss / memory",
-              "description": "任意已編譯的 OpenDAL 服務，如 gcs、azblob、oss、memory。"
-            },
             "config": {
-              "label": "服務設定（JSON）",
-              "placeholder": "{ \"root\": \"/tmp\", \"bucket\": \"demo\" }",
-              "description": "以 JSON 物件原樣傳入 OpenDAL Builder 鍵值，如 {\"root\":\"/tmp\",\"bucket\":\"demo\"}。"
+              "label": "參數（JSON）",
+              "placeholder": "{ \"endpoint\": \"https://host\", \"user\": \"me\" }",
+              "description": "所選協定的連線參數（JSON 物件）；各鍵名見 rclone 文件。"
             },
             "container": {
               "label": "容器",
-              "placeholder": "my-container（留空則列出全部容器）",
-              "description": "Azure Blob 容器名稱。可選：留空時在連線根目錄列出全部容器，可隨時切換使用。"
+              "placeholder": "my-container",
+              "description": "Azure Blob 容器名稱；留空則在連線根目錄列出全部容器。"
             },
             "account_name": {
               "label": "帳戶名稱",
@@ -1283,22 +1597,22 @@
             "scope": {
               "label": "OAuth 範圍",
               "placeholder": "https://www.googleapis.com/auth/devstorage.read_write",
-              "description": "可選的 Google OAuth 範圍；留空使用 OpenDAL 預設值。"
+              "description": "可選的 Google OAuth 範圍；留空使用預設值。"
             },
             "bucket": {
               "label": "儲存桶",
-              "placeholder": "my-bucket（留空則列出全部儲存桶）",
-              "description": "物件儲存桶名稱。可選：留空時在連線根目錄列出全部儲存桶，可隨時切換使用。"
+              "placeholder": "my-bucket",
+              "description": "儲存桶名稱；留空則在連線根目錄列出全部儲存桶。"
             },
             "endpoint": {
               "label": "端點",
               "placeholder": "http://127.0.0.1:9000",
-              "description": "S3/OSS/WebDAV：http(s)://host，HTTPS 啟用 TLS。FTP：ftp://host:21 或 ftps://host:21（顯式 TLS，不支援 990 隱式 TLS）。SFTP：ssh://user@host:22。SMB：host:445。根目錄另行填寫。"
+              "description": "服務位址：物件儲存/WebDAV 用 https://host；FTP 用 ftp(s)://host[:21]；SFTP 用 ssh://user@host[:22]；SMB 用 host[:445]。"
             },
             "share": {
               "label": "共用名稱",
               "placeholder": "media",
-              "description": "SMB 共用名稱可選。留空可列出伺服器共用；共用名稱/子路徑形式會連線共用並將子路徑作為根目錄。"
+              "description": "SMB 共用名稱可選；留空則列出伺服器共用。共用名稱/子路徑形式以子路徑為根目錄。"
             },
             "region": {
               "label": "區域",
@@ -1336,70 +1650,62 @@
             "user": {
               "label": "使用者",
               "placeholder": "anonymous",
-              "description": "FTP 留空為匿名登入。SFTP 請填寫 SSH 登入使用者，或在位址中使用 user@；此欄位優先。"
+              "description": "FTP 留空為匿名；SFTP 填 SSH 登入使用者（位址中帶 user@ 亦可）。"
             },
             "password": {
               "label": "密碼",
-              "description": "登入密碼：WebDAV/FTP/SMB 基本或密碼登入（FTP 使用者留空即匿名）；SFTP（原生）密碼認證，失敗自動回退 keyboard-interactive。OpenDAL SFTP 僅支援金鑰——密碼帳號請用 SFTP（原生）。"
+              "description": "登入密碼（WebDAV/FTP/SMB；FTP 使用者留空即匿名）。SFTP（原生）支援密碼；SFTP 僅支援金鑰。"
             },
             "key": {
               "label": "私鑰或私鑰路徑",
               "placeholder": "~/.ssh/id_ed25519",
-              "description": "OpenDAL SFTP 填寫 DBX 所在機器上的私鑰路徑；原生 SFTP 也可貼上 PEM 內容，僅在密碼為空時使用。不支援加密私鑰。此項作為連線憑證安全儲存。"
+              "description": "DBX 所在機器上的私鑰路徑（如 ~/.ssh/id_ed25519）。SFTP（原生）在密碼為空時也可貼上 PEM 內容。不支援加密私鑰。"
             },
             "known_hosts_strategy": {
               "label": "Known Hosts 策略",
-              "description": "Strict 僅接受已知主機金鑰；Tolerate 接受未知主機，但拒絕已知金鑰變更，原生 SFTP 不記住新金鑰；Trust 略過驗證（OpenDAL SFTP 協定下會降級為 Tolerate）。",
+              "description": "Strict 驗證已知主機金鑰；Tolerate 接受新主機但拒絕金鑰變更；Trust 跳過驗證（不安全）。",
               "options": {
                 "Tolerate": "寬容（記住新主機）",
                 "Strict": "嚴格（驗證已知主機）",
                 "Trust": "信任任意（不安全）"
               }
             },
-            "proxy_type": {
-              "label": "連線代理",
-              "description": "rclone 引擎下，HTTP 或 SOCKS5 代理作用於 FTP/SFTP 連線（經 rclone 後端選項）。關閉或不支援代理的通訊協定按直連處理。",
-              "options": {
-                "off": "關閉（直連）",
-                "http": "HTTP 代理",
-                "socks5": "SOCKS5 代理"
-              }
-            },
-            "proxy_host": {
-              "label": "代理主機",
-              "placeholder": "proxy.example.com",
-              "description": "代理伺服器主機名稱或位址。"
-            },
-            "proxy_port": {
-              "label": "代理連接埠",
-              "placeholder": "8080",
-              "description": "代理連接埠，1-65535 之間的整數。"
-            },
-            "proxy_username": {
-              "label": "代理使用者名稱",
-              "description": "代理帳戶可選；代理無需驗證時留空。"
-            },
-            "proxy_password": {
-              "label": "代理密碼",
-              "description": "代理密碼可選；匿名代理留空。由宿主 secret binding 保管。"
-            },
             "tunnel_jump_hosts": {
               "label": "SSH 通道跳板鏈",
               "placeholder": "ops@j1.example.com:2222, j2.corp",
-              "description": "可選 SSH 跳板鏈（ssh -J 語法，逗號分隔 [user@]host[:port]，user@ 與 :port 可省略；最後一個為登入目標，流量轉發到連線 endpoint）。留空不建通道。僅 rclone 引擎（DBX_FILES_ENGINE=rclone）生效；僅金鑰認證（BatchMode），密碼無法也絕不會被使用。endpoint 會被改寫為本機 127.0.0.1 轉發連接埠（遠端憑證按 127.0.0.1 驗證，適合私有 CA 內網部署）。"
+              "description": "可選 SSH 跳板鏈（ssh -J 語法）：逗號分隔 [user@]host[:port]，最後一個為登入目標。僅支援金鑰認證；僅 rclone 引擎。"
             },
             "tunnel_identity_file": {
               "label": "SSH 通道私鑰",
               "placeholder": "~/.ssh/id_ed25519",
               "description": "通道使用的私鑰路徑（可選）；留空使用 ssh 預設金鑰與 agent。"
             },
-            "access_token": { "label": "Access Token" },
-            "client_id": { "label": "OAuth 用戶端 ID" },
-            "client_secret": { "label": "OAuth 用戶端密鑰" },
-            "refresh_token": { "label": "OAuth 更新權杖" },
-            "drive_type": { "label": "雲端硬碟類型", "options": { "resource": "資源硬碟", "share": "共用硬碟", "backup": "備份硬碟" } },
-            "email": { "label": "帳戶電子郵件" },
-            "repo_name": { "label": "資料庫名稱" },
+            "access_token": {
+              "label": "Access Token"
+            },
+            "client_id": {
+              "label": "OAuth 用戶端 ID"
+            },
+            "client_secret": {
+              "label": "OAuth 用戶端密鑰"
+            },
+            "refresh_token": {
+              "label": "OAuth 更新權杖"
+            },
+            "drive_type": {
+              "label": "雲端硬碟類型",
+              "options": {
+                "resource": "資源硬碟",
+                "share": "共用硬碟",
+                "backup": "備份硬碟"
+              }
+            },
+            "email": {
+              "label": "帳戶電子郵件"
+            },
+            "repo_name": {
+              "label": "資料庫名稱"
+            },
             "read_only": {
               "label": "唯讀",
               "description": "拒絕該連線上的所有寫入操作。"
@@ -1414,23 +1720,23 @@
             },
             "enable_virtual_host_style": {
               "label": "虛擬主機風格",
-              "description": "以虛擬主機名（bucket.s3.region.amazonaws.com）而非路徑風格 URL 定址儲存貯體；服務商要求時開啟。"
+              "description": "以虛擬主機名（bucket.host）而非路徑風格 URL 定址儲存桶；服務商要求時開啟。"
             }
           }
         },
         "io.dbx.files.workbench": {
           "label": "檔案工作台",
-          "description": "在 OpenDAL 儲存後端之間瀏覽、傳輸與同步檔案。"
+          "description": "在已連線的儲存服務之間瀏覽、傳輸與同步檔案。"
         }
       }
     },
     "en": {
       "name": "Files Studio",
-      "description": "A unified file workspace for local folders, S3-compatible storage, WebDAV, FTP, SFTP, SMB/CIFS, and other OpenDAL services.",
+      "description": "A unified file workspace for local folders, S3-compatible storage, Azure Blob, Google Cloud Storage, Huawei OBS, Tencent COS, WebDAV, FTP, SFTP, SMB/CIFS, and other rclone storage backends.",
       "contributions": {
         "io.dbx.files.connection": {
           "label": "Storage",
-          "description": "Storage connection through Apache OpenDAL: local filesystem, S3/MinIO, Alibaba OSS, WebDAV, FTP, SFTP, SMB/CIFS, or any compiled OpenDAL service.",
+          "description": "Storage connection backed by rclone: local filesystem, S3/MinIO, Azure Blob, Google Cloud Storage, Huawei OBS, Alibaba OSS, Tencent COS, WebDAV, FTP, SFTP, SMB/CIFS, or any other rclone backend.",
           "fields": {
             "display_name": {
               "label": "Connection name"
@@ -1447,7 +1753,6 @@
                 "ftp": "FTP",
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
-                "opendal-custom": "OpenDAL custom service",
                 "sftp-native": "SFTP (native)",
                 "oss": "Alibaba OSS",
                 "cos": "Tencent COS",
@@ -1458,7 +1763,59 @@
                 "onedrive": "OneDrive",
                 "pcloud": "pCloud",
                 "seafile": "Seafile",
-                "yandex-disk": "Yandex Disk"
+                "yandex-disk": "Yandex Disk",
+                "alias": "Alias",
+                "archive": "Archive",
+                "azurefiles": "Azure Files",
+                "b2": "Backblaze B2",
+                "box": "Box",
+                "chunker": "Chunker",
+                "cloudinary": "Cloudinary",
+                "combine": "Combine",
+                "compress": "Compress",
+                "crypt": "Crypt",
+                "doi": "DOI",
+                "drime": "Drime",
+                "fichier": "1Fichier",
+                "filefabric": "Enterprise File Fabric",
+                "filelu": "FileLu",
+                "filen": "Filen",
+                "filescom": "Files.com",
+                "gofile": "Gofile",
+                "gphotos": "Google Photos",
+                "hasher": "Hasher",
+                "hdfs": "HDFS",
+                "hidrive": "HiDrive",
+                "http": "HTTP",
+                "huaweidrive": "Huawei Drive",
+                "iclouddrive": "iCloud Drive",
+                "imagekit": "ImageKit",
+                "internetarchive": "Internet Archive",
+                "internxt": "Internxt",
+                "jottacloud": "Jottacloud",
+                "linkbox": "Linkbox",
+                "mailru": "Mail.ru Cloud",
+                "mega": "Mega",
+                "netstorage": "Akamai NetStorage",
+                "oos": "Oracle Object Storage",
+                "opendrive": "OpenDrive",
+                "pikpak": "PikPak",
+                "pixeldrain": "Pixeldrain",
+                "premiumizeme": "premiumize.me",
+                "protondrive": "Proton Drive",
+                "putio": "Put.io",
+                "qingstor": "QingStor",
+                "quatrix": "Maytech Quatrix",
+                "shade": "Shade",
+                "sharefile": "Citrix ShareFile",
+                "sia": "Sia",
+                "storj": "Storj",
+                "sugarsync": "SugarSync",
+                "swift": "OpenStack Swift",
+                "tardigrade": "Tardigrade",
+                "ulozto": "Uloz.to",
+                "union": "Union",
+                "zoho": "Zoho WorkDrive"
               }
             },
             "root": {
@@ -1470,20 +1827,15 @@
               "label": "Lock navigation to root",
               "description": "Reject any path outside the configured root."
             },
-            "service": {
-              "label": "OpenDAL service name",
-              "placeholder": "gcs / azblob / oss / memory",
-              "description": "Any compiled OpenDAL service, e.g. gcs, azblob, oss, memory."
-            },
             "config": {
-              "label": "Service config (JSON)",
-              "placeholder": "{ \"root\": \"/tmp\", \"bucket\": \"demo\" }",
-              "description": "JSON object passed verbatim as OpenDAL Builder key/values, e.g. {\"root\":\"/tmp\",\"bucket\":\"demo\"}."
+              "label": "Parameters (JSON)",
+              "placeholder": "{ \"endpoint\": \"https://host\", \"user\": \"me\" }",
+              "description": "Parameters for the selected protocol as a JSON object; see rclone's docs for each backend's keys."
             },
             "container": {
               "label": "Container",
-              "placeholder": "my-container (leave empty to list all containers)",
-              "description": "Azure Blob container name. Optional: leave empty to list all containers at the connection root and switch between them."
+              "placeholder": "my-container",
+              "description": "Azure Blob container. Leave empty to list all containers at the connection root."
             },
             "account_name": {
               "label": "Account name",
@@ -1502,22 +1854,22 @@
             "scope": {
               "label": "OAuth scope",
               "placeholder": "https://www.googleapis.com/auth/devstorage.read_write",
-              "description": "Optional Google OAuth scope; leave empty for the OpenDAL default."
+              "description": "Optional Google OAuth scope; leave empty for the default."
             },
             "bucket": {
               "label": "Bucket",
-              "placeholder": "my-bucket (leave empty to list all buckets)",
-              "description": "Object storage bucket name. Optional: leave empty to list all buckets at the connection root and switch between them."
+              "placeholder": "my-bucket",
+              "description": "Bucket name. Leave empty to list all buckets at the connection root."
             },
             "endpoint": {
               "label": "Endpoint",
               "placeholder": "http://127.0.0.1:9000",
-              "description": "S3/OSS/WebDAV: https://host (TLS) or http://host. FTP: ftp://host:21 or ftps://host:21 (explicit TLS; implicit TLS on 990 is unsupported). SFTP: ssh://user@host:22. SMB: host:445. Set the root separately."
+              "description": "Service address: https://host for object storage and WebDAV; ftp(s)://host[:21] for FTP; ssh://user@host[:22] for SFTP; host[:445] for SMB."
             },
             "share": {
               "label": "Share",
               "placeholder": "media",
-              "description": "Optional SMB share name. Leave empty to list server shares; share/sub/path connects to the share and uses the sub-path as the root."
+              "description": "Optional SMB share; leave empty to list server shares. share/sub/path uses the sub-path as the root."
             },
             "region": {
               "label": "Region",
@@ -1555,70 +1907,62 @@
             "user": {
               "label": "User",
               "placeholder": "anonymous",
-              "description": "FTP: empty means anonymous. SFTP: enter the SSH login user or include user@ in the endpoint. This field takes precedence."
+              "description": "FTP: empty = anonymous. SFTP: SSH login user (user@ in the endpoint also works)."
             },
             "password": {
               "label": "Password",
-              "description": "Login password: WebDAV/FTP/SMB basic or password login (empty user = anonymous FTP); SFTP (native) password auth with keyboard-interactive fallback. OpenDAL SFTP is key-only — use SFTP (native) for password accounts."
+              "description": "Login password (WebDAV/FTP/SMB; FTP with empty user = anonymous). Native SFTP accepts passwords; plain SFTP is key-only."
             },
             "key": {
               "label": "Private key or path",
               "placeholder": "~/.ssh/id_ed25519",
-              "description": "OpenDAL SFTP: key file path on the DBX machine. Native SFTP also accepts PEM content, used when Password is empty. Encrypted keys are unsupported. Saved with connection secrets."
+              "description": "Private key path on the DBX machine (e.g. ~/.ssh/id_ed25519). Native SFTP also accepts PEM content when the password is empty. Encrypted keys are unsupported."
             },
             "known_hosts_strategy": {
               "label": "Known hosts strategy",
-              "description": "Strict requires known host keys. Tolerate accepts unknown hosts but rejects changed known keys; native SFTP does not remember new keys. Trust skips verification (the OpenDAL SFTP protocol degrades it to Tolerate).",
+              "description": "Strict verifies against known host keys; Tolerate accepts new hosts but rejects changed keys; Trust skips verification (insecure).",
               "options": {
                 "Tolerate": "Tolerate (remember new hosts)",
                 "Strict": "Strict (verify known hosts)",
                 "Trust": "Trust (any key, insecure)"
               }
             },
-            "proxy_type": {
-              "label": "Connection proxy",
-              "description": "Under the rclone engine, an HTTP or SOCKS5 proxy applies to the FTP/SFTP connection (via rclone backend options). Off, or an unsupported protocol, connects directly.",
-              "options": {
-                "off": "Off (direct connection)",
-                "http": "HTTP proxy",
-                "socks5": "SOCKS5 proxy"
-              }
-            },
-            "proxy_host": {
-              "label": "Proxy host",
-              "placeholder": "proxy.example.com",
-              "description": "Proxy server hostname or address."
-            },
-            "proxy_port": {
-              "label": "Proxy port",
-              "placeholder": "8080",
-              "description": "Proxy port, an integer between 1 and 65535."
-            },
-            "proxy_username": {
-              "label": "Proxy username",
-              "description": "Optional proxy account; leave empty when the proxy needs no authentication."
-            },
-            "proxy_password": {
-              "label": "Proxy password",
-              "description": "Optional proxy password; leave empty for an anonymous proxy. Kept in the host secret binding."
-            },
             "tunnel_jump_hosts": {
               "label": "SSH tunnel jump hosts",
               "placeholder": "ops@j1.example.com:2222, j2.corp",
-              "description": "Optional SSH jump-host chain in ssh -J syntax: comma-separated [user@]host[:port] entries with optional user@ and :port; the last hop is the login target and traffic is forwarded to the connection endpoint. Leave empty for no tunnel. Only effective under the rclone engine (DBX_FILES_ENGINE=rclone); key-based authentication only (BatchMode) — passwords cannot and will never be used. The endpoint is rewritten to a local 127.0.0.1 forwarded port (remote certificates are then validated against 127.0.0.1, which suits private-CA intranet deployments)."
+              "description": "Optional SSH jump chain (ssh -J syntax): comma-separated [user@]host[:port]; the last hop is the login target. Key-based auth only; rclone engine only."
             },
             "tunnel_identity_file": {
               "label": "SSH tunnel private key",
               "placeholder": "~/.ssh/id_ed25519",
               "description": "Optional private key path for the tunnel; leave empty to use ssh default keys and the agent."
             },
-            "access_token": { "label": "Access token" },
-            "client_id": { "label": "OAuth client ID" },
-            "client_secret": { "label": "OAuth client secret" },
-            "refresh_token": { "label": "OAuth refresh token" },
-            "drive_type": { "label": "Drive type", "options": { "resource": "Resource drive", "share": "Share drive", "backup": "Backup drive" } },
-            "email": { "label": "Account email" },
-            "repo_name": { "label": "Library name" },
+            "access_token": {
+              "label": "Access token"
+            },
+            "client_id": {
+              "label": "OAuth client ID"
+            },
+            "client_secret": {
+              "label": "OAuth client secret"
+            },
+            "refresh_token": {
+              "label": "OAuth refresh token"
+            },
+            "drive_type": {
+              "label": "Drive type",
+              "options": {
+                "resource": "Resource drive",
+                "share": "Share drive",
+                "backup": "Backup drive"
+              }
+            },
+            "email": {
+              "label": "Account email"
+            },
+            "repo_name": {
+              "label": "Library name"
+            },
             "read_only": {
               "label": "Read only",
               "description": "Reject every write operation on this connection."
@@ -1633,23 +1977,23 @@
             },
             "enable_virtual_host_style": {
               "label": "Virtual-host style",
-              "description": "Address the bucket as a virtual hostname (bucket.s3.region.amazonaws.com) instead of a path-style URL; enable when the provider requires it."
+              "description": "Address buckets as virtual hostnames (bucket.host) instead of path-style URLs; enable when the provider requires it."
             }
           }
         },
         "io.dbx.files.workbench": {
           "label": "Files Workbench",
-          "description": "Browse, transfer, and sync files across OpenDAL storage backends."
+          "description": "Browse, transfer, and sync files across connected storage services."
         }
       }
     },
     "es": {
       "name": "Files Studio",
-      "description": "Espacio de trabajo de archivos unificado para carpetas locales, almacenamiento compatible con S3, WebDAV, FTP, SFTP, SMB/CIFS y otros servicios de OpenDAL.",
+      "description": "Espacio de trabajo de archivos unificado para carpetas locales, almacenamiento compatible con S3, WebDAV, FTP, SFTP, SMB/CIFS y otros backends de almacenamiento de rclone.",
       "contributions": {
         "io.dbx.files.connection": {
           "label": "Almacenamiento",
-          "description": "Conexión de almacenamiento mediante Apache OpenDAL: sistema de archivos local, S3/MinIO, OSS de Alibaba, WebDAV, FTP, SFTP, SMB/CIFS o cualquier servicio compilado de OpenDAL.",
+          "description": "Conexión de almacenamiento basada en rclone: sistema de archivos local, S3/MinIO, OSS de Alibaba, COS de Tencent, Azure Blob, Google Cloud Storage, OBS de Huawei, WebDAV, FTP, SFTP, SMB/CIFS o cualquier otro backend de rclone.",
           "fields": {
             "display_name": {
               "label": "Nombre de la conexión"
@@ -1666,7 +2010,6 @@
                 "ftp": "FTP",
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
-                "opendal-custom": "Servicio personalizado de OpenDAL",
                 "sftp-native": "SFTP (nativo)",
                 "oss": "OSS de Alibaba",
                 "cos": "COS de Tencent",
@@ -1677,7 +2020,59 @@
                 "onedrive": "OneDrive",
                 "pcloud": "pCloud",
                 "seafile": "Seafile",
-                "yandex-disk": "Yandex Disk"
+                "yandex-disk": "Yandex Disk",
+                "alias": "Alias",
+                "archive": "Archive",
+                "azurefiles": "Azure Files",
+                "b2": "Backblaze B2",
+                "box": "Box",
+                "chunker": "Chunker",
+                "cloudinary": "Cloudinary",
+                "combine": "Combine",
+                "compress": "Compress",
+                "crypt": "Crypt",
+                "doi": "DOI",
+                "drime": "Drime",
+                "fichier": "1Fichier",
+                "filefabric": "Enterprise File Fabric",
+                "filelu": "FileLu",
+                "filen": "Filen",
+                "filescom": "Files.com",
+                "gofile": "Gofile",
+                "gphotos": "Google Photos",
+                "hasher": "Hasher",
+                "hdfs": "HDFS",
+                "hidrive": "HiDrive",
+                "http": "HTTP",
+                "huaweidrive": "Huawei Drive",
+                "iclouddrive": "iCloud Drive",
+                "imagekit": "ImageKit",
+                "internetarchive": "Internet Archive",
+                "internxt": "Internxt",
+                "jottacloud": "Jottacloud",
+                "linkbox": "Linkbox",
+                "mailru": "Mail.ru Cloud",
+                "mega": "Mega",
+                "netstorage": "Akamai NetStorage",
+                "oos": "Oracle Object Storage",
+                "opendrive": "OpenDrive",
+                "pikpak": "PikPak",
+                "pixeldrain": "Pixeldrain",
+                "premiumizeme": "premiumize.me",
+                "protondrive": "Proton Drive",
+                "putio": "Put.io",
+                "qingstor": "QingStor",
+                "quatrix": "Maytech Quatrix",
+                "shade": "Shade",
+                "sharefile": "Citrix ShareFile",
+                "sia": "Sia",
+                "storj": "Storj",
+                "sugarsync": "SugarSync",
+                "swift": "OpenStack Swift",
+                "tardigrade": "Tardigrade",
+                "ulozto": "Uloz.to",
+                "union": "Union",
+                "zoho": "Zoho WorkDrive"
               }
             },
             "root": {
@@ -1689,20 +2084,15 @@
               "label": "Restringir a la raíz",
               "description": "Rechaza cualquier ruta fuera de la raíz configurada."
             },
-            "service": {
-              "label": "Nombre del servicio OpenDAL",
-              "placeholder": "gcs / azblob / oss / memory",
-              "description": "Cualquier servicio OpenDAL compilado, p. ej. gcs, azblob, oss, memory."
-            },
             "config": {
-              "label": "Configuración del servicio (JSON)",
-              "placeholder": "{ \"root\": \"/tmp\", \"bucket\": \"demo\" }",
-              "description": "Objeto JSON que se pasa tal cual como claves/valores del Builder de OpenDAL, p. ej. {\"root\":\"/tmp\",\"bucket\":\"demo\"}."
+              "label": "Parámetros (JSON)",
+              "placeholder": "{ \"endpoint\": \"https://host\", \"user\": \"me\" }",
+              "description": "Parámetros del protocolo elegido como objeto JSON; consulta la documentación de rclone para las claves de cada backend."
             },
             "container": {
               "label": "Contenedor",
-              "placeholder": "my-container (vacío para enumerar todos los contenedores)",
-              "description": "Nombre del contenedor de Azure Blob. Opcional: si se deja vacío, la raíz de la conexión enumera todos los contenedores y permite cambiar entre ellos."
+              "placeholder": "my-container",
+              "description": "Contenedor de Azure Blob; déjelo vacío para listar todos los contenedores en la raíz de la conexión."
             },
             "account_name": {
               "label": "Nombre de cuenta",
@@ -1721,22 +2111,22 @@
             "scope": {
               "label": "Ámbito OAuth",
               "placeholder": "https://www.googleapis.com/auth/devstorage.read_write",
-              "description": "Ámbito OAuth de Google opcional; déjalo vacío para usar el valor predeterminado de OpenDAL."
+              "description": "Ámbito OAuth de Google opcional; déjelo vacío para usar el valor predeterminado."
             },
             "bucket": {
               "label": "Bucket",
-              "placeholder": "my-bucket (vacío para enumerar todos los buckets)",
-              "description": "Nombre del bucket de almacenamiento de objetos. Opcional: si se deja vacío, la raíz de la conexión enumera todos los buckets y permite cambiar entre ellos."
+              "placeholder": "my-bucket",
+              "description": "Nombre del bucket; déjelo vacío para listar todos los buckets en la raíz de la conexión."
             },
             "endpoint": {
               "label": "Endpoint",
               "placeholder": "http://127.0.0.1:9000",
-              "description": "S3/OSS/WebDAV: https://host (TLS) o http://host. FTP: ftp://host:21 o ftps://host:21 (TLS explícito; sin TLS implícito en 990). SFTP: ssh://user@host:22. SMB: host:445. Indique la raíz aparte."
+              "description": "Dirección del servicio: https://host para object storage y WebDAV; ftp(s)://host[:21] para FTP; ssh://user@host[:22] para SFTP; host[:445] para SMB."
             },
             "share": {
               "label": "Recurso compartido",
               "placeholder": "media",
-              "description": "Nombre opcional del recurso compartido SMB. Déjelo vacío para enumerar los recursos del servidor; recurso/subruta conecta al recurso y usa la subruta como raíz."
+              "description": "Recurso compartido SMB opcional; déjelo vacío para listar los recursos del servidor. recurso/subruta usa la subruta como raíz."
             },
             "region": {
               "label": "Región",
@@ -1774,70 +2164,62 @@
             "user": {
               "label": "Usuario",
               "placeholder": "anonymous",
-              "description": "FTP: vacío permite acceso anónimo. SFTP: indique el usuario SSH o user@ en el endpoint. Este campo tiene prioridad."
+              "description": "FTP: vacío = anónimo. SFTP: usuario SSH (user@ en el endpoint también vale)."
             },
             "password": {
               "label": "Contraseña",
-              "description": "Contraseña: login básico o por contraseña de WebDAV/FTP/SMB (usuario vacío = FTP anónimo); autenticación por contraseña de SFTP (nativo) con alternativa keyboard-interactive. El SFTP de OpenDAL solo acepta clave: use SFTP (nativo) para cuentas con contraseña."
+              "description": "Contraseña de inicio de sesión (WebDAV/FTP/SMB; FTP con usuario vacío = anónimo). SFTP (nativo) acepta contraseñas; SFTP normal solo acepta clave."
             },
             "key": {
               "label": "Clave privada o ruta",
               "placeholder": "~/.ssh/id_ed25519",
-              "description": "OpenDAL SFTP: ruta de la clave en la máquina DBX. SFTP nativo también acepta PEM si Contraseña está vacío. No admite claves cifradas. Se guarda con los secretos de conexión."
+              "description": "Ruta de la clave privada en la máquina DBX (p. ej. ~/.ssh/id_ed25519). SFTP nativo también acepta contenido PEM si la contraseña está vacía. No admite claves cifradas."
             },
             "known_hosts_strategy": {
               "label": "Estrategia de known hosts",
-              "description": "Strict exige claves conocidas. Tolerate acepta hosts nuevos y rechaza claves conocidas modificadas; SFTP nativo no recuerda claves nuevas. Trust omite la verificación (en el protocolo SFTP de OpenDAL se degrada a Tolerate).",
+              "description": "Strict verifica las claves conocidas; Tolerate acepta hosts nuevos pero rechaza claves modificadas; Trust omite la verificación (inseguro).",
               "options": {
                 "Tolerate": "Tolerante (recordar hosts nuevos)",
                 "Strict": "Estricto (verificar known hosts)",
                 "Trust": "Confiar (cualquier clave, inseguro)"
               }
             },
-            "proxy_type": {
-              "label": "Proxy de conexión",
-              "description": "Con el motor rclone, un proxy HTTP o SOCKS5 se aplica a la conexión FTP/SFTP (mediante opciones del backend de rclone). Desactivado, o un protocolo sin soporte de proxy, se conecta directamente.",
-              "options": {
-                "off": "Desactivado (conexión directa)",
-                "http": "Proxy HTTP",
-                "socks5": "Proxy SOCKS5"
-              }
-            },
-            "proxy_host": {
-              "label": "Host del proxy",
-              "placeholder": "proxy.example.com",
-              "description": "Nombre de host o dirección del servidor proxy."
-            },
-            "proxy_port": {
-              "label": "Puerto del proxy",
-              "placeholder": "8080",
-              "description": "Puerto del proxy, un entero entre 1 y 65535."
-            },
-            "proxy_username": {
-              "label": "Usuario del proxy",
-              "description": "Cuenta del proxy opcional; déjelo vacío si el proxy no requiere autenticación."
-            },
-            "proxy_password": {
-              "label": "Contraseña del proxy",
-              "description": "Contraseña del proxy opcional; déjela vacía para un proxy anónimo. Guardada en el binding secreto del host."
-            },
             "tunnel_jump_hosts": {
               "label": "Saltos del túnel SSH",
               "placeholder": "ops@j1.example.com:2222, j2.corp",
-              "description": "Cadena opcional de saltos SSH (sintaxis ssh -J: entradas [usuario@]host[:puerto] separadas por comas, con usuario@ y :puerto opcionales; el último salto es el destino de inicio de sesión y el tráfico se reenvía al endpoint de la conexión). Déjelo vacío para no crear un túnel. Solo es efectivo con el motor rclone (DBX_FILES_ENGINE=rclone); solo autenticación por clave (BatchMode): las contraseñas no pueden y nunca se usarán. El endpoint se reescribe a un puerto local reenviado en 127.0.0.1 (los certificados remotos se validan contra 127.0.0.1, lo que se ajusta a despliegues en intranet con CA privada)."
+              "description": "Cadena opcional de saltos SSH (sintaxis ssh -J): [usuario@]host[:puerto] separados por comas; el último salto es el destino de login. Solo autenticación por clave; solo motor rclone."
             },
             "tunnel_identity_file": {
               "label": "Clave privada del túnel SSH",
               "placeholder": "~/.ssh/id_ed25519",
               "description": "Ruta opcional de la clave privada para el túnel; déjela vacía para usar las claves predeterminadas de ssh y el agente."
             },
-            "access_token": { "label": "Token de acceso" },
-            "client_id": { "label": "ID de cliente OAuth" },
-            "client_secret": { "label": "Secreto de cliente OAuth" },
-            "refresh_token": { "label": "Token de actualización OAuth" },
-            "drive_type": { "label": "Tipo de unidad", "options": { "resource": "Unidad de recursos", "share": "Unidad compartida", "backup": "Unidad de respaldo" } },
-            "email": { "label": "Correo de la cuenta" },
-            "repo_name": { "label": "Nombre de biblioteca" },
+            "access_token": {
+              "label": "Token de acceso"
+            },
+            "client_id": {
+              "label": "ID de cliente OAuth"
+            },
+            "client_secret": {
+              "label": "Secreto de cliente OAuth"
+            },
+            "refresh_token": {
+              "label": "Token de actualización OAuth"
+            },
+            "drive_type": {
+              "label": "Tipo de unidad",
+              "options": {
+                "resource": "Unidad de recursos",
+                "share": "Unidad compartida",
+                "backup": "Unidad de respaldo"
+              }
+            },
+            "email": {
+              "label": "Correo de la cuenta"
+            },
+            "repo_name": {
+              "label": "Nombre de biblioteca"
+            },
             "read_only": {
               "label": "Solo lectura",
               "description": "Rechaza toda operación de escritura en esta conexión."
@@ -1852,23 +2234,23 @@
             },
             "enable_virtual_host_style": {
               "label": "Estilo virtual-host",
-              "description": "Direcciona el bucket como nombre de host virtual (bucket.s3.region.amazonaws.com) en vez de URL estilo ruta; actívalo si el proveedor lo exige."
+              "description": "Direcciona el bucket como nombre de host virtual (bucket.host) en vez de URL estilo ruta; actívalo si el proveedor lo exige."
             }
           }
         },
         "io.dbx.files.workbench": {
           "label": "Mesa de trabajo de archivos",
-          "description": "Explore, transfiera y sincronice archivos entre backends de OpenDAL."
+          "description": "Explora, transfiere y sincroniza archivos entre servicios de almacenamiento conectados."
         }
       }
     },
     "it": {
       "name": "Files Studio",
-      "description": "Area di lavoro unificata per i file: cartelle locali, archiviazione compatibile S3, WebDAV, FTP, SFTP, SMB/CIFS e altri servizi OpenDAL.",
+      "description": "Area di lavoro unificata per i file: cartelle locali, archiviazione compatibile S3, WebDAV, FTP, SFTP, SMB/CIFS e altri backend di archiviazione rclone.",
       "contributions": {
         "io.dbx.files.connection": {
           "label": "Archiviazione",
-          "description": "Connessione di archiviazione tramite Apache OpenDAL: filesystem locale, S3/MinIO, OSS di Alibaba, WebDAV, FTP, SFTP, SMB/CIFS o qualsiasi servizio OpenDAL compilato.",
+          "description": "Connessione di archiviazione basata su rclone: filesystem locale, S3/MinIO, OSS di Alibaba, COS Tencent, Azure Blob, Google Cloud Storage, OBS di Huawei, WebDAV, FTP, SFTP, SMB/CIFS o qualsiasi altro backend rclone.",
           "fields": {
             "display_name": {
               "label": "Nome connessione"
@@ -1885,7 +2267,6 @@
                 "ftp": "FTP",
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
-                "opendal-custom": "Servizio OpenDAL personalizzato",
                 "sftp-native": "SFTP (nativo)",
                 "oss": "OSS di Alibaba",
                 "cos": "COS Tencent",
@@ -1896,7 +2277,59 @@
                 "onedrive": "OneDrive",
                 "pcloud": "pCloud",
                 "seafile": "Seafile",
-                "yandex-disk": "Yandex Disk"
+                "yandex-disk": "Yandex Disk",
+                "alias": "Alias",
+                "archive": "Archive",
+                "azurefiles": "Azure Files",
+                "b2": "Backblaze B2",
+                "box": "Box",
+                "chunker": "Chunker",
+                "cloudinary": "Cloudinary",
+                "combine": "Combine",
+                "compress": "Compress",
+                "crypt": "Crypt",
+                "doi": "DOI",
+                "drime": "Drime",
+                "fichier": "1Fichier",
+                "filefabric": "Enterprise File Fabric",
+                "filelu": "FileLu",
+                "filen": "Filen",
+                "filescom": "Files.com",
+                "gofile": "Gofile",
+                "gphotos": "Google Photos",
+                "hasher": "Hasher",
+                "hdfs": "HDFS",
+                "hidrive": "HiDrive",
+                "http": "HTTP",
+                "huaweidrive": "Huawei Drive",
+                "iclouddrive": "iCloud Drive",
+                "imagekit": "ImageKit",
+                "internetarchive": "Internet Archive",
+                "internxt": "Internxt",
+                "jottacloud": "Jottacloud",
+                "linkbox": "Linkbox",
+                "mailru": "Mail.ru Cloud",
+                "mega": "Mega",
+                "netstorage": "Akamai NetStorage",
+                "oos": "Oracle Object Storage",
+                "opendrive": "OpenDrive",
+                "pikpak": "PikPak",
+                "pixeldrain": "Pixeldrain",
+                "premiumizeme": "premiumize.me",
+                "protondrive": "Proton Drive",
+                "putio": "Put.io",
+                "qingstor": "QingStor",
+                "quatrix": "Maytech Quatrix",
+                "shade": "Shade",
+                "sharefile": "Citrix ShareFile",
+                "sia": "Sia",
+                "storj": "Storj",
+                "sugarsync": "SugarSync",
+                "swift": "OpenStack Swift",
+                "tardigrade": "Tardigrade",
+                "ulozto": "Uloz.to",
+                "union": "Union",
+                "zoho": "Zoho WorkDrive"
               }
             },
             "root": {
@@ -1908,20 +2341,15 @@
               "label": "Blocca nella radice",
               "description": "Rifiuta qualsiasi percorso fuori dalla radice configurata."
             },
-            "service": {
-              "label": "Nome servizio OpenDAL",
-              "placeholder": "gcs / azblob / oss / memory",
-              "description": "Qualsiasi servizio OpenDAL compilato, es. gcs, azblob, oss, memory."
-            },
             "config": {
-              "label": "Configurazione servizio (JSON)",
-              "placeholder": "{ \"root\": \"/tmp\", \"bucket\": \"demo\" }",
-              "description": "Oggetto JSON passato verbatim come chiavi/valori del Builder OpenDAL, es. {\"root\":\"/tmp\",\"bucket\":\"demo\"}."
+              "label": "Parametri (JSON)",
+              "placeholder": "{ \"endpoint\": \"https://host\", \"user\": \"me\" }",
+              "description": "Parametri del protocollo scelto come oggetto JSON; vedi la documentazione di rclone per le chiavi di ogni backend."
             },
             "container": {
               "label": "Contenitore",
-              "placeholder": "my-container (vuoto per elencare tutti i contenitori)",
-              "description": "Nome del contenitore Azure Blob. Facoltativo: se vuoto, la radice della connessione elenca tutti i contenitori tra cui passare."
+              "placeholder": "my-container",
+              "description": "Contenitore Azure Blob; vuoto per elencare tutti i contenitori nella radice della connessione."
             },
             "account_name": {
               "label": "Nome account",
@@ -1940,22 +2368,22 @@
             "scope": {
               "label": "Ambito OAuth",
               "placeholder": "https://www.googleapis.com/auth/devstorage.read_write",
-              "description": "Ambito OAuth Google opzionale; lascia vuoto per usare il valore predefinito di OpenDAL."
+              "description": "Ambito OAuth Google opzionale; lascia vuoto per il valore predefinito."
             },
             "bucket": {
               "label": "Bucket",
-              "placeholder": "my-bucket (vuoto per elencare tutti i bucket)",
-              "description": "Nome del bucket di object storage. Facoltativo: se vuoto, la radice della connessione elenca tutti i bucket tra cui passare."
+              "placeholder": "my-bucket",
+              "description": "Nome del bucket; vuoto per elencare tutti i bucket nella radice della connessione."
             },
             "endpoint": {
               "label": "Endpoint",
               "placeholder": "http://127.0.0.1:9000",
-              "description": "S3/OSS/WebDAV: https://host (TLS) o http://host. FTP: ftp://host:21 o ftps://host:21 (TLS esplicito; non supportato TLS implicito su 990). SFTP: ssh://user@host:22. SMB: host:445. Imposta la radice separatamente."
+              "description": "Indirizzo del servizio: https://host per object storage e WebDAV; ftp(s)://host[:21] per FTP; ssh://user@host[:22] per SFTP; host[:445] per SMB."
             },
             "share": {
               "label": "Condivisione",
               "placeholder": "media",
-              "description": "Nome facoltativo della condivisione SMB. Lascia vuoto per elencare le condivisioni del server; condivisione/sottopercorso usa il sottopercorso come radice."
+              "description": "Condivisione SMB facoltativa; vuoto per elencare le condivisioni del server. condivisione/sottopercorso usa il sottopercorso come radice."
             },
             "region": {
               "label": "Regione",
@@ -1993,70 +2421,62 @@
             "user": {
               "label": "Utente",
               "placeholder": "anonymous",
-              "description": "FTP: vuoto indica accesso anonimo. SFTP: inserisci l’utente SSH o user@ nell’endpoint. Questo campo ha priorità."
+              "description": "FTP: vuoto = anonimo. SFTP: utente SSH (user@ nell'endpoint va bene)."
             },
             "password": {
               "label": "Password",
-              "description": "Password: login basic o con password di WebDAV/FTP/SMB (utente vuoto = FTP anonimo); autenticazione con password di SFTP (nativo) con fallback keyboard-interactive. L'SFTP OpenDAL accetta solo chiavi: per account con password usa SFTP (nativo)."
+              "description": "Password di accesso (WebDAV/FTP/SMB; FTP con utente vuoto = anonimo). SFTP (nativo) accetta password; SFTP normale solo chiavi."
             },
             "key": {
               "label": "Chiave privata o percorso",
               "placeholder": "~/.ssh/id_ed25519",
-              "description": "OpenDAL SFTP: percorso della chiave sulla macchina DBX. SFTP nativo accetta anche PEM se Password è vuota. Chiavi cifrate non supportate. Salvato tra i segreti della connessione."
+              "description": "Percorso della chiave privata sulla macchina DBX (es. ~/.ssh/id_ed25519). SFTP nativo accetta anche contenuto PEM se la password è vuota. Chiavi cifrate non supportate."
             },
             "known_hosts_strategy": {
               "label": "Strategia known hosts",
-              "description": "Strict richiede chiavi note. Tolerate accetta host nuovi e rifiuta chiavi note modificate; SFTP nativo non memorizza chiavi nuove. Trust salta la verifica (con il protocollo SFTP di OpenDAL viene degradata a Tolerate).",
+              "description": "Strict verifica le chiavi note; Tolerate accetta nuovi host ma rifiuta chiavi modificate; Trust salta la verifica (non sicuro).",
               "options": {
                 "Tolerate": "Tollerante (ricorda i nuovi host)",
                 "Strict": "Rigoroso (verifica i known hosts)",
                 "Trust": "Fiducia (qualsiasi chiave, non sicuro)"
               }
             },
-            "proxy_type": {
-              "label": "Proxy di connessione",
-              "description": "Con il motore rclone, un proxy HTTP o SOCKS5 si applica alla connessione FTP/SFTP (tramite opzioni del backend rclone). Disattivo, o un protocollo senza supporto proxy, si connette direttamente.",
-              "options": {
-                "off": "Disattivo (connessione diretta)",
-                "http": "Proxy HTTP",
-                "socks5": "Proxy SOCKS5"
-              }
-            },
-            "proxy_host": {
-              "label": "Host del proxy",
-              "placeholder": "proxy.example.com",
-              "description": "Nome host o indirizzo del server proxy."
-            },
-            "proxy_port": {
-              "label": "Porta del proxy",
-              "placeholder": "8080",
-              "description": "Porta del proxy, un intero compreso tra 1 e 65535."
-            },
-            "proxy_username": {
-              "label": "Nome utente del proxy",
-              "description": "Account proxy facoltativo; lasciare vuoto se il proxy non richiede autenticazione."
-            },
-            "proxy_password": {
-              "label": "Password del proxy",
-              "description": "Password del proxy facoltativa; lasciare vuota per un proxy anonimo. Conservata nel binding segreto dell'host."
-            },
             "tunnel_jump_hosts": {
               "label": "Jump host del tunnel SSH",
               "placeholder": "ops@j1.example.com:2222, j2.corp",
-              "description": "Catena facoltativa di jump host SSH (sintassi ssh -J: voci [utente@]host[:porta] separate da virgole, con utente@ e :porta facoltativi; l'ultimo salto è la destinazione di accesso e il traffico viene inoltrato all'endpoint della connessione). Lasciare vuoto per non creare un tunnel. Effettivo solo con il motore rclone (DBX_FILES_ENGINE=rclone); solo autenticazione a chiave (BatchMode): le password non possono e non verranno mai usate. L'endpoint viene riscritto su una porta locale inoltrata su 127.0.0.1 (i certificati remoti vengono validati su 127.0.0.1, adatto a distribuzioni in intranet con CA privata)."
+              "description": "Catena facoltativa di jump host SSH (sintassi ssh -J): voci [utente@]host[:porta] separate da virgole; l'ultimo salto è la destinazione di accesso. Solo autenticazione a chiave; solo motore rclone."
             },
             "tunnel_identity_file": {
               "label": "Chiave privata del tunnel SSH",
               "placeholder": "~/.ssh/id_ed25519",
               "description": "Percorso facoltativo della chiave privata per il tunnel; lasciare vuoto per usare le chiavi predefinite di ssh e l'agente."
             },
-            "access_token": { "label": "Token di accesso" },
-            "client_id": { "label": "ID client OAuth" },
-            "client_secret": { "label": "Segreto client OAuth" },
-            "refresh_token": { "label": "Token di aggiornamento OAuth" },
-            "drive_type": { "label": "Tipo di drive", "options": { "resource": "Drive risorse", "share": "Drive condiviso", "backup": "Drive di backup" } },
-            "email": { "label": "Email account" },
-            "repo_name": { "label": "Nome libreria" },
+            "access_token": {
+              "label": "Token di accesso"
+            },
+            "client_id": {
+              "label": "ID client OAuth"
+            },
+            "client_secret": {
+              "label": "Segreto client OAuth"
+            },
+            "refresh_token": {
+              "label": "Token di aggiornamento OAuth"
+            },
+            "drive_type": {
+              "label": "Tipo di drive",
+              "options": {
+                "resource": "Drive risorse",
+                "share": "Drive condiviso",
+                "backup": "Drive di backup"
+              }
+            },
+            "email": {
+              "label": "Email account"
+            },
+            "repo_name": {
+              "label": "Nome libreria"
+            },
             "read_only": {
               "label": "Sola lettura",
               "description": "Rifiuta ogni operazione di scrittura su questa connessione."
@@ -2071,23 +2491,23 @@
             },
             "enable_virtual_host_style": {
               "label": "Stile virtual-host",
-              "description": "Indirizza il bucket come nome host virtuale (bucket.s3.region.amazonaws.com) invece che URL in stile percorso; attivalo se il provider lo richiede."
+              "description": "Indirizza il bucket come nome host virtuale (bucket.host) invece che URL in stile percorso; attivalo se il provider lo richiede."
             }
           }
         },
         "io.dbx.files.workbench": {
           "label": "Banco di lavoro file",
-          "description": "Sfoglia, trasferisci e sincronizza file tra i backend OpenDAL."
+          "description": "Sfoglia, trasferisci e sincronizza file tra i servizi di archiviazione connessi."
         }
       }
     },
     "ja": {
       "name": "Files Studio",
-      "description": "ローカルフォルダー、S3 互換ストレージ、WebDAV、FTP、SFTP、SMB/CIFS など各種 OpenDAL サービスを束ねた統合ファイルワークベンチ。",
+      "description": "ローカルフォルダー、S3 互換ストレージ、WebDAV、FTP、SFTP、SMB/CIFS など各種 rclone ストレージバックエンドを束ねた統合ファイルワークベンチ。",
       "contributions": {
         "io.dbx.files.connection": {
           "label": "ストレージ",
-          "description": "Apache OpenDAL 経由のストレージ接続：ローカルファイルシステム、S3/MinIO、Alibaba OSS、WebDAV、FTP、SFTP、SMB/CIFS、またはコンパイル済みの任意の OpenDAL サービス。",
+          "description": "rclone ベースのストレージ接続：ローカルファイルシステム、S3/MinIO、Alibaba OSS、Tencent COS、Azure Blob、Google Cloud Storage、Huawei OBS、WebDAV、FTP、SFTP、SMB/CIFS、またはその他の任意の rclone バックエンド。",
           "fields": {
             "display_name": {
               "label": "接続名"
@@ -2104,7 +2524,6 @@
                 "ftp": "FTP",
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
-                "opendal-custom": "OpenDAL カスタムサービス",
                 "sftp-native": "SFTP（ネイティブ）",
                 "oss": "Alibaba OSS",
                 "cos": "Tencent COS",
@@ -2115,7 +2534,59 @@
                 "onedrive": "OneDrive",
                 "pcloud": "pCloud",
                 "seafile": "Seafile",
-                "yandex-disk": "Yandex Disk"
+                "yandex-disk": "Yandex Disk",
+                "alias": "Alias",
+                "archive": "Archive",
+                "azurefiles": "Azure Files",
+                "b2": "Backblaze B2",
+                "box": "Box",
+                "chunker": "Chunker",
+                "cloudinary": "Cloudinary",
+                "combine": "Combine",
+                "compress": "Compress",
+                "crypt": "Crypt",
+                "doi": "DOI",
+                "drime": "Drime",
+                "fichier": "1Fichier",
+                "filefabric": "Enterprise File Fabric",
+                "filelu": "FileLu",
+                "filen": "Filen",
+                "filescom": "Files.com",
+                "gofile": "Gofile",
+                "gphotos": "Google Photos",
+                "hasher": "Hasher",
+                "hdfs": "HDFS",
+                "hidrive": "HiDrive",
+                "http": "HTTP",
+                "huaweidrive": "Huawei Drive",
+                "iclouddrive": "iCloud Drive",
+                "imagekit": "ImageKit",
+                "internetarchive": "Internet Archive",
+                "internxt": "Internxt",
+                "jottacloud": "Jottacloud",
+                "linkbox": "Linkbox",
+                "mailru": "Mail.ru Cloud",
+                "mega": "Mega",
+                "netstorage": "Akamai NetStorage",
+                "oos": "Oracle Object Storage",
+                "opendrive": "OpenDrive",
+                "pikpak": "PikPak",
+                "pixeldrain": "Pixeldrain",
+                "premiumizeme": "premiumize.me",
+                "protondrive": "Proton Drive",
+                "putio": "Put.io",
+                "qingstor": "QingStor",
+                "quatrix": "Maytech Quatrix",
+                "shade": "Shade",
+                "sharefile": "Citrix ShareFile",
+                "sia": "Sia",
+                "storj": "Storj",
+                "sugarsync": "SugarSync",
+                "swift": "OpenStack Swift",
+                "tardigrade": "Tardigrade",
+                "ulozto": "Uloz.to",
+                "union": "Union",
+                "zoho": "Zoho WorkDrive"
               }
             },
             "root": {
@@ -2127,20 +2598,15 @@
               "label": "ルート内に制限",
               "description": "設定されたルート外のパスを拒否します。"
             },
-            "service": {
-              "label": "OpenDAL サービス名",
-              "placeholder": "gcs / azblob / oss / memory",
-              "description": "コンパイル済みの任意の OpenDAL サービス（例: gcs、azblob、oss、memory）。"
-            },
             "config": {
-              "label": "サービス設定（JSON）",
-              "placeholder": "{ \"root\": \"/tmp\", \"bucket\": \"demo\" }",
-              "description": "OpenDAL Builder のキー/値としてそのまま渡す JSON オブジェクト（例: {\"root\":\"/tmp\",\"bucket\":\"demo\"}）。"
+              "label": "パラメーター（JSON）",
+              "placeholder": "{ \"endpoint\": \"https://host\", \"user\": \"me\" }",
+              "description": "選択したプロトコルの接続パラメーター（JSON オブジェクト）。キー名は rclone のドキュメントを参照。"
             },
             "container": {
               "label": "コンテナー",
-              "placeholder": "コンテナー（空欄で全コンテナーを一覧）",
-              "description": "Azure Blob コンテナー名。省略可：空欄の場合、接続ルートに全コンテナーを一覧表示し、切り替えて使用できます。"
+              "placeholder": "my-container",
+              "description": "Azure Blob コンテナー名。空欄で接続ルートに全コンテナーを一覧します。"
             },
             "account_name": {
               "label": "アカウント名",
@@ -2159,22 +2625,22 @@
             "scope": {
               "label": "OAuth スコープ",
               "placeholder": "https://www.googleapis.com/auth/devstorage.read_write",
-              "description": "任意の Google OAuth スコープ。空欄の場合は OpenDAL の既定値を使用します。"
+              "description": "任意の Google OAuth スコープ。空欄で既定値を使用します。"
             },
             "bucket": {
               "label": "バケット",
-              "placeholder": "バケット（空欄で全バケットを一覧）",
-              "description": "オブジェクトストレージのバケット名。省略可：空欄の場合、接続ルートに全バケットを一覧表示し、切り替えて使用できます。"
+              "placeholder": "my-bucket",
+              "description": "バケット名。空欄で接続ルートに全バケットを一覧します。"
             },
             "endpoint": {
               "label": "エンドポイント",
               "placeholder": "http://127.0.0.1:9000",
-              "description": "S3/OSS/WebDAV: https://host（TLS）または http://host。FTP: ftp://host:21 または ftps://host:21（明示的 TLS。990 の暗黙的 TLS は非対応）。SFTP: ssh://user@host:22。SMB: host:445。ルートは別欄です。"
+              "description": "サービスのアドレス：オブジェクトストレージ/WebDAV は https://host、FTP は ftp(s)://host[:21]、SFTP は ssh://user@host[:22]、SMB は host[:445]。"
             },
             "share": {
               "label": "共有名",
               "placeholder": "media",
-              "description": "SMB 共有名は任意です。空欄ならサーバーの共有一覧を表示します。共有名/サブパス形式では共有に接続し、サブパスをルートとして扱います。"
+              "description": "SMB 共有名（任意）。空欄でサーバーの共有一覧を表示します。共有名/サブパス形式ではサブパスをルートにします。"
             },
             "region": {
               "label": "リージョン",
@@ -2212,70 +2678,62 @@
             "user": {
               "label": "ユーザー",
               "placeholder": "anonymous",
-              "description": "FTP は空欄で匿名ログインです。SFTP は SSH ユーザーを入力するか、接続先に user@ を含めてください。この欄を優先します。"
+              "description": "FTP は空欄で匿名。SFTP は SSH ログインユーザー（user@ を含む endpoint も可）。"
             },
             "password": {
               "label": "パスワード",
-              "description": "ログインパスワード：WebDAV/FTP/SMB の basic・パスワード認証（FTP はユーザー空欄で匿名）；SFTP（ネイティブ）のパスワード認証（失敗時 keyboard-interactive に自動フォールバック）。OpenDAL SFTP は鍵認証専用 — パスワードアカウントは SFTP（ネイティブ）を使用してください。"
+              "description": "ログインパスワード（WebDAV/FTP/SMB。FTP はユーザー空欄で匿名）。SFTP（ネイティブ）はパスワード対応、SFTP は鍵認証専用です。"
             },
             "key": {
               "label": "秘密鍵またはパス",
               "placeholder": "~/.ssh/id_ed25519",
-              "description": "OpenDAL SFTP は DBX マシン上の秘密鍵パスを指定します。ネイティブ SFTP は PEM も可能で、パスワードが空の場合に使います。暗号化秘密鍵は非対応です。接続のシークレットに保存します。"
+              "description": "DBX マシン上の秘密鍵パス（例: ~/.ssh/id_ed25519）。ネイティブ SFTP はパスワード未入力時に PEM も可。暗号化鍵は非対応です。"
             },
             "known_hosts_strategy": {
               "label": "Known Hosts 戦略",
-              "description": "Strict は既知の鍵のみ許可します。Tolerate は未知のホストを許可し、既知の鍵の変更を拒否します。ネイティブ SFTP は新しい鍵を記録しません。Trust は検証を省略します（OpenDAL SFTP プロトコルでは Tolerate に低下します）。",
+              "description": "Strict は既知のホスト鍵を検証、Tolerate は新規ホストを許可し鍵の変更を拒否、Trust は検証を省略（非安全）します。",
               "options": {
                 "Tolerate": "許容（新しいホストを記憶）",
                 "Strict": "厳格（known hosts を検証）",
                 "Trust": "信頼（任意の鍵・非安全）"
               }
             },
-            "proxy_type": {
-              "label": "接続プロキシ",
-              "description": "rclone エンジンでは、HTTP または SOCKS5 プロキシが FTP/SFTP 接続に適用されます（rclone バックエンドオプション経由）。オフ、またはプロキシ非対応のプロトコルは直接接続します。",
-              "options": {
-                "off": "オフ（直接接続）",
-                "http": "HTTP プロキシ",
-                "socks5": "SOCKS5 プロキシ"
-              }
-            },
-            "proxy_host": {
-              "label": "プロキシホスト",
-              "placeholder": "proxy.example.com",
-              "description": "プロキシサーバーのホスト名またはアドレス。"
-            },
-            "proxy_port": {
-              "label": "プロキシポート",
-              "placeholder": "8080",
-              "description": "プロキシのポート番号。1〜65535 の整数。"
-            },
-            "proxy_username": {
-              "label": "プロキシユーザー名",
-              "description": "プロキシのアカウント（任意）。認証不要のプロキシでは空欄にします。"
-            },
-            "proxy_password": {
-              "label": "プロキシパスワード",
-              "description": "プロキシのパスワード（任意）。匿名プロキシは空欄にします。ホストの secret binding に保存されます。"
-            },
             "tunnel_jump_hosts": {
               "label": "SSH トンネルジャンプホスト",
               "placeholder": "ops@j1.example.com:2222, j2.corp",
-              "description": "SSH ジャンプホスト連鎖（任意）。ssh -J 構文で [user@]host[:port] をカンマ区切りで指定します（user@ と :port は省略可。最後のホップがログイン先となり、接続 endpoint へトラフィックを転送）。空欄でトンネルなし。rclone エンジン（DBX_FILES_ENGINE=rclone）でのみ有効。鍵認証のみ（BatchMode）。パスワードは使用できず、決して使用されません。endpoint はローカルの 127.0.0.1 転送ポートへ書き換えられます（リモート証明書は 127.0.0.1 に対して検証されるため、プライベート CA のイントラネット構成に適します）。"
+              "description": "SSH ジャンプホスト連鎖（任意）：ssh -J 構文で [user@]host[:port] をカンマ区切り。最後のホップがログイン先。鍵認証のみ／rclone エンジン限定。"
             },
             "tunnel_identity_file": {
               "label": "SSH トンネル秘密鍵",
               "placeholder": "~/.ssh/id_ed25519",
               "description": "トンネルで使う秘密鍵のパス（任意）。空欄で ssh の既定の鍵とエージェントを使用します。"
             },
-            "access_token": { "label": "アクセストークン" },
-            "client_id": { "label": "OAuth クライアント ID" },
-            "client_secret": { "label": "OAuth クライアントシークレット" },
-            "refresh_token": { "label": "OAuth リフレッシュトークン" },
-            "drive_type": { "label": "ドライブ種別", "options": { "resource": "リソースドライブ", "share": "共有ドライブ", "backup": "バックアップドライブ" } },
-            "email": { "label": "アカウントメール" },
-            "repo_name": { "label": "ライブラリ名" },
+            "access_token": {
+              "label": "アクセストークン"
+            },
+            "client_id": {
+              "label": "OAuth クライアント ID"
+            },
+            "client_secret": {
+              "label": "OAuth クライアントシークレット"
+            },
+            "refresh_token": {
+              "label": "OAuth リフレッシュトークン"
+            },
+            "drive_type": {
+              "label": "ドライブ種別",
+              "options": {
+                "resource": "リソースドライブ",
+                "share": "共有ドライブ",
+                "backup": "バックアップドライブ"
+              }
+            },
+            "email": {
+              "label": "アカウントメール"
+            },
+            "repo_name": {
+              "label": "ライブラリ名"
+            },
             "read_only": {
               "label": "読み取り専用",
               "description": "この接続でのすべての書き込み操作を拒否します。"
@@ -2290,23 +2748,23 @@
             },
             "enable_virtual_host_style": {
               "label": "バーチャルホスト形式",
-              "description": "パス形式の URL ではなく仮想ホスト名（bucket.s3.region.amazonaws.com）でバケットを指定します。プロバイダーが要求する場合に有効化。"
+              "description": "パス形式ではなく仮想ホスト名（bucket.host）でバケットを指定します。プロバイダーが要求する場合に有効化します。"
             }
           }
         },
         "io.dbx.files.workbench": {
           "label": "ファイルワークベンチ",
-          "description": "OpenDAL ストレージバックエンド間でファイルを閲覧・転送・同期します。"
+          "description": "接続したストレージサービス間でファイルを閲覧・転送・同期します。"
         }
       }
     },
     "pt-BR": {
       "name": "Files Studio",
-      "description": "Espaço de trabalho unificado de arquivos para pastas locais, armazenamento compatível com S3, WebDAV, FTP, SFTP, SMB/CIFS e outros serviços OpenDAL.",
+      "description": "Espaço de trabalho unificado de arquivos para pastas locais, armazenamento compatível com S3, WebDAV, FTP, SFTP, SMB/CIFS e outros backends de armazenamento do rclone.",
       "contributions": {
         "io.dbx.files.connection": {
           "label": "Armazenamento",
-          "description": "Conexão de armazenamento via Apache OpenDAL: sistema de arquivos local, S3/MinIO, OSS da Alibaba, WebDAV, FTP, SFTP, SMB/CIFS ou qualquer serviço OpenDAL compilado.",
+          "description": "Conexão de armazenamento baseada no rclone: sistema de arquivos local, S3/MinIO, OSS da Alibaba, COS da Tencent, Azure Blob, Google Cloud Storage, OBS da Huawei, WebDAV, FTP, SFTP, SMB/CIFS ou qualquer outro backend do rclone.",
           "fields": {
             "display_name": {
               "label": "Nome da conexão"
@@ -2323,7 +2781,6 @@
                 "ftp": "FTP",
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
-                "opendal-custom": "Serviço personalizado do OpenDAL",
                 "sftp-native": "SFTP (nativo)",
                 "oss": "OSS da Alibaba",
                 "cos": "COS da Tencent",
@@ -2334,7 +2791,59 @@
                 "onedrive": "OneDrive",
                 "pcloud": "pCloud",
                 "seafile": "Seafile",
-                "yandex-disk": "Yandex Disk"
+                "yandex-disk": "Yandex Disk",
+                "alias": "Alias",
+                "archive": "Archive",
+                "azurefiles": "Azure Files",
+                "b2": "Backblaze B2",
+                "box": "Box",
+                "chunker": "Chunker",
+                "cloudinary": "Cloudinary",
+                "combine": "Combine",
+                "compress": "Compress",
+                "crypt": "Crypt",
+                "doi": "DOI",
+                "drime": "Drime",
+                "fichier": "1Fichier",
+                "filefabric": "Enterprise File Fabric",
+                "filelu": "FileLu",
+                "filen": "Filen",
+                "filescom": "Files.com",
+                "gofile": "Gofile",
+                "gphotos": "Google Photos",
+                "hasher": "Hasher",
+                "hdfs": "HDFS",
+                "hidrive": "HiDrive",
+                "http": "HTTP",
+                "huaweidrive": "Huawei Drive",
+                "iclouddrive": "iCloud Drive",
+                "imagekit": "ImageKit",
+                "internetarchive": "Internet Archive",
+                "internxt": "Internxt",
+                "jottacloud": "Jottacloud",
+                "linkbox": "Linkbox",
+                "mailru": "Mail.ru Cloud",
+                "mega": "Mega",
+                "netstorage": "Akamai NetStorage",
+                "oos": "Oracle Object Storage",
+                "opendrive": "OpenDrive",
+                "pikpak": "PikPak",
+                "pixeldrain": "Pixeldrain",
+                "premiumizeme": "premiumize.me",
+                "protondrive": "Proton Drive",
+                "putio": "Put.io",
+                "qingstor": "QingStor",
+                "quatrix": "Maytech Quatrix",
+                "shade": "Shade",
+                "sharefile": "Citrix ShareFile",
+                "sia": "Sia",
+                "storj": "Storj",
+                "sugarsync": "SugarSync",
+                "swift": "OpenStack Swift",
+                "tardigrade": "Tardigrade",
+                "ulozto": "Uloz.to",
+                "union": "Union",
+                "zoho": "Zoho WorkDrive"
               }
             },
             "root": {
@@ -2346,20 +2855,15 @@
               "label": "Restringir à raiz",
               "description": "Rejeita qualquer caminho fora da raiz configurada."
             },
-            "service": {
-              "label": "Nome do serviço OpenDAL",
-              "placeholder": "gcs / azblob / oss / memory",
-              "description": "Qualquer serviço OpenDAL compilado, ex.: gcs, azblob, oss, memory."
-            },
             "config": {
-              "label": "Configuração do serviço (JSON)",
-              "placeholder": "{ \"root\": \"/tmp\", \"bucket\": \"demo\" }",
-              "description": "Objeto JSON passado verbatim como chaves/valores do Builder do OpenDAL, ex.: {\"root\":\"/tmp\",\"bucket\":\"demo\"}."
+              "label": "Parâmetros (JSON)",
+              "placeholder": "{ \"endpoint\": \"https://host\", \"user\": \"me\" }",
+              "description": "Parâmetros do protocolo escolhido como objeto JSON; veja a documentação do rclone para as chaves de cada backend."
             },
             "container": {
               "label": "Contêiner",
-              "placeholder": "my-container (vazio para listar todos os contêineres)",
-              "description": "Nome do contêiner do Azure Blob. Opcional: deixe vazio para listar todos os contêineres na raiz da conexão e alternar entre eles."
+              "placeholder": "my-container",
+              "description": "Contêiner do Azure Blob; deixe vazio para listar todos os contêineres na raiz da conexão."
             },
             "account_name": {
               "label": "Nome da conta",
@@ -2378,22 +2882,22 @@
             "scope": {
               "label": "Escopo OAuth",
               "placeholder": "https://www.googleapis.com/auth/devstorage.read_write",
-              "description": "Escopo OAuth do Google opcional; deixe vazio para usar o padrão do OpenDAL."
+              "description": "Escopo OAuth do Google opcional; deixe vazio para usar o padrão."
             },
             "bucket": {
               "label": "Bucket",
-              "placeholder": "my-bucket (vazio para listar todos os buckets)",
-              "description": "Nome do bucket de armazenamento de objetos. Opcional: deixe vazio para listar todos os buckets na raiz da conexão e alternar entre eles."
+              "placeholder": "my-bucket",
+              "description": "Nome do bucket; deixe vazio para listar todos os buckets na raiz da conexão."
             },
             "endpoint": {
               "label": "Endpoint",
               "placeholder": "http://127.0.0.1:9000",
-              "description": "S3/OSS/WebDAV: https://host (TLS) ou http://host. FTP: ftp://host:21 ou ftps://host:21 (TLS explícito; sem TLS implícito em 990). SFTP: ssh://user@host:22. SMB: host:445. Informe a raiz separadamente."
+              "description": "Endereço do serviço: https://host para armazenamento de objetos e WebDAV; ftp(s)://host[:21] para FTP; ssh://user@host[:22] para SFTP; host[:445] para SMB."
             },
             "share": {
               "label": "Compartilhamento",
               "placeholder": "media",
-              "description": "Nome opcional do compartilhamento SMB. Deixe vazio para listar os compartilhamentos do servidor; compartilhamento/subcaminho usa o subcaminho como raiz."
+              "description": "Compartilhamento SMB opcional; deixe vazio para listar os compartilhamentos do servidor. compartilhamento/subcaminho usa o subcaminho como raiz."
             },
             "region": {
               "label": "Região",
@@ -2431,70 +2935,62 @@
             "user": {
               "label": "Usuário",
               "placeholder": "anonymous",
-              "description": "FTP: vazio usa acesso anônimo. SFTP: informe o usuário SSH ou user@ no endpoint. Este campo tem prioridade."
+              "description": "FTP: vazio = anônimo. SFTP: usuário SSH (user@ no endpoint também vale)."
             },
             "password": {
               "label": "Senha",
-              "description": "Senha de login: basic ou senha de WebDAV/FTP/SMB (usuário vazio = FTP anônimo); autenticação por senha do SFTP (nativo) com fallback keyboard-interactive. O SFTP do OpenDAL é somente por chave — use SFTP (nativo) para contas com senha."
+              "description": "Senha de login (WebDAV/FTP/SMB; FTP com usuário vazio = anônimo). SFTP (nativo) aceita senha; SFTP normal aceita apenas chave."
             },
             "key": {
               "label": "Chave privada ou caminho",
               "placeholder": "~/.ssh/id_ed25519",
-              "description": "OpenDAL SFTP: caminho da chave na máquina DBX. SFTP nativo aceita PEM com Senha vazia. Chaves criptografadas não são suportadas. Salvo com os segredos da conexão."
+              "description": "Caminho da chave privada na máquina DBX (ex.: ~/.ssh/id_ed25519). SFTP nativo também aceita conteúdo PEM com senha vazia. Chaves criptografadas não são suportadas."
             },
             "known_hosts_strategy": {
               "label": "Estratégia de known hosts",
-              "description": "Strict exige chaves conhecidas. Tolerate aceita hosts novos e rejeita alterações em chaves conhecidas; SFTP nativo não memoriza chaves novas. Trust ignora a verificação (no protocolo SFTP do OpenDAL é rebaixada para Tolerate).",
+              "description": "Strict verifica chaves conhecidas; Tolerate aceita novos hosts mas rejeita chaves alteradas; Trust ignora a verificação (inseguro).",
               "options": {
                 "Tolerate": "Tolerar (lembrar novos hosts)",
                 "Strict": "Estrito (verificar known hosts)",
                 "Trust": "Confiar (qualquer chave, inseguro)"
               }
             },
-            "proxy_type": {
-              "label": "Proxy da conexão",
-              "description": "No motor rclone, um proxy HTTP ou SOCKS5 se aplica à conexão FTP/SFTP (por meio das opções do backend do rclone). Desativado, ou um protocolo sem suporte a proxy, conecta diretamente.",
-              "options": {
-                "off": "Desativado (conexão direta)",
-                "http": "Proxy HTTP",
-                "socks5": "Proxy SOCKS5"
-              }
-            },
-            "proxy_host": {
-              "label": "Host do proxy",
-              "placeholder": "proxy.example.com",
-              "description": "Nome de host ou endereço do servidor proxy."
-            },
-            "proxy_port": {
-              "label": "Porta do proxy",
-              "placeholder": "8080",
-              "description": "Porta do proxy, um inteiro entre 1 e 65535."
-            },
-            "proxy_username": {
-              "label": "Usuário do proxy",
-              "description": "Conta do proxy opcional; deixe vazio se o proxy não exige autenticação."
-            },
-            "proxy_password": {
-              "label": "Senha do proxy",
-              "description": "Senha do proxy opcional; deixe vazia para um proxy anônimo. Mantida no binding secreto do host."
-            },
             "tunnel_jump_hosts": {
               "label": "Saltos do túnel SSH",
               "placeholder": "ops@j1.example.com:2222, j2.corp",
-              "description": "Cadeia opcional de jump hosts SSH (sintaxe ssh -J: entradas [usuário@]host[:porta] separadas por vírgulas, com usuário@ e :porta opcionais; o último salto é o destino de login e o tráfego é encaminhado ao endpoint da conexão). Deixe vazio para não criar túnel. Tem efeito apenas no motor rclone (DBX_FILES_ENGINE=rclone); apenas autenticação por chave (BatchMode): senhas não podem e nunca serão usadas. O endpoint é reescrito para uma porta local encaminhada em 127.0.0.1 (certificados remotos são validados contra 127.0.0.1, adequado a implantações em intranet com CA privada)."
+              "description": "Cadeia opcional de jump hosts SSH (sintaxe ssh -J): [usuário@]host[:porta] separados por vírgulas; o último salto é o destino de login. Apenas autenticação por chave; apenas motor rclone."
             },
             "tunnel_identity_file": {
               "label": "Chave privada do túnel SSH",
               "placeholder": "~/.ssh/id_ed25519",
               "description": "Caminho opcional da chave privada para o túnel; deixe vazio para usar as chaves padrão do ssh e o agente."
             },
-            "access_token": { "label": "Token de acesso" },
-            "client_id": { "label": "ID do cliente OAuth" },
-            "client_secret": { "label": "Segredo do cliente OAuth" },
-            "refresh_token": { "label": "Token de atualização OAuth" },
-            "drive_type": { "label": "Tipo de unidade", "options": { "resource": "Unidade de recursos", "share": "Unidade compartilhada", "backup": "Unidade de backup" } },
-            "email": { "label": "E-mail da conta" },
-            "repo_name": { "label": "Nome da biblioteca" },
+            "access_token": {
+              "label": "Token de acesso"
+            },
+            "client_id": {
+              "label": "ID do cliente OAuth"
+            },
+            "client_secret": {
+              "label": "Segredo do cliente OAuth"
+            },
+            "refresh_token": {
+              "label": "Token de atualização OAuth"
+            },
+            "drive_type": {
+              "label": "Tipo de unidade",
+              "options": {
+                "resource": "Unidade de recursos",
+                "share": "Unidade compartilhada",
+                "backup": "Unidade de backup"
+              }
+            },
+            "email": {
+              "label": "E-mail da conta"
+            },
+            "repo_name": {
+              "label": "Nome da biblioteca"
+            },
             "read_only": {
               "label": "Somente leitura",
               "description": "Rejeita toda operação de gravação nesta conexão."
@@ -2509,13 +3005,13 @@
             },
             "enable_virtual_host_style": {
               "label": "Estilo virtual-host",
-              "description": "Endereça o bucket como nome de host virtual (bucket.s3.region.amazonaws.com) em vez de URL estilo caminho; ative se o provedor exigir."
+              "description": "Endereça o bucket como nome de host virtual (bucket.host) em vez de URL estilo caminho; ative se o provedor exigir."
             }
           }
         },
         "io.dbx.files.workbench": {
           "label": "Bancada de arquivos",
-          "description": "Navegue, transfira e sincronize arquivos entre backends OpenDAL."
+          "description": "Navegue, transfira e sincronize arquivos entre os serviços de armazenamento conectados."
         }
       }
     }

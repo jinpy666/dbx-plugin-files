@@ -229,8 +229,7 @@ fn numeric_arg_or(arguments: &Value, key: &str, default: u64) -> Result<u64, Str
 }
 
 /// Strips the whitespace + trailing-`/` spelling an LLM may echo back, keeping
-/// the rest of the path verbatim (a leading `/` is OpenDAL-normalized anyway).
-/// The root collapses to `/`.
+/// the rest of the path verbatim. The root collapses to `/`.
 fn normalize_slashes(raw: &str) -> String {
     let trimmed = raw.trim().trim_end_matches('/');
     if trimmed.is_empty() {
@@ -280,8 +279,8 @@ fn validate_path_shape(raw: &str, key: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Normalized file write/rename target: trailing slashes dropped (OpenDAL file
-/// ops reject the directory-marker spelling), the connection root rejected —
+/// Normalized file write/rename target: trailing slashes dropped (the
+/// directory-marker spelling is never a file), the connection root rejected —
 /// writing or renaming onto it is never meaningful.
 fn file_target_path(raw: &str, key: &str) -> Result<String, String> {
     let path = normalize_slashes(raw);
@@ -294,12 +293,12 @@ fn file_target_path(raw: &str, key: &str) -> Result<String, String> {
     Ok(path)
 }
 
-/// OpenDAL path spelling for a delete/purge target, decided by the preview
+/// Path spelling for a delete/purge target, decided by the preview
 /// stat's kind: directory markers keep exactly one trailing `/` (prefix-based
 /// backends resolve the marker only through that form), file paths never carry
 /// one — an LLM-echoed `a.txt/` must delete `a.txt` instead of silently
 /// no-op'ing against a missing marker. A missing path collapses to its bare
-/// spelling (OpenDAL delete is idempotent).
+/// spelling (delete is idempotent).
 fn canonical_delete_target(raw: &str, kind: Option<&str>) -> String {
     let trimmed = raw.trim().trim_end_matches('/');
     if trimmed.is_empty() {
