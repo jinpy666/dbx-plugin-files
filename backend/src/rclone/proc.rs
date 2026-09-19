@@ -558,36 +558,53 @@ mod tests {
         };
         let mut command = std::process::Command::new("true");
         env.apply_to(&mut command);
-        let envs: std::collections::HashMap<&std::ffi::OsStr, Option<&std::ffi::OsStr>> = command
-            .get_envs()
-            .map(|(key, value)| (key, value))
-            .collect();
-        // Set: uppercase canonical name + lowercase variant, both carrying
-        // the same value (Go reads either).
-        for name in ["HTTP_PROXY", "http_proxy"] {
-            assert_eq!(
-                envs.get(std::ffi::OsStr::new(name)).copied().flatten(),
-                Some(std::ffi::OsStr::new("http://user:secret@127.0.0.1:8080")),
-                "{name} must be set"
+        // Windows env names are case-insensitive: both `env()` spellings of
+        // one variable collapse into a single entry, so assert on an
+        // uppercased projection. Unix keeps both spellings as distinct keys.
+        let mut normalized: std::collections::HashMap<String, Option<String>> =
+            std::collections::HashMap::new();
+        for (key, value) in command.get_envs() {
+            normalized.insert(
+                key.to_string_lossy().to_ascii_uppercase(),
+                value.map(|value| value.to_string_lossy().into_owned()),
             );
         }
-        for name in ["NO_PROXY", "no_proxy"] {
-            assert_eq!(
-                envs.get(std::ffi::OsStr::new(name)).copied().flatten(),
-                Some(std::ffi::OsStr::new("127.0.0.1,localhost")),
-                "{name} must be set"
-            );
-        }
+        assert_eq!(
+            normalized.get("HTTP_PROXY").and_then(|value| value.as_deref()),
+            Some("http://user:secret@127.0.0.1:8080"),
+            "http_proxy must be set"
+        );
+        assert_eq!(
+            normalized.get("NO_PROXY").and_then(|value| value.as_deref()),
+            Some("127.0.0.1,localhost"),
+            "no_proxy must be set"
+        );
         // Remove: both spellings dropped so the child cannot inherit a
         // stale sidecar proxy. `get_envs` records an explicit removal as
         // `Some(None)` (key listed, value cleared) — flattening yields
         // `None` for both that shape and an absent key.
-        for name in ["HTTPS_PROXY", "https_proxy"] {
-            assert_eq!(
-                envs.get(std::ffi::OsStr::new(name)).copied().flatten(),
-                None,
-                "{name} must be removed"
-            );
+        assert_eq!(
+            normalized.get("HTTPS_PROXY").and_then(|value| value.as_deref()),
+            None,
+            "https_proxy must be removed"
+        );
+        #[cfg(unix)]
+        {
+            // Unix distinguishes the spellings: both must carry the value.
+            let envs: std::collections::HashMap<
+                &std::ffi::OsStr,
+                Option<&std::ffi::OsStr>,
+            > = command
+                .get_envs()
+                .map(|(key, value)| (key, value))
+                .collect();
+            for name in ["HTTP_PROXY", "http_proxy"] {
+                assert_eq!(
+                    envs.get(std::ffi::OsStr::new(name)).copied().flatten(),
+                    Some(std::ffi::OsStr::new("http://user:secret@127.0.0.1:8080")),
+                    "{name} must be set"
+                );
+            }
         }
     }
 
