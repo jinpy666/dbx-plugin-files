@@ -89,3 +89,16 @@ scripts/test.sh
 `scripts/connection-forms/verify.mjs` 校验，CI 在五个 target（linux-x64、linux-arm64、
 darwin-arm64、darwin-x64、windows-x64）上构建候选包。协议、后端能力和集成验证说明
 位于 `docs/`。
+
+### 本地 Docker 测试环境（可选）
+
+CI 用 `scripts/container_smoke.sh` 起即焚容器做全协议冒烟；本地手工验证可以用
+`scripts/docker_env.sh` 起一套持久测试服务端（MinIO / OpenSSH / Samba / mod_dav /
+pyftpdlib，凭据运行时随机生成、存在本地状态目录、不进仓库）：
+
+```bash
+scripts/docker_env.sh up                      # 初始化并启动（幂等，随 Docker 自动重启）
+python3 scripts/docker_env_connect_dbx.py     # 把 docker-* 六条存储连接注入本地 DBX（需先退出 DBX）
+scripts/docker_env.sh verify                  # 五协议真实健康检查
+scripts/docker_env.sh down [--purge]          # 停止容器；--purge 连凭据/数据一起删
+```
