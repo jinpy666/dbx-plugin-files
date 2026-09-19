@@ -1550,26 +1550,19 @@ fn inline_connection_schema_covers_every_mapped_key() {
         .collect();
     assert_eq!(extra.len(), 2, "undeclared schema keys: {extra:?}");
     assert!(properties.contains_key("id") && properties.contains_key("name"));
-    // The protocol description must enumerate every engine protocol so an
-    // LLM caller can never be offered a value the engine would reject.
-    // The retired `opendal-custom` alias stays parseable for stored
-    // connections but is deliberately absent from the caller-facing list.
+    // The protocol description is built from PROTOCOLS itself, so it can
+    // never offer a value the engine would reject; pin the equality and the
+    // `local` alias spelling.
     let description = properties["protocol"]["description"]
         .as_str()
         .expect("protocol description");
     for protocol in crate::model::PROTOCOLS {
-        if protocol == "opendal-custom" {
-            assert!(
-                !description.contains(protocol),
-                "retired alias 'opendal-custom' must not be offered to MCP callers"
-            );
-            continue;
-        }
         assert!(
             description.contains(protocol),
             "protocol '{protocol}' missing from the inline schema description"
         );
     }
+    assert!(description.contains("local (alias of fs)"), "{description}");
 }
 
 /// Manifest↔MCP leg of the contract triangle: every connection-provider
@@ -1621,6 +1614,10 @@ fn manifest_fields_are_fully_covered_by_inline_mapping() {
         ("allow_delete", "allowDelete"),
         ("lock_to_root", "lockToRoot"),
         ("timeout_secs", "timeoutSecs"),
+        // `service` is a legacy-only mapped key: the retired pass-through
+        // aliases still parse it for stored connections, but the form no
+        // longer carries a `service` field (generic backends are first-class
+        // protocols now) — allowed past the manifest-coverage direction.
         ("service", "service"),
         ("config", "config"),
         ("client_id", "clientId"),
@@ -1661,6 +1658,9 @@ fn manifest_fields_are_fully_covered_by_inline_mapping() {
         covered.push(key);
     }
     for (source, _) in config_map.iter().chain(secret_map) {
+        if *source == "service" {
+            continue; // legacy-only mapped key (see note above)
+        }
         assert!(
             covered.contains(source),
             "inline mapping key '{source}' has no manifest field behind it"

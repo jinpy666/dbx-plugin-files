@@ -85,9 +85,10 @@ pub(crate) fn stored_connection_from_inline(connection: &Value) -> Result<Stored
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
-            "Missing protocol in connection (one of: local, fs, s3, gcs, azblob, obs, oss, cos, webdav, ftp, \
-             sftp, smb, sftp-native, rclone-custom, aliyun-drive, dropbox, gdrive, koofr, onedrive, pcloud, seafile, yandex-disk)"
-                .to_string()
+            format!(
+                "Missing protocol in connection (one of: local (alias of fs), {})",
+                crate::model::PROTOCOLS.join(", ")
+            )
         })?;
     let protocol = match protocol {
         "local" | "localFs" | "localfs" | "localFS" => "fs",
@@ -180,9 +181,15 @@ pub(crate) fn stored_connection_from_inline(connection: &Value) -> Result<Stored
 /// [`stored_connection_from_inline`] 的 camelCase 键一一同名：漏声明的键
 /// 会被严格校验的 MCP 宿主丢弃）。
 pub(crate) fn inline_connection_properties() -> Value {
+    // Built from PROTOCOLS so the caller-facing list can never drift from
+    // what the engine accepts (the MCP tests pin this equality).
+    let protocols = format!(
+        "Storage protocol (required): local (alias of fs), {}",
+        crate::model::PROTOCOLS.join(", ")
+    );
     json!({
     "protocol": { "type": "string",
-        "description": "Storage protocol (required): local (alias of fs), fs, s3, gcs, azblob, obs, oss, cos, webdav, ftp, sftp, smb, sftp-native, rclone-custom, aliyun-drive, dropbox, gdrive, koofr, onedrive, pcloud, seafile, yandex-disk" },
+        "description": protocols },
     "root": { "type": "string", "description": "Root path; operations are confined under it" },
     "bucket": { "type": "string", "description": "Bucket (s3/gcs/obs/oss/cos); optional on s3/oss/obs/cos — leave empty to list all buckets at the connection root" },
     "container": { "type": "string", "description": "Azure Blob container (azblob)" },

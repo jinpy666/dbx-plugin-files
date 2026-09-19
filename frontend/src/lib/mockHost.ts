@@ -14,6 +14,8 @@
 // __local__ 连接（双栏左栏本地面）：list/listPaged/stat/quickPaths/read 路由到
 // 独立本地树（$HOME 家族 quickPaths）；读写按连接落各自内存树。
 
+import { GENERIC_PROTOCOL_IDS } from "./rcloneServices";
+
 type MockEntry = { kind: "file" | "dir"; size: number; modifiedAt: string };
 
 const CHUNK = 256 * 1024;
@@ -189,11 +191,11 @@ export function installMockHost() {
     const config = connection.external_config as Record<string, unknown> | undefined;
     const protocol = typeof config?.protocol === "string" ? config.protocol.trim() : "";
     if (!protocol) throw new Error("Missing protocol in external_config");
-    const protocols = ["fs", "s3", "gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native", "rclone-custom", "opendal-custom", "aliyun-drive", "dropbox", "gdrive", "koofr", "onedrive", "pcloud", "seafile", "yandex-disk"];
+    const protocols = ["fs", "s3", "gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native", "aliyun-drive", "dropbox", "gdrive", "koofr", "onedrive", "pcloud", "seafile", "yandex-disk", "rclone-custom", "opendal-custom", ...GENERIC_PROTOCOL_IDS];
     if (!protocols.includes(protocol)) throw new Error(`Unsupported protocol '${protocol}'; expected one of ${protocols.join(", ")}`);
-    if (protocol === "rclone-custom" || protocol === "opendal-custom") {
-      // 对齐 sidecar 透传语义：service 即 rclone backend type（lowercase-alnum），
-      // config JSON 必须是对象；任意后端类型都收（mock 按通用远端夹具服务）。
+    if (GENERIC_PROTOCOL_IDS.has(protocol) || protocol === "rclone-custom" || protocol === "opendal-custom") {
+      // 对齐 sidecar 透传语义：通用协议的协议值即 rclone backend type，
+      // 旧别名额外携带 service 字段；config JSON 必须是对象。
       let custom = config?.config ?? {};
       if (typeof custom === "string") {
         try { custom = JSON.parse(custom); } catch { throw new Error("Invalid service config JSON"); }
@@ -201,8 +203,10 @@ export function installMockHost() {
       }
       if (!custom || typeof custom !== "object" || Array.isArray(custom)) throw new Error("Service config must be a JSON object");
       const service = typeof config?.service === "string" ? config.service.trim() : "";
-      if (!service) throw new Error("custom backend requires 'service'");
-      if (!/^[a-z0-9]+$/.test(service)) throw new Error(`Invalid custom backend type '${service}' (lowercase letters and digits only)`);
+      if (!GENERIC_PROTOCOL_IDS.has(protocol)) {
+        if (!service) throw new Error("custom backend requires 'service'");
+        if (!/^[a-z0-9]+$/.test(service)) throw new Error(`Invalid custom backend type '${service}' (lowercase letters and digits only)`);
+      }
     }
     return { id: connection.id.trim(), readOnly: connection.read_only === true || config?.read_only === true };
   }

@@ -103,10 +103,6 @@
               "value": "smb"
             },
             {
-              "label": "Custom rclone backend",
-              "value": "rclone-custom"
-            },
-            {
               "label": "Alibaba Drive",
               "value": "aliyun-drive"
             },
@@ -137,74 +133,7 @@
             {
               "label": "Yandex Disk",
               "value": "yandex-disk"
-            }
-          ]
-        },
-        {
-          "key": "endpoint",
-          "label": "Endpoint",
-          "type": "text",
-          "binding": "config",
-          "default": "",
-          "placeholder": "https://storage.example.com",
-          "description": "Service address: https://host for object storage and WebDAV; ftp(s)://host[:21] for FTP; ssh://user@host[:22] for SFTP; host[:445] for SMB.",
-          "visible_when": {
-            "field": "protocol",
-            "one_of": [
-              "s3",
-              "gcs",
-              "azblob",
-              "obs",
-              "oss",
-              "cos",
-              "webdav",
-              "ftp",
-              "sftp",
-              "smb",
-              "sftp-native",
-              "koofr",
-              "pcloud",
-              "seafile"
-            ]
-          },
-          "required_when": {
-            "field": "protocol",
-            "one_of": [
-              "oss",
-              "gcs",
-              "azblob",
-              "obs",
-              "cos",
-              "webdav",
-              "ftp",
-              "sftp",
-              "smb",
-              "sftp-native",
-              "koofr",
-              "pcloud",
-              "seafile"
-            ]
-          }
-        },
-        {
-          "key": "service",
-          "label": "Backend type",
-          "type": "select",
-          "binding": "config",
-          "description": "Pick the rclone backend to connect. Popular services already have their own protocol above; use this for the rest.",
-          "visible_when": {
-            "field": "protocol",
-            "one_of": [
-              "rclone-custom"
-            ]
-          },
-          "required_when": {
-            "field": "protocol",
-            "one_of": [
-              "rclone-custom"
-            ]
-          },
-          "options": [
+            },
             {
               "label": "Alias",
               "value": "alias"
@@ -416,6 +345,52 @@
           ]
         },
         {
+          "key": "endpoint",
+          "label": "Endpoint",
+          "type": "text",
+          "binding": "config",
+          "default": "",
+          "placeholder": "https://storage.example.com",
+          "description": "Service address: https://host for object storage and WebDAV; ftp(s)://host[:21] for FTP; ssh://user@host[:22] for SFTP; host[:445] for SMB.",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "s3",
+              "gcs",
+              "azblob",
+              "obs",
+              "oss",
+              "cos",
+              "webdav",
+              "ftp",
+              "sftp",
+              "smb",
+              "sftp-native",
+              "koofr",
+              "pcloud",
+              "seafile"
+            ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
+              "oss",
+              "gcs",
+              "azblob",
+              "obs",
+              "cos",
+              "webdav",
+              "ftp",
+              "sftp",
+              "smb",
+              "sftp-native",
+              "koofr",
+              "pcloud",
+              "seafile"
+            ]
+          }
+        },
+        {
           "key": "config",
           "label": "Parameters (JSON)",
           "type": "textarea",
@@ -426,7 +401,58 @@
           "visible_when": {
             "field": "protocol",
             "one_of": [
-              "rclone-custom"
+              "alias",
+              "archive",
+              "azurefiles",
+              "b2",
+              "box",
+              "chunker",
+              "cloudinary",
+              "combine",
+              "compress",
+              "crypt",
+              "doi",
+              "drime",
+              "fichier",
+              "filefabric",
+              "filelu",
+              "filen",
+              "filescom",
+              "gofile",
+              "gphotos",
+              "hasher",
+              "hdfs",
+              "hidrive",
+              "http",
+              "huaweidrive",
+              "iclouddrive",
+              "imagekit",
+              "internetarchive",
+              "internxt",
+              "jottacloud",
+              "linkbox",
+              "mailru",
+              "mega",
+              "netstorage",
+              "oos",
+              "opendrive",
+              "pikpak",
+              "pixeldrain",
+              "premiumizeme",
+              "protondrive",
+              "putio",
+              "qingstor",
+              "quatrix",
+              "shade",
+              "sharefile",
+              "sia",
+              "storj",
+              "sugarsync",
+              "swift",
+              "tardigrade",
+              "ulozto",
+              "union",
+              "zoho"
             ]
           }
         },
@@ -1083,7 +1109,6 @@
               "sftp",
               "sftp-native",
               "smb",
-              "rclone-custom",
               "aliyun-drive",
               "dropbox",
               "gdrive",
@@ -1091,7 +1116,59 @@
               "onedrive",
               "pcloud",
               "seafile",
-              "yandex-disk"
+              "yandex-disk",
+              "alias",
+              "archive",
+              "azurefiles",
+              "b2",
+              "box",
+              "chunker",
+              "cloudinary",
+              "combine",
+              "compress",
+              "crypt",
+              "doi",
+              "drime",
+              "fichier",
+              "filefabric",
+              "filelu",
+              "filen",
+              "filescom",
+              "gofile",
+              "gphotos",
+              "hasher",
+              "hdfs",
+              "hidrive",
+              "http",
+              "huaweidrive",
+              "iclouddrive",
+              "imagekit",
+              "internetarchive",
+              "internxt",
+              "jottacloud",
+              "linkbox",
+              "mailru",
+              "mega",
+              "netstorage",
+              "oos",
+              "opendrive",
+              "pikpak",
+              "pixeldrain",
+              "premiumizeme",
+              "protondrive",
+              "putio",
+              "qingstor",
+              "quatrix",
+              "shade",
+              "sharefile",
+              "sia",
+              "storj",
+              "sugarsync",
+              "swift",
+              "tardigrade",
+              "ulozto",
+              "union",
+              "zoho"
             ]
           },
           "description": "Optional SSH jump chain (ssh -J syntax): comma-separated [user@]host[:port]; the last hop is the login target. Key-based auth only; rclone engine only."
@@ -1117,7 +1194,6 @@
               "sftp",
               "sftp-native",
               "smb",
-              "rclone-custom",
               "aliyun-drive",
               "dropbox",
               "gdrive",
@@ -1125,7 +1201,59 @@
               "onedrive",
               "pcloud",
               "seafile",
-              "yandex-disk"
+              "yandex-disk",
+              "alias",
+              "archive",
+              "azurefiles",
+              "b2",
+              "box",
+              "chunker",
+              "cloudinary",
+              "combine",
+              "compress",
+              "crypt",
+              "doi",
+              "drime",
+              "fichier",
+              "filefabric",
+              "filelu",
+              "filen",
+              "filescom",
+              "gofile",
+              "gphotos",
+              "hasher",
+              "hdfs",
+              "hidrive",
+              "http",
+              "huaweidrive",
+              "iclouddrive",
+              "imagekit",
+              "internetarchive",
+              "internxt",
+              "jottacloud",
+              "linkbox",
+              "mailru",
+              "mega",
+              "netstorage",
+              "oos",
+              "opendrive",
+              "pikpak",
+              "pixeldrain",
+              "premiumizeme",
+              "protondrive",
+              "putio",
+              "qingstor",
+              "quatrix",
+              "shade",
+              "sharefile",
+              "sia",
+              "storj",
+              "sugarsync",
+              "swift",
+              "tardigrade",
+              "ulozto",
+              "union",
+              "zoho"
             ]
           },
           "description": "Optional private key path for the tunnel; leave empty to use ssh default keys and the agent."
@@ -1217,7 +1345,6 @@
                 "ftp": "FTP",
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
-                "rclone-custom": "自定义 rclone 后端",
                 "sftp-native": "SFTP（原生）",
                 "oss": "阿里云 OSS",
                 "cos": "腾讯云 COS",
@@ -1228,22 +1355,7 @@
                 "onedrive": "OneDrive",
                 "pcloud": "pCloud",
                 "seafile": "Seafile",
-                "yandex-disk": "Yandex Disk"
-              }
-            },
-            "root": {
-              "label": "根路径",
-              "placeholder": "/srv/share 或 ~/data",
-              "description": "设置后所有操作都限制在该根路径内。"
-            },
-            "lock_to_root": {
-              "label": "锁定在根路径内",
-              "description": "拒绝任何超出所配置根路径的操作。"
-            },
-            "service": {
-              "label": "后端类型",
-              "description": "选择要连接的 rclone 后端。常用协议已在上方单独列出，其余后端在此选择。",
-              "options": {
+                "yandex-disk": "Yandex Disk",
                 "alias": "Alias",
                 "archive": "Archive",
                 "azurefiles": "Azure Files",
@@ -1262,13 +1374,13 @@
                 "filen": "Filen",
                 "filescom": "Files.com",
                 "gofile": "Gofile",
-                "gphotos": "Google Photos",
+                "gphotos": "Google 相册",
                 "hasher": "Hasher",
                 "hdfs": "HDFS",
                 "hidrive": "HiDrive",
                 "http": "HTTP",
-                "huaweidrive": "Huawei Drive",
-                "iclouddrive": "iCloud Drive",
+                "huaweidrive": "华为云盘",
+                "iclouddrive": "iCloud 云盘",
                 "imagekit": "ImageKit",
                 "internetarchive": "Internet Archive",
                 "internxt": "Internxt",
@@ -1298,10 +1410,19 @@
                 "zoho": "Zoho WorkDrive"
               }
             },
+            "root": {
+              "label": "根路径",
+              "placeholder": "/srv/share 或 ~/data",
+              "description": "设置后所有操作都限制在该根路径内。"
+            },
+            "lock_to_root": {
+              "label": "锁定在根路径内",
+              "description": "拒绝任何超出所配置根路径的操作。"
+            },
             "config": {
               "label": "参数（JSON）",
               "placeholder": "{ \"endpoint\": \"https://host\", \"user\": \"me\" }",
-              "description": "所选后端的连接参数（JSON 对象）；各键名见 rclone 文档。"
+              "description": "所选协议的连接参数（JSON 对象）；各键名见 rclone 文档。"
             },
             "container": {
               "label": "容器",
@@ -1508,7 +1629,6 @@
                 "ftp": "FTP",
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
-                "rclone-custom": "自訂 rclone 後端",
                 "sftp-native": "SFTP（原生）",
                 "oss": "阿里雲 OSS",
                 "cos": "騰訊雲 COS",
@@ -1519,22 +1639,7 @@
                 "onedrive": "OneDrive",
                 "pcloud": "pCloud",
                 "seafile": "Seafile",
-                "yandex-disk": "Yandex Disk"
-              }
-            },
-            "root": {
-              "label": "根路徑",
-              "placeholder": "/srv/share 或 ~/data",
-              "description": "設定後所有操作都限制在該根路徑內。"
-            },
-            "lock_to_root": {
-              "label": "鎖定在根路徑內",
-              "description": "拒絕任何超出所設定根路徑的操作。"
-            },
-            "service": {
-              "label": "後端類型",
-              "description": "選擇要連線的 rclone 後端。常用協定已在上方單獨列出，其餘後端在此選擇。",
-              "options": {
+                "yandex-disk": "Yandex Disk",
                 "alias": "Alias",
                 "archive": "Archive",
                 "azurefiles": "Azure Files",
@@ -1553,13 +1658,13 @@
                 "filen": "Filen",
                 "filescom": "Files.com",
                 "gofile": "Gofile",
-                "gphotos": "Google Photos",
+                "gphotos": "Google 相簿",
                 "hasher": "Hasher",
                 "hdfs": "HDFS",
                 "hidrive": "HiDrive",
                 "http": "HTTP",
-                "huaweidrive": "Huawei Drive",
-                "iclouddrive": "iCloud Drive",
+                "huaweidrive": "華為雲盤",
+                "iclouddrive": "iCloud 雲盤",
                 "imagekit": "ImageKit",
                 "internetarchive": "Internet Archive",
                 "internxt": "Internxt",
@@ -1589,10 +1694,19 @@
                 "zoho": "Zoho WorkDrive"
               }
             },
+            "root": {
+              "label": "根路徑",
+              "placeholder": "/srv/share 或 ~/data",
+              "description": "設定後所有操作都限制在該根路徑內。"
+            },
+            "lock_to_root": {
+              "label": "鎖定在根路徑內",
+              "description": "拒絕任何超出所設定根路徑的操作。"
+            },
             "config": {
               "label": "參數（JSON）",
               "placeholder": "{ \"endpoint\": \"https://host\", \"user\": \"me\" }",
-              "description": "所選後端的連線參數（JSON 物件）；各鍵名見 rclone 文件。"
+              "description": "所選協定的連線參數（JSON 物件）；各鍵名見 rclone 文件。"
             },
             "container": {
               "label": "容器",
@@ -1799,7 +1913,6 @@
                 "ftp": "FTP",
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
-                "rclone-custom": "Custom rclone backend",
                 "sftp-native": "SFTP (native)",
                 "oss": "Alibaba OSS",
                 "cos": "Tencent COS",
@@ -1810,22 +1923,7 @@
                 "onedrive": "OneDrive",
                 "pcloud": "pCloud",
                 "seafile": "Seafile",
-                "yandex-disk": "Yandex Disk"
-              }
-            },
-            "root": {
-              "label": "Root path",
-              "placeholder": "/srv/share or ~/data",
-              "description": "All operations are confined under this root when set."
-            },
-            "lock_to_root": {
-              "label": "Lock navigation to root",
-              "description": "Reject any path outside the configured root."
-            },
-            "service": {
-              "label": "Backend type",
-              "description": "Pick the rclone backend to connect. Popular services already have their own protocol above; use this for the rest.",
-              "options": {
+                "yandex-disk": "Yandex Disk",
                 "alias": "Alias",
                 "archive": "Archive",
                 "azurefiles": "Azure Files",
@@ -1880,10 +1978,19 @@
                 "zoho": "Zoho WorkDrive"
               }
             },
+            "root": {
+              "label": "Root path",
+              "placeholder": "/srv/share or ~/data",
+              "description": "All operations are confined under this root when set."
+            },
+            "lock_to_root": {
+              "label": "Lock navigation to root",
+              "description": "Reject any path outside the configured root."
+            },
             "config": {
               "label": "Parameters (JSON)",
               "placeholder": "{ \"endpoint\": \"https://host\", \"user\": \"me\" }",
-              "description": "JSON object with the selected backend's options; see rclone's docs for each backend's keys."
+              "description": "Parameters for the selected protocol as a JSON object; see rclone's docs for each backend's keys."
             },
             "container": {
               "label": "Container",
@@ -2090,7 +2197,6 @@
                 "ftp": "FTP",
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
-                "rclone-custom": "Backend rclone personalizado",
                 "sftp-native": "SFTP (nativo)",
                 "oss": "OSS de Alibaba",
                 "cos": "COS de Tencent",
@@ -2101,22 +2207,7 @@
                 "onedrive": "OneDrive",
                 "pcloud": "pCloud",
                 "seafile": "Seafile",
-                "yandex-disk": "Yandex Disk"
-              }
-            },
-            "root": {
-              "label": "Ruta raíz",
-              "placeholder": "/srv/share o ~/data",
-              "description": "Si se establece, todas las operaciones quedan confinadas bajo esta raíz."
-            },
-            "lock_to_root": {
-              "label": "Restringir a la raíz",
-              "description": "Rechaza cualquier ruta fuera de la raíz configurada."
-            },
-            "service": {
-              "label": "Tipo de backend",
-              "description": "Elige el backend de rclone al que conectar. Los servicios populares ya tienen su propio protocolo arriba; usa este campo para el resto.",
-              "options": {
+                "yandex-disk": "Yandex Disk",
                 "alias": "Alias",
                 "archive": "Archive",
                 "azurefiles": "Azure Files",
@@ -2171,10 +2262,19 @@
                 "zoho": "Zoho WorkDrive"
               }
             },
+            "root": {
+              "label": "Ruta raíz",
+              "placeholder": "/srv/share o ~/data",
+              "description": "Si se establece, todas las operaciones quedan confinadas bajo esta raíz."
+            },
+            "lock_to_root": {
+              "label": "Restringir a la raíz",
+              "description": "Rechaza cualquier ruta fuera de la raíz configurada."
+            },
             "config": {
               "label": "Parámetros (JSON)",
               "placeholder": "{ \"endpoint\": \"https://host\", \"user\": \"me\" }",
-              "description": "Parámetros del backend elegido como objeto JSON; consulta la documentación de rclone para las claves de cada backend."
+              "description": "Parámetros del protocolo elegido como objeto JSON; consulta la documentación de rclone para las claves de cada backend."
             },
             "container": {
               "label": "Contenedor",
@@ -2381,7 +2481,6 @@
                 "ftp": "FTP",
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
-                "rclone-custom": "Backend rclone personalizzato",
                 "sftp-native": "SFTP (nativo)",
                 "oss": "OSS di Alibaba",
                 "cos": "COS Tencent",
@@ -2392,22 +2491,7 @@
                 "onedrive": "OneDrive",
                 "pcloud": "pCloud",
                 "seafile": "Seafile",
-                "yandex-disk": "Yandex Disk"
-              }
-            },
-            "root": {
-              "label": "Percorso radice",
-              "placeholder": "/srv/share o ~/data",
-              "description": "Se impostato, tutte le operazioni restano confinate sotto questa radice."
-            },
-            "lock_to_root": {
-              "label": "Blocca nella radice",
-              "description": "Rifiuta qualsiasi percorso fuori dalla radice configurata."
-            },
-            "service": {
-              "label": "Tipo di backend",
-              "description": "Scegli il backend rclone a cui connettersi. I servizi più diffusi hanno già un protocollo dedicato qui sopra; usa questo campo per gli altri.",
-              "options": {
+                "yandex-disk": "Yandex Disk",
                 "alias": "Alias",
                 "archive": "Archive",
                 "azurefiles": "Azure Files",
@@ -2462,10 +2546,19 @@
                 "zoho": "Zoho WorkDrive"
               }
             },
+            "root": {
+              "label": "Percorso radice",
+              "placeholder": "/srv/share o ~/data",
+              "description": "Se impostato, tutte le operazioni restano confinate sotto questa radice."
+            },
+            "lock_to_root": {
+              "label": "Blocca nella radice",
+              "description": "Rifiuta qualsiasi percorso fuori dalla radice configurata."
+            },
             "config": {
               "label": "Parametri (JSON)",
               "placeholder": "{ \"endpoint\": \"https://host\", \"user\": \"me\" }",
-              "description": "Parametri del backend scelto come oggetto JSON; vedi la documentazione di rclone per le chiavi di ogni backend."
+              "description": "Parametri del protocollo scelto come oggetto JSON; vedi la documentazione di rclone per le chiavi di ogni backend."
             },
             "container": {
               "label": "Contenitore",
@@ -2672,7 +2765,6 @@
                 "ftp": "FTP",
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
-                "rclone-custom": "カスタム rclone バックエンド",
                 "sftp-native": "SFTP（ネイティブ）",
                 "oss": "Alibaba OSS",
                 "cos": "Tencent COS",
@@ -2683,22 +2775,7 @@
                 "onedrive": "OneDrive",
                 "pcloud": "pCloud",
                 "seafile": "Seafile",
-                "yandex-disk": "Yandex Disk"
-              }
-            },
-            "root": {
-              "label": "ルートパス",
-              "placeholder": "/srv/share または ~/data",
-              "description": "設定すると、すべての操作がこのルート配下に制限されます。"
-            },
-            "lock_to_root": {
-              "label": "ルート内に制限",
-              "description": "設定されたルート外のパスを拒否します。"
-            },
-            "service": {
-              "label": "バックエンドタイプ",
-              "description": "接続する rclone バックエンドを選択します。主要サービスは上のプロトコル欄に専用項目があるため、それ以外はここで選択してください。",
-              "options": {
+                "yandex-disk": "Yandex Disk",
                 "alias": "Alias",
                 "archive": "Archive",
                 "azurefiles": "Azure Files",
@@ -2753,10 +2830,19 @@
                 "zoho": "Zoho WorkDrive"
               }
             },
+            "root": {
+              "label": "ルートパス",
+              "placeholder": "/srv/share または ~/data",
+              "description": "設定すると、すべての操作がこのルート配下に制限されます。"
+            },
+            "lock_to_root": {
+              "label": "ルート内に制限",
+              "description": "設定されたルート外のパスを拒否します。"
+            },
             "config": {
               "label": "パラメーター（JSON）",
               "placeholder": "{ \"endpoint\": \"https://host\", \"user\": \"me\" }",
-              "description": "選択したバックエンドの接続パラメーター（JSON オブジェクト）。キー名は rclone のドキュメントを参照。"
+              "description": "選択したプロトコルの接続パラメーター（JSON オブジェクト）。キー名は rclone のドキュメントを参照。"
             },
             "container": {
               "label": "コンテナー",
@@ -2963,7 +3049,6 @@
                 "ftp": "FTP",
                 "sftp": "SFTP",
                 "smb": "SMB / CIFS",
-                "rclone-custom": "Backend rclone personalizado",
                 "sftp-native": "SFTP (nativo)",
                 "oss": "OSS da Alibaba",
                 "cos": "COS da Tencent",
@@ -2974,22 +3059,7 @@
                 "onedrive": "OneDrive",
                 "pcloud": "pCloud",
                 "seafile": "Seafile",
-                "yandex-disk": "Yandex Disk"
-              }
-            },
-            "root": {
-              "label": "Caminho raiz",
-              "placeholder": "/srv/share ou ~/data",
-              "description": "Se definida, todas as operações ficam confinadas sob esta raiz."
-            },
-            "lock_to_root": {
-              "label": "Restringir à raiz",
-              "description": "Rejeita qualquer caminho fora da raiz configurada."
-            },
-            "service": {
-              "label": "Tipo de backend",
-              "description": "Escolha o backend do rclone ao qual conectar. Serviços populares já têm protocolo próprio acima; use este campo para os demais.",
-              "options": {
+                "yandex-disk": "Yandex Disk",
                 "alias": "Alias",
                 "archive": "Archive",
                 "azurefiles": "Azure Files",
@@ -3044,10 +3114,19 @@
                 "zoho": "Zoho WorkDrive"
               }
             },
+            "root": {
+              "label": "Caminho raiz",
+              "placeholder": "/srv/share ou ~/data",
+              "description": "Se definida, todas as operações ficam confinadas sob esta raiz."
+            },
+            "lock_to_root": {
+              "label": "Restringir à raiz",
+              "description": "Rejeita qualquer caminho fora da raiz configurada."
+            },
             "config": {
               "label": "Parâmetros (JSON)",
               "placeholder": "{ \"endpoint\": \"https://host\", \"user\": \"me\" }",
-              "description": "Parâmetros do backend escolhido como objeto JSON; veja a documentação do rclone para as chaves de cada backend."
+              "description": "Parâmetros do protocolo escolhido como objeto JSON; veja a documentação do rclone para as chaves de cada backend."
             },
             "container": {
               "label": "Contêiner",

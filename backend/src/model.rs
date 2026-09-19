@@ -31,10 +31,11 @@ pub const PROGRESS_MIN_DELTA: f64 = 0.01;
 /// JSON+base64 fallback chunk (1 MiB raw) for hosts without `host.binary`.
 pub const JSON_CHUNK_BYTES: usize = 1024 * 1024;
 
-/// Protocols understood by the engine. The quick protocols map onto fixed
-/// rclone backends; the generic pass-through is `rclone-custom` (the retired
-/// `opendal-custom` value stays accepted for stored connections).
-pub const PROTOCOLS: [&str; 22] = [
+/// Quick protocols with a dedicated parameter assembly. Every other form
+/// protocol is a [`GENERIC_PROTOCOLS`] value whose backend type is the
+/// protocol value itself. The retired `rclone-custom`/`opendal-custom`
+/// pass-through values stay accepted for stored connections.
+pub const PROTOCOLS: [&str; 74] = [
     "fs",
     "s3",
     "gcs",
@@ -57,6 +58,75 @@ pub const PROTOCOLS: [&str; 22] = [
     "pcloud",
     "seafile",
     "yandex-disk",
+    // Generic rclone backends: the protocol value IS the rclone backend type
+    // (`rclone config providers` on v1.75.1; the form lists every one of
+    // these as a first-class protocol option).
+    "alias",
+    "archive",
+    "azurefiles",
+    "b2",
+    "box",
+    "chunker",
+    "cloudinary",
+    "combine",
+    "compress",
+    "crypt",
+    "doi",
+    "drime",
+    "fichier",
+    "filefabric",
+    "filelu",
+    "filen",
+    "filescom",
+    "gofile",
+    "gphotos",
+    "hasher",
+    "hdfs",
+    "hidrive",
+    "http",
+    "huaweidrive",
+    "iclouddrive",
+    "imagekit",
+    "internetarchive",
+    "internxt",
+    "jottacloud",
+    "linkbox",
+    "mailru",
+    "mega",
+    "netstorage",
+    "oos",
+    "opendrive",
+    "pikpak",
+    "pixeldrain",
+    "premiumizeme",
+    "protondrive",
+    "putio",
+    "qingstor",
+    "quatrix",
+    "shade",
+    "sharefile",
+    "sia",
+    "storj",
+    "sugarsync",
+    "swift",
+    "tardigrade",
+    "ulozto",
+    "union",
+    "zoho",
+];
+
+/// Protocols whose backend type is the protocol value itself and whose
+/// parameters travel verbatim in the `config` JSON field (`external_config.
+/// config` → `config/create` parameters). The form carries the same list.
+pub const GENERIC_PROTOCOLS: [&str; 52] = [
+    "alias", "archive", "azurefiles", "b2", "box", "chunker", "cloudinary", "combine",
+    "compress", "crypt", "doi", "drime", "fichier", "filefabric", "filelu", "filen",
+    "filescom", "gofile", "gphotos", "hasher", "hdfs", "hidrive", "http",
+    "huaweidrive", "iclouddrive", "imagekit", "internetarchive", "internxt",
+    "jottacloud", "linkbox", "mailru", "mega", "netstorage", "oos", "opendrive",
+    "pikpak", "pixeldrain", "premiumizeme", "protondrive", "putio", "qingstor",
+    "quatrix", "shade", "sharefile", "sia", "storj", "sugarsync", "swift",
+    "tardigrade", "ulozto", "union", "zoho",
 ];
 
 /// Egress proxy protocol of a connection. Maps onto the rclone ftp/sftp
@@ -288,9 +358,13 @@ impl StoredConnection {
         }
 
         // The custom pass-through (`rclone-custom`, legacy alias
-        // `opendal-custom`) accepts either a JSON object or a JSON string in
-        // the textarea field; anything else must parse to an object.
-        let custom_value = if protocol == "rclone-custom" || protocol == "opendal-custom" {
+        // `opendal-custom`) and every generic protocol accept either a JSON
+        // object or a JSON string in the textarea field; anything else must
+        // parse to an object.
+        let custom_value = if protocol == "rclone-custom"
+            || protocol == "opendal-custom"
+            || GENERIC_PROTOCOLS.contains(&protocol.as_str())
+        {
             external_config.and_then(|config| config.get("config"))
         } else {
             None // An inactive custom-service draft must not break another protocol.
@@ -388,9 +462,13 @@ impl StoredConnection {
         })
     }
 
-    /// `true` when the protocol is the generic pass-through service form.
+    /// `true` when the protocol carries its parameters through the `config`
+    /// JSON field: the generic rclone backends and the retired pass-through
+    /// aliases.
     pub fn is_custom(&self) -> bool {
-        self.protocol == "rclone-custom" || self.protocol == "opendal-custom"
+        self.protocol == "rclone-custom"
+            || self.protocol == "opendal-custom"
+            || GENERIC_PROTOCOLS.contains(&self.protocol.as_str())
     }
 }
 
@@ -2057,8 +2135,7 @@ mod tests {
             ("password", &["webdav", "ftp", "smb", "sftp-native", "koofr", "pcloud", "seafile"]),
             ("key", &["sftp", "sftp-native"]),
             ("known_hosts_strategy", &["sftp", "sftp-native"]),
-            ("service", &["rclone-custom"]),
-            ("config", &["rclone-custom"]),
+            ("config", &GENERIC_PROTOCOLS),
             ("access_token", &["dropbox", "gdrive", "onedrive", "yandex-disk"]),
             ("client_id", &["aliyun-drive", "dropbox", "gdrive", "onedrive"]),
             ("client_secret", &["aliyun-drive", "dropbox", "gdrive", "onedrive"]),
@@ -2148,7 +2225,6 @@ mod tests {
             "account_key",
             "secret_id",
             "secret_key",
-            "service",
             "email",
             "repo_name",
         ];

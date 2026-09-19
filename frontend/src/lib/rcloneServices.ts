@@ -29,6 +29,21 @@ export function customServiceSuggestions(): string[] {
 }
 
 /**
+ * 已升为一级协议的通用 rclone 后端（无快捷表单的后端全集）：协议值即
+ * rclone backend type，参数走 `config` JSON 字段。与后端
+ * `model::GENERIC_PROTOCOLS` 对齐（快捷协议已映射的类型与 memory/cache
+ * 不进表单）。
+ */
+const QUICK_MAPPED_BACKEND_TYPES: ReadonlySet<string> = new Set([
+  "local", "s3", "gcs", "azureblob", "webdav", "ftp", "sftp", "smb", "drive",
+  "dropbox", "onedrive", "yandex", "seafile", "koofr", "pcloud", "memory", "cache",
+]);
+
+export const GENERIC_PROTOCOL_IDS: ReadonlySet<string> = new Set(
+  [...RCLONE_BACKEND_TYPES].filter((type) => !QUICK_MAPPED_BACKEND_TYPES.has(type)),
+);
+
+/**
  * 常用后端的参数示例（JSON 编辑器的占位草稿）。键名经
  * `rclone config providers <type>` 实测核对（v1.75.1）；未列出的后端
  * 直接手写 JSON，键名见 rclone 文档。

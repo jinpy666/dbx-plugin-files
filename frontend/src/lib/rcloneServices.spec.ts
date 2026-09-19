@@ -4,7 +4,7 @@
 // - datalist 建议去重有序；
 // - JSON 示例必须是合法对象草稿。
 import { describe, expect, it } from "vitest";
-import { CUSTOM_CONFIG_HINTS, customServiceSuggestions, RCLONE_BACKEND_TYPES } from "./rcloneServices";
+import { CUSTOM_CONFIG_HINTS, customServiceSuggestions, GENERIC_PROTOCOL_IDS, RCLONE_BACKEND_TYPES } from "./rcloneServices";
 
 describe("rcloneServices", () => {
   it("backend type vocabulary is lowercase-alnum and duplicate-free", () => {
@@ -25,6 +25,16 @@ describe("rcloneServices", () => {
     expect(new Set(suggestions).size).toBe(suggestions.length);
     expect([...suggestions]).toEqual([...suggestions].sort());
     expect(suggestions).toContain("b2");
+  });
+
+  it("generic protocol ids exclude quick-mapped types (aligned with model::GENERIC_PROTOCOLS)", () => {
+    for (const type of ["b2", "http", "mega", "protondrive", "zoho"]) {
+      expect(GENERIC_PROTOCOL_IDS.has(type), type).toBe(true);
+    }
+    for (const quick of ["local", "s3", "gcs", "azureblob", "webdav", "ftp", "sftp", "smb", "drive", "memory", "cache"]) {
+      expect(GENERIC_PROTOCOL_IDS.has(quick), quick).toBe(false);
+    }
+    expect(GENERIC_PROTOCOL_IDS.size).toBe(52);
   });
 
   it("config hints parse as JSON object drafts", () => {
