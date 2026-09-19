@@ -256,3 +256,51 @@ describe("FileTable loading and failure states", () => {
     wrapper.unmount();
   });
 });
+
+describe("FileTable 媒体图标着色与空态（对标 rclone-dashboard）", () => {
+  function mountMediaTable() {
+    return mount(FileTable, {
+      props: {
+        entries: [
+          { name: "photo.png", path: "/photo.png", kind: "file", size: 8 },
+          { name: "clip.mp4", path: "/clip.mp4", kind: "file", size: 9 },
+          { name: "song.mp3", path: "/song.mp3", kind: "file", size: 10 },
+          { name: "main.go", path: "/main.go", kind: "file", size: 11 },
+          { name: "backup.zip", path: "/backup.zip", kind: "file", size: 12 },
+          { name: "notes.txt", path: "/notes.txt", kind: "file", size: 13 },
+          { name: "docs", path: "/docs", kind: "directory", size: 0 },
+        ],
+        selection: [],
+        activePath: "",
+        sort: { column: "name", direction: "asc" },
+        t: (key: string) => key,
+      },
+    });
+  }
+
+  function rowByName(wrapper: ReturnType<typeof mountMediaTable>, name: string) {
+    return wrapper.findAll(".wb-file-row").find((row) => row.text().includes(name))!;
+  }
+
+  it("media/code/archive rows carry theme-aware icon classes; plain files stay neutral", () => {
+    const wrapper = mountMediaTable();
+    const colored = ["photo.png", "clip.mp4", "song.mp3", "main.go", "backup.zip"];
+    for (const name of colored) {
+      const classes = rowByName(wrapper, name).find("svg").attributes("class") ?? "";
+      expect(classes.split(/\s+/).some((cls) => cls.startsWith("wb-fi-")), name).toBe(true);
+    }
+    expect(rowByName(wrapper, "notes.txt").find("svg").attributes("class") ?? "").not.toContain("wb-fi-");
+    expect(rowByName(wrapper, "docs").find("svg").attributes("class") ?? "").toContain("wb-icon-dir");
+    wrapper.unmount();
+  });
+
+  it("empty state renders a quiet card with an icon (FolderOpen for empty dir, SearchX for filter miss)", async () => {
+    const wrapper = mountMediaTable();
+    await wrapper.setProps({ entries: [] });
+    expect(wrapper.find(".wb-file-empty svg").exists()).toBe(true);
+    expect(wrapper.get(".wb-file-empty").text()).toBe("emptyDirectory");
+    await wrapper.setProps({ filtered: true });
+    expect(wrapper.get(".wb-file-empty").text()).toBe("noMatchResults");
+    wrapper.unmount();
+  });
+});

@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowRightLeft,
+  Calculator,
   Copy,
   ArrowUp,
   Download,
@@ -17,6 +18,7 @@ import {
   FolderOpen,
   FolderPlus,
   FolderSymlink,
+  Link,
   Link2,
   PanelLeft,
   PanelRight,
@@ -45,6 +47,7 @@ import {
   baseName,
   call,
   errorMessage,
+  formatBytes,
   isMethodMissing,
   joinPath,
   normalizeEntries,
@@ -56,7 +59,7 @@ import { createTransferTracker, isActive, isRetryableKind, type TransferJob, typ
 import { inspect, type DangerousHit } from "./lib/dangerousPaths";
 import { errorBannerOf, i18nTextOf, workbenchMessage, type ErrorBannerState, type I18nInput, type I18nText } from "./lib/i18n";
 import { isArchivePath } from "./lib/archive";
-import { loadDownloadDir, loadUiPrefs, persistDownloadDir, saveUiPrefs } from "./lib/prefs";
+import { PREVIEW_MIN, loadDownloadDir, loadUiPrefs, persistDownloadDir, saveUiPrefs, type PreviewWin } from "./lib/prefs";
 import { sortEntries, toggleSortState, type SortColumn, type SortState } from "./lib/sorting";
 import { filterEntries } from "./lib/searchFilter";
 import { isLargeDirectory } from "./lib/largeDir";
@@ -76,6 +79,8 @@ type PaneSide = "left" | "right";
 type MenuAction =
   | "open" | "preview" | "download" | "rename" | "delete" | "copyPath" | "copyName"
   | "syncDir" | "copyDir" | "copy" | "move" | "extract" | "archiveContents" | "compress"
+  // 对标 rclone-dashboard：目录体积统计（files/size）与公开链接（files/publicLink）
+  | "computeSize" | "copyPublicLink"
   // 批量（多选右键，P-FILES 压缩轮）
   | "downloadSelected" | "copySelected" | "moveSelected" | "deleteSelected" | "compressSelected";
 
@@ -936,6 +941,7 @@ function openPreview(target: string, side: PaneSide = "left") {
   // 弹窗期间两侧栏保持各自连接面可继续导航。
   previewPath.value = target;
   previewConnectionId.value = sideConnectionId(side) ?? connectionId.value;
+  previewMinimized.value = false;
 }
 
 // 审计#7：预览弹窗 dialog 化——Esc/遮罩/关闭钮此前会静默丢弃 CodeMirror
@@ -946,17 +952,78 @@ const previewDiscardOpen = ref(false);
 const previewOverlayEl = ref<HTMLElement>();
 const previewTitle = computed(() => (previewPath.value ? baseName(previewPath.value) : ""));
 
+// 对标 rclone-dashboard media-preview-overlay：浮窗可拖拽缩放（右下角握把，
+// 尺寸记忆进 prefs），可最小化成右下角悬浮 pill（面板保持挂载，编辑草稿不丢）。
+const previewMinimized = ref(false);
+const previewWin = ref<PreviewWin | undefined>(prefs.previewWin);
+const previewPanelStyle = computed(() => {
+  if (!previewWin.value) return undefined;
+  return {
+    "--preview-w": `${previewWin.value.width}px`,
+    "--preview-h": `${previewWin.value.height}px`,
+  };
+});
+let previewGripActive = false;
+
+function clampPreviewSize(width: number, height: number): PreviewWin {
+  const maxWidth = Math.max(PREVIEW_MIN.width, window.innerWidth - 40);
+  const maxHeight = Math.max(PREVIEW_MIN.height, window.innerHeight - 40);
+  return {
+    width: Math.min(maxWidth, Math.max(PREVIEW_MIN.width, Math.round(width))),
+    height: Math.min(maxHeight, Math.max(PREVIEW_MIN.height, Math.round(height))),
+  };
+}
+
+function onPreviewGripPointerdown(event: PointerEvent) {
+  const start = { x: event.clientX, y: event.clientY, width: previewWin.value?.width ?? 0, height: previewWin.value?.height ?? 0 };
+  const overlay = previewOverlayEl.value;
+  const panel = overlay?.querySelector<HTMLElement>(".wb-preview");
+  if (!panel) return;
+  if (!previewWin.value) {
+    const rect = panel.getBoundingClientRect();
+    start.width = rect.width;
+    start.height = rect.height;
+  }
+  previewGripActive = true;
+  (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  const onMove = (move: PointerEvent) => {
+    if (!previewGripActive) return;
+    previewWin.value = clampPreviewSize(start.width + (move.clientX - start.x) * 2, start.height + (move.clientY - start.y) * 2);
+  };
+  const onUp = () => {
+    previewGripActive = false;
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    if (previewWin.value) saveUiPrefs({ ...prefs, previewWin: previewWin.value });
+  };
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+}
+
+function minimizePreview() {
+  previewMinimized.value = true;
+  void nextTick(() => document.querySelector<HTMLElement>(".wb-preview-pill")?.focus());
+}
+
+function restorePreview() {
+  previewMinimized.value = false;
+  void nextTick(() => previewOverlayEl.value?.focus());
+}
+
 function closePreview() {
   if (previewRef.value?.isDirty) {
     previewDiscardOpen.value = true;
     return;
   }
   previewPath.value = null;
+  previewMinimized.value = false;
 }
 
 /** 焦点陷阱：Tab 在预览内循环（同 ConfirmDialog 实现）；defaultPrevented
- * （CodeMirror 已消费 Tab 缩进）时由 a11y 层跳过，不与编辑器键位冲突。 */
+ * （CodeMirror 已消费 Tab 缩进）时由 a11y 层跳过，不与编辑器键位冲突。
+ * 最小化态面板隐藏，陷阱不参与（焦点落在悬浮 pill 上）。 */
 function onPreviewTabKeydown(event: KeyboardEvent) {
+  if (previewMinimized.value) return;
   trapTabKey(event, previewOverlayEl.value);
 }
 
@@ -2015,6 +2082,12 @@ function menuAction(action: MenuAction) {
     case "copyName":
       void window.dbxPlugin.clipboard?.writeText(baseName(entry.path)).then(() => showNotice(t("copiedName")));
       break;
+    case "computeSize":
+      void computeEntrySize(entry, side);
+      break;
+    case "copyPublicLink":
+      void copyPublicLink(entry, side);
+      break;
     case "syncDir":
     case "copyDir":
       startDirJob(action, entry, side);
@@ -2052,6 +2125,34 @@ function menuAction(action: MenuAction) {
     case "compressSelected":
       startCompress(pickSideEntries(side, menuSelection), side);
       break;
+  }
+}
+
+/** 对标 rclone-dashboard 目录体积卡：files/size 汇总后以顶部提示汇报。 */
+async function computeEntrySize(entry: FileEntry, side: PaneSide) {
+  showNotice(t("computingSize"));
+  try {
+    const result = await call<{ count: number; bytes: number }>("files/size", {
+      path: entry.path,
+      connectionId: sideConnectionId(side) ?? connectionId.value,
+    });
+    showNotice(t("sizeResult", { count: result.count, size: formatBytes(result.bytes) }));
+  } catch (cause) {
+    showNotice(t("operationFailed", { error: errorMessage(cause) }));
+  }
+}
+
+/** 公开链接：presign 能力门控（菜单项仅在 capabilities.presign 时出现）。 */
+async function copyPublicLink(entry: FileEntry, side: PaneSide) {
+  try {
+    const result = await call<{ url: string }>("files/publicLink", {
+      path: entry.path,
+      connectionId: sideConnectionId(side) ?? connectionId.value,
+    });
+    await window.dbxPlugin.clipboard?.writeText(result.url);
+    showNotice(t("copiedPublicLink"));
+  } catch (cause) {
+    showNotice(t("operationFailed", { error: errorMessage(cause) }));
   }
 }
 
@@ -2546,14 +2647,18 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 文件概览弹窗：来自任一栏的预览/压缩包列表；遮罩点击 / Esc / 关闭按钮均可关闭。
-         审计#7：dialog 语义 + aria-modal + Tab 焦点陷阱；脏草稿关闭先确认。 -->
+         审计#7：dialog 语义 + aria-modal + Tab 焦点陷阱；脏草稿关闭先确认。
+         对标 rclone-dashboard：面板可拖拽缩放（右下握把）、可最小化为悬浮 pill
+         （is-minimized 仅隐藏面板，PreviewPane 保持挂载，草稿不丢）。 -->
     <div
       v-if="previewPath"
       ref="previewOverlayEl"
       class="wb-preview-overlay"
+      :class="{ 'is-minimized': previewMinimized }"
       role="dialog"
       aria-modal="true"
       :aria-label="previewTitle"
+      :style="previewPanelStyle"
       @click.self="closePreview"
       @keydown="onPreviewTabKeydown"
     >
@@ -2563,12 +2668,25 @@ onBeforeUnmount(() => {
         :can-write="canWrite"
         :appearance="appearance"
         :connection-id="previewConnectionId"
+        :allow-minimize="true"
         :t="t"
         @close="closePreview"
         @saved="onPreviewSaved"
         @download="onPreviewDownload"
+        @minimize="minimizePreview"
+      />
+      <div
+        class="wb-preview-grip"
+        aria-hidden="true"
+        @pointerdown.prevent="onPreviewGripPointerdown"
       />
     </div>
+
+    <!-- 最小化 pill：点击还原预览；仅预览存在时出现。 -->
+    <button v-if="previewPath && previewMinimized" type="button" class="wb-preview-pill" :title="previewTitle" @click="restorePreview">
+      <FileText aria-hidden="true" />
+      <span>{{ previewTitle }}</span>
+    </button>
 
     <!-- 统一右键菜单（A-FILES ④b）：源栏/目标栏共用；多选时切批量动作面。
          R3-P2-8：role="menu"/menuitem 语义。 -->
@@ -2593,6 +2711,7 @@ onBeforeUnmount(() => {
         <button v-if="contextMenu.entry.kind === 'file' && isArchivePath(contextMenu.entry.path) && canWrite" role="menuitem" @click="menuAction('extract')"><FileOutput /> {{ t("extractTo") }}</button>
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('syncDir')"><ArrowRightLeft /> {{ t("transferKind.syncDir") }}…</button>
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('copyDir')"><FolderSymlink /> {{ t("transferKind.copyDir") }}…</button>
+        <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('computeSize')"><Calculator /> {{ t("computeSize") }}</button>
         <button v-if="canWrite" role="menuitem" @click="menuAction('compress')"><FileArchive /> {{ t("compress") }}</button>
         <hr />
         <button v-if="canWrite" role="menuitem" @click="menuAction('copy')"><Copy /> {{ t("transferKind.copy") }}…</button>
@@ -2602,6 +2721,7 @@ onBeforeUnmount(() => {
         <hr />
         <button role="menuitem" @click="menuAction('copyPath')"><Link2 /> {{ t("copyPath") }}</button>
         <button role="menuitem" @click="menuAction('copyName')"><FileText /> {{ t("copyName") }}</button>
+        <button v-if="capabilities?.presign" role="menuitem" @click="menuAction('copyPublicLink')"><Link /> {{ t("copyPublicLink") }}</button>
       </template>
     </div>
 

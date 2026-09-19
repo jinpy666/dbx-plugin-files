@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { Folder } from "@lucide/vue";
+import { Folder, FolderOpen, SearchX } from "@lucide/vue";
 import { formatBytes, formatTime, type FileEntry } from "../lib/api";
-import { fileIcon } from "../lib/fileIcons";
+import { fileIcon, fileIconClass } from "../lib/fileIcons";
 import { listNav, scrollRowIntoView, selectionRange, type ListNavState } from "../lib/listNav";
 
 const props = defineProps<{
@@ -229,7 +229,7 @@ function onDragStart(entry: FileEntry, event: DragEvent) {
         </label>
         <span class="wb-file-name">
           <Folder v-if="entry.kind === 'directory'" class="wb-icon-dir" />
-          <component :is="fileIcon(entry.name)" v-else aria-hidden="true" />
+          <component :is="fileIcon(entry.name)" v-else aria-hidden="true" :class="fileIconClass(entry.name)" />
           <span :title="entry.path">{{ entry.name }}</span>
         </span>
         <span class="wb-numeric" style="width: 90px">{{ entry.kind === "directory" ? "" : formatBytes(entry.size) }}</span>
@@ -244,8 +244,12 @@ function onDragStart(entry: FileEntry, event: DragEvent) {
           <span class="wb-skeleton wb-skeleton-cell" />
         </div>
       </template>
-      <!-- R3-P2-6：区分「过滤无匹配」与「目录确认为空」两态，避免误导。 -->
-      <div v-else-if="!entries.length" class="wb-file-empty" role="status">{{ filtered ? t("noMatchResults") : t("emptyDirectory") }}</div>
+      <!-- R3-P2-6：区分「过滤无匹配」与「目录确认为空」两态，避免误导。
+           对标 rclone-dashboard empty-state：虚线安静卡片 + 图标。 -->
+      <div v-else-if="!entries.length" class="wb-file-empty" role="status">
+        <component :is="filtered ? SearchX : FolderOpen" aria-hidden="true" />
+        <p>{{ filtered ? t("noMatchResults") : t("emptyDirectory") }}</p>
+      </div>
     </div>
   </div>
   <div class="wb-file-footer">
