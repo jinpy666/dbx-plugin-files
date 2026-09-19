@@ -224,7 +224,28 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install native dependencies
         if: matrix.os == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y pkg-config nasm unzip
+        run: sudo apt-get update && sudo apt-get install -y pkg-config nasm
+      - name: Install rclone (Offline MCP smoke spawns it)
+        if: runner.os != 'Windows'
+        run: |
+          case "${{ matrix.rclone_os }}" in
+            darwin) rclone_os="osx" ;;
+            *) rclone_os="${{ matrix.rclone_os }}" ;;
+          esac
+          curl -fsSL "https://downloads.rclone.org/v1.75.1/rclone-v1.75.1-${rclone_os}-${{ matrix.rclone_arch }}.zip" -o /tmp/rclone.zip
+          unzip -o -q /tmp/rclone.zip -d /tmp/rclone-tmp
+          sudo mv /tmp/rclone-tmp/*/rclone /usr/local/bin/rclone
+          rclone version | head -1
+      - name: Install rclone (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          curl -fsSL "https://downloads.rclone.org/v1.75.1/rclone-v1.75.1-windows-amd64.zip" -o rclone.zip
+          Expand-Archive -Path rclone.zip -DestinationPath rclone-tmp -Force
+          $dir = (Get-ChildItem rclone-tmp -Directory | Select-Object -First 1).FullName
+          New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\bin" | Out-Null
+          Copy-Item "$dir\rclone.exe" "$env:USERPROFILE\bin\rclone.exe"
+          Add-Content $env:GITHUB_PATH "$env:USERPROFILE\bin" unzip
       - uses: pnpm/action-setup@v6
         with:
           version: 11.24.0
