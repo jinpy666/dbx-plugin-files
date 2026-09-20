@@ -134,6 +134,21 @@ pub(crate) struct WorkGuard {
     inner: std::sync::Arc<WorkGuardInner>,
 }
 
+impl WorkGuard {
+    /// Test-only construction so sibling modules (mount records) can build a
+    /// guard without a live engine.
+    #[cfg(test)]
+    pub(crate) fn for_tests() -> WorkGuard {
+        WorkGuard {
+            inner: std::sync::Arc::new(WorkGuardInner {
+                work: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
+                key: "test".to_string(),
+                done: std::sync::atomic::AtomicBool::new(false),
+            }),
+        }
+    }
+}
+
 struct WorkGuardInner {
     work: std::sync::Arc<std::sync::Mutex<HashMap<String, u64>>>,
     key: String,

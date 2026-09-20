@@ -72,8 +72,15 @@ const dirEntry: FileEntry = {
   modifiedAt: new Date().toISOString(),
 };
 
+// 挂载对话框流（选目录 → 确认）：菜单/工具栏入口先弹 ConfirmDialog，
+// 确认后才调 files/mount（含所选 mountPoint），成功后 reveal 挂载点。
+async function confirmMountDialog() {
+  await wrapper!.find(".wb-dialog .wb-dialog-primary").trigger("click");
+  await settle();
+}
+
 describe("mount to local UI", () => {
-  it("reports the kernel mount point when rclone mount wins", async () => {
+  it("opens the mount dialog first and mounts the chosen directory on confirm", async () => {
     mountWorkbench();
     await settle();
     const spy = vi
@@ -82,12 +89,40 @@ describe("mount to local UI", () => {
     await openEntryMenu(dirEntry);
     await menuItem(workbenchMessage("en", "mountToLocal"))!.trigger("click");
     await settle();
+    // 对话框先出现，尚未发起 files/mount。
+    expect(wrapper!.find(".wb-dialog").text()).toContain(workbenchMessage("en", "mountToLocal"));
+    expect(spy).not.toHaveBeenCalled();
+    await confirmMountDialog();
     expect(spy).toHaveBeenCalledWith(
       "files/mount",
       expect.objectContaining({ path: "/docs", strategy: "auto" }),
       undefined,
     );
+    // 挂载成功后自动在文件管理器中打开挂载点。
+    expect(spy).toHaveBeenCalledWith(
+      "files/local/reveal",
+      expect.objectContaining({ path: "/home/x/dbx-files-mounts/dbxabc" }),
+      undefined,
+    );
     expect(wrapper!.get(".wb-notice").text()).toContain("Mounted read-only at");
+  });
+
+  it("passes the chosen mount point through to files/mount", async () => {
+    mountWorkbench();
+    await settle();
+    const spy = vi
+      .spyOn(window.dbxPlugin, "invoke")
+      .mockResolvedValueOnce({ mountId: "m3", strategy: "rclone", mountPoint: "/tmp/chose" });
+    await openEntryMenu(dirEntry);
+    await menuItem(workbenchMessage("en", "mountToLocal"))!.trigger("click");
+    await settle();
+    await wrapper!.find(".wb-dialog input").setValue("/tmp/chose");
+    await confirmMountDialog();
+    expect(spy).toHaveBeenCalledWith(
+      "files/mount",
+      expect.objectContaining({ path: "/docs", strategy: "auto", mountPoint: "/tmp/chose" }),
+      undefined,
+    );
   });
 
   it("copies the gateway URL when the webdav fallback answers", async () => {
@@ -106,22 +141,25 @@ describe("mount to local UI", () => {
     await openEntryMenu(dirEntry);
     await menuItem(workbenchMessage("en", "mountToLocal"))!.trigger("click");
     await settle();
+    await confirmMountDialog();
     expect(spy).toHaveBeenCalledWith(
       "files/mount",
       expect.objectContaining({ path: "/docs", strategy: "auto" }),
       undefined,
     );
     expect(writeText).toHaveBeenCalledWith("http://127.0.0.1:54321/tok/conn/");
-    expect(wrapper!.get(".wb-notice").text()).toContain("WebDAV gateway URL copied");
+    expect(wrapper!.get(".wb-notice").text()).toContain("No FUSE driver on this machine");
   });
 
-  it("surfaces mount failures in the notice", async () => {
+  it("surfaces mount failures in the error banner", async () => {
     mountWorkbench();
     await settle();
     vi.spyOn(window.dbxPlugin, "invoke").mockRejectedValueOnce(new Error("no fuse driver"));
     await openEntryMenu(dirEntry);
     await menuItem(workbenchMessage("en", "mountToLocal"))!.trigger("click");
     await settle();
-    expect(wrapper!.get(".wb-notice").text()).toContain("Mount failed: no fuse driver");
+    await confirmMountDialog();
+    expect(wrapper!.find(".wb-error-banner").exists()).toBe(true);
+    expect(wrapper!.find(".wb-error-banner").text()).toContain("fuse");
   });
 });

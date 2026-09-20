@@ -1251,6 +1251,12 @@ impl Plugin {
                     .and_then(Value::as_str)
                     .filter(|value| !value.is_empty())
                     .ok_or("Missing path")?;
+                // 挂载成功后的「在文件管理器中打开」：只放行当前活跃挂载点
+                //（mount 表内存比对），其余路径仍走下载历史白名单。
+                if mount::is_active_mount_point(&self.mounts, std::path::Path::new(path))? {
+                    local_downloads::reveal_in_file_manager(std::path::Path::new(path))?;
+                    return Ok(json!({ "success": true }));
+                }
                 let history = self.store.load_transfers();
                 local_downloads::reveal_validated(&history, std::path::Path::new(path))?;
                 Ok(json!({ "success": true }))

@@ -76,7 +76,7 @@ import { resolveToolbarTarget } from "./lib/toolbarTarget";
 import { validateFileName } from "./lib/fileName";
 import { runBatchTasks } from "./lib/batchRunner";
 
-type ConfirmKind = "delete" | "purge" | "syncDir" | "copyDir" | "newFolder" | "newFile" | "rename" | "copy" | "move" | "extract" | "compress" | "overwrite";
+type ConfirmKind = "delete" | "purge" | "syncDir" | "copyDir" | "newFolder" | "newFile" | "rename" | "copy" | "move" | "extract" | "compress" | "overwrite" | "mount";
 type PaneSide = "left" | "right";
 type MenuAction =
   | "open" | "preview" | "download" | "rename" | "delete" | "copyPath" | "copyName"
@@ -458,7 +458,7 @@ const confirmForce = ref(false);
 const confirmForcePath = ref("");
 // R3-P2-5：跨栏 copy/move 冲突预检命中时挂起整批传输，弹「覆盖确认」后原样执行。
 const pendingPaneTransfer = ref<{ from: PaneSide; move: boolean; list: FileEntry[]; destPath: string }>();
-const confirmInput = computed(() => confirmKind.value === "newFolder" || confirmKind.value === "newFile" || confirmKind.value === "rename" || confirmKind.value === "syncDir" || confirmKind.value === "copyDir" || confirmKind.value === "copy" || confirmKind.value === "move" || confirmKind.value === "extract" || confirmKind.value === "compress");
+const confirmInput = computed(() => confirmKind.value === "newFolder" || confirmKind.value === "newFile" || confirmKind.value === "rename" || confirmKind.value === "syncDir" || confirmKind.value === "copyDir" || confirmKind.value === "copy" || confirmKind.value === "move" || confirmKind.value === "extract" || confirmKind.value === "compress" || confirmKind.value === "mount");
 // P2-2：危险确认列表走 i18n 七语（lib 侧 label 为英文兜底，路径类条目原样展示）。
 const confirmDangerList = computed(() =>
   confirmHits.value.map((hit) => {
@@ -486,6 +486,7 @@ const confirmLabel = computed(() => {
   if (confirmKind.value === "newFolder" || confirmKind.value === "newFile") return t("create");
   if (confirmKind.value === "rename") return t("save");
   if (confirmKind.value === "compress") return t("compressAction");
+  if (confirmKind.value === "mount") return t("mountConfirm");
   return t("confirm");
 });
 
@@ -551,7 +552,7 @@ const canMountToolbar = computed(() => sideConnectionId(toolbarTarget.value.side
 
 function mountToolbarTarget() {
   if (!canMountToolbar.value) return;
-  void startMount(paneDirPath(toolbarTarget.value.side));
+  openMountDialog(paneDirPath(toolbarTarget.value.side), toolbarTarget.value.side);
 }
 
 // 双栏开关不持久化；两侧侧栏状态分别持久化，切换一侧不影响另一侧。
@@ -1536,6 +1537,19 @@ async function onConfirm() {
         }
         break;
       }
+      case "mount": {
+        // 挂载位置：空 = sidecar 默认（~/dbx-files-mounts/<remote>）；显式
+        // 位置由后端 ensure_empty_mount_dir 校验（不存在自动建，非空报错）。
+        const point = confirmDraft.value.trim();
+        const result = await call<MountResult>("files/mount", {
+          connectionId: mountTargetConnectionId.value || connectionId.value,
+          strategy: "auto",
+          ...(confirmTarget.value.path ? { path: confirmTarget.value.path } : {}),
+          ...(point ? { mountPoint: point } : {}),
+        });
+        await handleMountResult(result);
+        break;
+      }
     }
     closeConfirm();
     refreshAuditPanel();
@@ -2217,7 +2231,7 @@ function menuAction(action: MenuAction) {
       void computeEntrySize(entry, side);
       break;
     case "mountLocal":
-      void startMount(entry.path);
+      openMountDialog(entry.path, side);
       break;
     case "copyPublicLink":
       void copyPublicLink(entry, side);
@@ -2333,7 +2347,7 @@ function sideMenuAction(action: "open" | "openOther" | "copyPath" | "copyName" |
     return;
   }
   if (action === "mountLocal") {
-    void startMount(target);
+    openMountDialog(target, side);
     return;
   }
   const value = action === "copyPath" ? target : name;
@@ -2352,23 +2366,47 @@ interface MountResult {
   fallbackReason?: string;
 }
 
-async function startMount(path?: string) {
+/** 挂载对话框：先选位置再挂载（工具栏/右键/侧栏/设置面板共用入口）。
+ * openMountDialog 固化目标连接——双栏下设置面板入口挂主连接，而不是活动栏。 */
+const mountTargetConnectionId = ref("");
+
+function openMountDialog(path?: string, side: PaneSide = "left") {
+  mountTargetConnectionId.value = sideConnectionId(side) ?? connectionId.value;
+  openConfirm("mount", {
+    title: { key: "mountToLocal" },
+    body: { key: "mountDialogBody" },
+    target: path ? { path } : {},
+    draft: "",
+  });
+}
+
+const canPickMountDir = computed(() => typeof window.dbxPlugin?.fileTransfer?.pickDirectory === "function");
+
+/** 系统目录选择器（宿主提供时）：选中即回填挂载位置。 */
+async function pickMountDirectory() {
+  const picker = window.dbxPlugin.fileTransfer?.pickDirectory;
+  if (!picker) return;
   try {
-    const result = await call<MountResult>(
-      "files/mount",
-      path ? { strategy: "auto", path } : { strategy: "auto" },
-    );
-    if (result.strategy === "webdav" && result.gatewayUrl) {
-      await window.dbxPlugin.clipboard?.writeText(result.gatewayUrl);
-      showNotice(t("mountGatewayCopied"));
-    } else {
-      showNotice(t("mountRcloneOk", { point: result.mountPoint ?? "" }));
-    }
-    // 挂载面板开着时同步刷新（工具栏/右键入口挂载后状态即时可见）。
-    if (settingsOpen.value && settingsCategory.value === "mounts") void loadMounts();
-  } catch (error) {
-    showNotice(t("mountFailed", { message: errorMessage(error) }));
+    const picked = await picker();
+    if (!picked) return;
+    const target = typeof picked === "string" ? picked : picked.path;
+    if (target) confirmDraft.value = target;
+  } catch {
+    /* canceled native picker is intentionally silent */
   }
+}
+
+async function handleMountResult(result: MountResult) {
+  if (result.strategy === "webdav" && result.gatewayUrl) {
+    await window.dbxPlugin.clipboard?.writeText(result.gatewayUrl);
+    showNotice(t("mountGatewayFallback", { reason: result.fallbackReason ?? "" }));
+    return;
+  }
+  showNotice(t("mountRcloneOk", { point: result.mountPoint ?? "" }));
+  // 「直接挂载上去」：挂完立即在文件管理器里打开挂载点（后端 reveal 只
+  // 放行活跃挂载点，不是任意路径入口）；reveal 失败不影响挂载结果。
+  if (result.mountPoint) await call("files/local/reveal", { path: result.mountPoint }).catch(() => undefined);
+  if (settingsOpen.value && settingsCategory.value === "mounts") void loadMounts();
 }
 
 // ---- 设置弹窗「本地挂载」面板：files/mountStatus 列表 + 逐条卸载 ----------------
@@ -2978,7 +3016,7 @@ onBeforeUnmount(() => {
             <div v-else class="wb-settings-pane" :aria-busy="mountsLoading">
               <p class="wb-settings-help">{{ t("mounts.help") }}</p>
               <div class="wb-mounts-actions">
-                <button class="wb-toolbar-button" :disabled="mountsLoading" @click="startMount()"><HardDrive /> {{ t("mounts.mountNow") }}</button>
+                <button class="wb-toolbar-button" :disabled="mountsLoading" @click="openMountDialog()"><HardDrive /> {{ t("mounts.mountNow") }}</button>
                 <button class="wb-icon-button wb-icon-neutral" v-tip="t('refresh')" :disabled="mountsLoading" @click="loadMounts"><RefreshCw :class="{ 'wb-spin': mountsLoading }" /></button>
               </div>
               <p v-if="mountsError" class="wb-settings-error" role="alert">{{ t("mounts.loadFailed") }}</p>
@@ -3074,13 +3112,25 @@ onBeforeUnmount(() => {
       @confirm="onConfirm"
       @cancel="closeConfirm"
     >
-      <label v-if="confirmInput" style="display: flex; flex-direction: column; gap: 4px">
+      <label v-if="confirmInput && confirmKind !== 'mount'" style="display: flex; flex-direction: column; gap: 4px">
         <span v-if="confirmKind === 'newFolder'">{{ t("newFolderPlaceholder") }}</span>
         <span v-else-if="confirmKind === 'newFile'">{{ t("newFilePlaceholder") }}</span>
         <span v-else-if="confirmKind === 'rename'">{{ t("renameTitle") }}</span>
         <span v-else>{{ t("pathPlaceholder") }}</span>
         <input v-model="confirmDraft" spellcheck="false" @keydown.enter.prevent="!confirmDanger && onConfirm()" />
       </label>
+      <!-- 挂载对话框：目标连接/子目录在标题区说明，这里选本机挂载位置
+           （留空 = sidecar 默认；宿主提供 pickDirectory 时可系统选目录）。 -->
+      <div v-if="confirmKind === 'mount'" style="display: flex; flex-direction: column; gap: 6px">
+        <label style="display: flex; flex-direction: column; gap: 4px">
+          <span>{{ t("mountPointLabel") }}</span>
+          <input v-model="confirmDraft" class="wb-mono" spellcheck="false" :placeholder="t('mountPointPlaceholder')" @keydown.enter.prevent="onConfirm()" />
+        </label>
+        <div style="display: flex; align-items: center; gap: 8px">
+          <button v-if="canPickMountDir" class="wb-toolbar-button" type="button" @click="pickMountDirectory">{{ t("mountChooseDirectory") }}</button>
+          <span class="wb-muted" style="font-size: 11px">{{ t("mountPointHint") }}</span>
+        </div>
+      </div>
     </ConfirmDialog>
 
     <!-- 审计中#15：清空传输历史二次确认（危险度低于删文件，无需 danger 态）。 -->

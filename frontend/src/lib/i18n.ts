@@ -64,7 +64,13 @@ export const messages = {
     // 本地挂载（docs/MOUNT.zh-CN.md M1）：rclone mount 优先，WebDAV 网关兜底
     mountToLocal: "Mount to local",
     mountRcloneOk: "Mounted read-only at {point}",
-    mountGatewayCopied: "WebDAV gateway URL copied — connect from your file manager to mount it (read-only)",
+    mountGatewayFallback: "No FUSE driver on this machine — gateway URL copied ({reason}). Paste it into your file manager's \"Connect to server\" to mount (read-only).",
+    mountDialogBody: "Mount the connection (or a subdirectory) read-only into your local file system: with a FUSE driver it mounts at the location below; without one it falls back to a loopback WebDAV gateway (copy the URL and connect from your file manager).",
+    mountPointLabel: "Mount point",
+    mountPointPlaceholder: "Leave empty for the default location (~/dbx-files-mounts/<connection>)",
+    mountPointHint: "The directory must be empty; missing ones are created automatically.",
+    mountChooseDirectory: "Choose…",
+    mountConfirm: "Mount",
     mountFailed: "Mount failed: {message}",
     // 独立设置弹窗（对标 ssh settings-modal）：分类导航 + 挂载面板
     settingsNav: {
@@ -338,7 +344,13 @@ export const messages = {
     copiedPublicLink: "Enlace público copiado",
     mountToLocal: "Montar en local",
     mountRcloneOk: "Montado en solo lectura en {point}",
-    mountGatewayCopied: "URL del gateway WebDAV copiada: conéctala desde tu gestor de archivos (solo lectura)",
+    mountGatewayFallback: "No hay driver FUSE en esta máquina: URL del gateway copiada ({reason}). Pégala en «Conectar con el servidor» de tu gestor de archivos (solo lectura).",
+    mountDialogBody: "Monta la conexión (o un subdirectorio) en solo lectura en tu sistema de archivos: con driver FUSE se monta en la ruta indicada abajo; sin él, se usa una pasarela WebDAV en localhost (copia la URL y conéctala desde tu gestor de archivos).",
+    mountPointLabel: "Punto de montaje",
+    mountPointPlaceholder: "Vacío para la ubicación predeterminada (~/dbx-files-mounts/<conexión>)",
+    mountPointHint: "El directorio debe estar vacío; los que no existan se crean automáticamente.",
+    mountChooseDirectory: "Elegir…",
+    mountConfirm: "Montar",
     mountFailed: "Error al montar: {message}",
     // 独立设置弹窗（对标 ssh settings-modal）：分类导航 + 挂载面板
     settingsNav: {
@@ -602,7 +614,13 @@ export const messages = {
     copiedPublicLink: "Link pubblico copiato",
     mountToLocal: "Monta in locale",
     mountRcloneOk: "Montato in sola lettura su {point}",
-    mountGatewayCopied: "URL del gateway WebDAV copiato: connettiti dal file manager per montarlo (sola lettura)",
+    mountGatewayFallback: "Nessun driver FUSE su questa macchina: URL del gateway copiato ({reason}). Incollalo in «Connetti al server» del file manager (sola lettura).",
+    mountDialogBody: "Monta la connessione (o una sottocartella) in sola lettura nel file system locale: con un driver FUSE si monta nel percorso indicato sotto; senza, si usa un gateway WebDAV su localhost (copia l'URL e connettiti dal file manager).",
+    mountPointLabel: "Punto di mount",
+    mountPointPlaceholder: "Vuoto per la posizione predefinita (~/dbx-files-mounts/<connessione>)",
+    mountPointHint: "La cartella deve essere vuota; quelle mancanti vengono create automaticamente.",
+    mountChooseDirectory: "Scegli…",
+    mountConfirm: "Monta",
     mountFailed: "Montaggio non riuscito: {message}",
     // 独立设置弹窗（对标 ssh settings-modal）：分类导航 + 挂载面板
     settingsNav: {
@@ -866,7 +884,13 @@ export const messages = {
     copiedPublicLink: "公開リンクをコピーしました",
     mountToLocal: "ローカルにマウント",
     mountRcloneOk: "読み取り専用で {point} にマウントしました",
-    mountGatewayCopied: "WebDAV ゲートウェイの URL をコピーしました — ファイルマネージャーの「サーバへ接続」で貼り付けてマウントしてください（読み取り専用）",
+    mountGatewayFallback: "このマシンには FUSE ドライバーがないため、ゲートウェイの URL をコピーしました（{reason}）。ファイルマネージャーの「サーバへ接続」に貼り付けてマウントしてください（読み取り専用）。",
+    mountDialogBody: "接続（またはサブディレクトリ）を読み取り専用でローカルファイルシステムにマウントします。FUSE ドライバーがあれば下の場所にマウントし、なければループバックの WebDAV ゲートウェイにフォールバックします（URL をコピーしてファイルマネージャーから接続）。",
+    mountPointLabel: "マウントポイント",
+    mountPointPlaceholder: "空欄で既定の場所（~/dbx-files-mounts/<接続名>）",
+    mountPointHint: "ディレクトリは空である必要があります。存在しない場合は自動的に作成されます。",
+    mountChooseDirectory: "選択…",
+    mountConfirm: "マウント",
     mountFailed: "マウントに失敗しました: {message}",
     // 独立设置弹窗（对标 ssh settings-modal）：分类导航 + 挂载面板
     settingsNav: {
@@ -1130,7 +1154,13 @@ export const messages = {
     copiedPublicLink: "Link público copiado",
     mountToLocal: "Montar localmente",
     mountRcloneOk: "Montado somente leitura em {point}",
-    mountGatewayCopied: "URL do gateway WebDAV copiada — conecte pelo gerenciador de arquivos para montar (somente leitura)",
+    mountGatewayFallback: "Sem driver FUSE nesta máquina — URL do gateway copiada ({reason}). Cole no \"Conectar ao servidor\" do gerenciador de arquivos para montar (somente leitura).",
+    mountDialogBody: "Monta a conexão (ou um subdiretório) somente leitura no sistema de arquivos local: com driver FUSE monta no local indicado abaixo; sem ele, usa um gateway WebDAV local (copie a URL e conecte pelo gerenciador de arquivos).",
+    mountPointLabel: "Ponto de montagem",
+    mountPointPlaceholder: "Vazio para o local padrão (~/dbx-files-mounts/<conexão>)",
+    mountPointHint: "O diretório deve estar vazio; os inexistentes são criados automaticamente.",
+    mountChooseDirectory: "Escolher…",
+    mountConfirm: "Montar",
     mountFailed: "Falha ao montar: {message}",
     // 独立设置弹窗（对标 ssh settings-modal）：分类导航 + 挂载面板
     settingsNav: {
@@ -1395,7 +1425,13 @@ export const messages = {
     // 本地挂载（docs/MOUNT.zh-CN.md M1）：rclone mount 优先，WebDAV 网关兜底
     mountToLocal: "挂载到本机",
     mountRcloneOk: "已只读挂载到 {point}",
-    mountGatewayCopied: "网关地址已复制：在文件管理器「连接服务器」粘贴即可挂载（只读）",
+    mountGatewayFallback: "本机缺少 FUSE 驱动，已复制网关地址（{reason}）——在文件管理器「连接服务器」粘贴即可挂载（只读）",
+    mountDialogBody: "把连接（或其子目录）只读挂载进本机文件系统：有 FUSE 驱动时挂到下方位置；缺少 FUSE 时自动回退为本机 WebDAV 网关（复制地址后由文件管理器「连接服务器」完成挂载）。",
+    mountPointLabel: "挂载位置",
+    mountPointPlaceholder: "留空使用默认位置（~/dbx-files-mounts/<连接名>）",
+    mountPointHint: "目录须为空，不存在会自动创建。",
+    mountChooseDirectory: "选择…",
+    mountConfirm: "挂载",
     mountFailed: "挂载失败：{message}",
     // 独立设置弹窗（对标 ssh settings-modal）：分类导航 + 挂载面板
     settingsNav: {
@@ -1659,7 +1695,13 @@ export const messages = {
     copiedPublicLink: "公開連結已複製",
     mountToLocal: "掛載到本機",
     mountRcloneOk: "已唯讀掛載到 {point}",
-    mountGatewayCopied: "網關位址已複製：在檔案管理器「連線伺服器」貼上即可掛載（唯讀）",
+    mountGatewayFallback: "本機缺少 FUSE 驅動，已複製閘道位址（{reason}）——在檔案管理器「連線伺服器」貼上即可掛載（唯讀）",
+    mountDialogBody: "把連線（或其子目錄）唯讀掛載進本機檔案系統：有 FUSE 驅動時掛到下方位置；缺少 FUSE 時自動回退為本機 WebDAV 閘道（複製位址後由檔案管理器「連線伺服器」完成掛載）。",
+    mountPointLabel: "掛載位置",
+    mountPointPlaceholder: "留空使用預設位置（~/dbx-files-mounts/<連線名>）",
+    mountPointHint: "目錄須為空，不存在會自動建立。",
+    mountChooseDirectory: "選擇…",
+    mountConfirm: "掛載",
     mountFailed: "掛載失敗：{message}",
     // 独立设置弹窗（对标 ssh settings-modal）：分类导航 + 挂载面板
     settingsNav: {

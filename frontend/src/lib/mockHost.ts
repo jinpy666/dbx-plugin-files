@@ -638,6 +638,11 @@ export function installMockHost() {
           .map(([mountId, row]) => ({ mountId, strategy: row.strategy, readOnly: true, gatewayPort: row.gatewayPort, mounted: true }));
         return { mounts };
       }
+      case "files/local/reveal": {
+        const target = str("path");
+        if (!target) throw new Error("Missing path");
+        return { success: true };
+      }
       case "files/unmount": {
         const mountId = str("mountId");
         if (mountId && !mockMounts.delete(mountId)) throw new Error("Mount not found");

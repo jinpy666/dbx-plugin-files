@@ -137,13 +137,18 @@ describe("standalone settings dialog", () => {
 });
 
 describe("toolbar mount icon", () => {
-  it("mounts the active pane directory via files/mount", async () => {
+  it("opens the mount dialog and mounts on confirm", async () => {
     mountWorkbench();
     await settle();
     const spy = vi
       .spyOn(window.dbxPlugin, "invoke")
       .mockResolvedValueOnce({ mountId: "m9", strategy: "rclone", mountPoint: "/home/x/mnt" });
     await toolbarButton(workbenchMessage("en", "mountToLocal"))!.trigger("click");
+    await settle();
+    // 对话框先行：标题即挂载入口文案，确认后才发起 files/mount。
+    expect(wrapper!.find(".wb-dialog").text()).toContain(workbenchMessage("en", "mountToLocal"));
+    expect(spy).not.toHaveBeenCalled();
+    await wrapper!.find(".wb-dialog .wb-dialog-primary").trigger("click");
     await settle();
     expect(spy).toHaveBeenCalledWith("files/mount", expect.objectContaining({ strategy: "auto", path: expect.any(String) }), undefined);
     expect(wrapper!.get(".wb-notice").text()).toContain("Mounted read-only at");

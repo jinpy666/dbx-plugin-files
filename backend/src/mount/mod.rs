@@ -501,6 +501,24 @@ fn snapshot_for_connection(
         .collect())
 }
 
+/// Whether `path` is the live local mount point of an active mount record.
+/// WebDAV gateway mounts answer on loopback and have no local directory, so
+/// only kernel (rclone) mounts qualify — this gates "reveal the mount in the
+/// file manager" so `files/local/reveal` never becomes an open-anything path.
+pub fn is_active_mount_point(mounts: &MountTable, path: &Path) -> Result<bool, String> {
+    Ok(lock_table(mounts)?
+        .values()
+        .any(|record| backend_mounts_path(&record.backend, path)))
+}
+
+/// Pure match behind `is_active_mount_point` (testable without a WorkGuard).
+fn backend_mounts_path(backend: &MountBackend, path: &Path) -> bool {
+    match backend {
+        MountBackend::Rclone { mount_point } => mount_point == path,
+        MountBackend::WebDav { .. } => false,
+    }
+}
+
 fn backend_snapshot(backend: &MountBackend) -> MountBackend {
     match backend {
         MountBackend::Rclone { mount_point } => MountBackend::Rclone {
@@ -629,6 +647,60 @@ pub async fn mount_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- mount-point reveal allowlist ---------------------------------------
+
+    fn table() -> MountTable {
+        Arc::new(std::sync::Mutex::new(HashMap::new()))
+    }
+
+    #[test]
+    fn active_mount_point_matches_kernel_mounts_only() {
+        assert!(backend_mounts_path(
+            &MountBackend::Rclone { mount_point: PathBuf::from("/Volumes/dbx") },
+            Path::new("/Volumes/dbx"),
+        ));
+        assert!(!backend_mounts_path(
+            &MountBackend::Rclone { mount_point: PathBuf::from("/Volumes/dbx") },
+            Path::new("/Volumes/other"),
+        ));
+        // WebDAV gateway serves loopback — there is no local directory.
+        let gateway = MountBackend::WebDav {
+            gateway: webdav_gateway::GatewayHandle {
+                port: 1,
+                token: "t".to_string(),
+                shutdown: Arc::new(tokio::sync::Notify::new()),
+            },
+        };
+        assert!(!backend_mounts_path(&gateway, Path::new("/Volumes/dbx")));
+    }
+
+    #[test]
+    fn active_mount_point_over_empty_table_is_false() {
+        assert!(!is_active_mount_point(&table(), Path::new("/anywhere")).unwrap());
+    }
+
+    #[test]
+    fn active_mount_point_finds_registered_record() {
+        let mounts = table();
+        lock_table(&mounts)
+            .unwrap()
+            .insert(
+                "m1".to_string(),
+                MountRecord {
+                    mount_id: "m1".to_string(),
+                    connection_id: "c1".to_string(),
+                    strategy: "rclone".to_string(),
+                    fs: "remote:/".to_string(),
+                    backend: MountBackend::Rclone { mount_point: PathBuf::from("/tmp/mnt") },
+                    fallback_reason: None,
+                    created_at_ms: 0,
+                    _work: rclone::WorkGuard::for_tests(),
+                },
+            );
+        assert!(is_active_mount_point(&mounts, Path::new("/tmp/mnt")).unwrap());
+        assert!(!is_active_mount_point(&mounts, Path::new("/elsewhere")).unwrap());
+    }
 
     // -- strategy matrix ----------------------------------------------------
 
