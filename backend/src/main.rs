@@ -429,6 +429,15 @@ impl Plugin {
                         )
                         .await?;
                         self.audit_id(&request.connection_id, method, &request.path, "ok")?;
+                        // Best-effort mount-view refresh: the parent listing
+                        // changed, active rclone mounts re-read it (batch 5).
+                        mount::best_effort_refresh_mount_caches(
+                            &self.rclone,
+                            &self.mounts,
+                            &request.connection_id,
+                            Some(&parent_dir_of(&request.path)),
+                        )
+                        .await;
                     }
                     _ => {
                         ensure_binding_deletable(&binding)?;
@@ -442,6 +451,15 @@ impl Plugin {
                         )
                         .await?;
                         self.audit_id(&request.connection_id, method, &request.path, "ok")?;
+                        // Purge emptied the directory itself — the listing
+                        // that changed is its parent's (batch 5 hook).
+                        mount::best_effort_refresh_mount_caches(
+                            &self.rclone,
+                            &self.mounts,
+                            &request.connection_id,
+                            Some(&parent_dir_of(&request.path)),
+                        )
+                        .await;
                     }
                 }
                 Ok(json!({ "success": true }))
@@ -1261,6 +1279,33 @@ impl Plugin {
                 )
                 .await
             }
+            // VFS cache management (batch 5): rclone-strategy mounts refresh
+            // their directory cache / report stats through the rcd's vfs/*
+            // endpoints; WebDAV gateway mounts answer `skipped` (no VFS).
+            "files/mount/refresh" => {
+                let connection_id = connection_id_param(&params)?.to_string();
+                let request: model::MountRefreshRequest = parse(params)?;
+                mount::refresh_mount_caches(
+                    &self.rclone,
+                    &self.mounts,
+                    &connection_id,
+                    request.mount_id.as_deref(),
+                    request.path.as_deref(),
+                    request.recursive.unwrap_or(false),
+                )
+                .await
+            }
+            "files/mount/stats" => {
+                let connection_id = connection_id_param(&params)?.to_string();
+                let request: model::MountStatsRequest = parse(params)?;
+                mount::mount_vfs_stats(
+                    &self.rclone,
+                    &self.mounts,
+                    &connection_id,
+                    request.mount_id.as_deref(),
+                )
+                .await
+            }
             "files/transfer/status" => {
                 let request: model::JobRequest = parse(params)?;
                 // rclone mirrors first (single-file + sync jobs). Lock order
@@ -1748,6 +1793,20 @@ impl Plugin {
                     None,
                     emitter,
                 );
+                // Best-effort mount-view refresh (batch 5): the upload changed
+                // the target file's parent listing, so active rclone-strategy
+                // mounts of the connection re-read it. Terminal job records
+                // survive completion, so the wire path is still readable here.
+                let changed_dir = rclone_lock(&self.rclone.jobs)
+                    .get(task_id)
+                    .map(|job| parent_dir_of(&job.remote_path));
+                mount::best_effort_refresh_mount_caches(
+                    &self.rclone,
+                    &self.mounts,
+                    &connection_id,
+                    changed_dir.as_deref(),
+                )
+                .await;
                 Ok(())
             }
             Err(error) => {
@@ -2086,6 +2145,18 @@ fn ensure_deletable(connection: &StoredConnection) -> Result<(), String> {
 #[cfg(test)]
 fn refuse_root_purge(connection: &StoredConnection, path: &str) -> Result<(), String> {
     refuse_purge_of_root(&connection.root, path)
+}
+
+/// Parent directory (plugin-space absolute) of a mutated path — the
+/// directory whose listing a file/dir mutation actually changed and which
+/// the mount VFS auto-refresh re-reads: `/a/b.txt` → `/a`, `/a` → `/`,
+/// `/a/b/` → `/a`. Never returns `""`.
+fn parent_dir_of(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/');
+    match trimmed.rsplit_once('/') {
+        Some((parent, _)) if !parent.is_empty() => parent.to_string(),
+        _ => "/".to_string(),
+    }
 }
 
 /// Root-string twin of [`refuse_root_purge`] for the rclone arms (bindings

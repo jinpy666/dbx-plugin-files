@@ -351,6 +351,44 @@ impl RcClient {
         .await
     }
 
+    /// Refreshes the directory cache of an ACTIVE VFS (`vfs/refresh`).
+    /// `fs` selects the mount (the same fs string `mount/mount` was given —
+    /// rclone canonicalizes both sides, so `None` picks the only VFS when
+    /// exactly one is active). `dir` is the mount-root-relative directory
+    /// to re-read (`None` = the mount root); `recursive` walks the whole
+    /// subtree. Live-verified v1.75.1 against rcd + source-pinned
+    /// (`vfs/rc.go`): `recursive` is parsed with `strconv.ParseBool` from a
+    /// STRING — a JSON boolean answers `value must be string
+    /// "recursive"=true`; and there is no `remote` param on this endpoint —
+    /// leftover request keys must carry a `dir` prefix or rclone answers
+    /// `unknown key`.
+    pub async fn vfs_refresh(
+        &self,
+        fs: &str,
+        dir: Option<&str>,
+        recursive: bool,
+    ) -> Result<Value, RcError> {
+        let mut payload = serde_json::json!({
+            "fs": fs,
+            "recursive": if recursive { "true" } else { "false" },
+        });
+        if let Some(dir) = dir
+            .map(|dir| dir.trim_matches('/'))
+            .filter(|dir| !dir.is_empty())
+        {
+            payload["dir"] = Value::String(dir.to_string());
+        }
+        self.call("vfs/refresh", &payload).await
+    }
+
+    /// Stats of an ACTIVE VFS (`vfs/stats`): `{fs, inUse, metadataCache,
+    /// opt}` plus `diskCache` when the mount runs a VFS cache mode > off
+    /// (byte usage lives in `diskCache.bytesUsed`). Only `fs` is consumed;
+    /// this endpoint ignores rather than validates extra keys.
+    pub async fn vfs_stats(&self, fs: &str) -> Result<Value, RcError> {
+        self.call("vfs/stats", &serde_json::json!({ "fs": fs })).await
+    }
+
     /// rc-serve URL for byte reads. rcserver routes GET paths with the
     /// `^\[(.*?)\](.*)$` regex, so the fs component MUST be bracket-wrapped —
     /// plain forms 404 for every path (live-verified v1.68–1.75). Idempotent:

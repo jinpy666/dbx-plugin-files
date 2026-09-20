@@ -734,6 +734,34 @@ export function installMockHost() {
           .map(([mountId, row]) => ({ mountId, strategy: row.strategy, readOnly: true, gatewayPort: row.gatewayPort, mounted: true }));
         return { mounts };
       }
+      // VFS 缓存管理（批次5）：mock 只有 webdav 兜底行 → refresh 全部计入
+      // skipped；stats 无 rclone 行，只回空挂载列表（形状与真实 sidecar 一致）。
+      case "files/mount/refresh": {
+        const mountId = str("mountId");
+        let refreshed = 0;
+        let skipped = 0;
+        const wantedId = p.connectionId == null ? null : connectionIdOf(p.connectionId);
+        for (const [id, row] of mockMounts.entries()) {
+          if (mountId && id !== mountId) continue;
+          if (wantedId != null && row.connectionId !== wantedId) continue;
+          if (row.strategy === "rclone") refreshed += 1;
+          else skipped += 1;
+        }
+        if (mountId && refreshed + skipped === 0) throw new Error("Mount not found");
+        return { refreshed, skipped, errors: [] };
+      }
+      case "files/mount/stats": {
+        const wanted = p.connectionId == null ? null : connectionIdOf(p.connectionId);
+        const mounts = [...mockMounts.entries()]
+          .filter(([, row]) => wanted == null || row.connectionId === wanted)
+          .filter(([, row]) => row.strategy === "rclone")
+          .map(([mountId]) => ({
+            mountId,
+            strategy: "rclone",
+            stats: { metadataCache: { dirs: 1, files: 0 } },
+          }));
+        return { mounts, skipped: mockMounts.size - mounts.length };
+      }
       case "files/local/reveal": {
         const target = str("path");
         if (!target) throw new Error("Missing path");

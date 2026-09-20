@@ -392,4 +392,123 @@ mod tests {
             .await
             .expect("unmount should succeed");
     }
+
+    // ---------------------------------------------------------------------
+    // VFS cache endpoints (batch 5). Behavior pinned against a live rcd in
+    // two layers, mirroring the skip conventions above.
+    // ---------------------------------------------------------------------
+
+    /// Without any mount, `vfs/refresh`/`vfs/stats` answer rclone's
+    /// business error naming the fs — this pins the endpoint paths, the
+    /// `fs` param spelling and the error-envelope surfacing (RcError::Rclone
+    /// with `no VFS found with name %q`), all without needing a FUSE mount.
+    #[tokio::test]
+    async fn vfs_endpoints_surface_rc_business_errors_without_a_mount() {
+        let Some(binary) = super::super::proc::resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let rcd = match super::super::proc::RcdHandle::start(&binary, None).await {
+            Ok(rcd) => rcd,
+            Err(error) => {
+                eprintln!("skipping: rcd spawn failed: {error}");
+                return;
+            }
+        };
+        let client = rcd.client();
+
+        let missing = "no VFS found with name";
+        for error in [
+            client
+                .vfs_stats("/tmp/dbx-not-a-mount")
+                .await
+                .expect_err("stats needs an active VFS")
+                .to_string(),
+            client
+                .vfs_refresh("/tmp/dbx-not-a-mount", None, false)
+                .await
+                .expect_err("refresh needs an active VFS")
+                .to_string(),
+            client
+                .vfs_refresh("/tmp/dbx-not-a-mount", Some("sub"), true)
+                .await
+                .expect_err("dir + recursive still need an active VFS")
+                .to_string(),
+        ] {
+            assert!(error.contains(missing), "unexpected rc error: {error}");
+        }
+    }
+
+    /// Full round-trip on a live mount: root refresh reports rclone's
+    /// canonical `{"result": {"": "OK"}}`, `vfs/stats` identifies the VFS
+    /// with a live `inUse` count. Skipped when the FUSE driver is absent —
+    /// the error-shape test above still pins the endpoint wiring there.
+    #[tokio::test]
+    async fn vfs_refresh_and_stats_roundtrip_on_a_live_mount() {
+        let Some(binary) = super::super::proc::resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let rcd = match super::super::proc::RcdHandle::start(&binary, None).await {
+            Ok(rcd) => rcd,
+            Err(error) => {
+                eprintln!("skipping: rcd spawn failed: {error}");
+                return;
+            }
+        };
+        let client = rcd.client();
+
+        let sandbox = tempfile::tempdir().expect("tempdir");
+        let source = sandbox.path().join("source");
+        std::fs::create_dir_all(&source).expect("source dir");
+        std::fs::write(source.join("hello.txt"), "hello vfs").expect("seed file");
+        let mount_point = sandbox.path().join("mnt");
+        std::fs::create_dir_all(&mount_point).expect("mountpoint dir");
+
+        let spec = MountSpec {
+            fs: source.display().to_string(),
+            mount_point: mount_point.clone(),
+            read_only: true,
+        };
+        if let Err(error) = mount(&client, &spec).await {
+            if error.is_unavailable() {
+                eprintln!("skipping: rclone mount unavailable on this host: {error}");
+                return;
+            }
+            panic!("mount failed with unexpected error: {error}");
+        }
+
+        // Non-recursive root refresh: the canonical OK lands under result[""].
+        let refreshed = client
+            .vfs_refresh(&spec.fs, None, false)
+            .await
+            .expect("vfs refresh");
+        assert_eq!(
+            refreshed
+                .get("result")
+                .and_then(|result| result.get(""))
+                .and_then(Value::as_str),
+            Some("OK"),
+            "unexpected refresh payload: {refreshed}"
+        );
+
+        // Stats: the VFS identifies itself by fs and counts the mount inUse.
+        let stats = client.vfs_stats(&spec.fs).await.expect("vfs stats");
+        assert_eq!(
+            stats.get("fs").and_then(Value::as_str),
+            Some(spec.fs.as_str()),
+            "unexpected stats payload: {stats}"
+        );
+        assert!(
+            stats
+                .get("inUse")
+                .and_then(Value::as_u64)
+                .map_or(false, |in_use| in_use >= 1),
+            "inUse missing or stale: {stats}"
+        );
+
+        unmount(&client, &mount_point)
+            .await
+            .expect("unmount should succeed");
+    }
 }

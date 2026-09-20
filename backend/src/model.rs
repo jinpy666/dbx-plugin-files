@@ -839,6 +839,32 @@ pub struct MountStatusRequest {
     pub mount_id: Option<String>,
 }
 
+/// `files/mount/refresh`: refresh the VFS dir cache of the connection's
+/// rclone-strategy mounts (WebDAV gateway mounts keep no VFS and count as
+/// skipped). `path` is the plugin-space absolute directory whose listing
+/// changed — it maps onto each mount's own root; absent = refresh at the
+/// mount root. `recursive` walks the subtree (large remotes can take a
+/// while; the rc client caps the call at 30s).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MountRefreshRequest {
+    #[serde(default)]
+    pub mount_id: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub recursive: Option<bool>,
+}
+
+/// `files/mount/stats`: per rclone-strategy mount `vfs/stats` (webdav
+/// mounts answer under `skipped`); omit `mountId` for every mount.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MountStatsRequest {
+    #[serde(default)]
+    pub mount_id: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TransfersListRequest {

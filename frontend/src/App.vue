@@ -2732,6 +2732,14 @@ const mountsLoading = ref(false);
 const mountsError = ref(false);
 const mountsList = ref<MountRow[]>([]);
 const unmountBusyId = ref("");
+const refreshBusyId = ref("");
+// vfs/stats 摘要（批次5）：mountId → 关键字段。diskCache 只有 VFS 缓存
+// 打开时才有，字段一律容错缺失。
+interface MountVfsStats {
+  diskCache?: { bytesUsed?: number };
+  metadataCache?: { dirs?: number; files?: number };
+}
+const mountStats = ref<Record<string, MountVfsStats>>({});
 
 async function loadMounts() {
   if (mountsLoading.value) return;
@@ -2744,6 +2752,53 @@ async function loadMounts() {
     mountsError.value = true;
   } finally {
     mountsLoading.value = false;
+  }
+  void loadMountStats();
+}
+
+/** vfs/stats 摘要（best-effort）：失败只清空摘要，不影响挂载列表本身。 */
+async function loadMountStats() {
+  try {
+    const result = await call<{ mounts: Array<{ mountId: string; stats?: MountVfsStats }> }>("files/mount/stats", {});
+    const next: Record<string, MountVfsStats> = {};
+    for (const row of result.mounts ?? []) {
+      if (row.stats) next[row.mountId] = row.stats;
+    }
+    mountStats.value = next;
+  } catch {
+    mountStats.value = {};
+  }
+}
+
+/** rclone 行展示缓存占用 + 目录/条目数（字段缺失就跳过该段）。 */
+function mountStatsText(mountId: string) {
+  const stats = mountStats.value[mountId];
+  if (!stats) return "";
+  const parts: string[] = [];
+  const bytes = stats.diskCache?.bytesUsed;
+  if (typeof bytes === "number") parts.push(t("mountStats.cacheBytes", { bytes: formatBytes(bytes) }));
+  const dirs = stats.metadataCache?.dirs;
+  if (typeof dirs === "number") parts.push(t("mountStats.dirs", { count: dirs }));
+  const files = stats.metadataCache?.files;
+  if (typeof files === "number") parts.push(t("mountStats.files", { count: files }));
+  return parts.join(" · ");
+}
+
+async function refreshMountCache(row: MountRow) {
+  if (refreshBusyId.value) return;
+  refreshBusyId.value = row.mountId;
+  try {
+    const result = await call<{ refreshed: number; skipped: number }>("files/mount/refresh", { mountId: row.mountId });
+    if (result.refreshed > 0) {
+      showNotice(t("mountRefresh.done", { refreshed: result.refreshed, skipped: result.skipped ?? 0 }));
+    } else {
+      showNotice(t("mountRefresh.skipped"));
+    }
+    await loadMounts();
+  } catch (cause) {
+    showError(cause);
+  } finally {
+    refreshBusyId.value = "";
   }
 }
 
@@ -3373,9 +3428,11 @@ onBeforeUnmount(() => {
                   <div class="wb-mounts-main">
                     <strong>{{ mountStrategyLabel(row.strategy) }}</strong>
                     <span class="wb-mono">{{ row.mountPoint ?? `:${row.gatewayPort ?? ""}` }}</span>
+                    <span v-if="mountStatsText(row.mountId)" class="wb-mounts-stats">{{ mountStatsText(row.mountId) }}</span>
                     <span v-if="row.mounted === false" class="wb-settings-error">{{ t("mounts.stale") }}</span>
                   </div>
                   <span class="wb-mounts-badge">{{ t("mounts.readOnly") }}</span>
+                  <button class="wb-icon-button wb-icon-neutral" :disabled="refreshBusyId === row.mountId" v-tip="t('mountRefresh.button')" @click="refreshMountCache(row)"><RefreshCw /></button>
                   <button class="wb-icon-button wb-icon-neutral" :disabled="unmountBusyId === row.mountId" v-tip="t('mounts.unmount')" @click="unmountMount(row)"><Eject /></button>
                 </li>
               </ul>

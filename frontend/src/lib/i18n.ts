@@ -96,6 +96,16 @@ export const messages = {
       rclone: "rclone mount",
       webdav: "WebDAV gateway",
     },
+    mountRefresh: {
+      button: "Refresh cache",
+      done: "Mount cache refreshed ({refreshed} refreshed, {skipped} skipped)",
+      skipped: "This mount keeps no VFS cache (the WebDAV gateway reads live)",
+    },
+    mountStats: {
+      cacheBytes: "cache {bytes}",
+      dirs: "{count} dirs",
+      files: "{count} files",
+    },
     // 平台「打开方式」预设 + 保存反馈 + 预览外部打开引导
     presetsTitle: "Detected applications",
     presetsHint: "Click to set as the default open-with app — the path is validated on this machine.",
@@ -438,6 +448,16 @@ export const messages = {
       rclone: "rclone mount",
       webdav: "Pasarela WebDAV",
     },
+    mountRefresh: {
+      button: "Actualizar caché",
+      done: "Caché del montaje actualizada ({refreshed} actualizados, {skipped} omitidos)",
+      skipped: "Este montaje no mantiene caché VFS (la pasarela WebDAV lee en directo)",
+    },
+    mountStats: {
+      cacheBytes: "caché {bytes}",
+      dirs: "{count} carpetas",
+      files: "{count} archivos",
+    },
     // 平台「打开方式」预设 + 保存反馈 + 预览外部打开引导
     presetsTitle: "Aplicaciones detectadas",
     presetsHint: "Haz clic para establecerla como aplicación predeterminada; la ruta se valida en esta máquina.",
@@ -769,6 +789,16 @@ export const messages = {
     mountStrategy: {
       rclone: "rclone mount",
       webdav: "Gateway WebDAV",
+    },
+    mountRefresh: {
+      button: "Aggiorna cache",
+      done: "Cache del mount aggiornata ({refreshed} aggiornati, {skipped} saltati)",
+      skipped: "Questo mount non mantiene cache VFS (il gateway WebDAV legge in diretta)",
+    },
+    mountStats: {
+      cacheBytes: "cache {bytes}",
+      dirs: "{count} cartelle",
+      files: "{count} file",
     },
     // 平台「打开方式」预设 + 保存反馈 + 预览外部打开引导
     presetsTitle: "Applicazioni rilevate",
@@ -1102,6 +1132,16 @@ export const messages = {
       rclone: "rclone マウント",
       webdav: "WebDAV ゲートウェイ",
     },
+    mountRefresh: {
+      button: "キャッシュを更新",
+      done: "マウントキャッシュを更新しました（{refreshed} 件更新、{skipped} 件対象外）",
+      skipped: "このマウントには VFS キャッシュがありません（WebDAV ゲートウェイは都度読み取り）",
+    },
+    mountStats: {
+      cacheBytes: "キャッシュ {bytes}",
+      dirs: "ディレクトリ {count}",
+      files: "ファイル {count}",
+    },
     // 平台「打开方式」预设 + 保存反馈 + 预览外部打开引导
     presetsTitle: "検出されたアプリ",
     presetsHint: "クリックで既定の起動アプリに設定します。パスはこのマシンで検証されます。",
@@ -1433,6 +1473,16 @@ export const messages = {
     mountStrategy: {
       rclone: "rclone mount",
       webdav: "Gateway WebDAV",
+    },
+    mountRefresh: {
+      button: "Atualizar cache",
+      done: "Cache da montagem atualizado ({refreshed} atualizados, {skipped} ignorados)",
+      skipped: "Esta montagem não mantém cache VFS (o gateway WebDAV lê em tempo real)",
+    },
+    mountStats: {
+      cacheBytes: "cache {bytes}",
+      dirs: "{count} pastas",
+      files: "{count} arquivos",
     },
     // 平台「打开方式」预设 + 保存反馈 + 预览外部打开引导
     presetsTitle: "Aplicativos detectados",
@@ -1767,6 +1817,16 @@ export const messages = {
       rclone: "rclone 挂载",
       webdav: "WebDAV 网关",
     },
+    mountRefresh: {
+      button: "刷新缓存",
+      done: "挂载缓存已刷新（{refreshed} 个已刷新，{skipped} 个跳过）",
+      skipped: "该挂载没有 VFS 缓存（WebDAV 网关实时读取）",
+    },
+    mountStats: {
+      cacheBytes: "缓存 {bytes}",
+      dirs: "{count} 个目录",
+      files: "{count} 个文件",
+    },
     // 平台「打开方式」预设 + 保存反馈 + 预览外部打开引导
     presetsTitle: "检测到的应用",
     presetsHint: "点击设为默认打开应用，路径会在本机校验。",
@@ -2098,6 +2158,16 @@ export const messages = {
     mountStrategy: {
       rclone: "rclone 掛載",
       webdav: "WebDAV 閘道",
+    },
+    mountRefresh: {
+      button: "重新整理快取",
+      done: "掛載快取已重新整理（{refreshed} 個已重新整理，{skipped} 個略過）",
+      skipped: "該掛載沒有 VFS 快取（WebDAV 閘道即時讀取）",
+    },
+    mountStats: {
+      cacheBytes: "快取 {bytes}",
+      dirs: "{count} 個目錄",
+      files: "{count} 個檔案",
     },
     // 平台「打开方式」预设 + 保存反馈 + 预览外部打开引导
     presetsTitle: "偵測到的應用程式",
