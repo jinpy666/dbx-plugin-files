@@ -51,6 +51,7 @@ import struct
 import sys
 import tempfile
 import time
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -471,6 +472,54 @@ def scenario_read_only(client: SidecarClient, section: str, connection_id: str, 
     runner.step("read-only-list-ok", _read_ok)
 
 
+def scenario_mount(runner: Runner, base: str) -> None:
+    """docs/MOUNT.zh-CN.md M1: files/mount with the auto strategy.
+
+    Containers usually lack /dev/fuse, so `auto` degrades to the read-only
+    WebDAV gateway; hosts with a working FUSE stack exercise the rclone
+    kernel mount instead. Either way the mounted content must be readable
+    over the returned surface, then unmount cleanly."""
+    cid = runner.connection_id
+    mount_dir = f"{base}/dir"
+    state: dict = {}
+
+    def _mount():
+        result = runner.call("files/mount", {"connectionId": cid, "path": mount_dir, "strategy": "auto"})
+        assert result.get("strategy") in ("rclone", "webdav"), f"unknown strategy: {result}"
+        assert result.get("readOnly") is True, f"mount must be read-only: {result}"
+        if result["strategy"] == "webdav":
+            assert result.get("gatewayUrl"), f"webdav mount missing gatewayUrl: {result}"
+        else:
+            assert result.get("mountPoint"), f"rclone mount missing mountPoint: {result}"
+        state.update(result)
+    runner.step("mount-auto", _mount)
+
+    def _read_through():
+        payload = b"hello files"
+        if state.get("strategy") == "webdav":
+            url = f"{state['gatewayUrl']}hello.txt"
+            with urllib.request.urlopen(url, timeout=10) as response:
+                body = response.read()
+            assert body == payload, f"gateway read mismatch: {body!r}"
+        else:
+            point = Path(state["mountPoint"]) / "hello.txt"
+            assert point.read_bytes() == payload, "kernel mount read mismatch"
+    runner.step("mount-read-through", _read_through)
+
+    def _status():
+        result = runner.call("files/mountStatus", {"connectionId": cid})
+        mounts = result.get("mounts", [])
+        assert any(m.get("mountId") == state["mountId"] for m in mounts), f"mount missing from status: {mounts}"
+    runner.step("mount-status", _status)
+
+    def _unmount():
+        result = runner.call("files/unmount", {"connectionId": cid, "mountId": state["mountId"]})
+        assert state["mountId"] in result.get("unmounted", []), f"unmount missed the mount: {result}"
+        after = runner.call("files/mountStatus", {"connectionId": cid}).get("mounts", [])
+        assert not after, f"mounts left after unmount: {after}"
+    runner.step("unmount", _unmount)
+
+
 # --------------------------------------------------------------------------
 # Sections
 # --------------------------------------------------------------------------
@@ -650,6 +699,7 @@ def run_core_sections(client: SidecarClient, fs_root: str) -> None:
         scenario_capabilities(runner)
         scenario_quick_paths(runner, expect_user_dirs=False)
         scenario_structure(runner, base)
+        scenario_mount(runner, base)
         scenario_audit(runner)
         scenario_transfer_roundtrip(runner, base)
         scenario_archive(runner, base)
