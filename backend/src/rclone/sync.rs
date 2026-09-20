@@ -1079,6 +1079,80 @@ mod tests {
         drop(rcd);
     }
 
+    /// `operations/list_filtered` (files/search base): recursive, files-only,
+    /// case-insensitive substring pruning — directories without matches are
+    /// pruned by rclone itself (live-verified v1.75.1).
+    #[tokio::test]
+    async fn list_filtered_prunes_non_matching_subtrees() {
+        let Some(binary) = resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
+        let root = tempfile::tempdir().expect("root");
+        write_file(&root.path().join("Report-2024.txt"), "hit");
+        write_file(&root.path().join("unrelated.log"), "miss");
+        write_file(&root.path().join("deep").join("old-report.dat"), "hit");
+        write_file(&root.path().join("empty-here").join("nothing.txt"), "miss");
+        let client = rcd.client();
+        let fs = root.path().to_string_lossy().into_owned();
+        let result = client
+            .operations_list_filtered(&fs, "", "**report**", true)
+            .await
+            .expect("filtered list");
+        let paths: Vec<String> = result
+            .get("list")
+            .and_then(Value::as_array)
+            .map(|array| {
+                array
+                    .iter()
+                    .filter_map(|entry| entry.get("Path").and_then(Value::as_str))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(paths.iter().any(|path| path.contains("Report-2024.txt")), "{paths:?}");
+        assert!(paths.iter().any(|path| path.contains("old-report.dat")), "{paths:?}");
+        assert!(!paths.iter().any(|path| path.contains("unrelated")), "{paths:?}");
+        assert!(!paths.iter().any(|path| path.contains("nothing")), "empty subtrees pruned: {paths:?}");
+    }
+
+    /// `operations/copyurl` (files/copyurl base): the rcd host fetches the
+    /// URL and uploads the bytes — exercised here against a loopback HTTP
+    /// server serving one file (same spawn pattern as the webdav tests).
+    #[tokio::test]
+    async fn copyurl_pulls_from_a_local_http_url() {
+        use std::io::{Read as _, Write as _};
+        let Some(binary) = resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().expect("addr").port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buffer = [0u8; 4096];
+            let _ = stream.read(&mut buffer);
+            let body = b"downloaded-bytes";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.write_all(body);
+        });
+        let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
+        let dst = tempfile::tempdir().expect("dst");
+        let client = rcd.client();
+        let fs = dst.path().to_string_lossy().into_owned();
+        client
+            .operations_copyurl(&fs, "pulled.bin", &format!("http://127.0.0.1:{port}/file.bin"), false)
+            .await
+            .expect("copyurl");
+        server.join().expect("server thread");
+        assert_eq!(std::fs::read(dst.path().join("pulled.bin")).expect("read"), b"downloaded-bytes");
+    }
+
     /// `core/bwlimit` set + read roundtrip on the shared rcd (live-verified
     /// shape: the response echoes the canonical rate string, "off" clears).
     #[tokio::test]

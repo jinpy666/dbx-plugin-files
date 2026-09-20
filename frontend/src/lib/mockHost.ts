@@ -554,6 +554,36 @@ export function installMockHost() {
         recordAudit(method, source, sourceId);
         return { success: true, transport: "native", jobId: null };
       }
+      case "files/search": {
+        const term = str("pattern").toLowerCase();
+        const rootPath = (typeof p.root === "string" && p.root ? p.root : "/").replace(/\/+$/, "") || "/";
+        const hits: Array<Record<string, unknown>> = [];
+        const remoteTree = treeFor(p.connectionId);
+        for (const [entryPath, entry] of remoteTree) {
+          if (entry.kind !== "file") continue;
+          if (!entryPath.startsWith(rootPath) && rootPath !== "/") continue;
+          const name = entryPath.split("/").pop() ?? "";
+          if (term && name.toLowerCase().includes(term.toLowerCase())) {
+            hits.push({ path: entryPath, size: entry.size ?? 0, modifiedAt: entry.modifiedAt ?? "" });
+          }
+        }
+        return { entries: hits.slice(0, typeof p.limit === "number" ? p.limit : 200), truncated: false, scanned: hits.length };
+      }
+      case "files/copyurl": {
+        const dirPath = str("dirPath");
+        const url = str("url");
+        assertOk(dirPath);
+        const cleanUrl = url.split(/[?#]/)[0] ?? url;
+        const auto = cleanUrl.split("/").filter(Boolean).pop() ?? "download";
+        const filename = typeof p.filename === "string" && p.filename ? p.filename : auto;
+        const target = `${dirPath.replace(/\/+$/, "")}/${filename}`;
+        const urlTree = treeFor(p.connectionId);
+        const urlContents = contentsFor(p.connectionId);
+        urlTree.set(target, { kind: "file", size: 15, modifiedAt: new Date().toISOString() });
+        urlContents.set(target, new TextEncoder().encode(`imported:${url}`));
+        recordAudit(method, target, p.connectionId);
+        return { path: target, filename };
+      }
       case "files/bisync/state": {
         // mock：默认视为已有同步状态；URL 带 bisyncNew=1 时返回首次态。
         const isNew = new URLSearchParams(window.location.search).has("bisyncNew");

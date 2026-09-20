@@ -81,7 +81,7 @@ import { resolveToolbarTarget } from "./lib/toolbarTarget";
 import { validateFileName } from "./lib/fileName";
 import { runBatchTasks } from "./lib/batchRunner";
 
-type ConfirmKind = "delete" | "purge" | "newFolder" | "newFile" | "rename" | "copy" | "move" | "extract" | "compress" | "overwrite" | "check" | "cleanup";
+type ConfirmKind = "delete" | "purge" | "newFolder" | "newFile" | "rename" | "copy" | "move" | "extract" | "compress" | "overwrite" | "check" | "cleanup" | "copyurl";
 type PaneSide = "left" | "right";
 type MenuAction =
   | "open" | "preview" | "download" | "rename" | "delete" | "copyPath" | "copyName"
@@ -92,6 +92,8 @@ type MenuAction =
   | "hashsum" | "rmdirs" | "checkDir"
   // rclone 双向同步（sync/bisync，beta）
   | "bisyncDir"
+  // rclone URL 导入（operations/copyurl）
+  | "copyurl"
   // 本地挂载（docs/MOUNT.zh-CN.md M1）：rclone mount 优先，WebDAV 网关兜底
   | "mountLocal"
   // 批量（多选右键，P-FILES 压缩轮）
@@ -472,7 +474,7 @@ const confirmForce = ref(false);
 const confirmForcePath = ref("");
 // R3-P2-5：跨栏 copy/move 冲突预检命中时挂起整批传输，弹「覆盖确认」后原样执行。
 const pendingPaneTransfer = ref<{ from: PaneSide; move: boolean; list: FileEntry[]; destPath: string }>();
-const confirmInput = computed(() => confirmKind.value === "newFolder" || confirmKind.value === "newFile" || confirmKind.value === "rename" || confirmKind.value === "copy" || confirmKind.value === "move" || confirmKind.value === "extract" || confirmKind.value === "compress" || confirmKind.value === "check");
+const confirmInput = computed(() => confirmKind.value === "newFolder" || confirmKind.value === "newFile" || confirmKind.value === "rename" || confirmKind.value === "copy" || confirmKind.value === "move" || confirmKind.value === "extract" || confirmKind.value === "compress" || confirmKind.value === "check" || confirmKind.value === "copyurl");
 // P2-2：危险确认列表走 i18n 七语（lib 侧 label 为英文兜底，路径类条目原样展示）。
 const confirmDangerList = computed(() =>
   confirmHits.value.map((hit) => {
@@ -1608,6 +1610,17 @@ async function onConfirm() {
         showNotice(t("cleanupDone"));
         break;
       }
+      case "copyurl": {
+        const entry = confirmTarget.value.entry;
+        const url = confirmDraft.value.trim();
+        if (!entry || !url) return;
+        const result = await invokeConfirmed<{ filename: string }>("files/copyurl", {
+          dirPath: entry.path,
+          url,
+        });
+        showNotice(t("copyurlDone", { name: result.filename }));
+        break;
+      }
       case "extract": {
         const entry = confirmTarget.value.entry;
         const targetPath = confirmDraft.value.trim();
@@ -2191,6 +2204,54 @@ async function probeAppPresets() {
 const saveDirDraft = ref(loadDownloadDir());
 const saveDirError = ref("");
 let saveDirValidationSerial = 0;
+// ---- 深度搜索（files/search，远端递归；回车触发，当前目录即时过滤不受影响）----
+const deepSearchOpen = ref(false);
+const deepSearchSide = ref<PaneSide>("left");
+const deepSearchBusy = ref(false);
+const deepSearchResults = ref<Array<{ path: string; size: number; modifiedAt: string }>>([]);
+const deepSearchTruncated = ref(false);
+
+/** 回车触发：从该栏当前目录递归搜索文件名子串。 */
+async function runDeepSearch(side: PaneSide, query: string) {
+  const term = query.trim();
+  if (!term) return;
+  const id = sideConnectionId(side) ?? connectionId.value;
+  deepSearchOpen.value = true;
+  deepSearchSide.value = side;
+  deepSearchBusy.value = true;
+  deepSearchResults.value = [];
+  deepSearchTruncated.value = false;
+  try {
+    const result = await call<{ entries: Array<{ path: string; size: number; modifiedAt: string }>; truncated: boolean }>(
+      "files/search",
+      { connectionId: id, root: paneDirPath(side), pattern: term },
+    );
+    deepSearchResults.value = result.entries ?? [];
+    deepSearchTruncated.value = Boolean(result.truncated);
+  } catch (cause) {
+    deepSearchOpen.value = false;
+    showError(cause);
+  } finally {
+    deepSearchBusy.value = false;
+  }
+}
+
+/** 点击结果：跳到其父目录（保留目标栏语义）。 */
+async function openDeepSearchResult(entry: { path: string }) {
+  const side = deepSearchSide.value;
+  const parent = parentPath(entry.path) || "/";
+  deepSearchOpen.value = false;
+  if (side === "left") {
+    await loadDirectory(parent).catch(() => undefined);
+  } else {
+    await loadRightDirectory(parent).catch(() => undefined);
+  }
+}
+
+function closeDeepSearch() {
+  deepSearchOpen.value = false;
+}
+
 // ---- 远端空间占用（files/about，sidecar 60s 缓存；仅右栏远程连接显示）----
 const remoteUsage = ref<{ used: number; total: number } | null>(null);
 
@@ -2383,6 +2444,14 @@ function menuAction(action: MenuAction) {
       break;
     case "bisyncDir":
       startDirJob("bisync", entry, side);
+      break;
+    case "copyurl":
+      openConfirm("copyurl", {
+        title: { key: "copyurlTitle", values: { path: baseName(entry.path) || entry.path } },
+        body: { key: "copyurlBody" },
+        target: { entry },
+        side,
+      });
       break;
     case "checkDir":
       openConfirm("check", {
@@ -2989,7 +3058,8 @@ onBeforeUnmount(() => {
                     type="search"
                     spellcheck="false"
                     @input="searchQuery = ($event.target as HTMLInputElement).value"
-                    @keydown.esc.prevent="searchQuery = ''"
+                    @keydown.enter.prevent="runDeepSearch('left', ($event.target as HTMLInputElement).value)"
+                    @keydown.esc.prevent="searchQuery = ''; closeDeepSearch()"
                   />
                 </span>
               </div>
@@ -3079,7 +3149,8 @@ onBeforeUnmount(() => {
                     type="search"
                     spellcheck="false"
                     @input="rightSearchQuery = ($event.target as HTMLInputElement).value"
-                    @keydown.esc.prevent="rightSearchQuery = ''"
+                    @keydown.enter.prevent="runDeepSearch('right', ($event.target as HTMLInputElement).value)"
+                    @keydown.esc.prevent="rightSearchQuery = ''; closeDeepSearch()"
                   />
                 </span>
               </div>
@@ -3335,6 +3406,7 @@ onBeforeUnmount(() => {
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('rmdirs')"><FolderMinus /> {{ t("rmdirsMenu") }}</button>
         <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('checkDir')"><Scale /> {{ t("checkDirMenu") }}</button>
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('bisyncDir')"><ArrowRightLeft /> {{ t("bisyncMenu") }}</button>
+        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('copyurl')"><Link /> {{ t("copyurlMenu") }}</button>
         <button v-if="canUseMount && contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('mountLocal')"><HardDrive /> {{ t("mountToLocal") }}</button>
         <button v-if="canWrite" role="menuitem" @click="menuAction('compress')"><FileArchive /> {{ t("compress") }}</button>
         <hr />
@@ -3374,6 +3446,27 @@ onBeforeUnmount(() => {
       <button v-if="canUseMount" role="menuitem" @click="sideMenuAction('mountLocal')"><HardDrive /> {{ t("mountToLocal") }}</button>
     </div>
 
+    <!-- 深度搜索结果（files/search）：点击行跳到该文件所在目录 -->
+    <div v-if="deepSearchOpen" class="wb-deepsearch" role="dialog" :aria-label="t('deepSearchTitle')">
+      <header>
+        <strong>{{ t("deepSearchTitle") }}</strong>
+        <button class="wb-icon-button wb-icon-neutral" v-tip="t('close')" @click="closeDeepSearch"><X /></button>
+      </header>
+      <p v-if="deepSearchBusy" class="wb-muted">{{ t("loading") }}</p>
+      <p v-else-if="!deepSearchResults.length" class="wb-muted">{{ t("deepSearchNoResults") }}</p>
+      <template v-else>
+        <ul class="wb-deepsearch-list">
+          <li v-for="entry in deepSearchResults" :key="entry.path">
+            <button type="button" @click="openDeepSearchResult(entry)">
+              <span class="wb-mono">{{ entry.path }}</span>
+              <span class="wb-muted">{{ formatBytes(entry.size) }}</span>
+            </button>
+          </li>
+        </ul>
+        <p v-if="deepSearchTruncated" class="wb-muted">{{ t("deepSearchTruncated") }}</p>
+      </template>
+    </div>
+
     <ConfirmDialog
       :open="confirmOpen"
       :title="confirmTitleText"
@@ -3391,6 +3484,7 @@ onBeforeUnmount(() => {
         <span v-if="confirmKind === 'newFolder'">{{ t("newFolderPlaceholder") }}</span>
         <span v-else-if="confirmKind === 'newFile'">{{ t("newFilePlaceholder") }}</span>
         <span v-else-if="confirmKind === 'rename'">{{ t("renameTitle") }}</span>
+        <span v-else-if="confirmKind === 'copyurl'">{{ t("copyurlUrlLabel") }}</span>
         <span v-else>{{ t("pathPlaceholder") }}</span>
         <input v-model="confirmDraft" spellcheck="false" @keydown.enter.prevent="!confirmDanger && onConfirm()" />
       </label>

@@ -694,6 +694,36 @@ pub struct HashsumRequest {
     pub hash_type: Option<String>,
 }
 
+/// `files/search`：远端递归搜索（文件名子串、大小写不敏感）。先做文件总数
+/// 预检（超过 [`未导出的 SEARCH_MAX_SCAN`] 由 main.rs 常量定）拒绝，防止在
+/// 巨型目录树上做全量列举。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchRequest {
+    pub connection_id: String,
+    /// 搜索根（连接根下相对路径）；缺省 = 连接根。
+    #[serde(default)]
+    pub root: Option<String>,
+    /// 文件名子串。glob 元字符会被剔除，按字面子串匹配。
+    pub pattern: String,
+    /// 返回条数上限（缺省 200，服务端封顶 500）。
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+/// `files/copyurl`：把 URL 指向的资源下载并上传到远端目录（rcd 所在机器
+/// 负责下载）。仅允许 http/https。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyUrlRequest {
+    pub connection_id: String,
+    pub dir_path: String,
+    pub url: String,
+    /// 缺省 = 用 URL 最后一段自动命名。
+    #[serde(default)]
+    pub filename: Option<String>,
+}
+
 /// `files/bisync/start`：双向同步作业。`mode` 缺省 `run`（增量双向）；
 /// `resync` 为首次/修复初始化（按 `resyncMode` 决定冲突侧，默认 newer，
 /// 破坏性——两侧都收敛到所选基准）。状态文件持久化在插件数据目录的

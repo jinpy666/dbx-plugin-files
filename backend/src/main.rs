@@ -1120,6 +1120,108 @@ impl Plugin {
                     "state": if marker.exists() { "synced" } else { "new" },
                 }))
             }
+            "files/search" => {
+                let request: model::SearchRequest = parse(params)?;
+                let binding = self.rclone.binding(&request.connection_id)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                let fs = rclone::call_fs(&binding);
+                let remote = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    request.root.as_deref().unwrap_or(""),
+                    crate::policy::PathPolicy::check_read,
+                )?;
+                // Substring term → rclone include glob (`**term**` matches
+                // the substring anywhere in the relative path). Glob
+                // metacharacters are stripped so the term stays literal.
+                let term: String = request
+                    .pattern
+                    .trim()
+                    .chars()
+                    .filter(|c| !matches!(c, '*' | '?' | '[' | ']' | '{' | '}'))
+                    .collect();
+                if term.is_empty() {
+                    return Err("search pattern is empty".to_string());
+                }
+                // Scan budget: a full-tree listing is not free — refuse
+                // absurd trees instead of crawling for minutes.
+                let size = client
+                    .operations_size(&fs, &remote)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let scanned = size.get("count").and_then(Value::as_u64).unwrap_or(0);
+                if scanned > SEARCH_MAX_SCAN {
+                    return Err(format!(
+                        "this tree holds {scanned} files; search is capped at {SEARCH_MAX_SCAN} — pick a smaller folder"
+                    ));
+                }
+                let result = client
+                    .operations_list_filtered(&fs, &remote, &format!("**{term}**"), true)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let limit = request.limit.unwrap_or(200).clamp(1, SEARCH_RESULT_LIMIT) as usize;
+                let empty = Vec::new();
+                let list = result.get("list").and_then(Value::as_array).unwrap_or(&empty);
+                let truncated = list.len() > limit;
+                let entries: Vec<Value> = list
+                    .iter()
+                    .take(limit)
+                    .map(|entry| {
+                        json!({
+                            "path": entry.get("Path").and_then(Value::as_str).unwrap_or_default(),
+                            "size": entry.get("Size").and_then(Value::as_u64).unwrap_or(0),
+                            "modifiedAt": entry.get("ModTime").and_then(Value::as_str).unwrap_or_default(),
+                        })
+                    })
+                    .collect();
+                Ok(json!({
+                    "entries": entries,
+                    "truncated": truncated,
+                    "scanned": scanned,
+                }))
+            }
+            "files/copyurl" => {
+                let request: model::CopyUrlRequest = parse(params)?;
+                // Web URLs only: rclone supports more schemes, but the
+                // workbench entry targets downloadable resources.
+                let lower = request.url.to_lowercase();
+                if !lower.starts_with("http://") && !lower.starts_with("https://") {
+                    return Err("only http(s) URLs are supported".to_string());
+                }
+                let binding = self.rclone.binding(&request.connection_id)?;
+                ensure_binding_writable(&binding)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                let fs = rclone::call_fs(&binding);
+                let dir_remote = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    &request.dir_path,
+                    crate::policy::PathPolicy::check_write,
+                )?;
+                let filename = match request.filename.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+                    Some(name) => name.to_string(),
+                    None => {
+                        // URL last path segment (query/fragment stripped),
+                        // mirroring rclone's autoFilename pick.
+                        let without_query = request.url.split(['?', '#']).next().unwrap_or("");
+                        let segment = without_query.rsplit('/').find(|part| !part.is_empty()).unwrap_or("download");
+                        segment.to_string()
+                    }
+                };
+                let target_wire = format!("{}/{}", request.dir_path.trim_end_matches('/'), filename);
+                let target_remote = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    &target_wire,
+                    crate::policy::PathPolicy::check_write,
+                )?;
+                client
+                    .operations_copyurl(&fs, &target_remote, &request.url, false)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                self.audit_id(&request.connection_id, "files/copyurl", &target_wire, "ok")?;
+                Ok(json!({ "path": target_wire, "filename": filename }))
+            }
             // ------------------------------------------------------------------
             // Local mounts (docs/MOUNT.zh-CN.md, M1): rclone mount first,
             // read-only WebDAV gateway fallback. `mount/mod.rs` owns the
@@ -2972,6 +3074,12 @@ const HASHSUM_MAX_FILES: u64 = 20_000;
 
 /// `files/about` per-connection cache TTL (sidebar renders it on every load).
 const ABOUT_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// `files/search` guard: refuse full-tree listings above this many files —
+/// narrow the root instead.
+const SEARCH_MAX_SCAN: u64 = 20_000;
+/// `files/search` hard cap on returned rows (the wire limit, not the scan).
+const SEARCH_RESULT_LIMIT: u32 = 500;
 
 fn rclone_lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())

@@ -178,6 +178,53 @@ describe("advanced ops UI", () => {
     expect(wrapper!.find(".wb-notice").text()).toContain(workbenchMessage("en", "bisyncStarted"));
   });
 
+  it("deep-searches on Enter from the toolbar search box and navigates on click", async () => {
+    mountWorkbench();
+    await settle();
+    const spy = stubInvoke((method) =>
+      method === "files/search"
+        ? { entries: [{ path: "/docs/report-2024.txt", size: 12, modifiedAt: new Date().toISOString() }], truncated: false, scanned: 1 }
+        : undefined,
+    );
+    const input = wrapper!.find(".wb-search-input");
+    await input.setValue("report");
+    await input.trigger("keydown.enter");
+    await settle();
+    expect(spy).toHaveBeenCalledWith(
+      "files/search",
+      expect.objectContaining({ pattern: "report", root: expect.any(String) }),
+      undefined,
+    );
+    const panel = wrapper!.find(".wb-deepsearch");
+    expect(panel.exists()).toBe(true);
+    expect(panel.text()).toContain("/docs/report-2024.txt");
+    await panel.findAll("li button")[0]!.trigger("click");
+    await settle();
+    expect(wrapper!.find(".wb-deepsearch").exists()).toBe(false);
+  });
+
+  it("imports a file from a URL into a directory via the confirm dialog", async () => {
+    mountWorkbench();
+    await settle();
+    const spy = stubInvoke((method) =>
+      method === "files/copyurl" ? { path: "/docs/logo.png", filename: "logo.png" } : undefined,
+    );
+    await openEntryMenu(dirEntry);
+    await menuItem(workbenchMessage("en", "copyurlMenu"))!.trigger("click");
+    await settle();
+    expect(spy).not.toHaveBeenCalledWith("files/copyurl", expect.anything(), undefined);
+    const input = wrapper!.find("[role=dialog] input");
+    await input.setValue("https://example.com/img/logo.png");
+    await wrapper!.find("[role=dialog] .wb-dialog-primary").trigger("click");
+    await settle();
+    expect(spy).toHaveBeenCalledWith(
+      "files/copyurl",
+      expect.objectContaining({ dirPath: "/docs", url: "https://example.com/img/logo.png" }),
+      undefined,
+    );
+    expect(wrapper!.find(".wb-notice").text()).toContain("logo.png");
+  });
+
   it("renders the remote usage footer from files/about", async () => {
     mountWorkbench();
     await settle();

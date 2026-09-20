@@ -261,6 +261,57 @@ impl RcClient {
         .await
     }
 
+    /// Recursive filename search (`operations/list` + rc-level filter
+    /// params, live-verified v1.75.1): `include` glob and `ignore_case` ride
+    /// at the TOP level of the body (not inside `opt`), `opt` carries
+    /// `recurse`/`filesOnly`. Non-matching directories are pruned by rclone.
+    pub async fn operations_list_filtered(
+        &self,
+        fs: &str,
+        remote: &str,
+        include_glob: &str,
+        files_only: bool,
+    ) -> Result<Value, RcError> {
+        let mut opt = serde_json::json!({ "recurse": true });
+        if files_only {
+            opt["filesOnly"] = Value::Bool(true);
+        }
+        self.call(
+            "operations/list",
+            &serde_json::json!({
+                "fs": fs,
+                "remote": remote,
+                "include": [include_glob],
+                "ignore_case": true,
+                "opt": opt,
+            }),
+        )
+        .await
+    }
+
+    /// Downloads `url` and uploads it to `fs`/`remote` server-side (the rcd
+    /// host fetches it). With `auto_filename` the name comes from the URL;
+    /// the answer is `{}` — callers derive the final path themselves.
+    pub async fn operations_copyurl(
+        &self,
+        fs: &str,
+        remote: &str,
+        url: &str,
+        auto_filename: bool,
+    ) -> Result<Value, RcError> {
+        self.call(
+            "operations/copyurl",
+            &serde_json::json!({
+                "fs": fs,
+                "remote": remote,
+                "url": url,
+                "autoFilename": auto_filename,
+                "no_check": false,
+            }),
+        )
+        .await
+    }
+
     /// Empties the remote's trash (fs-level; local fs rejects with
     /// "doesn't support cleanup", which surfaces to the caller).
     pub async fn operations_cleanup(&self, fs: &str) -> Result<Value, RcError> {
