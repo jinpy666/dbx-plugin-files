@@ -16,6 +16,7 @@
 
 mod archive;
 mod local_downloads;
+mod mount;
 mod mcp;
 mod model;
 mod policy;
