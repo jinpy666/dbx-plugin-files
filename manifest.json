@@ -3,7 +3,7 @@
   "manifest_version": 1,
   "id": "io.dbx.files",
   "name": "Files Studio",
-  "version": "0.1.64",
+  "version": "0.1.65",
   "publisher": "jinpy",
   "description": "A unified file workspace for local folders, S3-compatible storage, Azure Blob, Google Cloud Storage, Huawei OBS, Tencent COS, WebDAV, FTP, SFTP, SMB/CIFS, and other rclone storage backends.",
   "source": "https://github.com/jinpy666/dbx-plugin-files",
