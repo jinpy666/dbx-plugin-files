@@ -133,6 +133,34 @@ describe("advanced ops UI", () => {
     expect(wrapper!.find(".wb-notice").text()).toContain(workbenchMessage("en", "checkStarted"));
   });
 
+  it("verifies the directory from a checksum file context menu (batch 7)", async () => {
+    mountWorkbench();
+    await settle();
+    const spy = stubInvoke((method) =>
+      method === "files/checksum/verify" ? { jobId: "job-sum-1" } : undefined,
+    );
+    // .md5 文件（非目录）才出现「校验所在目录」；直接发起，无需确认弹层。
+    const sumEntry: FileEntry = {
+      name: "docs.md5",
+      path: "/docs.md5",
+      kind: "file",
+      size: 44,
+      modifiedAt: new Date().toISOString(),
+    };
+    await openEntryMenu(sumEntry);
+    const item = menuItem(workbenchMessage("en", "verifySumMenu"));
+    expect(item).toBeDefined();
+    await item!.trigger("click");
+    await settle();
+    expect(spy).toHaveBeenCalledWith(
+      "files/checksum/verify",
+      expect.objectContaining({ sumPath: "/docs.md5", connectionId: expect.any(String) }),
+      undefined,
+    );
+    // 作业进传输面板 + 顶部通知。
+    expect(wrapper!.find(".wb-notice").text()).toContain(workbenchMessage("en", "verifySumStarted"));
+  });
+
   it("empties the remote trash from the blank context menu after confirmation", async () => {
     mountWorkbench();
     await settle();

@@ -32,6 +32,7 @@ import {
   Search,
   Scale,
   Share2,
+  ShieldCheck,
   Trash2,
   X,
 } from "@lucide/vue";
@@ -91,7 +92,8 @@ type MenuAction =
   // 对标 rclone-dashboard：目录体积统计（files/size）与公开链接（files/publicLink）
   | "computeSize" | "copyPublicLink"
   // rclone 深度能力：SUM 校验文件 / 清理空目录 / 目录内容比对（files/check）
-  | "hashsum" | "rmdirs" | "checkDir"
+  // 批次7：右键 SUM 校验文件 → 核验所在目录（files/checksum/verify）
+  | "hashsum" | "rmdirs" | "checkDir" | "verifySum"
   // rclone 双向同步（sync/bisync，beta）
   | "bisyncDir"
   // rclone URL 导入（operations/copyurl）
@@ -2480,6 +2482,9 @@ function menuAction(action: MenuAction) {
         side,
       });
       break;
+    case "verifySum":
+      void runVerifySum(entry, side);
+      break;
     case "computeSize":
       void computeEntrySize(entry, side);
       break;
@@ -2557,6 +2562,32 @@ async function runHashsum(entry: FileEntry, side: PaneSide) {
       hashType: "md5",
     });
     showNotice(t("hashsumDone", { path: result.path, files: result.files }));
+  } catch (cause) {
+    showNotice(t("operationFailed", { error: errorMessage(cause) }));
+  }
+}
+
+// SUM 校验文件（批次7）：右键 → 「校验所在目录」。哈希类型缺省由后端按
+// 扩展名推断，前端不做二次猜测。
+const SUM_EXTENSIONS = new Set(["md5", "sha1", "sha256", "sha512", "crc32"]);
+function isSumFile(entry: FileEntry): boolean {
+  if (entry.kind !== "file") return false;
+  const extension = entry.path.split(".").pop()?.toLowerCase() ?? "";
+  return SUM_EXTENSIONS.has(extension);
+}
+
+/** 校验 SUM 文件所在目录（files/checksum/verify）：复用 check 作业与 checkSummary 展示。 */
+async function runVerifySum(entry: FileEntry, side: PaneSide) {
+  const id = sideConnectionId(side) ?? connectionId.value;
+  try {
+    const result = await call<{ jobId: string }>("files/checksum/verify", {
+      connectionId: id,
+      sumPath: entry.path,
+    });
+    if (result.jobId) {
+      trackSidecarJob(result.jobId, "check", `⨯ ${entry.path}`);
+    }
+    showNotice(t("verifySumStarted"));
   } catch (cause) {
     showNotice(t("operationFailed", { error: errorMessage(cause) }));
   }
@@ -3559,6 +3590,7 @@ onBeforeUnmount(() => {
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('hashsum')"><FileCheck /> {{ t("hashsumMenu") }}</button>
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('rmdirs')"><FolderMinus /> {{ t("rmdirsMenu") }}</button>
         <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('checkDir')"><Scale /> {{ t("checkDirMenu") }}</button>
+        <button v-if="isSumFile(contextMenu.entry)" role="menuitem" @click="menuAction('verifySum')"><ShieldCheck /> {{ t("verifySumMenu") }}</button>
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('bisyncDir')"><ArrowRightLeft /> {{ t("bisyncMenu") }}</button>
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('copyurl')"><Link /> {{ t("copyurlMenu") }}</button>
         <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('serveHttp')"><Globe /> {{ t("shareHttpMenu") }}</button>

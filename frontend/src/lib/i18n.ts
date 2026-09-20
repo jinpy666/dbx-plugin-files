@@ -277,6 +277,8 @@ export const messages = {
     shareStop: "Stop sharing",
     shareEmpty: "No active shares for this connection.",
     shareStopDone: "Share stopped",
+    verifySumMenu: "Verify with checksum file",
+    verifySumStarted: "Verification started — watch the transfers panel",
     transferKind: {
       upload: "Upload",
       download: "Download",
@@ -632,6 +634,8 @@ export const messages = {
     shareStop: "Detener",
     shareEmpty: "No hay compartidos activos para esta conexión.",
     shareStopDone: "Compartido detenido",
+    verifySumMenu: "Verificar con archivo de suma",
+    verifySumStarted: "Verificación iniciada: mira el panel de transferencias",
     transferKind: {
       upload: "Subida",
       download: "Descarga",
@@ -981,6 +985,8 @@ export const messages = {
     shareStop: "Interrompi",
     shareEmpty: "Nessuna condivisione attiva per questa connessione.",
     shareStopDone: "Condivisione interrotta",
+    verifySumMenu: "Verifica con file di checksum",
+    verifySumStarted: "Verifica avviata: guarda il pannello trasferimenti",
     transferKind: {
       upload: "Caricamento",
       download: "Scaricamento",
@@ -1330,6 +1336,8 @@ export const messages = {
     shareStop: "停止",
     shareEmpty: "この接続には有効な共有がありません。",
     shareStopDone: "共有を停止しました",
+    verifySumMenu: "チェックサムファイルで検証",
+    verifySumStarted: "検証を開始しました — 転送パネルで確認できます",
     transferKind: {
       upload: "アップロード",
       download: "ダウンロード",
@@ -1679,6 +1687,8 @@ export const messages = {
     shareStop: "Parar",
     shareEmpty: "Nenhum compartilhamento ativo para esta conexão.",
     shareStopDone: "Compartilhamento interrompido",
+    verifySumMenu: "Verificar com arquivo de checksum",
+    verifySumStarted: "Verificação iniciada — acompanhe no painel de transferências",
     transferKind: {
       upload: "Envio",
       download: "Download",
@@ -2029,6 +2039,8 @@ export const messages = {
     shareStop: "停止",
     shareEmpty: "当前连接暂无活跃共享。",
     shareStopDone: "共享已停止",
+    verifySumMenu: "校验所在目录",
+    verifySumStarted: "校验已开始——请在传输面板查看结果",
     transferKind: {
       upload: "上传",
       download: "下载",
@@ -2378,6 +2390,8 @@ export const messages = {
     shareStop: "停止",
     shareEmpty: "目前連線沒有作用中的共享。",
     shareStopDone: "共享已停止",
+    verifySumMenu: "校驗所在目錄",
+    verifySumStarted: "校驗已開始——請在傳輸面板查看結果",
     transferKind: {
       upload: "上傳",
       download: "下載",

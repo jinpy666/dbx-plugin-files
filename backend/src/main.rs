@@ -1006,6 +1006,29 @@ impl Plugin {
                 .await?;
                 Ok(json!({ "jobId": job_id }))
             }
+            // 右键 SUM 校验文件（`.md5`/`.sha1`/…）→ 核验其所在目录（批次7）。
+            // 单连接：同一 CheckRequest 走 SUM 分支，终态报告与 files/check
+            // 同形态，复用 check 作业面板与 checkSummary 展示。
+            "files/checksum/verify" => {
+                let request: model::SumVerifyRequest = parse(params)?;
+                let job_id = rclone_start_check_job(
+                    Arc::clone(&self.rclone),
+                    Arc::clone(&self.sync_jobs),
+                    &model::CheckRequest {
+                        source_connection_id: request.connection_id.clone(),
+                        source_path: request.sum_path.clone(),
+                        target_connection_id: request.connection_id.clone(),
+                        target_path: request.sum_path.clone(),
+                        one_way: None,
+                        download: None,
+                        sum_path: Some(request.sum_path),
+                        hash_type: request.hash_type,
+                    },
+                    Some(emitter),
+                )
+                .await?;
+                Ok(json!({ "jobId": job_id }))
+            }
             "files/hashsum" => {
                 let request: model::HashsumRequest = parse(params)?;
                 let binding = self.rclone.binding(&request.connection_id)?;
@@ -2633,6 +2656,9 @@ async fn rclone_start_dir_job(
             retries: request.retries,
             check_one_way: false,
             check_download: false,
+            // 目录作业不携带 SUM 校验参数（仅 check 作业的 SUM 分支使用）。
+            sum_remote: None,
+            sum_hash: None,
             bisync_workdir: None,
             bisync_resync: false,
             bisync_resync_mode: None,
@@ -2657,10 +2683,35 @@ async fn rclone_start_dir_job(
     Ok(job_id)
 }
 
+/// SUM 文件扩展名 → rclone 哈希类型（批次7）。猜错哈希类型会让 rclone 把
+/// 整个目录报成差异，因此无法识别的扩展名直接拒绝作业，让用户显式指定。
+fn sum_hash_from_extension(sum_path: &str) -> Result<String, String> {
+    let extension = std::path::Path::new(sum_path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match extension.as_str() {
+        "md5" => Ok("md5".to_string()),
+        "sha1" => Ok("sha1".to_string()),
+        "sha256" => Ok("sha256".to_string()),
+        "sha512" => Ok("sha512".to_string()),
+        "crc32" => Ok("crc32".to_string()),
+        other => Err(format!(
+            "cannot infer the hash type from '.{other}' — pass hashType (md5/sha1/sha256/sha512/crc32)"
+        )),
+    }
+}
+
 /// Starts one `operations/check` comparison job (`files/check`): the same
 /// job mirror + transfer-tracker surface as dir jobs. The terminal report
 /// lands on the record as `checkSummary`; differences are data, so the job
 /// completes unless rclone itself errors.
+///
+/// SUM 校验模式（批次7）：`sum_path` 存在时改为单连接核验——被核验目录 =
+/// SUM 文件父目录（files/hashsum 把校验文件写在目录旁 `<目录>.<hash>`，
+/// 行相对连接根，因此核验对象就是父目录），SUM 文件与目录各过一次 read
+/// 门；哈希类型缺省按扩展名推断；src 侧不参与比较（`src_rel` 置空）。
 async fn rclone_start_check_job(
     rclone: Arc<rclone::RcloneEngine>,
     sync_jobs: Arc<std::sync::Mutex<HashMap<String, RcloneSyncRecord>>>,
@@ -2671,6 +2722,45 @@ async fn rclone_start_check_job(
     let target_binding = rclone.binding(&request.target_connection_id)?;
     // One rc call drives both fs strings inside a single rcd.
     rclone::ensure_same_proxy_group(&source_binding, &target_binding)?;
+    // SUM 分支预取：SUM 文件 read 门 + 父目录 read 门 + 哈希类型解析。
+    // wire 路径的 parent/base 拆分与 files/hashsum 臂保持一致。
+    let sum_target = match request
+        .sum_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(sum_path) => {
+            let sum_remote = rclone_gate(
+                &target_binding.root,
+                target_binding.lock_to_root,
+                sum_path,
+                crate::policy::PathPolicy::check_read,
+            )?;
+            let trimmed = sum_path.trim_matches('/');
+            let dir_path = match trimmed.rsplit_once('/') {
+                Some((parent, _base)) => format!("/{parent}"),
+                None => "/".to_string(),
+            };
+            let dir_rel = rclone_gate(
+                &target_binding.root,
+                target_binding.lock_to_root,
+                &dir_path,
+                crate::policy::PathPolicy::check_read,
+            )?;
+            let hash_type = match request
+                .hash_type
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                Some(explicit) => explicit.to_lowercase(),
+                None => sum_hash_from_extension(sum_path)?,
+            };
+            Some((dir_rel, sum_remote, hash_type))
+        }
+        None => None,
+    };
     // Check reads both sides and writes nothing — read gates on both paths.
     let src_rel = rclone_gate(
         &source_binding.root,
@@ -2678,12 +2768,15 @@ async fn rclone_start_check_job(
         &request.source_path,
         crate::policy::PathPolicy::check_read,
     )?;
-    let dst_rel = rclone_gate(
+    let mut dst_rel = rclone_gate(
         &target_binding.root,
         target_binding.lock_to_root,
         &request.target_path,
         crate::policy::PathPolicy::check_read,
     )?;
+    if let Some((dir_rel, _, _)) = &sum_target {
+        dst_rel = dir_rel.clone();
+    }
     let job_id = uuid::Uuid::new_v4().to_string();
     let job = transfers::TransferJob {
         task_id: job_id.clone(),
@@ -2705,7 +2798,8 @@ async fn rclone_start_check_job(
         handle: None,
         kind: rclone::sync::SyncKind::Check,
         src_conn: request.source_connection_id.clone(),
-        src_rel: src_rel.clone(),
+        // SUM 模式无源侧：占位空串，面板只看 dst_rel（被核验目录）。
+        src_rel: if sum_target.is_some() { String::new() } else { src_rel.clone() },
         dst_conn: request.target_connection_id.clone(),
         dst_rel: dst_rel.clone(),
         dry_run: false,
@@ -2787,7 +2881,8 @@ async fn rclone_start_check_job(
             kind: rclone::sync::SyncKind::Check,
             src_fs: rclone::call_fs(&source_binding),
             dst_fs: rclone::call_fs(&target_binding),
-            src_rel,
+            // SUM 模式无源侧：src_rel 置空（rc 体不含 srcFs，见 sync.rs）。
+            src_rel: if sum_target.is_some() { String::new() } else { src_rel },
             dst_rel,
             dry_run: false,
             max_delete: None,
@@ -2806,8 +2901,12 @@ async fn rclone_start_check_job(
             transfers: None,
             checkers: None,
             retries: None,
-            check_one_way: request.one_way.unwrap_or(false),
-            check_download: request.download.unwrap_or(false),
+            check_one_way: sum_target.is_none() && request.one_way.unwrap_or(false),
+            check_download: sum_target.is_none() && request.download.unwrap_or(false),
+            sum_remote: sum_target
+                .as_ref()
+                .map(|(_, sum_remote, _)| sum_remote.clone()),
+            sum_hash: sum_target.as_ref().map(|(_, _, hash_type)| hash_type.clone()),
             bisync_workdir: None,
             bisync_resync: false,
             bisync_resync_mode: None,
@@ -3058,6 +3157,8 @@ async fn rclone_start_bisync_job(
             retries: None,
             check_one_way: false,
             check_download: false,
+            sum_remote: None,
+            sum_hash: None,
             bisync_workdir: Some(workdir.to_string_lossy().into_owned()),
             bisync_resync: resync,
             bisync_resync_mode: request.resync_mode.clone(),

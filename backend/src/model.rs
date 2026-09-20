@@ -701,6 +701,29 @@ pub struct CheckRequest {
     /// 下载后逐字节比对（不信任远端存储哈希）；缺省用存储哈希。
     #[serde(default)]
     pub download: Option<bool>,
+    /// SUM 校验模式（批次7）：SUM 校验文件路径（如 `/data.md5`）。存在时不
+    /// 比较两棵目录树，改为用 rclone `operations/check` 的 checkFile* 模式
+    /// 核验 SUM 文件所在目录的内容是否与校验文件一致。
+    #[serde(default)]
+    pub sum_path: Option<String>,
+    /// SUM 校验模式的哈希类型（md5/sha1/sha256/sha512/crc32）；缺省按 SUM
+    /// 文件扩展名推断，无法识别时拒绝作业。
+    #[serde(default)]
+    pub hash_type: Option<String>,
+}
+
+/// `files/checksum/verify`：右键 SUM 校验文件（`.md5`/`.sha1` 等）→ 异步
+/// 核验其所在目录内容是否与校验文件一致（批次7）。返回 jobId，终态经
+/// files/transfer/status 轮询并携带与 files/check 相同形态的差异报告。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SumVerifyRequest {
+    pub connection_id: String,
+    /// SUM 校验文件路径（如 `/data.md5`）；被核验目录取其父目录。
+    pub sum_path: String,
+    /// 哈希类型；缺省按扩展名推断（.md5→md5 等）。
+    #[serde(default)]
+    pub hash_type: Option<String>,
 }
 
 /// `files/hashsum`：为目录生成 SUM 校验文件（`<目录名>.<hash>`，写入父目录，

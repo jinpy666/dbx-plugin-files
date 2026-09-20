@@ -140,6 +140,14 @@ pub struct SyncJobParams {
     /// Check-only: compare by downloading instead of trusting stored hashes
     /// (for backends whose hashes are unreliable or absent).
     pub check_download: bool,
+    /// Check-only SUM verification (batch 7): connection-root-relative path
+    /// of the checksum file (`files/hashsum` output). When set, the rc body
+    /// switches to rclone's checksum-file mode (`checkFile*` params) and
+    /// `srcFs` stays ABSENT — see the body construction in [`start_job`].
+    pub sum_remote: Option<String>,
+    /// Check-only SUM verification: rclone hash type recorded in the
+    /// checksum file (md5/sha1/sha256/sha512/crc32).
+    pub sum_hash: Option<String>,
     /// Bisync-only: persistent state directory. rclone's default (its own
     /// cache dir) outlives our temp config but is shared and unmanaged —
     /// the wiring layer pins it under the plugin data dir instead.
@@ -256,13 +264,35 @@ pub async fn start_job(
         SyncKind::Check => "operations/check",
         SyncKind::Bisync => "sync/bisync",
     };
-    let mut body = serde_json::json!({
-        "srcFs": compose_fs(&params.src_fs, &params.src_rel),
-        "dstFs": compose_fs(&params.dst_fs, &params.dst_rel),
-        "_async": true,
-        "_group": params.task_id,
-    });
-    if params.dry_run {
+    // SUM mode (batch 7): verify the directory in `dst_rel` against an
+    // existing checksum file instead of a live source tree. Live-pinned
+    // v1.75.1 quirks: `srcFs` must be ABSENT (sending it trips the misleading
+    // upstream 400 "only supply dstFs when using checkFileHash" — the real
+    // requirement is the opposite) and the three checkFile* params are only
+    // accepted together ("need all of checkFileFs, ..."). The checksum file
+    // is addressed relative to the connection root, so `checkFileFs` is the
+    // bare root fs while `dst_rel` keeps the verified directory inside the
+    // same fs string. oneWay/download/filters never ride along — they would
+    // quietly narrow the report.
+    let sum_mode = params.kind == SyncKind::Check && params.sum_remote.is_some();
+    let mut body = if sum_mode {
+        serde_json::json!({
+            "dstFs": compose_fs(&params.dst_fs, &params.dst_rel),
+            "checkFileFs": compose_fs(&params.dst_fs, ""),
+            "checkFileRemote": params.sum_remote.clone().unwrap_or_default(),
+            "checkFileHash": params.sum_hash.clone().unwrap_or_default(),
+            "_async": true,
+            "_group": params.task_id,
+        })
+    } else {
+        serde_json::json!({
+            "srcFs": compose_fs(&params.src_fs, &params.src_rel),
+            "dstFs": compose_fs(&params.dst_fs, &params.dst_rel),
+            "_async": true,
+            "_group": params.task_id,
+        })
+    };
+    if params.dry_run && !sum_mode {
         // snake_case or nothing: camelCase `dryRun` is silently ignored.
         body["dry_run"] = Value::Bool(true);
     }
@@ -355,7 +385,7 @@ pub async fn start_job(
     if let Some(retries) = params.retries {
         body["retries"] = Value::from(retries);
     }
-    if params.kind == SyncKind::Check {
+    if params.kind == SyncKind::Check && !sum_mode {
         if params.check_one_way {
             body["oneWay"] = Value::Bool(true);
         }
@@ -736,6 +766,8 @@ mod tests {
             retries: None,
             check_one_way: false,
             check_download: false,
+            sum_remote: None,
+            sum_hash: None,
             bisync_workdir: None,
             bisync_resync: false,
             bisync_resync_mode: None,
@@ -1073,6 +1105,112 @@ mod tests {
         };
         assert!(empty("missingOnSrc"), "one-way must not scan the source side");
         assert!(empty("missingOnDst") && empty("differ"), "identical overlap: {report}");
+    }
+
+    /// SUM verification (batch 7): `operations/check` in checksum-file mode
+    /// compares a directory against a checksum file instead of a live source
+    /// tree. Live-pinned v1.75.1 layout (probed before this batch): the
+    /// checksum file lives NEXT TO the directory and its lines are relative
+    /// to it — a clean tree verifies empty (success), a corrupted file lands
+    /// in `differ` with success=false. End-to-end passing also pins the wire
+    /// shape: with `srcFs` present rclone would reject the whole request.
+    #[tokio::test]
+    async fn check_sum_mode_verifies_directory_against_checksum_file() {
+        let Some(binary) = resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
+        let root = tempfile::tempdir().expect("root tempdir");
+        write_file(&root.path().join("data").join("a.txt"), "alpha");
+        write_file(&root.path().join("data").join("deep").join("b.txt"), "beta");
+        let client = rcd.client();
+        // Batch-2 generator run against the directory itself, so the lines
+        // are relative to it ("a.txt", "deep/b.txt").
+        let sum = client
+            .operations_hashsum(
+                &root.path().join("data").to_string_lossy(),
+                "",
+                "md5",
+                false,
+            )
+            .await
+            .expect("hashsum");
+        let lines: Vec<String> = sum
+            .get("hashsum")
+            .and_then(Value::as_array)
+            .map(|array| {
+                array
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(!lines.is_empty(), "hashsum must list the sandbox files");
+        // Written NEXT TO the directory (outside the verified tree), so the
+        // verification cannot flag the checksum file itself as extra.
+        std::fs::write(
+            root.path().join("data.md5"),
+            format!("{}\n", lines.join("\n")),
+        )
+        .expect("write checksum file");
+
+        let listed = |report: &Value, key: &str| -> Vec<String> {
+            report
+                .get(key)
+                .and_then(Value::as_array)
+                .map(|array| {
+                    array
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let sum_job = |task: &str| {
+            let mut job = params(SyncKind::Check, root.path(), root.path());
+            job.task_id = task.to_string();
+            job.src_rel = String::new(); // unused in SUM mode
+            job.dst_rel = "data".to_string();
+            job.sum_remote = Some("data.md5".to_string());
+            job.sum_hash = Some("md5".to_string());
+            job
+        };
+
+        // Clean tree: the report must be all-empty and successful.
+        let (on_event, mut rx) = event_channel();
+        let _handle = start_job(rcd.client(), sum_job("test-sum-clean"), on_event)
+            .await
+            .expect("start SUM check");
+        let (_progress, event) = wait_terminal(&mut rx).await;
+        let SyncEvent::CheckFinished { report } = event else {
+            panic!("expected CheckFinished, got {event:?}");
+        };
+        assert_eq!(report.get("success").and_then(Value::as_bool), Some(true));
+        assert!(
+            listed(&report, "differ").is_empty()
+                && listed(&report, "missingOnDst").is_empty()
+                && listed(&report, "missingOnSrc").is_empty(),
+            "clean tree must verify empty: {report}"
+        );
+
+        // Corrupt one file: the rerun must flag it in `differ` and fail.
+        write_file(&root.path().join("data").join("a.txt"), "corrupted");
+        let (on_event, mut rx) = event_channel();
+        let _handle = start_job(rcd.client(), sum_job("test-sum-corrupt"), on_event)
+            .await
+            .expect("start SUM recheck");
+        let (_progress, event) = wait_terminal(&mut rx).await;
+        let SyncEvent::CheckFinished { report } = event else {
+            panic!("expected CheckFinished, got {event:?}");
+        };
+        assert_eq!(report.get("success").and_then(Value::as_bool), Some(false));
+        assert!(
+            listed(&report, "differ").iter().any(|path| path.contains("a.txt")),
+            "corrupted file must differ: {report}"
+        );
     }
 
     /// Full bisync lifecycle against real rclone (live-verified v1.75.1):
