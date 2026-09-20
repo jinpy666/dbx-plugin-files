@@ -1582,6 +1582,55 @@ mod tests {
         assert_eq!(params["provider"], "HuaweiOBS");
     }
 
+    /// Issue #21 regression evidence: an obs connection through an intranet
+    /// endpoint — a custom domain or a bare IP — keeps `provider=HuaweiOBS`
+    /// and passes the endpoint through verbatim. The retired OpenDAL obs
+    /// signer judged any non-`obs.*.myhuaweicloud.com` host a CNAME custom
+    /// binding domain and built a wrong signature resource (SignatureDoes
+    /// NotMatch); the rclone s3 backend signs path-style by default and no
+    /// host rewriting happens anywhere in this assembly. The bucket never
+    /// enters the parameters (bucket-based protocols browse it through the
+    /// path), and `force_path_style` stays unpinned here — only plain s3
+    /// pins the explicit override; the s3 backend's own default (true,
+    /// providers v1.75.1) already is path style.
+    #[test]
+    fn params_for_obs_intranet_endpoints_keep_provider_and_verbatim_url() {
+        // Custom intranet hostname, not an obs.<region>.myhuaweicloud.com.
+        let mut connection = fixture("obs");
+        connection.access_key_id = "AK".into();
+        connection.secret_access_key = secret("obs-sk");
+        connection.endpoint = "https://obs.intranet.corp.example:9000".into();
+        let params = param_map(&connection);
+        assert_eq!(params["provider"], "HuaweiOBS");
+        assert_eq!(params["endpoint"], "https://obs.intranet.corp.example:9000");
+        assert!(params.get("bucket").is_none(), "bucket travels in the path");
+        assert!(params.get("force_path_style").is_none(), "only plain s3 pins it");
+        assert!(params_for(&connection).expect("tuple").2, "obscure on secret");
+
+        // Bare IP form — the exact shape the OpenDAL signer misjudged as a
+        // CNAME domain. The endpoint is still untouched, and a set bucket
+        // stays out of the parameter set too.
+        let mut ip = fixture("obs");
+        ip.access_key_id = "AK".into();
+        ip.secret_access_key = secret("obs-sk");
+        ip.endpoint = "http://10.20.30.40:9000".into();
+        ip.bucket = "demo".into();
+        let params = param_map(&ip);
+        assert_eq!(params["provider"], "HuaweiOBS");
+        assert_eq!(params["endpoint"], "http://10.20.30.40:9000");
+        assert!(params.get("bucket").is_none(), "a set bucket still travels in the path");
+        assert!(params.get("force_path_style").is_none());
+
+        // The virtual-host opt-in is a plain-s3 form concept: it must not
+        // leak any bucket-prefixed host or force_path_style flip onto an
+        // intranet obs parameter set.
+        ip.enable_virtual_host_style = true;
+        let params = param_map(&ip);
+        assert_eq!(params["endpoint"], "http://10.20.30.40:9000");
+        assert!(params.get("bucket").is_none());
+        assert!(params.get("force_path_style").is_none());
+    }
+
     #[test]
     fn params_for_gcs_decodes_credential() {
         let mut connection = fixture("gcs");
