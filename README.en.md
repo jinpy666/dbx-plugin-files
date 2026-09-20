@@ -34,9 +34,9 @@ into a coherent, auditable, and automatable workflow.
 
 ## Highlights
 
-- Multi-protocol engine (Apache OpenDAL plus in-house adapters): local filesystems,
-  S3/MinIO, Alibaba Cloud OSS, Tencent Cloud COS, WebDAV, FTP, SFTP, SMB/CIFS, and
-  other compiled OpenDAL services such as gcs/azblob/obs.
+- Multi-protocol engine (managed rclone rcd): local filesystems,
+  S3/MinIO, Alibaba Cloud OSS, Tencent Cloud COS, Qiniu Kodo, Huawei OBS, WebDAV,
+  FTP, SFTP, SMB/CIFS, and 50 generic rclone backends such as hdfs/qingstor.
 - SFTP dual stack: the `sftp` quick protocol (OpenDAL, keyfile auth) and
   `sftp-native` (russh, password or keyfile) coexist; on Windows use `sftp-native`.
 - Consistent browse, read, upload, download, copy, move, rename, and delete operations.
@@ -72,8 +72,8 @@ See the [MCP usage guide](docs/MCP_USAGE.en.md) and the
 ## Security
 
 For production connections, use root-path locking and read-only mode where possible,
-and enable deletion only when required. Credentials for S3, OSS, Tencent COS, WebDAV, FTP, SFTP,
-and SMB are managed by the host secret store; the plugin does not write keys,
+and enable deletion only when required. Credentials for S3, OSS, Tencent COS, Qiniu Kodo,
+WebDAV, FTP, SFTP, and SMB are managed by the host secret store; the plugin does not write keys,
 private keys, or connection exports to logs or local configuration.
 
 ## Installation

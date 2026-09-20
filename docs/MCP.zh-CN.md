@@ -124,7 +124,8 @@ files sidecar（与工作台同进程）——保存的连接因此可用，凭�
   的内联参数字段——`"connection": {"protocol": "local", "root": "/data"}`
   或 `{"protocol": "s3", "bucket": "…", "endpoint": "…", "region": "…",
   "accessKeyId": "…", "secretAccessKey": "…"}`；腾讯云 COS 使用
-  `{"protocol": "cos", "bucket": "bucket-appid", "endpoint": "https://cos.ap-guangzhou.myqcloud.com", "secretId": "…", "secretKey": "…"}`——外加 `__local__` 与
+  `{"protocol": "cos", "bucket": "bucket-appid", "endpoint": "https://cos.ap-guangzhou.myqcloud.com", "secretId": "…", "secretKey": "…"}`；七牛云 Kodo 使用
+  `{"protocol": "qiniu", "bucket": "…", "endpoint": "https://s3.cn-east-1.qiniucs.com", "accessKeyId": "…", "secretAccessKey": "…"}`（bucket 留空时连接根列出所有桶）——外加 `__local__` 与
   启动 DBX 应用两条出路。
 
 ### stdio 语义差异与后续项

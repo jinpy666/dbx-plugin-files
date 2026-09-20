@@ -84,6 +84,10 @@
               "value": "cos"
             },
             {
+              "label": "Qiniu Kodo",
+              "value": "qiniu"
+            },
+            {
               "label": "WebDAV",
               "value": "webdav"
             },
@@ -353,6 +357,7 @@
               "obs",
               "oss",
               "cos",
+              "qiniu",
               "webdav",
               "ftp",
               "sftp",
@@ -380,6 +385,7 @@
               "azblob",
               "obs",
               "cos",
+              "qiniu",
               "webdav",
               "ftp",
               "sftp",
@@ -643,7 +649,8 @@
               "gcs",
               "obs",
               "oss",
-              "cos"
+              "cos",
+              "qiniu"
             ]
           },
           "required_when": {
@@ -786,6 +793,7 @@
               "s3",
               "obs",
               "oss",
+              "qiniu",
               "azurefiles",
               "b2",
               "cloudinary",
@@ -801,12 +809,13 @@
               "s3",
               "obs",
               "oss",
+              "qiniu",
               "b2",
               "cloudinary",
               "imagekit"
             ]
           },
-          "description": "Access key or public identifier: S3/OBS/OSS access key ID; b2 account ID; azurefiles storage account; qingstor/internetarchive/sugarsync access key; cloudinary API key; imagekit public key."
+          "description": "Access key or public identifier: S3/OBS/OSS/Qiniu access key ID; b2 account ID; azurefiles storage account; qingstor/internetarchive/sugarsync access key; cloudinary API key; imagekit public key."
         },
         {
           "key": "secret_access_key",
@@ -820,6 +829,7 @@
               "s3",
               "obs",
               "oss",
+              "qiniu",
               "azurefiles",
               "b2",
               "cloudinary",
@@ -835,12 +845,13 @@
               "s3",
               "obs",
               "oss",
+              "qiniu",
               "b2",
               "cloudinary",
               "imagekit"
             ]
           },
-          "description": "Secret kept in the host secret binding: S3/OBS/OSS secret key; b2 application key; azurefiles account key; qingstor/internetarchive access secret; sugarsync private access key; cloudinary API secret; imagekit private key."
+          "description": "Secret kept in the host secret binding: S3/OBS/OSS/Qiniu secret key; b2 application key; azurefiles account key; qingstor/internetarchive access secret; sugarsync private access key; cloudinary API secret; imagekit private key."
         },
         {
           "key": "token",
@@ -1214,6 +1225,7 @@
                 "sftp-native": "SFTP（原生）",
                 "oss": "阿里云 OSS",
                 "cos": "腾讯云 COS",
+                "qiniu": "七牛云 Kodo",
                 "aliyun-drive": "阿里云盘",
                 "dropbox": "Dropbox",
                 "gdrive": "Google Drive",
@@ -1333,11 +1345,11 @@
             },
             "access_key_id": {
               "label": "Access Key ID",
-              "description": "访问密钥或公开标识：S3/OBS/OSS 的 Access Key ID；b2 账户 ID；azurefiles 存储账户；qingstor/internetarchive/sugarsync 访问密钥；cloudinary API 密钥；imagekit 公钥。"
+              "description": "访问密钥或公开标识：S3/OBS/OSS/Qiniu 的 Access Key ID；b2 账户 ID；azurefiles 存储账户；qingstor/internetarchive/sugarsync 访问密钥；cloudinary API 密钥；imagekit 公钥。"
             },
             "secret_access_key": {
               "label": "Secret Access Key",
-              "description": "由宿主 secret binding 保管的机密：S3/OBS/OSS 的 Secret Key；b2 应用密钥；azurefiles 账户密钥；qingstor/internetarchive 访问私钥；sugarsync 私有访问密钥；cloudinary API 密钥；imagekit 私钥。"
+              "description": "由宿主 secret binding 保管的机密：S3/OBS/OSS/Qiniu 的 Secret Key；b2 应用密钥；azurefiles 账户密钥；qingstor/internetarchive 访问私钥；sugarsync 私有访问密钥；cloudinary API 密钥；imagekit 私钥。"
             },
             "secret_id": {
               "label": "Secret ID",
@@ -1475,6 +1487,7 @@
                 "sftp-native": "SFTP（原生）",
                 "oss": "阿里雲 OSS",
                 "cos": "騰訊雲 COS",
+                "qiniu": "七牛雲 Kodo",
                 "aliyun-drive": "阿里雲盤",
                 "dropbox": "Dropbox",
                 "gdrive": "Google Drive",
@@ -1594,11 +1607,11 @@
             },
             "access_key_id": {
               "label": "Access Key ID",
-              "description": "存取金鑰或公開識別：S3/OBS/OSS 的 Access Key ID；b2 帳戶 ID；azurefiles 儲存體帳戶；qingstor/internetarchive/sugarsync 存取金鑰；cloudinary API 金鑰；imagekit 公鑰。"
+              "description": "存取金鑰或公開識別：S3/OBS/OSS/Qiniu 的 Access Key ID；b2 帳戶 ID；azurefiles 儲存體帳戶；qingstor/internetarchive/sugarsync 存取金鑰；cloudinary API 金鑰；imagekit 公鑰。"
             },
             "secret_access_key": {
               "label": "Secret Access Key",
-              "description": "由宿主 secret binding 保管的機密：S3/OBS/OSS 的 Secret Key；b2 應用程式金鑰；azurefiles 帳戶金鑰；qingstor/internetarchive 存取私鑰；sugarsync 私有存取金鑰；cloudinary API 金鑰；imagekit 私鑰。"
+              "description": "由宿主 secret binding 保管的機密：S3/OBS/OSS/Qiniu 的 Secret Key；b2 應用程式金鑰；azurefiles 帳戶金鑰；qingstor/internetarchive 存取私鑰；sugarsync 私有存取金鑰；cloudinary API 金鑰；imagekit 私鑰。"
             },
             "secret_id": {
               "label": "Secret ID",
@@ -1736,6 +1749,7 @@
                 "sftp-native": "SFTP (native)",
                 "oss": "Alibaba OSS",
                 "cos": "Tencent COS",
+                "qiniu": "Qiniu Kodo",
                 "aliyun-drive": "Alibaba Drive",
                 "dropbox": "Dropbox",
                 "gdrive": "Google Drive",
@@ -1855,11 +1869,11 @@
             },
             "access_key_id": {
               "label": "Access key ID",
-              "description": "Access key or public identifier: S3/OBS/OSS access key ID; b2 account ID; azurefiles storage account; qingstor/internetarchive/sugarsync access key; cloudinary API key; imagekit public key."
+              "description": "Access key or public identifier: S3/OBS/OSS/Qiniu access key ID; b2 account ID; azurefiles storage account; qingstor/internetarchive/sugarsync access key; cloudinary API key; imagekit public key."
             },
             "secret_access_key": {
               "label": "Secret access key",
-              "description": "Secret kept in the host secret binding: S3/OBS/OSS secret key; b2 application key; azurefiles account key; qingstor/internetarchive access secret; sugarsync private access key; cloudinary API secret; imagekit private key."
+              "description": "Secret kept in the host secret binding: S3/OBS/OSS/Qiniu secret key; b2 application key; azurefiles account key; qingstor/internetarchive access secret; sugarsync private access key; cloudinary API secret; imagekit private key."
             },
             "secret_id": {
               "label": "Secret ID",
@@ -1997,6 +2011,7 @@
                 "sftp-native": "SFTP (nativo)",
                 "oss": "OSS de Alibaba",
                 "cos": "COS de Tencent",
+                "qiniu": "Qiniu Kodo",
                 "aliyun-drive": "Alibaba Drive",
                 "dropbox": "Dropbox",
                 "gdrive": "Google Drive",
@@ -2116,11 +2131,11 @@
             },
             "access_key_id": {
               "label": "ID de clave de acceso",
-              "description": "Clave de acceso o identificador público: Access Key ID de S3/OBS/OSS; ID de cuenta de b2; cuenta de almacenamiento de azurefiles; clave de acceso de qingstor/internetarchive/sugarsync; clave de API de cloudinary; clave pública de imagekit."
+              "description": "Clave de acceso o identificador público: Access Key ID de S3/OBS/OSS/Qiniu; ID de cuenta de b2; cuenta de almacenamiento de azurefiles; clave de acceso de qingstor/internetarchive/sugarsync; clave de API de cloudinary; clave pública de imagekit."
             },
             "secret_access_key": {
               "label": "Clave de acceso secreta",
-              "description": "Secreto guardado en el binding secreto del host: clave secreta de S3/OBS/OSS; clave de aplicación de b2; clave de cuenta de azurefiles; secreto de acceso de qingstor/internetarchive; clave de acceso privada de sugarsync; secreto de API de cloudinary; clave privada de imagekit."
+              "description": "Secreto guardado en el binding secreto del host: clave secreta de S3/OBS/OSS/Qiniu; clave de aplicación de b2; clave de cuenta de azurefiles; secreto de acceso de qingstor/internetarchive; clave de acceso privada de sugarsync; secreto de API de cloudinary; clave privada de imagekit."
             },
             "secret_id": {
               "label": "ID secreto",
@@ -2258,6 +2273,7 @@
                 "sftp-native": "SFTP (nativo)",
                 "oss": "OSS di Alibaba",
                 "cos": "COS Tencent",
+                "qiniu": "Qiniu Kodo",
                 "aliyun-drive": "Alibaba Drive",
                 "dropbox": "Dropbox",
                 "gdrive": "Google Drive",
@@ -2377,11 +2393,11 @@
             },
             "access_key_id": {
               "label": "ID chiave di accesso",
-              "description": "Chiave di accesso o identificatore pubblico: Access Key ID di S3/OBS/OSS; ID account di b2; account di archiviazione di azurefiles; chiave di accesso di qingstor/internetarchive/sugarsync; chiave API di cloudinary; chiave pubblica di imagekit."
+              "description": "Chiave di accesso o identificatore pubblico: Access Key ID di S3/OBS/OSS/Qiniu; ID account di b2; account di archiviazione di azurefiles; chiave di accesso di qingstor/internetarchive/sugarsync; chiave API di cloudinary; chiave pubblica di imagekit."
             },
             "secret_access_key": {
               "label": "Chiave di accesso segreta",
-              "description": "Segreto conservato nel binding segreto dell'host: chiave segreta di S3/OBS/OSS; chiave applicazione di b2; chiave account di azurefiles; segreto di accesso di qingstor/internetarchive; chiave di accesso privata di sugarsync; segreto API di cloudinary; chiave privata di imagekit."
+              "description": "Segreto conservato nel binding segreto dell'host: chiave segreta di S3/OBS/OSS/Qiniu; chiave applicazione di b2; chiave account di azurefiles; segreto di accesso di qingstor/internetarchive; chiave di accesso privata di sugarsync; segreto API di cloudinary; chiave privata di imagekit."
             },
             "secret_id": {
               "label": "ID segreto",
@@ -2519,6 +2535,7 @@
                 "sftp-native": "SFTP（ネイティブ）",
                 "oss": "Alibaba OSS",
                 "cos": "Tencent COS",
+                "qiniu": "Qiniu Kodo",
                 "aliyun-drive": "Alibaba Drive",
                 "dropbox": "Dropbox",
                 "gdrive": "Google Drive",
@@ -2638,11 +2655,11 @@
             },
             "access_key_id": {
               "label": "アクセスキー ID",
-              "description": "アクセスキーまたは公開識別子：S3/OBS/OSS の Access Key ID、b2 のアカウント ID、azurefiles のストレージアカウント、qingstor/internetarchive/sugarsync のアクセスキー、cloudinary の API キー、imagekit の公開キー。"
+              "description": "アクセスキーまたは公開識別子：S3/OBS/OSS/Qiniu の Access Key ID、b2 のアカウント ID、azurefiles のストレージアカウント、qingstor/internetarchive/sugarsync のアクセスキー、cloudinary の API キー、imagekit の公開キー。"
             },
             "secret_access_key": {
               "label": "シークレットアクセスキー",
-              "description": "ホストの secret binding に保存されるシークレット：S3/OBS/OSS のシークレットキー、b2 のアプリケーションキー、azurefiles のアカウントキー、qingstor/internetarchive のアクセスシークレット、sugarsync のプライベートアクセスキー、cloudinary の API シークレット、imagekit の秘密キー。"
+              "description": "ホストの secret binding に保存されるシークレット：S3/OBS/OSS/Qiniu のシークレットキー、b2 のアプリケーションキー、azurefiles のアカウントキー、qingstor/internetarchive のアクセスシークレット、sugarsync のプライベートアクセスキー、cloudinary の API シークレット、imagekit の秘密キー。"
             },
             "secret_id": {
               "label": "Secret ID",
@@ -2780,6 +2797,7 @@
                 "sftp-native": "SFTP (nativo)",
                 "oss": "OSS da Alibaba",
                 "cos": "COS da Tencent",
+                "qiniu": "Qiniu Kodo",
                 "aliyun-drive": "Alibaba Drive",
                 "dropbox": "Dropbox",
                 "gdrive": "Google Drive",
@@ -2899,11 +2917,11 @@
             },
             "access_key_id": {
               "label": "ID da chave de acesso",
-              "description": "Chave de acesso ou identificador público: Access Key ID de S3/OBS/OSS; ID de conta do b2; conta de armazenamento do azurefiles; chave de acesso de qingstor/internetarchive/sugarsync; chave de API do cloudinary; chave pública do imagekit."
+              "description": "Chave de acesso ou identificador público: Access Key ID de S3/OBS/OSS/Qiniu; ID de conta do b2; conta de armazenamento do azurefiles; chave de acesso de qingstor/internetarchive/sugarsync; chave de API do cloudinary; chave pública do imagekit."
             },
             "secret_access_key": {
               "label": "Chave de acesso secreta",
-              "description": "Segredo guardado no binding secreto do host: chave secreta de S3/OBS/OSS; chave de aplicativo do b2; chave de conta do azurefiles; segredo de acesso de qingstor/internetarchive; chave de acesso privada do sugarsync; segredo de API do cloudinary; chave privada do imagekit."
+              "description": "Segredo guardado no binding secreto do host: chave secreta de S3/OBS/OSS/Qiniu; chave de aplicativo do b2; chave de conta do azurefiles; segredo de acesso de qingstor/internetarchive; chave de acesso privada do sugarsync; segredo de API do cloudinary; chave privada do imagekit."
             },
             "secret_id": {
               "label": "ID secreto",
