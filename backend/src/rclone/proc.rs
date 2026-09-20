@@ -280,6 +280,21 @@ impl RcdSupervisor {
         self.handles.keys().cloned().collect()
     }
 
+    /// `(group, client)` pairs for every LIVE group rcd — process-wide
+    /// settings (bandwidth limit) applied to each running process. Dead
+    /// groups are skipped on purpose: their respawn path replays the
+    /// setting through `replay_group_registrations`, and spawning here
+    /// would use the wrong proxy env.
+    pub async fn live_clients(&mut self) -> Vec<(String, RcClient)> {
+        let mut pairs = Vec::new();
+        for (key, handle) in self.handles.iter_mut() {
+            if handle.is_running() {
+                pairs.push((key.clone(), handle.client()));
+            }
+        }
+        pairs
+    }
+
     /// Stops every group's rcd and forgets it. Remotes registered in the
     /// configs die with the temp dirs — `connection/disconnect` uses this
     /// only when the whole engine has no live connections left.

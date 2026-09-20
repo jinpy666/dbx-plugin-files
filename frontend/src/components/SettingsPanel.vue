@@ -4,7 +4,7 @@ import { FolderOpen, Plus, RotateCcw, X } from "@lucide/vue";
 import type { OpenAppMapping, OpenAppPrefs } from "../lib/prefs";
 
 /** 独立设置弹窗按分类只渲染一个 section；不传 section 时两段都渲染（兼容旧用法）。 */
-export type SettingsSection = "downloads" | "openWith";
+export type SettingsSection = "downloads" | "openWith" | "transfer";
 
 /** 平台预设（files/local/detect-apps 探测到的本机已装应用）。 */
 export interface AppPresetOption {
@@ -25,12 +25,26 @@ const props = defineProps<{
   section?: SettingsSection;
   /** 本机检测到的应用预设；空数组（旧 sidecar/未探测到）时隐藏预设区。 */
   presets?: AppPresetOption[];
+  /** 传输带宽限速（files/bwlimit 持久化值；空 = 不限）。 */
+  bwlimit?: string;
+  bwlimitError?: string;
 }>();
 
 const emit = defineEmits<{
   (event: "save-dir", dir: string): void;
   (event: "save-open-app", prefs: OpenAppPrefs): void;
+  (event: "save-bwlimit", rate: string): void;
 }>();
+
+// 带宽限速：编辑期真源，显式「保存」触发 sidecar 校验 + 持久化。
+const bwlimitDraft = ref(props.bwlimit ?? "");
+watch(() => props.bwlimit, (value) => {
+  bwlimitDraft.value = value ?? "";
+});
+
+function saveBwlimit() {
+  emit("save-bwlimit", bwlimitDraft.value.trim());
+}
 
 const draft = ref(props.saveDir);
 watch(() => props.saveDir, (value) => {
@@ -113,6 +127,26 @@ function applyPreset(preset: AppPresetOption) {
 
 <template>
   <section class="wb-settings-panel" :aria-label="t('settingsPanel')">
+    <div v-if="props.section === 'transfer'" class="wb-settings-section">
+      <div class="wb-settings-heading">
+        <strong>{{ t("bwlimitLabel") }}</strong>
+        <span class="wb-muted">{{ t("settings") }}</span>
+      </div>
+      <p class="wb-settings-help">{{ t("bwlimitHelp") }}</p>
+      <div class="wb-settings-path-row">
+        <input
+          v-model="bwlimitDraft"
+          class="wb-mono"
+          spellcheck="false"
+          :placeholder="t('bwlimitPlaceholder')"
+          :aria-label="t('bwlimitLabel')"
+          :aria-invalid="Boolean(bwlimitError)"
+          @keydown.enter.prevent="saveBwlimit"
+        />
+        <button class="wb-toolbar-button" type="button" @click="saveBwlimit">{{ t("bwlimitSave") }}</button>
+      </div>
+      <p v-if="bwlimitError" class="wb-settings-error" role="alert">{{ bwlimitError }}</p>
+    </div>
     <div v-if="!props.section || props.section === 'downloads'" class="wb-settings-section">
       <div class="wb-settings-heading">
         <strong>{{ t("downloadDirectory") }}</strong>

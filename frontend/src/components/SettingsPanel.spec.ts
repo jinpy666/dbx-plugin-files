@@ -13,7 +13,7 @@ function ensureHost() {
   window.dbxPlugin = (window.dbxPlugin ?? {}) as Window["dbxPlugin"];
 }
 
-function mountPanel(overrides: Partial<{ canSaveLocal: boolean; saveDir: string; defaultSaveDir: string; downloadDirError: string; openApp: OpenAppPrefs; openAppError: string }> = {}) {
+function mountPanel(overrides: Partial<{ canSaveLocal: boolean; saveDir: string; defaultSaveDir: string; downloadDirError: string; openApp: OpenAppPrefs; openAppError: string; bwlimit: string; bwlimitError: string }> = {}) {
   ensureHost();
   return mount(SettingsPanel, {
     props: {
@@ -150,3 +150,27 @@ describe("SettingsPanel external open-with app (issue #11)", () => {
     expect(wrapper.text()).toContain("downloadDirectoryUnavailable");
   });
 });
+
+describe("SettingsPanel transfer (bandwidth) section", () => {
+  it("renders the persisted rate and emits save-bwlimit on demand (not per keystroke)", async () => {
+    const wrapper = mount(SettingsPanel, {
+      props: { t, canSaveLocal: true, saveDir: "", defaultSaveDir: "", openApp: { defaultApp: "", mappings: [] }, section: "transfer", bwlimit: "10M", bwlimitError: "" },
+    });
+    const input = wrapper.get("input");
+    expect((input.element as HTMLInputElement).value).toBe("10M");
+    await input.setValue("10Mx");
+    expect(wrapper.emitted("save-bwlimit")).toBeUndefined();
+    await wrapper.get(".wb-settings-path-row .wb-toolbar-button").trigger("click");
+    expect(wrapper.emitted("save-bwlimit")).toEqual([["10Mx"]]);
+  });
+
+  it("shows the inline rejection message and watches external pref updates", async () => {
+    const wrapper = mount(SettingsPanel, {
+      props: { t, canSaveLocal: true, saveDir: "", defaultSaveDir: "", openApp: { defaultApp: "", mappings: [] }, section: "transfer", bwlimit: "", bwlimitError: "rejected" },
+    });
+    expect(wrapper.get('[role="alert"]').text()).toBe("rejected");
+    await wrapper.setProps({ bwlimit: "1M:100k", bwlimitError: "" });
+    expect((wrapper.get("input").element as HTMLInputElement).value).toBe("1M:100k");
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+  });
+})

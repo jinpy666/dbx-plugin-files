@@ -524,6 +524,13 @@ impl Plugin {
                         target_path: request.new_path.clone(),
                         dry_run: Some(false),
                         max_delete: None,
+            include: None,
+            exclude: None,
+            backup_dir: None,
+            suffix: None,
+            transfers: None,
+            checkers: None,
+            retries: None,
                     };
                     let job_id = rclone_start_dir_job(
                         Arc::clone(&self.rclone),
@@ -894,6 +901,31 @@ impl Plugin {
                 // The jobId doubles as the cancel/status taskId (shared
                 // namespace with the single-file taskIds).
                 Ok(json!({ "jobId": job_id }))
+            }
+            // ------------------------------------------------------------------
+            // Bandwidth limit (`files/bwlimit`): absent `rate` reads the
+            // persisted pref, `"off"` clears it, anything else is applied to
+            // every live group rcd and persisted for respawn replay.
+            // ------------------------------------------------------------------
+            "files/bwlimit" => {
+                let request: model::BwlimitRequest = parse(params)?;
+                let rate = request
+                    .rate
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string);
+                match rate.as_deref() {
+                    Some("off") => {
+                        self.rclone.set_bwlimit(None).await?;
+                        Ok(json!({ "rate": Value::Null }))
+                    }
+                    Some(rate) => {
+                        self.rclone.set_bwlimit(Some(rate)).await?;
+                        Ok(json!({ "rate": rate }))
+                    }
+                    None => Ok(json!({ "rate": self.rclone.bwlimit_pref() })),
+                }
             }
             // ------------------------------------------------------------------
             // Local mounts (docs/MOUNT.zh-CN.md, M1): rclone mount first,
@@ -2057,6 +2089,13 @@ async fn rclone_start_dir_job(
             dst_rel,
             dry_run: request.dry_run.unwrap_or(false),
             max_delete: request.max_delete,
+            include: request.include.clone(),
+            exclude: request.exclude.clone(),
+            backup_dir_rel: request.backup_dir.clone(),
+            suffix: request.suffix.clone(),
+            transfers: request.transfers,
+            checkers: request.checkers,
+            retries: request.retries,
         },
         on_event,
     )

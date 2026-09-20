@@ -74,6 +74,26 @@ pub struct SyncJobParams {
     /// `Some(0)` refuses all deletions; `Some(n)` caps them at n (job
     /// fails once exceeded); `None` = unlimited (rc default).
     pub max_delete: Option<u64>,
+    /// `--include` glob patterns (rc snake_case array); empty/`None` = no filter.
+    pub include: Option<Vec<String>>,
+    /// `--exclude` glob patterns (rc snake_case array); empty/`None` = no filter.
+    pub exclude: Option<Vec<String>>,
+    /// `--backup-dir`, relative to the DESTINATION CONNECTION ROOT (not the
+    /// synced subtree): overwritten (copy/sync) and deleted (sync) files are
+    /// moved here preserving hierarchy. Root-relative lets the UI point it
+    /// outside the synced path — inside would let a later mirror sync purge
+    /// the backups it made.
+    pub backup_dir_rel: Option<String>,
+    /// `--suffix` appended to backed-up file names (pair with backup_dir to
+    /// keep the originals distinguishable).
+    pub suffix: Option<String>,
+    /// Per-job overrides of rclone's global concurrency/retry flags
+    /// (`--transfers` / `--checkers` / `--retries`). rc parameter reshaping
+    /// silently ignores values it cannot parse, so the request layer keeps
+    /// the wire permissive while the UI clamps sane ranges.
+    pub transfers: Option<u32>,
+    pub checkers: Option<u32>,
+    pub retries: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -127,6 +147,33 @@ fn compose_fs(fs: &str, rel: &str) -> String {
     }
 }
 
+/// `Some(patterns)` only when the list carries at least one non-blank entry
+/// (blank patterns would silently filter everything out server-side).
+fn non_empty(patterns: &Option<Vec<String>>) -> Option<Vec<String>> {
+    patterns
+        .as_ref()
+        .map(|list| {
+            list.iter()
+                .map(|pattern| pattern.trim().to_string())
+                .filter(|pattern| !pattern.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .filter(|list| !list.is_empty())
+}
+
+/// Whether two connection-root-relative paths overlap (equal or nested in
+/// either direction). Empty = the connection root, which overlaps everything.
+fn paths_overlap(a: &str, b: &str) -> bool {
+    let (a, b) = (a.trim_matches('/'), b.trim_matches('/'));
+    if a.is_empty() || b.is_empty() {
+        return true;
+    }
+    let nested = |outer: &str, inner: &str| {
+        inner == outer || inner.strip_prefix(outer).is_some_and(|rest| rest.starts_with('/'))
+    };
+    nested(a, b) || nested(b, a)
+}
+
 /// Starts an rc `_async` sync job and spawns its 500ms poll task
 /// (`core/stats{group}` + `job/status`). Events reach `on_event`, throttled
 /// for Progress via [`Throttle`] (200ms / 1%). The module owns the callback
@@ -154,6 +201,51 @@ pub async fn start_job(
     }
     if let Some(max_delete) = params.max_delete {
         body["max_delete"] = Value::from(max_delete);
+    }
+    if let Some(include) = non_empty(&params.include) {
+        body["include"] = serde_json::json!(include);
+    }
+    if let Some(exclude) = non_empty(&params.exclude) {
+        body["exclude"] = serde_json::json!(exclude);
+    }
+    if let Some(backup) = params
+        .backup_dir_rel
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        // rclone refuses an overlapping --backup-dir ("destination and
+        // parameter to --backup-dir mustn't overlap", live-verified
+        // v1.75.1) — and an inside-the-mirror backup would be purged by the
+        // next sync anyway. Reject early with a readable message instead of
+        // surfacing rclone's job error after the fact.
+        let backup_rel = backup.trim_matches('/');
+        if paths_overlap(backup_rel, params.dst_rel.trim_matches('/')) {
+            return Err(format!(
+                "backup dir '{}' must live outside the synced destination '{}'",
+                backup, params.dst_rel
+            ));
+        }
+        // Composed onto the destination connection root (see the field doc):
+        // the fs part of dst_fs carries the root, only the rel varies.
+        body["backup_dir"] = Value::String(compose_fs(&params.dst_fs, backup_rel));
+    }
+    if let Some(suffix) = params
+        .suffix
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        body["suffix"] = Value::String(suffix.to_string());
+    }
+    if let Some(transfers) = params.transfers {
+        body["transfers"] = Value::from(transfers);
+    }
+    if let Some(checkers) = params.checkers {
+        body["checkers"] = Value::from(checkers);
+    }
+    if let Some(retries) = params.retries {
+        body["retries"] = Value::from(retries);
     }
     let response = client
         .call(method, &body)
@@ -436,6 +528,13 @@ mod tests {
             dst_rel: String::new(),
             dry_run: false,
             max_delete: None,
+            include: None,
+            exclude: None,
+            backup_dir_rel: None,
+            suffix: None,
+            transfers: None,
+            checkers: None,
+            retries: None,
         }
     }
 
@@ -450,6 +549,37 @@ mod tests {
         assert_eq!(compose_fs("dbxAb12:", "sub"), "dbxAb12:sub");
         // Empty rel keeps the fs untouched.
         assert_eq!(compose_fs("/tmp/data", ""), "/tmp/data");
+    }
+
+    #[test]
+    fn paths_overlap_catches_equal_and_nested() {
+        assert!(paths_overlap("_backups", "_backups"));
+        assert!(paths_overlap("_backups/sub", "_backups"));
+        assert!(paths_overlap("data", "data/2024"));
+        assert!(paths_overlap("", "anything"));
+        assert!(!paths_overlap("_backups", "sub"));
+        assert!(!paths_overlap("_backups", "backups2"));
+        // Cosmetic slashes do not change the answer.
+        assert!(!paths_overlap("/_backups/", "/sub/"));
+    }
+
+    /// A backup dir inside the mirrored subtree is refused before any rc
+    /// call (rclone itself rejects the overlap, live-verified v1.75.1).
+    #[tokio::test]
+    async fn backup_dir_inside_the_destination_is_refused() {
+        let Some(binary) = resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
+        let (src, dst) = sandbox();
+        let mut job = params(SyncKind::Copy, src.path(), dst.path());
+        job.backup_dir_rel = Some("deep/keep".to_string()); // inside `sub`
+        let (on_event, _rx) = event_channel();
+        let error = start_job(rcd.client(), job, on_event)
+            .await
+            .expect_err("overlapping backup dir must fail fast");
+        assert!(error.contains("outside the synced destination"), "{error}");
     }
 
     #[tokio::test]
@@ -579,6 +709,105 @@ mod tests {
         );
         // The deletion was refused: file still there.
         assert!(dst.path().join("stale.txt").is_file());
+    }
+
+    /// The include array is honored (rc snake_case filter param): only
+    /// `*.txt` travels, the `.log` sentinel stays behind.
+    #[tokio::test]
+    async fn include_filter_keeps_only_matching_files() {
+        let Some(binary) = resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
+        let (src, dst) = sandbox();
+        write_file(&src.path().join("sub").join("skip.log"), "never travels");
+        let mut job = params(SyncKind::Copy, src.path(), dst.path());
+        job.include = Some(vec!["*.txt".to_string()]);
+        let (on_event, mut rx) = event_channel();
+        let _handle = start_job(rcd.client(), job, on_event).await.expect("start filtered copy");
+        let (_progress, event) = wait_terminal(&mut rx).await;
+        assert!(matches!(event, SyncEvent::Completed { .. }), "got {event:?}");
+        let names = dir_names(&dst.path());
+        assert!(names.contains(&"a.txt".to_string()), "{names:?}");
+        assert!(!names.contains(&"skip.log".to_string()), "include must skip .log: {names:?}");
+    }
+
+    /// The exclude array removes matching files even though include is unset.
+    #[tokio::test]
+    async fn exclude_filter_skips_matching_files() {
+        let Some(binary) = resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
+        let (src, dst) = sandbox();
+        write_file(&src.path().join("sub").join("skip.log"), "never travels");
+        let mut job = params(SyncKind::Copy, src.path(), dst.path());
+        job.exclude = Some(vec!["*.log".to_string()]);
+        let (on_event, mut rx) = event_channel();
+        let _handle = start_job(rcd.client(), job, on_event).await.expect("start excluded copy");
+        let (_progress, event) = wait_terminal(&mut rx).await;
+        assert!(matches!(event, SyncEvent::Completed { .. }), "got {event:?}");
+        let names = dir_names(&dst.path());
+        assert!(names.contains(&"a.txt".to_string()), "{names:?}");
+        assert!(!names.contains(&"skip.log".to_string()), "exclude must skip .log: {names:?}");
+    }
+
+    /// `backup_dir` (destination-root-relative) receives the overwritten
+    /// destination file, preserving its name; the copy itself proceeds.
+    #[tokio::test]
+    async fn backup_dir_preserves_overwritten_dst_files() {
+        let Some(binary) = resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
+        let (src, dst) = sandbox();
+        let mut job = params(SyncKind::Copy, src.path(), dst.path());
+        // Mirror layout the overlap guard requires: the synced subtree lands
+        // in `mirror/`, the backup dir sits at the connection root — OUTSIDE
+        // the synced subtree.
+        job.dst_rel = "mirror".to_string();
+        job.backup_dir_rel = Some("_backups".to_string());
+        job.suffix = Some(".bak".to_string());
+        write_file(&dst.path().join("mirror").join("a.txt"), "old payload");
+        let (on_event, mut rx) = event_channel();
+        let _handle = start_job(rcd.client(), job, on_event).await.expect("start backed-up copy");
+        let (_progress, event) = wait_terminal(&mut rx).await;
+        assert!(matches!(event, SyncEvent::Completed { .. }), "got {event:?}");
+        // New content landed...
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("mirror").join("a.txt")).expect("new a.txt"),
+            "sentinel-a"
+        );
+        // ...and the overwritten original moved into the backup dir. Suffix
+        // acceptance is rclone-version dependent, so accept either spelling.
+        let backup_names = dir_names(&dst.path().join("_backups"));
+        assert!(
+            backup_names.iter().any(|name| name.starts_with("a.txt")),
+            "overwritten file must be backed up: {backup_names:?}"
+        );
+    }
+
+    /// `core/bwlimit` set + read roundtrip on the shared rcd (live-verified
+    /// shape: the response echoes the canonical rate string, "off" clears).
+    #[tokio::test]
+    async fn bwlimit_set_and_read_roundtrip() {
+        let Some(binary) = resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
+        let client = rcd.client();
+        let applied = client.core_bwlimit(Some("10M")).await.expect("set bwlimit");
+        assert_eq!(applied.get("rate").and_then(Value::as_str), Some("10Mi"));
+        let read = client.core_bwlimit(None).await.expect("read bwlimit");
+        assert_eq!(read.get("rate").and_then(Value::as_str), Some("10Mi"));
+        let cleared = client.core_bwlimit(Some("off")).await.expect("clear bwlimit");
+        assert_eq!(cleared.get("rate").and_then(Value::as_str), Some("off"));
+        // Unparsable values are rejected by rcd itself (500 bad bwlimit).
+        assert!(client.core_bwlimit(Some("notanumber")).await.is_err());
     }
 
     #[tokio::test]

@@ -246,6 +246,8 @@ export function installMockHost() {
   // ---- 异步 job 表（降级 copy/move/rename）--------------------------------
   let jobSeq = 0;
   const jobs = new Map<string, Record<string, unknown>>();
+  /** files/bwlimit 的持久化值（sidecar prefs 假身；空 = 不限）。 */
+  let mockBwlimit: string | null = null;
   const timers = new Map<string, number[]>();
 
   function emit(method: string, payload: Record<string, unknown>) {
@@ -551,6 +553,16 @@ export function installMockHost() {
         if (method === "files/move") deleteEntry(source, sourceTree);
         recordAudit(method, source, sourceId);
         return { success: true, transport: "native", jobId: null };
+      }
+      case "files/bwlimit": {
+        // sidecar prefs 语义的假实现：空参读取，"off"/空串清除，其余原样保存。
+        const rate = p.rate;
+        if (rate !== undefined) {
+          if (typeof rate !== "string") throw new Error("Invalid request parameters: rate must be a string");
+          const normalized = rate.trim();
+          mockBwlimit = normalized === "off" || !normalized ? null : normalized;
+        }
+        return { rate: mockBwlimit };
       }
       case "files/transfers/list":
       case "files/transfers/clear": {

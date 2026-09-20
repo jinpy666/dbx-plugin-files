@@ -208,6 +208,19 @@ impl RcClient {
         .await
     }
 
+    /// Queries (rate `None`) or sets the rcd process's bandwidth limit.
+    /// `rate` takes rclone bwlimit spellings — `"10M"`, `"1M:100k"`, `"off"`;
+    /// an unparsable value answers an RcError (HTTP 500 `bad bwlimit: ...`,
+    /// live-verified v1.75.1). The setting is per-rcd-process: every proxy
+    /// group's rcd needs its own call, and a respawned rcd needs a replay.
+    pub async fn core_bwlimit(&self, rate: Option<&str>) -> Result<Value, RcError> {
+        let mut payload = serde_json::Map::new();
+        if let Some(rate) = rate {
+            payload.insert("rate".into(), Value::String(rate.to_string()));
+        }
+        self.call("core/bwlimit", &Value::Object(payload)).await
+    }
+
     /// Backend feature/capability report — input to the `files/capabilities`
     /// projection (phase A wires a conservative per-protocol matrix on top).
     pub async fn backend_features(&self, fs: &str, remote: &str) -> Result<Value, RcError> {

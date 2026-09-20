@@ -635,6 +635,44 @@ pub struct DirJobRequest {
     /// 该值时任务失败（不删任何文件）；缺省不限制。
     #[serde(default)]
     pub max_delete: Option<u64>,
+    /// rclone `--include` 对齐：glob 模式数组（如 `["*.jpg", "reports/*"]`），
+    /// 仅传输匹配项；空数组/缺省 = 不过滤。
+    #[serde(default)]
+    pub include: Option<Vec<String>>,
+    /// rclone `--exclude` 对齐：glob 模式数组（如 `["*.tmp", ".DS_Store"]`），
+    /// 跳过匹配项；空数组/缺省 = 不过滤。
+    #[serde(default)]
+    pub exclude: Option<Vec<String>>,
+    /// rclone `--backup-dir` 对齐：目标连接根下的相对目录（如 `"_backups"`）。
+    /// copy/sync 覆盖、sync 删除的文件会按原有层级移入该目录。必须位于同步
+    /// 目标子树之外（rclone 拒绝重叠，且镜像同步会把树内备份一并清掉）；
+    /// 缺省不备份。
+    #[serde(default)]
+    pub backup_dir: Option<String>,
+    /// rclone `--suffix` 对齐：备份文件名追加的后缀（如 `".bak"`）；
+    /// 缺省不加后缀。
+    #[serde(default)]
+    pub suffix: Option<String>,
+    /// rclone `--transfers` 对齐：本作业并行传输文件数覆盖（1–32）。
+    #[serde(default)]
+    pub transfers: Option<u32>,
+    /// rclone `--checkers` 对齐：本作业并行比对协程数覆盖（1–64）。
+    #[serde(default)]
+    pub checkers: Option<u32>,
+    /// rclone `--retries` 对齐：本作业整体重试次数覆盖（1–10）。
+    #[serde(default)]
+    pub retries: Option<u32>,
+}
+
+/// `files/bwlimit`：带宽限速。`rate` 缺省 = 查询当前持久化值；`"off"` = 取消
+/// 限速；其余值（如 `"10M"`、`"1M:100k"`）= 设置并持久化（rcd 重启自动重放）。
+/// 数值由 rclone 解析（`bytes/s`，支持 K/M/G/T 后缀与上下行分段），非法值
+/// 由 rclone 报错（HTTP 500 `bad bwlimit`）。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BwlimitRequest {
+    #[serde(default)]
+    pub rate: Option<String>,
 }
 
 /// `files/mount`: mount a connection (or a sub-path of it) onto the local

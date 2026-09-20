@@ -35,6 +35,7 @@ import FileToolbar from "./components/FileToolbar.vue";
 import TransferPanel from "./components/TransferPanel.vue";
 import SettingsPanel from "./components/SettingsPanel.vue";
 import MountDialog from "./components/MountDialog.vue";
+import SyncDialog, { type SyncDialogOptions } from "./components/SyncDialog.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
 import AuditPanel from "./components/AuditPanel.vue";
 import PreviewPane from "./components/PreviewPane.vue";
@@ -77,7 +78,7 @@ import { resolveToolbarTarget } from "./lib/toolbarTarget";
 import { validateFileName } from "./lib/fileName";
 import { runBatchTasks } from "./lib/batchRunner";
 
-type ConfirmKind = "delete" | "purge" | "syncDir" | "copyDir" | "newFolder" | "newFile" | "rename" | "copy" | "move" | "extract" | "compress" | "overwrite";
+type ConfirmKind = "delete" | "purge" | "newFolder" | "newFile" | "rename" | "copy" | "move" | "extract" | "compress" | "overwrite";
 type PaneSide = "left" | "right";
 type MenuAction =
   | "open" | "preview" | "download" | "rename" | "delete" | "copyPath" | "copyName"
@@ -272,12 +273,13 @@ const dockTab = ref<"transfers" | "audit" | "connection">("transfers");
 const auditRef = ref<InstanceType<typeof AuditPanel>>();
 
 // ---- 独立设置弹窗（对标 ssh 插件 settings-modal）：左导航分类 + 内容面板 --------
-type SettingsCategory = "downloads" | "openWith" | "mounts";
+type SettingsCategory = "downloads" | "openWith" | "transfer" | "mounts";
 // 「本地挂载」分类仅桌面端（canSaveLocal）可见：挂载发生在 sidecar 所在机器。
 const settingsCategories = computed<ReadonlyArray<{ id: SettingsCategory; labelKey: string }>>(() =>
   [
     { id: "downloads", labelKey: "settingsNav.downloads" },
     { id: "openWith", labelKey: "settingsNav.openWith" },
+    { id: "transfer", labelKey: "settingsNav.transfer" },
     ...(canSaveLocal.value ? [{ id: "mounts" as const, labelKey: "settingsNav.mounts" }] : []),
   ],
 );
@@ -297,6 +299,7 @@ function closeSettings() {
 }
 
 watch(settingsCategory, (category) => {
+  if (category === "transfer") void loadBwlimit();
   if (category === "mounts") void loadMounts();
 });
 
@@ -462,7 +465,7 @@ const confirmForce = ref(false);
 const confirmForcePath = ref("");
 // R3-P2-5：跨栏 copy/move 冲突预检命中时挂起整批传输，弹「覆盖确认」后原样执行。
 const pendingPaneTransfer = ref<{ from: PaneSide; move: boolean; list: FileEntry[]; destPath: string }>();
-const confirmInput = computed(() => confirmKind.value === "newFolder" || confirmKind.value === "newFile" || confirmKind.value === "rename" || confirmKind.value === "syncDir" || confirmKind.value === "copyDir" || confirmKind.value === "copy" || confirmKind.value === "move" || confirmKind.value === "extract" || confirmKind.value === "compress");
+const confirmInput = computed(() => confirmKind.value === "newFolder" || confirmKind.value === "newFile" || confirmKind.value === "rename" || confirmKind.value === "copy" || confirmKind.value === "move" || confirmKind.value === "extract" || confirmKind.value === "compress");
 // P2-2：危险确认列表走 i18n 七语（lib 侧 label 为英文兜底，路径类条目原样展示）。
 const confirmDangerList = computed(() =>
   confirmHits.value.map((hit) => {
@@ -1255,17 +1258,70 @@ function startDelete(targets: FileEntry[], side: PaneSide = "left") {
 
 function startDirJob(kind: "syncDir" | "copyDir", entry: FileEntry, side: PaneSide) {
   const defaultTarget = joinPath("/", `${baseName(entry.path) || "copy"}`);
-  openConfirm(kind, {
-    title:
-      kind === "syncDir"
-        ? { key: "syncDirTitle", values: { path: defaultTarget } }
-        : { key: "copyDirTitle", values: { path: defaultTarget } },
-    body: kind === "syncDir" ? { key: "syncDirBody" } : { key: "copyDirBody" },
-    danger: true,
-    target: { entry },
-    draft: defaultTarget,
-    side,
-  });
+  // 同步选项走独立顶层 SyncDialog（dry-run/过滤/备份/并发参数），连接在打开
+  // 时固化——双栏下右键动作挂该栏连接，而不是活动栏。
+  syncDialogKind.value = kind;
+  syncDialogEntry.value = entry;
+  syncDialogSide.value = side;
+  syncDialogDraft.value = defaultTarget;
+  syncDialogSourceConnectionId.value = sideConnectionId(side) ?? connectionId.value;
+  syncDialogOpen.value = true;
+}
+
+// ---- 目录同步/复制（独立顶层弹窗 SyncDialog）--------------------------------
+const syncDialogOpen = ref(false);
+const syncDialogKind = ref<"syncDir" | "copyDir">("syncDir");
+const syncDialogEntry = ref<FileEntry | null>(null);
+const syncDialogSide = ref<PaneSide>("right");
+const syncDialogDraft = ref("");
+const syncDialogSourceConnectionId = ref("");
+const syncDialogBusy = ref(false);
+
+function closeSyncDialog() {
+  syncDialogOpen.value = false;
+  syncDialogEntry.value = null;
+}
+
+/** SyncDialog 确认：非空字段才下发（保持 rclone 默认）；dry-run 同样入传输
+ * 面板跟踪，完成即终态、不落任何写。 */
+async function onSyncDialogConfirm(options: SyncDialogOptions) {
+  const entry = syncDialogEntry.value;
+  const kind = syncDialogKind.value;
+  if (!entry || syncDialogBusy.value) return;
+  syncDialogBusy.value = true;
+  const side = syncDialogSide.value;
+  const id = syncDialogSourceConnectionId.value;
+  let jobStarted = false;
+  try {
+    const retry = transferRequest(id, `files/${kind}`, {
+      sourcePath: entry.path,
+      targetPath: options.targetPath,
+      ...(options.dryRun ? { dryRun: true } : {}),
+      ...(options.include.length ? { include: options.include } : {}),
+      ...(options.exclude.length ? { exclude: options.exclude } : {}),
+      ...(options.backupDir ? { backupDir: options.backupDir } : {}),
+      ...(options.suffix ? { suffix: options.suffix } : {}),
+      ...(options.transfers !== null ? { transfers: options.transfers } : {}),
+      ...(options.checkers !== null ? { checkers: options.checkers } : {}),
+      ...(options.retries !== null ? { retries: options.retries } : {}),
+    });
+    const result = await call<{ jobId: string }>(retry.method, retry.params);
+    if (result.jobId) {
+      trackSidecarJob(result.jobId, kind, `${entry.path} → ${options.targetPath}`, retry);
+    }
+    jobStarted = true;
+    closeSyncDialog();
+    refreshAuditPanel();
+    showNotice(t(options.dryRun ? "syncDryRunStarted" : "jobStarted", { name: baseName(options.targetPath) }));
+  } catch (cause) {
+    showError(cause);
+  } finally {
+    syncDialogBusy.value = false;
+  }
+  if (jobStarted) {
+    await loadDirectory().catch(() => undefined);
+    if (side === "right" && dualPane.value) await loadRightDirectory().catch(() => undefined);
+  }
 }
 
 /** P-FILES ①b：copy/move 动作（native 同步返回 / 降级 jobId 由后端决定）。 */
@@ -1490,23 +1546,6 @@ async function onConfirm() {
         if (!target) return;
         await invokeConfirmed("files/purge", { path: target });
         showNotice(t("deleted"));
-        break;
-      }
-      case "syncDir":
-      case "copyDir": {
-        const entry = confirmTarget.value.entry;
-        const targetPath = confirmDraft.value.trim();
-        if (!entry || !targetPath) return;
-        const retry = transferRequest(id, `files/${kind}`, {
-          sourcePath: entry.path,
-          targetPath,
-        });
-        const result = await call<{ jobId: string }>(retry.method, retry.params);
-        if (result.jobId) {
-          trackSidecarJob(result.jobId, kind, `${entry.path} → ${targetPath}`, retry);
-        }
-        jobStarted = true;
-        showNotice(t("jobStarted", { name: baseName(targetPath) }));
         break;
       }
       case "extract": {
@@ -2092,6 +2131,37 @@ async function probeAppPresets() {
 const saveDirDraft = ref(loadDownloadDir());
 const saveDirError = ref("");
 let saveDirValidationSerial = 0;
+// ---- 传输带宽（files/bwlimit：sidecar prefs 持久化，每个 rcd 启动时重放）----
+const bwlimitDraft = ref("");
+const bwlimitError = ref("");
+
+/** 设置面板打开传输页签时拉取当前持久化限速（空 = 不限）。 */
+async function loadBwlimit() {
+  try {
+    const result = await call<{ rate: string | null }>("files/bwlimit", {});
+    bwlimitDraft.value = result.rate ?? "";
+    bwlimitError.value = "";
+  } catch {
+    bwlimitError.value = t("bwlimitLoadFailed");
+  }
+}
+
+/** 保存限速：空 = 取消（off）。非法值由 rclone 拒绝，行内提示不关闭设置。 */
+async function onBwlimitSave(rate: string) {
+  const normalized = rate.trim();
+  try {
+    const result = await call<{ rate: string | null }>(
+      "files/bwlimit",
+      normalized ? { rate: normalized } : {},
+    );
+    bwlimitDraft.value = result.rate ?? "";
+    bwlimitError.value = "";
+    showNotice(t("settingsSaved"));
+  } catch {
+    bwlimitError.value = t("bwlimitInvalid");
+  }
+}
+
 async function onSaveDirChange(dir: string) {
   const normalized = dir.trim();
   const serial = ++saveDirValidationSerial;
@@ -2989,6 +3059,16 @@ onBeforeUnmount(() => {
       @confirm="onMountDialogConfirm"
     />
 
+    <SyncDialog
+      v-if="syncDialogOpen"
+      :t="t"
+      :kind="syncDialogKind"
+      :source-path="syncDialogEntry?.path ?? ''"
+      :default-target="syncDialogDraft"
+      @close="closeSyncDialog"
+      @confirm="onSyncDialogConfirm"
+    />
+
     <!-- 独立设置弹窗（对标 ssh 插件 settings-modal）：左侧分类导航 + 右侧内容
          面板，Esc/遮罩/关闭钮均可关闭；Tab 焦点陷阱同预览弹窗。dock 只保留
          transfers/audit/connection，设置不再挤在 dock 页签里。 -->
@@ -3032,6 +3112,21 @@ onBeforeUnmount(() => {
               :presets="appPresets"
               @save-dir="onSaveDirChange"
               @save-open-app="onOpenAppPrefsChange"
+            />
+            <SettingsPanel
+              v-else-if="settingsCategory === 'transfer'"
+              section="transfer"
+              :t="t"
+              :can-save-local="canSaveLocal"
+              :save-dir="saveDirDraft"
+              :default-save-dir="localDownloadDir"
+              :download-dir-error="saveDirError"
+              :open-app="openAppPrefs"
+              :open-app-error="openAppError"
+              :presets="appPresets"
+              :bwlimit="bwlimitDraft"
+              :bwlimit-error="bwlimitError"
+              @save-bwlimit="onBwlimitSave"
             />
             <SettingsPanel
               v-else-if="settingsCategory === 'openWith'"
