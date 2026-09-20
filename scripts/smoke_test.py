@@ -884,6 +884,7 @@ def run_webdav_section(client: SidecarClient) -> None:
         scenario_smb_stat_rmdir(runner, base)
         scenario_audit(runner)
         scenario_transfer_roundtrip(runner, base)
+        scenario_webdav_large_file(runner, base)
         scenario_smb_public_link_refused(runner, base)
         scenario_root_confinement(client, "webdav", external, base, secrets)
         readonly_id = "smoke-webdav-readonly"
@@ -901,6 +902,22 @@ def scenario_webdav_capabilities(runner: Runner) -> None:
     """webdav capability contract: full files/* face; copy/rename are
     engine-reported booleans, presign never declared."""
     assert_protocol_contract(runner, "webdav")
+
+
+def scenario_webdav_large_file(runner: Runner, base: str) -> None:
+    """Issue #18 regression: a >4MiB upload through the files/upload binary
+    channel must round-trip byte-exact on WebDAV. The retired OpenDAL WebDAV
+    writer rejected multi-chunk writes ("OneShotWriter doesn't support
+    multiple write"), failing every upload past its 4MiB buffering
+    threshold; mod_dav here is an independent third-party server."""
+    payload = os.urandom(5 * 1024 * 1024)
+
+    def _roundtrip():
+        remote = f"{base}/issue-18-big.bin"
+        upload_bytes(runner, remote, payload)
+        data, _start = download_bytes(runner, remote)
+        assert data == payload, f"large-file round-trip mismatch: sent {len(payload)} got {len(data)}"
+    runner.step("webdav-large-file-roundtrip", _roundtrip)
 
 
 def run_ftp_section(client: SidecarClient) -> None:

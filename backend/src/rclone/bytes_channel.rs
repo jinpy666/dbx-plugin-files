@@ -666,4 +666,145 @@ mod tests {
             None
         );
     }
+
+    // -- live webdav (issue #18 regression) --------------------------------
+
+    /// `rclone serve webdav` subprocess over a scratch directory. Same
+    /// ownership discipline as `RcdHandle`: `kill_on_drop` on the child
+    /// plus an explicit `Drop` that kills it, so the server can never
+    /// outlive the test — orphaned rclone processes survive the test
+    /// process on Unix (the leak class fixed in ced986b3).
+    struct ServeWebdav {
+        child: tokio::process::Child,
+        url: String,
+        user: String,
+        pass: String,
+    }
+
+    impl ServeWebdav {
+        async fn start(data_dir: &std::path::Path) -> ServeWebdav {
+            let binary = super::super::proc::resolve_binary().expect("rclone binary");
+            // Reserve a loopback port, then hand it to rclone (same trick
+            // as proc.rs's free_loopback_port; the tiny TOCTOU window is
+            // acceptable for a test).
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            let port = listener.local_addr().expect("local addr").port();
+            drop(listener);
+            let user = "dbx-test".to_string();
+            let pass = uuid::Uuid::new_v4().simple().to_string();
+            let child = tokio::process::Command::new(&binary)
+                .arg("serve")
+                .arg("webdav")
+                .arg(data_dir)
+                .arg(format!("--addr=127.0.0.1:{port}"))
+                .arg(format!("--user={user}"))
+                .arg(format!("--pass={pass}"))
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .kill_on_drop(true)
+                .spawn()
+                .expect("rclone serve webdav spawns");
+            let server = ServeWebdav {
+                child,
+                url: format!("http://127.0.0.1:{port}/"),
+                user,
+                pass,
+            };
+            server.wait_ready().await;
+            server
+        }
+
+        /// Polls until the server answers HTTP — any status proves the
+        /// listener is serving (a webdav GET on a directory may well 404).
+        async fn wait_ready(&self) {
+            let client = reqwest::Client::new();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                if client.get(&self.url).send().await.is_ok() {
+                    return;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "rclone serve webdav never became ready"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+    }
+
+    impl Drop for ServeWebdav {
+        fn drop(&mut self) {
+            let _ = self.child.start_kill();
+        }
+    }
+
+    /// Issue #18 regression evidence: a >4MiB file uploaded through the
+    /// plugin's upload channel (`files/upload` start→append→finish → rc
+    /// `operations/uploadfile` + `movefile`) must land intact on a real
+    /// WebDAV server and read back byte-identical. The retired OpenDAL
+    /// WebDAV writer rejected multi-chunk writes ("OneShotWriter doesn't
+    /// support multiple write"), breaking every upload past its 4MiB
+    /// buffering threshold; this pins the rclone-engine replacement end to
+    /// end against a live `rclone serve webdav`, registering the remote
+    /// through the production `registry::connect` parameter assembly.
+    #[tokio::test]
+    async fn live_webdav_upload_over_four_mib_roundtrip() {
+        // Engine rcd + a real WebDAV server over a scratch directory.
+        let Some(live) = Live::start().await else { return };
+        let data_dir = tempfile::tempdir().expect("webdav scratch dir");
+        let server = ServeWebdav::start(data_dir.path()).await;
+
+        let connection = crate::model::StoredConnection::from_lifecycle_params(&json!({
+            "connection": {
+                "id": "WebdavLive1",
+                "name": "webdav live fixture",
+                "external_config": {
+                    "protocol": "webdav",
+                    "endpoint": server.url,
+                    "username": server.user,
+                },
+                "connection_secrets": { "password": server.pass },
+            }
+        }))
+        .expect("webdav fixture shape");
+        let registry = super::super::registry::Registry::new();
+        let binding = super::super::registry::connect(&registry, &live.client, &connection)
+            .await
+            .expect("webdav connect registers the remote");
+        assert_eq!(binding.backend_type, "webdav");
+
+        // 5 MiB deterministic payload: past the OpenDAL-era 4MiB threshold
+        // and spanning 20 host frames at the 256KiB channel chunk size.
+        const BIG_FILE_BYTES: usize = 5 * 1024 * 1024;
+        let payload = deterministic_payload(BIG_FILE_BYTES);
+        let uploaded =
+            stage_upload(&live.client, &binding.remote_fs, "issue-18/big.bin", &payload).await;
+        assert_eq!(uploaded, BIG_FILE_BYTES as u64);
+
+        // Size lands correctly through the engine's stat path.
+        assert_eq!(
+            remote_size(&live.client, &binding.remote_fs, "issue-18/big.bin")
+                .await
+                .expect("stat after upload"),
+            Some(BIG_FILE_BYTES as u64)
+        );
+
+        // Read back through the download pump: byte-identical round trip.
+        let mut back: Vec<u8> = Vec::with_capacity(BIG_FILE_BYTES);
+        let mut sink = |chunk: &[u8]| -> Result<(), String> {
+            back.extend_from_slice(chunk);
+            Ok(())
+        };
+        let total = download_pump(
+            &live.client,
+            &binding.remote_fs,
+            "issue-18/big.bin",
+            &mut sink,
+        )
+        .await
+        .expect("download roundtrip");
+        assert_eq!(total, BIG_FILE_BYTES as u64);
+        assert_eq!(back, payload, "roundtrip bytes identical");
+    }
 }
