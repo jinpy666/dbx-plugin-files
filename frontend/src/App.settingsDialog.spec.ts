@@ -104,12 +104,18 @@ describe("standalone settings dialog", () => {
   it("lists mounts via files/mountStatus and unmounts from the mounts pane", async () => {
     mountWorkbench();
     await settle();
-    const invoke = vi
-      .spyOn(window.dbxPlugin, "invoke")
-      .mockResolvedValueOnce({
-        mounts: [{ mountId: "m1", strategy: "rclone", mountPoint: "/home/x/dbx-files-mounts/dbxabc", mounted: true }],
-      })
-      .mockResolvedValueOnce({ mounts: [] });
+    // 批次5 起 mountStatus 后面会跟一次 files/mount/stats（best-effort 摘要），
+    // stub 按方法分流而不是按次数 Once，避免摘要调用吃掉卸载后的 status 响应。
+    const statuses = [
+      { mounts: [{ mountId: "m1", strategy: "rclone", mountPoint: "/home/x/dbx-files-mounts/dbxabc", mounted: true }] },
+    ];
+    const invoke = vi.spyOn(window.dbxPlugin, "invoke").mockImplementation(((
+      method: string,
+    ) => {
+      if (method === "files/mountStatus") return Promise.resolve(statuses.shift() ?? { mounts: [] });
+      if (method === "files/mount/stats") return Promise.resolve({ mounts: [], skipped: 0 });
+      return Promise.resolve({});
+    }) as typeof window.dbxPlugin.invoke);
     await toolbarButton(workbenchMessage("en", "settings"))!.trigger("click");
     await navButton(workbenchMessage("en", "settingsNav.mounts"))!.trigger("click");
     await settle();
@@ -117,7 +123,8 @@ describe("standalone settings dialog", () => {
     const list = wrapper!.get(".wb-mounts-list");
     expect(list.text()).toContain(workbenchMessage("en", "mountStrategy.rclone"));
     expect(list.text()).toContain("/home/x/dbx-files-mounts/dbxabc");
-    await list.find("button").trigger("click");
+    // 行内最后一颗按钮是「卸载」（批次5 起第一颗是「刷新缓存」）。
+    await list.findAll("button").at(-1)!.trigger("click");
     await settle();
     expect(invoke).toHaveBeenCalledWith("files/unmount", expect.objectContaining({ mountId: "m1" }), undefined);
     // 卸载后 status 重拉：空列表 → 空态提示，列表消失。
@@ -134,6 +141,80 @@ describe("standalone settings dialog", () => {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     await settle();
     expect(wrapper!.find(".wb-settings-backdrop").exists()).toBe(false);
+  });
+});
+
+// VFS 缓存管理（批次5）：挂载行「刷新缓存」按钮 + vfs/stats 摘要。真实 App +
+// stub 桥，按方法分流（mountStatus/stats/refresh），其余走 mock 宿主。
+describe("mount VFS cache management", () => {
+  const rcloneRow = { mountId: "m1", strategy: "rclone", mountPoint: "/home/x/dbx-files-mounts/dbxabc", mounted: true };
+
+  function stubMountMethods(handlers: Record<string, unknown>) {
+    const raw = window.dbxPlugin.invoke.bind(window.dbxPlugin);
+    return vi.spyOn(window.dbxPlugin, "invoke").mockImplementation(((
+      method: string,
+      params?: Record<string, unknown>,
+      options?: { timeoutMs?: number },
+    ) => {
+      const routed = handlers[method];
+      if (routed !== undefined) return Promise.resolve(routed);
+      return raw(method, params, options);
+    }) as typeof window.dbxPlugin.invoke);
+  }
+
+  async function openMountsPane() {
+    await toolbarButton(workbenchMessage("en", "settings"))!.trigger("click");
+    await navButton(workbenchMessage("en", "settingsNav.mounts"))!.trigger("click");
+    await settle();
+    return wrapper!.get(".wb-mounts-list");
+  }
+
+  it("shows a vfs/stats summary and refreshes the cache from the rclone row", async () => {
+    mountWorkbench();
+    await settle();
+    const invoke = stubMountMethods({
+      "files/mountStatus": { mounts: [rcloneRow] },
+      "files/mount/stats": {
+        mounts: [
+          {
+            mountId: "m1",
+            strategy: "rclone",
+            stats: { diskCache: { bytesUsed: 2048 }, metadataCache: { dirs: 3, files: 5 } },
+          },
+        ],
+        skipped: 0,
+      },
+      "files/mount/refresh": { refreshed: 1, skipped: 0, errors: [] },
+    });
+    const list = await openMountsPane();
+    // 摘要展示缓存占用与目录数（bytes 走 formatBytes：2048 → 2.0 KiB）。
+    expect(list.text()).toContain("cache 2.0 KiB");
+    expect(list.text()).toContain("3 dirs");
+    // 行内第一颗按钮是「刷新缓存」；点击后按 mountId 调 files/mount/refresh。
+    await list.findAll("button")[0]!.trigger("click");
+    await settle();
+    expect(invoke).toHaveBeenCalledWith(
+      "files/mount/refresh",
+      expect.objectContaining({ mountId: "m1", connectionId: expect.any(String) }),
+      undefined,
+    );
+    expect(wrapper!.get(".wb-notice").text()).toContain("Mount cache refreshed (1 refreshed, 0 skipped)");
+  });
+
+  it("reports the no-VFS notice for WebDAV gateway rows", async () => {
+    mountWorkbench();
+    await settle();
+    stubMountMethods({
+      "files/mountStatus": { mounts: [{ mountId: "m2", strategy: "webdav", gatewayPort: 41000, mounted: true }] },
+      "files/mount/stats": { mounts: [], skipped: 1 },
+      "files/mount/refresh": { refreshed: 0, skipped: 1, errors: [] },
+    });
+    const list = await openMountsPane();
+    await list.findAll("button")[0]!.trigger("click");
+    await settle();
+    expect(wrapper!.get(".wb-notice").text()).toContain(
+      workbenchMessage("en", "mountRefresh.skipped"),
+    );
   });
 });
 

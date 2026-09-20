@@ -42,6 +42,11 @@ pub struct MountRecord {
     pub strategy: String,
     /// The fs string the mount/gateway serves (root + optional subpath).
     pub fs: String,
+    /// The mounted folder in connection-space absolute form (`""` = whole
+    /// root) — the same `mount_surface` second component the gateway maps
+    /// paths through. The VFS refresh paths use it to translate a
+    /// plugin-space directory onto the mount's root-relative `dir` param.
+    pub mount_path: String,
     pub backend: MountBackend,
     /// Why the primary strategy lost, when `auto` degraded to the gateway.
     pub fallback_reason: Option<String>,
@@ -491,6 +496,7 @@ pub async fn start_mount(
                         connection_id: connection_id.to_string(),
                         strategy: "rclone".to_string(),
                         fs: fs.clone(),
+                        mount_path: mount_path.clone(),
                         backend: MountBackend::Rclone { mount_point: mount_point.clone() },
                         fallback_reason: None,
                         created_at_ms: chrono::Utc::now().timestamp_millis(),
@@ -558,6 +564,7 @@ pub async fn start_mount(
             connection_id: connection_id.to_string(),
             strategy: "webdav".to_string(),
             fs: fs.clone(),
+            mount_path: mount_path.clone(),
             backend: MountBackend::WebDav { gateway, mount_point: volume.clone() },
             fallback_reason: fallback_reason.clone(),
             created_at_ms: chrono::Utc::now().timestamp_millis(),
@@ -758,6 +765,183 @@ pub async fn mount_status(
     Ok(json!({ "mounts": rows }))
 }
 
+// ---------------------------------------------------------------------------
+// VFS cache management (batch 5): refresh + stats over the rcd's vfs/* rc
+// endpoints. Only rclone-strategy mounts carry a VFS; WebDAV gateway mounts
+// answer from live ops calls and have nothing to refresh (counted `skipped`).
+// ---------------------------------------------------------------------------
+
+/// Map a plugin-space directory onto a mount's VFS root-relative `dir`
+/// param. `""` mount path = whole connection root (pass-through); a subdir
+/// mount only serves paths inside its own prefix — boundary-checked, so
+/// `/data/insidex` is NOT under `/data/inside` and the change is skipped
+/// for that mount. `None` (no dir given = refresh the mount root) maps to
+/// `""`.
+fn dir_rel_for_mount(mount_path: &str, dir: Option<&str>) -> Option<String> {
+    let Some(dir) = dir else {
+        return Some(String::new());
+    };
+    let dir = dir.trim_start_matches('/');
+    let base = mount_path.trim_matches('/');
+    if base.is_empty() {
+        return Some(dir.to_string());
+    }
+    dir.strip_prefix(base)
+        .filter(|rest| rest.is_empty() || rest.starts_with('/'))
+        .map(|rest| rest.trim_matches('/').to_string())
+}
+
+/// Refresh the VFS directory cache of an rclone-strategy mount (or every
+/// mount of the connection when `mount_id` is absent). `dir` is the
+/// plugin-space absolute directory whose listing changed; absent = the
+/// mount root. Response `{refreshed, skipped, errors}` counts one per
+/// matching mount; per-mount rc failures land in `errors` (the rest still
+/// refresh), and the whole call errors only when the connection itself is
+/// unreachable.
+pub async fn refresh_mount_caches(
+    engine: &rclone::RcloneEngine,
+    mounts: &MountTable,
+    connection_id: &str,
+    mount_id: Option<&str>,
+    dir: Option<&str>,
+    recursive: bool,
+) -> Result<Value, String> {
+    // Short lock: snapshot the records; the rc awaits happen outside.
+    let snapshot: Vec<(String, String, String, String)> = {
+        let table = lock_table(mounts)?;
+        table
+            .values()
+            .filter(|record| {
+                record.connection_id == connection_id
+                    && mount_id.map_or(true, |wanted| record.mount_id == wanted)
+            })
+            .map(|record| {
+                (
+                    record.mount_id.clone(),
+                    record.strategy.clone(),
+                    record.fs.clone(),
+                    record.mount_path.clone(),
+                )
+            })
+            .collect()
+    };
+    let mut refreshed = 0usize;
+    let mut skipped = 0usize;
+    let mut errors: Vec<String> = Vec::new();
+    // Only resolve an rc client when an rclone mount actually needs one —
+    // spawning a group rcd just to count skipped gateway rows is waste.
+    let client = if snapshot
+        .iter()
+        .any(|(_, strategy, _, _)| strategy == "rclone")
+    {
+        Some(engine.client_for_id(connection_id).await?)
+    } else {
+        None
+    };
+    for (id, strategy, fs, mount_path) in snapshot {
+        if strategy != "rclone" {
+            skipped += 1;
+            continue;
+        }
+        match dir_rel_for_mount(&mount_path, dir) {
+            // Change outside this subdir mount's surface: nothing to refresh.
+            None => skipped += 1,
+            Some(rel) => match &client {
+                Some(client) => {
+                    let dir_param = (!rel.is_empty()).then_some(rel.as_str());
+                    match client.vfs_refresh(&fs, dir_param, recursive).await {
+                        Ok(_) => refreshed += 1,
+                        Err(error) => errors.push(format!("{id}: {error}")),
+                    }
+                }
+                None => errors.push(format!("{id}: connection is not connected")),
+            },
+        }
+    }
+    Ok(json!({ "refreshed": refreshed, "skipped": skipped, "errors": errors }))
+}
+
+/// Auto-refresh hook for the mutation success paths (upload finish,
+/// delete/purge): fire-and-forget [`refresh_mount_caches`] over every
+/// rclone mount of the connection, non-recursive at the changed dir.
+/// Never fails the caller — unreachable connections and rc errors only log.
+pub async fn best_effort_refresh_mount_caches(
+    engine: &rclone::RcloneEngine,
+    mounts: &MountTable,
+    connection_id: &str,
+    dir: Option<&str>,
+) {
+    match refresh_mount_caches(engine, mounts, connection_id, None, dir, false).await {
+        Ok(value) => {
+            for error in value
+                .get("errors")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                eprintln!("[io.dbx.files] mount vfs auto-refresh failed: {error}");
+            }
+        }
+        Err(error) => {
+            eprintln!("[io.dbx.files] mount vfs auto-refresh skipped: {error}");
+        }
+    }
+}
+
+/// Per rclone-strategy mount `vfs/stats` (raw rclone JSON under `stats`,
+/// per-mount failure under `error`). WebDAV gateway mounts have no VFS and
+/// answer under `skipped`. Row shape: `{mountId, strategy, stats|error}`.
+pub async fn mount_vfs_stats(
+    engine: &rclone::RcloneEngine,
+    mounts: &MountTable,
+    connection_id: &str,
+    mount_id: Option<&str>,
+) -> Result<Value, String> {
+    let snapshot: Vec<(String, String, String)> = {
+        let table = lock_table(mounts)?;
+        table
+            .values()
+            .filter(|record| {
+                record.connection_id == connection_id
+                    && mount_id.map_or(true, |wanted| record.mount_id == wanted)
+            })
+            .map(|record| {
+                (
+                    record.mount_id.clone(),
+                    record.strategy.clone(),
+                    record.fs.clone(),
+                )
+            })
+            .collect()
+    };
+    let client = if snapshot
+        .iter()
+        .any(|(_, strategy, _)| strategy == "rclone")
+    {
+        Some(engine.client_for_id(connection_id).await?)
+    } else {
+        None
+    };
+    let mut rows = Vec::new();
+    let mut skipped = 0usize;
+    for (id, strategy, fs) in snapshot {
+        if strategy != "rclone" {
+            skipped += 1;
+            continue;
+        }
+        let mut row = json!({ "mountId": id, "strategy": "rclone" });
+        match client.as_ref() {
+            Some(client) => match client.vfs_stats(&fs).await {
+                Ok(stats) => row["stats"] = stats,
+                Err(error) => row["error"] = Value::String(error.to_string()),
+            },
+            None => row["error"] = Value::String("connection is not connected".to_string()),
+        }
+        rows.push(row);
+    }
+    Ok(json!({ "mounts": rows, "skipped": skipped }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -817,6 +1001,7 @@ mod tests {
                     connection_id: "c1".to_string(),
                     strategy: "rclone".to_string(),
                     fs: "remote:/".to_string(),
+                    mount_path: String::new(),
                     backend: MountBackend::Rclone { mount_point: PathBuf::from("/tmp/mnt") },
                     fallback_reason: None,
                     created_at_ms: 0,
@@ -825,6 +1010,28 @@ mod tests {
             );
         assert!(is_active_mount_point(&mounts, Path::new("/tmp/mnt")).unwrap());
         assert!(!is_active_mount_point(&mounts, Path::new("/elsewhere")).unwrap());
+    }
+
+    // -- VFS cache mapping ---------------------------------------------------
+
+    #[test]
+    fn dir_rel_maps_plugin_paths_onto_mount_roots() {
+        // Whole-root mounts pass through; a missing dir means the mount root.
+        assert_eq!(dir_rel_for_mount("", Some("/a/b")).as_deref(), Some("a/b"));
+        assert_eq!(dir_rel_for_mount("/", Some("/a/b")).as_deref(), Some("a/b"));
+        assert_eq!(dir_rel_for_mount("", None).as_deref(), Some(""));
+        // Subdir mounts: equal maps to the mount root, nested maps relative.
+        assert_eq!(
+            dir_rel_for_mount("/data/inside", Some("/data/inside")).as_deref(),
+            Some("")
+        );
+        assert_eq!(
+            dir_rel_for_mount("/data/inside", Some("/data/inside/x")).as_deref(),
+            Some("x")
+        );
+        // Outside (or boundary-adjacent, so not actually inside) → skip.
+        assert_eq!(dir_rel_for_mount("/data/inside", Some("/data/other")), None);
+        assert_eq!(dir_rel_for_mount("/data/inside", Some("/data/insidex")), None);
     }
 
     // -- strategy matrix ----------------------------------------------------

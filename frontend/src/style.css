@@ -181,6 +181,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-mounts-main { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
 .wb-mounts-main strong { font-weight: 500; font-size: 12px; }
 .wb-mounts-main span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-mounts-stats { color: var(--muted-foreground); }
 .wb-mounts-badge { flex: 0 0 auto; border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; color: var(--muted-foreground); font-size: 10px; }
 
 /* ---- transfer panel --------------------------------------------------------- */
