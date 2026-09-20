@@ -9,6 +9,7 @@ import {
   Copy,
   ArrowUp,
   Download,
+  Eject,
   Eye,
   FileArchive,
   FileOutput,
@@ -263,10 +264,42 @@ function navigateQuickPath(side: PaneSide, targetPath: string) {
   else void loadRightDirectory(targetPath).catch(() => undefined);
 }
 
-// 右侧 dock（transfers/audit/connection/settings）不持久化，默认收起。
+// 右侧 dock（transfers/audit/connection）不持久化，默认收起；settings 已拆为
+// 独立弹窗（对标 ssh 插件 settings-modal），不再占 dock 页签。
 const dockOpen = ref(false);
-const dockTab = ref<"transfers" | "audit" | "connection" | "settings">("transfers");
+const dockTab = ref<"transfers" | "audit" | "connection">("transfers");
 const auditRef = ref<InstanceType<typeof AuditPanel>>();
+
+// ---- 独立设置弹窗（对标 ssh 插件 settings-modal）：左导航分类 + 内容面板 --------
+type SettingsCategory = "downloads" | "openWith" | "mounts";
+const SETTINGS_CATEGORIES: ReadonlyArray<{ id: SettingsCategory; labelKey: string }> = [
+  { id: "downloads", labelKey: "settingsNav.downloads" },
+  { id: "openWith", labelKey: "settingsNav.openWith" },
+  { id: "mounts", labelKey: "settingsNav.mounts" },
+];
+const settingsOpen = ref(false);
+const settingsCategory = ref<SettingsCategory>("downloads");
+const settingsOverlayEl = ref<HTMLElement>();
+
+function openSettings(category: SettingsCategory = "downloads") {
+  settingsCategory.value = category;
+  settingsOpen.value = true;
+  if (category === "mounts") void loadMounts();
+  void nextTick(() => document.querySelector<HTMLElement>(".wb-settings-nav .is-active")?.focus());
+}
+
+function closeSettings() {
+  settingsOpen.value = false;
+}
+
+watch(settingsCategory, (category) => {
+  if (category === "mounts") void loadMounts();
+});
+
+/** 焦点陷阱：Tab 在设置弹窗内循环（同预览/确认弹窗实现）。 */
+function onSettingsTabKeydown(event: KeyboardEvent) {
+  trapTabKey(event, settingsOverlayEl.value);
+}
 
 const previewPath = ref<string | null>(null);
 /** 预览条目所属栏连接：openPreview 时固化为快照——单栏预览会顺手开启双栏
@@ -513,6 +546,14 @@ function toolbarSelectionEntries(side: PaneSide): FileEntry[] {
   return pool.filter((entry) => sel.includes(entry.path));
 }
 
+/** 工具栏挂载入口：挂活动栏当前目录；本地 __local__ 栏没有远端可挂（禁用）。 */
+const canMountToolbar = computed(() => sideConnectionId(toolbarTarget.value.side) !== LOCAL_CONNECTION_ID);
+
+function mountToolbarTarget() {
+  if (!canMountToolbar.value) return;
+  void startMount(paneDirPath(toolbarTarget.value.side));
+}
+
 // 双栏开关不持久化；两侧侧栏状态分别持久化，切换一侧不影响另一侧。
 watch([sort, leftSideTab, rightSideTab, leftSideCollapsed, rightSideCollapsed], () => {
   saveUiPrefs({
@@ -678,8 +719,9 @@ function handleEvent(event: DbxPluginEvent) {
 
 const INTENT_CELL_WIDTH = 120;
 
-/** 当前工作台面板（快照/摘要用）：主区恒为 browse；dock 打开时为对应页签。 */
+/** 当前工作台面板（快照/摘要用）：设置弹窗 > dock 页签 > 主区 browse。 */
 function currentIntentPanel(): string {
+  if (settingsOpen.value) return "settings";
   return dockOpen.value ? dockTab.value : "browse";
 }
 
@@ -723,10 +765,17 @@ const uiIntentHandlers = {
       uiIntent.reportSnapshot({ panel: "browse", path: path.value, count: entries.value.length });
       return { status: "applied", summary: { panel } };
     }
-    if (panel === "transfers" || panel === "audit" || panel === "settings") {
+    if (panel === "transfers" || panel === "audit") {
       dockOpen.value = true;
       dockTab.value = panel;
       if (panel === "audit") auditRef.value?.refresh();
+      uiIntent.reportSnapshot({ panel });
+      return { status: "applied", summary: { panel } };
+    }
+    if (panel === "settings") {
+      // 设置已是独立弹窗：关掉 dock 让位，弹窗按 intent 面板打开。
+      dockOpen.value = false;
+      openSettings("downloads");
       uiIntent.reportSnapshot({ panel });
       return { status: "applied", summary: { panel } };
     }
@@ -1995,16 +2044,37 @@ async function deleteTransferRecord(jobId: string) {
 let localCapabilities: Promise<{ canSaveLocal: boolean; downloadsDir: string } | undefined> | undefined;
 const localDownloadDir = ref("");
 const canSaveLocal = ref(false);
+/** sidecar 平台标签（macos/windows/linux/other），驱动「打开方式」预设与文案。 */
+const localPlatform = ref("");
 function probeLocalCapabilities() {
   localCapabilities ??= window.dbxPlugin
-    .invoke<{ canSaveLocal: boolean; downloadsDir: string }>("files/local/capabilities")
+    .invoke<{ canSaveLocal: boolean; downloadsDir: string; platform?: string }>("files/local/capabilities")
     .then((result) => {
       localDownloadDir.value = result.downloadsDir || "";
       canSaveLocal.value = !!result.canSaveLocal;
+      localPlatform.value = result.platform || "";
       return result;
     })
     .catch(() => undefined);
   return localCapabilities;
+}
+
+// —— 平台「打开方式」预设（issue #11 延伸）——————————————————————
+// files/local/detect-apps 只回报告本机真实存在的候选（WPS/Excel/LibreOffice/...
+// 按平台默认安装路径探测）；方法缺失（旧 sidecar）时整组隐藏，手动输入仍可用。
+interface AppPreset {
+  id: string;
+  name: string;
+  path: string;
+}
+const appPresets = ref<AppPreset[]>([]);
+async function probeAppPresets() {
+  try {
+    const result = await window.dbxPlugin.invoke<{ apps?: AppPreset[] }>("files/local/detect-apps");
+    appPresets.value = Array.isArray(result.apps) ? result.apps : [];
+  } catch {
+    appPresets.value = [];
+  }
 }
 
 /** 「保存到」偏好（localStorage），空串 = 跟随 sidecar 默认下载目录。 */
@@ -2026,6 +2096,7 @@ async function onSaveDirChange(dir: string) {
     saveDirError.value = "";
     persistDownloadDir(normalized);
     saveDirDraft.value = loadDownloadDir();
+    showNotice(t("settingsSaved"));
   } catch {
     if (serial !== saveDirValidationSerial) return;
     saveDirError.value = t("invalidDownloadDirectory");
@@ -2073,6 +2144,7 @@ async function onOpenAppPrefsChange(prefs: OpenAppPrefs) {
     openAppError.value = "";
     openAppPrefs.value = normalized;
     persistOpenAppPrefs(normalized);
+    showNotice(t("settingsSaved"));
     return;
   }
   try {
@@ -2084,6 +2156,7 @@ async function onOpenAppPrefsChange(prefs: OpenAppPrefs) {
     openAppError.value = "";
     openAppPrefs.value = normalized;
     persistOpenAppPrefs(normalized);
+    showNotice(t("settingsSaved"));
   } catch {
     if (serial !== openAppValidationSerial) return;
     openAppError.value = t("invalidExternalApp");
@@ -2291,9 +2364,62 @@ async function startMount(path?: string) {
     } else {
       showNotice(t("mountRcloneOk", { point: result.mountPoint ?? "" }));
     }
+    // 挂载面板开着时同步刷新（工具栏/右键入口挂载后状态即时可见）。
+    if (settingsOpen.value && settingsCategory.value === "mounts") void loadMounts();
   } catch (error) {
     showNotice(t("mountFailed", { message: errorMessage(error) }));
   }
+}
+
+// ---- 设置弹窗「本地挂载」面板：files/mountStatus 列表 + 逐条卸载 ----------------
+// 工具栏/右键挂载只在完成时给 notice；这里提供常驻视图（策略/挂载点/失效态），
+// status 按当前连接过滤（call 注入 connectionId），换连接时弹窗整体关闭。
+
+interface MountRow {
+  mountId: string;
+  strategy: string;
+  mountPoint?: string;
+  gatewayPort?: number;
+  /** rclone 策略行：rcd 已不再报告该挂载点时为 false（用户侧自行卸载清理）。 */
+  mounted?: boolean;
+  fallbackReason?: string;
+}
+
+const mountsLoading = ref(false);
+const mountsError = ref(false);
+const mountsList = ref<MountRow[]>([]);
+const unmountBusyId = ref("");
+
+async function loadMounts() {
+  if (mountsLoading.value) return;
+  mountsLoading.value = true;
+  mountsError.value = false;
+  try {
+    const result = await call<{ mounts: MountRow[] }>("files/mountStatus", {});
+    mountsList.value = Array.isArray(result.mounts) ? result.mounts : [];
+  } catch {
+    mountsError.value = true;
+  } finally {
+    mountsLoading.value = false;
+  }
+}
+
+async function unmountMount(row: MountRow) {
+  if (unmountBusyId.value) return;
+  unmountBusyId.value = row.mountId;
+  try {
+    await call("files/unmount", { mountId: row.mountId });
+    showNotice(t("mounts.unmounted"));
+    await loadMounts();
+  } catch (cause) {
+    showError(cause);
+  } finally {
+    unmountBusyId.value = "";
+  }
+}
+
+function mountStrategyLabel(strategy: string) {
+  return strategy === "rclone" ? t("mountStrategy.rclone") : t("mountStrategy.webdav");
 }
 
 // ---- lifecycle -----------------------------------------------------------------
@@ -2312,6 +2438,8 @@ function updateHostContext(context: Record<string, unknown>) {
   onContextClick();
   closeConfirm();
   previewPath.value = null;
+  // 挂载状态面板按连接过滤：换连接时关闭设置弹窗，避免展示旧连接的挂载行。
+  settingsOpen.value = false;
   if (!sideConnectionId("left")) {
     leftNav.next();
     path.value = "/";
@@ -2451,6 +2579,10 @@ function onDocumentKeydown(event: KeyboardEvent) {
     transferHistoryConfirmOpen.value = false;
     return;
   }
+  if (settingsOpen.value) {
+    closeSettings();
+    return;
+  }
   closeMenusRestoreFocus();
 }
 
@@ -2465,12 +2597,15 @@ function onRightNavigate(target: string) {
   void loadRightDirectory(target).catch(() => undefined);
 }
 
-watch([dockOpen, dockTab], ([open, tab]) => {
-  if (!open || tab !== "settings") {
+watch([dockOpen, dockTab], ([, tab]) => {
+  if (tab === "audit") auditRef.value?.refresh();
+});
+// 设置弹窗关闭即清掉偏好编辑期的行内错误（下次打开重新校验）。
+watch(settingsOpen, (open) => {
+  if (!open) {
     saveDirError.value = "";
     openAppError.value = "";
   }
-  if (tab === "audit") auditRef.value?.refresh();
 });
 
 onMounted(() => {
@@ -2478,8 +2613,10 @@ onMounted(() => {
   document.addEventListener("keydown", onDocumentKeydown);
   window.addEventListener("resize", syncViewportLayout);
   syncViewportLayout();
-  // 本机落盘能力探测（决定下载走 sidecar 落盘还是宿主/浏览器兜底）。
+  // 本机落盘能力探测（决定下载走 sidecar 落盘还是宿主/浏览器兜底）+ 平台
+  // 打开方式预设探测（旧 sidecar 方法缺失时隐藏预设区）。
   void probeLocalCapabilities();
+  void probeAppPresets();
   void initialize().catch((cause) => {
     loading.value = false;
     listingFailed.value = true;
@@ -2526,12 +2663,15 @@ onBeforeUnmount(() => {
       :connection-color="connection.color"
       :read-only="!canWrite"
       :conn-state="connState"
+      :can-mount="canMountToolbar"
       :t="t"
       @new-folder="startNewFolder(toolbarTarget.side)"
       @upload="onUpload"
       @download="downloadSelection(toolbarTarget.side)"
       @delete="startDelete(toolbarSelectionEntries(toolbarTarget.side), toolbarTarget.side)"
       @toggle-dual-pane="dualPane = !dualPane"
+      @mount="mountToolbarTarget"
+      @open-settings="openSettings('downloads')"
       @toggle-dock="(tab) => { const target = tab ?? dockTab; if (dockOpen && dockTab === target) dockOpen = false; else { dockOpen = true; dockTab = target; if (target === 'audit') auditRef?.refresh(); } }"
     />
 
@@ -2703,7 +2843,6 @@ onBeforeUnmount(() => {
           <button role="tab" :aria-selected="dockTab === 'transfers'" :tabindex="dockTab === 'transfers' ? 0 : -1" :class="{ 'is-active': dockTab === 'transfers' }" @click="dockTab = 'transfers'">{{ t("transferPanel") }}</button>
           <button role="tab" :aria-selected="dockTab === 'audit'" :tabindex="dockTab === 'audit' ? 0 : -1" :class="{ 'is-active': dockTab === 'audit' }" @click="dockTab = 'audit'">{{ t("auditPanel") }}</button>
           <button role="tab" :aria-selected="dockTab === 'connection'" :tabindex="dockTab === 'connection' ? 0 : -1" :class="{ 'is-active': dockTab === 'connection' }" @click="dockTab = 'connection'">{{ t("connectionPanel") }}</button>
-          <button role="tab" :aria-selected="dockTab === 'settings'" :tabindex="dockTab === 'settings' ? 0 : -1" :class="{ 'is-active': dockTab === 'settings' }" @click="dockTab = 'settings'">{{ t("settingsPanel") }}</button>
         </div>
         <div class="wb-dock-body">
           <TransferPanel
@@ -2720,18 +2859,6 @@ onBeforeUnmount(() => {
             @open-app="openTransferWithApp"
           />
           <AuditPanel v-else-if="dockTab === 'audit'" ref="auditRef" :t="t" />
-          <SettingsPanel
-            v-else-if="dockTab === 'settings'"
-            :t="t"
-            :can-save-local="canSaveLocal"
-            :save-dir="saveDirDraft"
-            :default-save-dir="localDownloadDir"
-            :download-dir-error="saveDirError"
-            :open-app="openAppPrefs"
-            :open-app-error="openAppError"
-            @save-dir="onSaveDirChange"
-            @save-open-app="onOpenAppPrefsChange"
-          />
           <div v-else style="display: flex; flex-direction: column; gap: 10px">
             <div class="wb-transfer-item">
               <div class="wb-transfer-title"><strong>{{ connectionLabel }}</strong></div>
@@ -2775,6 +2902,7 @@ onBeforeUnmount(() => {
         @saved="onPreviewSaved"
         @download="onPreviewDownload"
         @minimize="minimizePreview"
+        @open-settings="openSettings('openWith')"
       />
       <div
         class="wb-preview-grip"
@@ -2788,6 +2916,89 @@ onBeforeUnmount(() => {
       <FileText aria-hidden="true" />
       <span>{{ previewTitle }}</span>
     </button>
+
+    <!-- 独立设置弹窗（对标 ssh 插件 settings-modal）：左侧分类导航 + 右侧内容
+         面板，Esc/遮罩/关闭钮均可关闭；Tab 焦点陷阱同预览弹窗。dock 只保留
+         transfers/audit/connection，设置不再挤在 dock 页签里。 -->
+    <div
+      v-if="settingsOpen"
+      ref="settingsOverlayEl"
+      class="wb-settings-backdrop"
+      role="dialog"
+      aria-modal="true"
+      :aria-label="t('settings')"
+      @click.self="closeSettings"
+      @keydown="onSettingsTabKeydown"
+    >
+      <div class="wb-settings-modal">
+        <header>
+          <strong>{{ t("settings") }}</strong>
+          <button class="wb-icon-button wb-icon-neutral" v-tip="t('close')" @click="closeSettings"><X /></button>
+        </header>
+        <div class="wb-settings-layout">
+          <nav class="wb-settings-nav" aria-label="settings categories">
+            <button
+              v-for="cat in SETTINGS_CATEGORIES"
+              :key="cat.id"
+              type="button"
+              class="wb-settings-nav-item"
+              :class="{ 'is-active': settingsCategory === cat.id }"
+              @click="settingsCategory = cat.id"
+            >{{ t(cat.labelKey) }}</button>
+          </nav>
+          <div class="wb-settings-content">
+            <SettingsPanel
+              v-if="settingsCategory === 'downloads'"
+              section="downloads"
+              :t="t"
+              :can-save-local="canSaveLocal"
+              :save-dir="saveDirDraft"
+              :default-save-dir="localDownloadDir"
+              :download-dir-error="saveDirError"
+              :open-app="openAppPrefs"
+              :open-app-error="openAppError"
+              :presets="appPresets"
+              @save-dir="onSaveDirChange"
+              @save-open-app="onOpenAppPrefsChange"
+            />
+            <SettingsPanel
+              v-else-if="settingsCategory === 'openWith'"
+              section="openWith"
+              :t="t"
+              :can-save-local="canSaveLocal"
+              :save-dir="saveDirDraft"
+              :default-save-dir="localDownloadDir"
+              :download-dir-error="saveDirError"
+              :open-app="openAppPrefs"
+              :open-app-error="openAppError"
+              :presets="appPresets"
+              @save-dir="onSaveDirChange"
+              @save-open-app="onOpenAppPrefsChange"
+            />
+            <div v-else class="wb-settings-pane" :aria-busy="mountsLoading">
+              <p class="wb-settings-help">{{ t("mounts.help") }}</p>
+              <div class="wb-mounts-actions">
+                <button class="wb-toolbar-button" :disabled="mountsLoading" @click="startMount()"><HardDrive /> {{ t("mounts.mountNow") }}</button>
+                <button class="wb-icon-button wb-icon-neutral" v-tip="t('refresh')" :disabled="mountsLoading" @click="loadMounts"><RefreshCw :class="{ 'wb-spin': mountsLoading }" /></button>
+              </div>
+              <p v-if="mountsError" class="wb-settings-error" role="alert">{{ t("mounts.loadFailed") }}</p>
+              <p v-else-if="!mountsLoading && !mountsList.length" class="wb-settings-help">{{ t("mounts.empty") }}</p>
+              <ul v-else-if="mountsList.length" class="wb-mounts-list">
+                <li v-for="row in mountsList" :key="row.mountId">
+                  <div class="wb-mounts-main">
+                    <strong>{{ mountStrategyLabel(row.strategy) }}</strong>
+                    <span class="wb-mono">{{ row.mountPoint ?? `:${row.gatewayPort ?? ""}` }}</span>
+                    <span v-if="row.mounted === false" class="wb-settings-error">{{ t("mounts.stale") }}</span>
+                  </div>
+                  <span class="wb-mounts-badge">{{ t("mounts.readOnly") }}</span>
+                  <button class="wb-icon-button wb-icon-neutral" :disabled="unmountBusyId === row.mountId" v-tip="t('mounts.unmount')" @click="unmountMount(row)"><Eject /></button>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- 统一右键菜单（A-FILES ④b）：源栏/目标栏共用；多选时切批量动作面。
          R3-P2-8：role="menu"/menuitem 语义。 -->

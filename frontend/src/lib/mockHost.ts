@@ -9,6 +9,8 @@
 //   &job=1           copy/move 一律走降级 job（默认仅目录/`mockDir`）
 //   &ro=1            只读态注入（connection.readOnly + capabilities.readOnly，
 //                    P2-13①：供只读徽章/写按钮禁用/右键菜单禁用的 UI 走查）
+//   &local=1         模拟桌面宿主（canSaveLocal=true + detect-apps 预设桩）
+//   &platform=macos  local=1 下的平台标签（macos|windows|linux，默认 macos）
 //   &connectionTest=fail  connection/test 的不可达夹具（不发真实网络请求）
 // 任何包含 "error" 的路径都会返回业务错误（便于验证错误横幅与重试）。
 // __local__ 连接（双栏左栏本地面）：list/listPaged/stat/quickPaths/read 路由到
@@ -59,6 +61,10 @@ export function installMockHost() {
   // 对标 rclone-dashboard share 链接：?presign=1 让 mock capabilities.presign=true，
   // files/publicLink 返回伪签名 URL（默认 false，模拟不支持公开链接的后端）。
   const presign = params.get("presign") === "1";
+  // ?local=1 模拟桌面宿主：canSaveLocal=true + ?platform= 指定 OS（默认 macos），
+  // 供设置弹窗「下载/打开方式」分类与平台预设 chips 走查（默认仍模拟 web 宿主）。
+  const demoLocal = params.get("local") === "1";
+  const demoPlatform = params.get("platform") ?? "macos";
 
   // ---- 虚拟文件树 ---------------------------------------------------------
   const tree = new Map<string, MockEntry>();
@@ -324,6 +330,12 @@ export function installMockHost() {
   const uploads = new Map<string, { path: string; size: number; received: number; bytes: Uint8Array; connectionId: unknown }>();
   const downloads = new Map<string, { path: string; size: number; received: number; connectionId: unknown; timer: number; canceled: boolean }>();
 
+  // ---- 本地挂载（mock 演示 webdav 策略；不触达真实网关/挂载点）----------------
+  // files/mount 固定走 webdav 兜底（mock 无 FUSE 概念），mountStatus/unmount
+  // 按连接过滤，供设置弹窗「本地挂载」面板走查。
+  const mockMounts = new Map<string, { strategy: string; gatewayPort: number; connectionId: unknown }>();
+  let mockMountSeq = 0;
+
   // ---- 监听器 ---------------------------------------------------------------
   const eventListeners: Array<(event: DbxPluginEvent) => void> = [];
   // mock 镜像当前宿主桥的二进制事件形状（零拷贝 data 字段），与真实宿主一致。
@@ -580,8 +592,57 @@ export function installMockHost() {
         return { removed: 1 };
       }
       case "files/local/capabilities": {
-        // mock 模拟 web 宿主：无本机落盘，前端走宿主保存/浏览器兜底路径。
+        // mock 模拟 web 宿主：无本机落盘，前端走宿主保存/浏览器兜底路径；
+        // ?local=1 时模拟桌面宿主（下载目录/外部打开可用）。
+        if (demoLocal) {
+          return { canSaveLocal: true, downloadsDir: "/Users/demo/Downloads", platform: demoPlatform };
+        }
         return { canSaveLocal: false, downloadsDir: "", platform: "web" };
+      }
+      case "files/local/detect-apps": {
+        // ?local=1 平台预设演示：返回一组伪路径（校验桩恒通过），不含真实探测。
+        if (!demoLocal) return { platform: "web", apps: [] };
+        const presets: Record<string, Array<{ id: string; name: string; path: string }>> = {
+          macos: [
+            { id: "wps", name: "WPS Office", path: "/Applications/wpsoffice.app" },
+            { id: "excel", name: "Microsoft Excel", path: "/Applications/Microsoft Excel.app" },
+            { id: "libreoffice", name: "LibreOffice", path: "/Applications/LibreOffice.app" },
+          ],
+          windows: [
+            { id: "wps", name: "WPS Office", path: "C:\\Program Files\\Kingsoft\\WPS Office\\ksolaunch.exe" },
+            { id: "excel", name: "Microsoft Excel", path: "C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE" },
+          ],
+          linux: [
+            { id: "libreoffice", name: "LibreOffice", path: "/usr/bin/libreoffice" },
+            { id: "vscode", name: "VS Code", path: "/usr/bin/code" },
+          ],
+        };
+        return { platform: demoPlatform, apps: presets[demoPlatform] ?? [] };
+      }
+      case "files/local/validate-open-app": {
+        // mock 不探测真实文件系统：非空即通过，保持设置链路可走查。
+        const app = str("path");
+        if (!app) throw new Error("Missing path");
+        return { valid: true, path: app };
+      }
+      case "files/mount": {
+        const mountId = `mock-mount-${++mockMountSeq}`;
+        const gatewayPort = 40000 + (mockMountSeq % 1000);
+        mockMounts.set(mountId, { strategy: "webdav", gatewayPort, connectionId: connectionIdOf(p.connectionId) });
+        return { mountId, strategy: "webdav", gatewayPort, gatewayUrl: `http://127.0.0.1:${gatewayPort}/tok/${mountId}/`, fallbackReason: "mock: no FUSE driver" };
+      }
+      case "files/mountStatus": {
+        const wanted = p.connectionId == null ? null : connectionIdOf(p.connectionId);
+        const mounts = [...mockMounts.entries()]
+          .filter(([, row]) => wanted == null || row.connectionId === wanted)
+          .map(([mountId, row]) => ({ mountId, strategy: row.strategy, readOnly: true, gatewayPort: row.gatewayPort, mounted: true }));
+        return { mounts };
+      }
+      case "files/unmount": {
+        const mountId = str("mountId");
+        if (mountId && !mockMounts.delete(mountId)) throw new Error("Mount not found");
+        if (!mountId) mockMounts.clear();
+        return { removed: 1 };
       }
       case "files/transfer/cancel": {
         if (typeof p.taskId !== "string") throw new Error("Invalid request parameters: taskId must be a string");

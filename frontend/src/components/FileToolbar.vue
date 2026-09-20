@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { Columns2, Download, FolderPlus, Gauge, ScrollText, Settings, Trash2, Upload, Plug } from "@lucide/vue";
+import { Columns2, Download, FolderPlus, Gauge, HardDrive, ScrollText, Settings, Trash2, Upload, Plug } from "@lucide/vue";
 
 // 全局动作栏：路径/面包屑/过滤等栏内控件已下沉到各栏 wb-pane-header
 // （双栏对称性修复），这里只承载跨栏的全局操作。
@@ -9,13 +9,15 @@ const props = defineProps<{
   busy: boolean;
   hasSelection: boolean;
   dockOpen: boolean;
-  dockTab: "transfers" | "audit" | "connection" | "settings";
+  dockTab: "transfers" | "audit" | "connection";
   dualPane: boolean;
   /** 顶栏 identity（对标 ssh 工具栏左侧）：连接名/色条/只读徽章 + 状态 pill。 */
   connectionName: string;
   connectionColor?: string;
   readOnly: boolean;
   connState: "connecting" | "connected" | "disconnected";
+  /** 挂载入口只对远端连接面可用（本地 __local__ 栏没有可挂载的远端）。 */
+  canMount: boolean;
   t: (key: string, values?: Record<string, string | number>) => string;
 }>();
 
@@ -27,8 +29,12 @@ const emit = defineEmits<{
   (event: "delete"): void;
   /** 审计#17：工具栏只保留一个 dock 开关。tab 省略即切换「当前页签」的
    * 开/关；带 tab 时语义不变（打开指定页签）——App 层兼容两种调用。 */
-  (event: "toggle-dock", tab?: "transfers" | "audit" | "connection" | "settings"): void;
+  (event: "toggle-dock", tab?: "transfers" | "audit" | "connection"): void;
   (event: "toggle-dual-pane"): void;
+  /** 本地挂载（对标 ssh 工具栏动作 icon）：挂载活动栏当前目录。 */
+  (event: "mount"): void;
+  /** 独立设置弹窗（对标 ssh 设置 icon）：设置不再挤在 dock 页签里。 */
+  (event: "open-settings"): void;
 }>();
 
 function t(key: string, values?: Record<string, string | number>) {
@@ -37,19 +43,17 @@ function t(key: string, values?: Record<string, string | number>) {
 
 // 审计#17：4 个 per-dock 图标收敛为单个开关按钮——按钮即「当前 dock 页签」
 // （图标与提示随 dockTab 走，is-active 表示 dock 已打开），开/关切换在
-// 工具栏，页签切换只保留 dock 内 tablist 一处。
+// 工具栏，页签切换只保留 dock 内 tablist 一处。settings 已拆为独立弹窗。
 const DOCK_ICONS = {
   transfers: Gauge,
   audit: ScrollText,
   connection: Plug,
-  settings: Settings,
 } as const;
 
 const DOCK_TIP_KEYS: Record<keyof typeof DOCK_ICONS, string> = {
   transfers: "transfers",
   audit: "auditPanel",
   connection: "connectionPanel",
-  settings: "settingsPanel",
 };
 
 const dockIcon = computed(() => DOCK_ICONS[props.dockTab]);
@@ -92,6 +96,9 @@ function onPicked(event: Event) {
       <button class="wb-icon-button wb-icon-neutral" v-tip="t('dualPane')" :class="{ 'is-active': dualPane }" @click="emit('toggle-dual-pane')"><Columns2 /></button>
       <!-- 审计#17：单一 dock 开关（高亮=已打开；图标/提示=当前页签）。 -->
       <button class="wb-icon-button wb-icon-neutral" v-tip="t(dockTipKey)" :class="{ 'is-active': dockOpen }" :aria-pressed="dockOpen" @click="emit('toggle-dock')"><component :is="dockIcon" /></button>
+      <!-- 功能 icon（对标 ssh 工具栏）：挂载活动栏目录 + 打开独立设置弹窗。 -->
+      <button class="wb-icon-button wb-icon-emerald" v-tip="t('mountToLocal')" :disabled="!canMount" @click="emit('mount')"><HardDrive /></button>
+      <button class="wb-icon-button wb-icon-neutral" v-tip="t('settings')" @click="emit('open-settings')"><Settings /></button>
     </div>
   </header>
 </template>

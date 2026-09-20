@@ -1267,6 +1267,23 @@ impl Plugin {
                 let path = local_downloads::validate_open_app(path)?;
                 Ok(json!({ "valid": true, "path": path.to_string_lossy() }))
             }
+            // 平台感知的「打开方式」预设（WPS/Excel/LibreOffice/...，按平台默认
+            // 安装路径探测）：只回报告本机真实存在的候选，前端据此渲染一键预设。
+            // 纯探测，不做任何启动，也不读文件内容。
+            "files/local/detect-apps" => {
+                let platform = local_downloads::platform_name();
+                let apps = local_downloads::detect_apps(platform)
+                    .into_iter()
+                    .map(|preset| {
+                        json!({
+                            "id": preset.id,
+                            "name": preset.name,
+                            "path": preset.path,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                Ok(json!({ "platform": platform, "apps": apps }))
+            }
             // 在默认应用或用户配置的外部应用中打开已完成的本机下载；同样只允许
             // 打开传输历史中记录过的路径，避免把这个按钮变成任意本机路径执行
             // 入口。`app` 是可选的用户外部应用可执行文件绝对路径（issue #11，
