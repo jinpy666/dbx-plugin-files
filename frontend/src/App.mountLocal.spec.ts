@@ -72,10 +72,25 @@ const dirEntry: FileEntry = {
   modifiedAt: new Date().toISOString(),
 };
 
-// 挂载对话框流（选目录 → 确认）：菜单/工具栏入口先弹 ConfirmDialog，
+// 挂载对话框流（选目录 → 确认）：菜单/工具栏入口先弹独立 MountDialog，
 // 确认后才调 files/mount（含所选 mountPoint），成功后 reveal 挂载点。
+// stubInvoke 按方法名分流：MountDialog 挂载时会先探测 quickPaths/浏览
+// __local__ 目录，不能让它们消费掉 mockResolvedValueOnce 的 mount 结果。
+function stubInvoke(handler: (method: string) => unknown) {
+  const raw = window.dbxPlugin.invoke.bind(window.dbxPlugin);
+  return vi.spyOn(window.dbxPlugin, "invoke").mockImplementation(((
+    method: string,
+    params?: Record<string, unknown>,
+    options?: { timeoutMs?: number },
+  ) => {
+    const routed = handler(method) as unknown;
+    if (routed !== undefined) return routed;
+    return raw(method, params, options);
+  }) as typeof window.dbxPlugin.invoke);
+}
+
 async function confirmMountDialog() {
-  await wrapper!.find(".wb-dialog .wb-dialog-primary").trigger("click");
+  await wrapper!.find(".wb-mount-dialog .wb-dialog-primary").trigger("click");
   await settle();
 }
 
@@ -83,15 +98,17 @@ describe("mount to local UI", () => {
   it("opens the mount dialog first and mounts the chosen directory on confirm", async () => {
     mountWorkbench();
     await settle();
-    const spy = vi
-      .spyOn(window.dbxPlugin, "invoke")
-      .mockResolvedValueOnce({ mountId: "m1", strategy: "rclone", mountPoint: "/home/x/dbx-files-mounts/dbxabc" });
+    const spy = stubInvoke((method) =>
+      method === "files/mount"
+        ? { mountId: "m1", strategy: "rclone", mountPoint: "/home/x/dbx-files-mounts/dbxabc" }
+        : undefined,
+    );
     await openEntryMenu(dirEntry);
     await menuItem(workbenchMessage("en", "mountToLocal"))!.trigger("click");
     await settle();
     // 对话框先出现，尚未发起 files/mount。
-    expect(wrapper!.find(".wb-dialog").text()).toContain(workbenchMessage("en", "mountToLocal"));
-    expect(spy).not.toHaveBeenCalled();
+    expect(wrapper!.find(".wb-mount-dialog").text()).toContain(workbenchMessage("en", "mountToLocal"));
+    expect(spy).not.toHaveBeenCalledWith("files/mount", expect.anything(), undefined);
     await confirmMountDialog();
     expect(spy).toHaveBeenCalledWith(
       "files/mount",
@@ -110,13 +127,13 @@ describe("mount to local UI", () => {
   it("passes the chosen mount point through to files/mount", async () => {
     mountWorkbench();
     await settle();
-    const spy = vi
-      .spyOn(window.dbxPlugin, "invoke")
-      .mockResolvedValueOnce({ mountId: "m3", strategy: "rclone", mountPoint: "/tmp/chose" });
+    const spy = stubInvoke((method) =>
+      method === "files/mount" ? { mountId: "m3", strategy: "rclone", mountPoint: "/tmp/chose" } : undefined,
+    );
     await openEntryMenu(dirEntry);
     await menuItem(workbenchMessage("en", "mountToLocal"))!.trigger("click");
     await settle();
-    await wrapper!.find(".wb-dialog input").setValue("/tmp/chose");
+    await wrapper!.find(".wb-mount-field input").setValue("/tmp/chose");
     await confirmMountDialog();
     expect(spy).toHaveBeenCalledWith(
       "files/mount",
@@ -128,14 +145,16 @@ describe("mount to local UI", () => {
   it("copies the gateway URL when the webdav fallback answers", async () => {
     mountWorkbench();
     await settle();
-    const spy = vi
-      .spyOn(window.dbxPlugin, "invoke")
-      .mockResolvedValueOnce({
-        mountId: "m2",
-        strategy: "webdav",
-        gatewayUrl: "http://127.0.0.1:54321/tok/conn/",
-        fallbackReason: "macFUSE not detected",
-      });
+    const spy = stubInvoke((method) =>
+      method === "files/mount"
+        ? {
+            mountId: "m2",
+            strategy: "webdav",
+            gatewayUrl: "http://127.0.0.1:54321/tok/conn/",
+            fallbackReason: "macFUSE not detected",
+          }
+        : undefined,
+    );
     const writeText = vi.fn().mockResolvedValue(undefined);
     (window.dbxPlugin as { clipboard?: unknown }).clipboard = { writeText };
     await openEntryMenu(dirEntry);
@@ -154,7 +173,7 @@ describe("mount to local UI", () => {
   it("surfaces mount failures in the error banner", async () => {
     mountWorkbench();
     await settle();
-    vi.spyOn(window.dbxPlugin, "invoke").mockRejectedValueOnce(new Error("no fuse driver"));
+    stubInvoke((method) => (method === "files/mount" ? Promise.reject(new Error("no fuse driver")) : undefined));
     await openEntryMenu(dirEntry);
     await menuItem(workbenchMessage("en", "mountToLocal"))!.trigger("click");
     await settle();

@@ -213,6 +213,32 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-settings-error { margin: 0; color: var(--destructive); font-size: 11px; overflow-wrap: anywhere; }
 .wb-settings-path-row { display: flex; align-items: center; gap: 6px; }
 .wb-settings-path-row input { flex: 1 1 auto; min-width: 0; height: 26px; padding: 0 7px; font-size: 11px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--background); color: var(--foreground); }
+/* 挂载到本机：独立顶层弹窗（高于设置 55/预览 60/确认 65），内嵌本机目录
+   浏览器（files/list + __local__），直接选目录后挂载。 */
+.wb-mount-backdrop { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; background: var(--overlay); }
+.wb-mount-dialog { display: flex; flex-direction: column; width: min(520px, calc(100vw - 40px)); max-height: min(600px, calc(100vh - 40px)); border: 1px solid var(--border); border-radius: 8px; background: var(--popover); box-shadow: 0 16px 40px rgb(0 0 0 / 45%); animation: wb-pop-in 160ms ease; }
+.wb-mount-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--border); padding: 10px 14px; color: var(--foreground); }
+.wb-mount-dialog header strong { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; }
+.wb-mount-title-icon { width: 15px; height: 15px; }
+.wb-mount-hint { margin: 8px 14px 0; color: var(--muted-foreground); font-size: 11px; overflow-wrap: anywhere; }
+.wb-mount-field { display: flex; flex-direction: column; gap: 4px; margin: 10px 14px 0; color: var(--muted-foreground); font-size: 11px; }
+.wb-mount-field input { height: 26px; padding: 0 7px; font-size: 11px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--background); color: var(--foreground); }
+.wb-mount-browse-toolbar { display: flex; align-items: center; gap: 6px; margin: 8px 14px 0; }
+.wb-mount-crumbs { display: flex; min-width: 0; flex: 1; align-items: center; overflow: hidden; }
+.wb-mount-crumb { border: 0; background: transparent; cursor: pointer; border-radius: 4px; padding: 2px 4px; color: var(--muted-foreground); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 130px; }
+.wb-mount-crumb:hover { background: var(--accent); color: var(--foreground); }
+.wb-mount-crumb-sep { color: var(--muted-foreground); font-size: 11px; }
+.wb-mount-list { display: flex; flex-direction: column; gap: 1px; min-height: 120px; max-height: 240px; overflow-y: auto; margin: 8px 14px; border: 1px solid var(--border); border-radius: 6px; padding: 4px; font-size: 12px; }
+.wb-mount-dir { display: flex; align-items: center; gap: 6px; border: 0; background: transparent; cursor: pointer; border-radius: 4px; padding: 4px 8px; color: var(--foreground); text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-mount-dir:hover { background: var(--accent); }
+.wb-mount-error { margin: 4px 8px; color: var(--destructive); font-size: 11px; overflow-wrap: anywhere; }
+.wb-mount-dialog footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid var(--border); padding: 10px 14px; }
+.wb-mount-foot-hint { font-size: 10px; overflow-wrap: anywhere; }
+.wb-mount-foot-actions { display: inline-flex; flex: 0 0 auto; gap: 8px; }
+.wb-mount-dialog footer button { border-radius: var(--radius); padding: 4px 12px; }
+.wb-mount-dialog .wb-dialog-primary { background: var(--primary); color: var(--primary-foreground); border: 0; }
+.wb-mount-dialog .wb-dialog-cancel { border: 1px solid var(--border); background: transparent; cursor: pointer; }
+
 /* 平台「打开方式」预设 chips（files/local/detect-apps 探测结果一键应用）。 */
 .wb-presets { display: flex; flex-direction: column; gap: 6px; }
 .wb-presets-row { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -254,7 +280,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-preview-skeleton .wb-skeleton { height: 12px; }
 
 /* ---- dialogs ----------------------------------------------------------------------- */
-.wb-dialog-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: var(--overlay); }
+.wb-dialog-backdrop { position: fixed; inset: 0; z-index: 65; display: grid; place-items: center; background: var(--overlay); }
 .wb-dialog { width: min(460px, calc(100vw - 40px)); max-height: min(560px, calc(100vh - 40px)); display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 8px; background: var(--popover); box-shadow: 0 16px 40px rgb(0 0 0 / 45%); animation: wb-pop-in 160ms ease; }
 .wb-dialog.is-danger { border-color: color-mix(in srgb, var(--destructive) 55%, transparent); }
 .wb-dialog header { display: flex; align-items: center; gap: 8px; padding: 10px 14px 4px; font-weight: 600; }

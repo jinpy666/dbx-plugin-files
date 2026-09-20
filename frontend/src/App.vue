@@ -34,6 +34,7 @@ import FileTable from "./components/FileTable.vue";
 import FileToolbar from "./components/FileToolbar.vue";
 import TransferPanel from "./components/TransferPanel.vue";
 import SettingsPanel from "./components/SettingsPanel.vue";
+import MountDialog from "./components/MountDialog.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
 import AuditPanel from "./components/AuditPanel.vue";
 import PreviewPane from "./components/PreviewPane.vue";
@@ -76,7 +77,7 @@ import { resolveToolbarTarget } from "./lib/toolbarTarget";
 import { validateFileName } from "./lib/fileName";
 import { runBatchTasks } from "./lib/batchRunner";
 
-type ConfirmKind = "delete" | "purge" | "syncDir" | "copyDir" | "newFolder" | "newFile" | "rename" | "copy" | "move" | "extract" | "compress" | "overwrite" | "mount";
+type ConfirmKind = "delete" | "purge" | "syncDir" | "copyDir" | "newFolder" | "newFile" | "rename" | "copy" | "move" | "extract" | "compress" | "overwrite";
 type PaneSide = "left" | "right";
 type MenuAction =
   | "open" | "preview" | "download" | "rename" | "delete" | "copyPath" | "copyName"
@@ -458,7 +459,7 @@ const confirmForce = ref(false);
 const confirmForcePath = ref("");
 // R3-P2-5：跨栏 copy/move 冲突预检命中时挂起整批传输，弹「覆盖确认」后原样执行。
 const pendingPaneTransfer = ref<{ from: PaneSide; move: boolean; list: FileEntry[]; destPath: string }>();
-const confirmInput = computed(() => confirmKind.value === "newFolder" || confirmKind.value === "newFile" || confirmKind.value === "rename" || confirmKind.value === "syncDir" || confirmKind.value === "copyDir" || confirmKind.value === "copy" || confirmKind.value === "move" || confirmKind.value === "extract" || confirmKind.value === "compress" || confirmKind.value === "mount");
+const confirmInput = computed(() => confirmKind.value === "newFolder" || confirmKind.value === "newFile" || confirmKind.value === "rename" || confirmKind.value === "syncDir" || confirmKind.value === "copyDir" || confirmKind.value === "copy" || confirmKind.value === "move" || confirmKind.value === "extract" || confirmKind.value === "compress");
 // P2-2：危险确认列表走 i18n 七语（lib 侧 label 为英文兜底，路径类条目原样展示）。
 const confirmDangerList = computed(() =>
   confirmHits.value.map((hit) => {
@@ -486,7 +487,6 @@ const confirmLabel = computed(() => {
   if (confirmKind.value === "newFolder" || confirmKind.value === "newFile") return t("create");
   if (confirmKind.value === "rename") return t("save");
   if (confirmKind.value === "compress") return t("compressAction");
-  if (confirmKind.value === "mount") return t("mountConfirm");
   return t("confirm");
 });
 
@@ -552,7 +552,7 @@ const canMountToolbar = computed(() => sideConnectionId(toolbarTarget.value.side
 
 function mountToolbarTarget() {
   if (!canMountToolbar.value) return;
-  openMountDialog(paneDirPath(toolbarTarget.value.side), toolbarTarget.value.side);
+  openMountDialog(paneDirPath(toolbarTarget.value.side), sideConnectionId(toolbarTarget.value.side) ?? connectionId.value);
 }
 
 // 双栏开关不持久化；两侧侧栏状态分别持久化，切换一侧不影响另一侧。
@@ -1537,19 +1537,6 @@ async function onConfirm() {
         }
         break;
       }
-      case "mount": {
-        // 挂载位置：空 = sidecar 默认（~/dbx-files-mounts/<remote>）；显式
-        // 位置由后端 ensure_empty_mount_dir 校验（不存在自动建，非空报错）。
-        const point = confirmDraft.value.trim();
-        const result = await call<MountResult>("files/mount", {
-          connectionId: mountTargetConnectionId.value || connectionId.value,
-          strategy: "auto",
-          ...(confirmTarget.value.path ? { path: confirmTarget.value.path } : {}),
-          ...(point ? { mountPoint: point } : {}),
-        });
-        await handleMountResult(result);
-        break;
-      }
     }
     closeConfirm();
     refreshAuditPanel();
@@ -2231,7 +2218,7 @@ function menuAction(action: MenuAction) {
       void computeEntrySize(entry, side);
       break;
     case "mountLocal":
-      openMountDialog(entry.path, side);
+      openMountDialog(entry.path, sideConnectionId(side) ?? connectionId.value);
       break;
     case "copyPublicLink":
       void copyPublicLink(entry, side);
@@ -2347,7 +2334,7 @@ function sideMenuAction(action: "open" | "openOther" | "copyPath" | "copyName" |
     return;
   }
   if (action === "mountLocal") {
-    openMountDialog(target, side);
+    openMountDialog(target, sideConnectionId(side) ?? connectionId.value);
     return;
   }
   const value = action === "copyPath" ? target : name;
@@ -2366,33 +2353,41 @@ interface MountResult {
   fallbackReason?: string;
 }
 
-/** 挂载对话框：先选位置再挂载（工具栏/右键/侧栏/设置面板共用入口）。
- * openMountDialog 固化目标连接——双栏下设置面板入口挂主连接，而不是活动栏。 */
+// ---- 挂载到本机（独立顶层弹窗 MountDialog）-------------------------------------
+// 工具栏/右键/侧栏/设置面板共用：先选本机目录再挂载。从设置弹窗发起时先收起
+// 设置弹窗，保证挂载弹窗永远可见（此前复用 ConfirmDialog 被 z-index 遮挡）。
+// 目标连接在打开时固化——双栏下设置面板入口挂主连接，而不是活动栏（可能为本地）。
+
+const mountDialogOpen = ref(false);
+const mountDialogRemotePath = ref("");
 const mountTargetConnectionId = ref("");
 
-function openMountDialog(path?: string, side: PaneSide = "left") {
-  mountTargetConnectionId.value = sideConnectionId(side) ?? connectionId.value;
-  openConfirm("mount", {
-    title: { key: "mountToLocal" },
-    body: { key: "mountDialogBody" },
-    target: path ? { path } : {},
-    draft: "",
-  });
+function openMountDialog(remotePath = "", connectionIdOverride?: string) {
+  mountDialogRemotePath.value = remotePath;
+  mountTargetConnectionId.value = connectionIdOverride ?? connectionId.value;
+  // 挂载弹窗置顶展示：设置弹窗让位（遮罩叠遮罩既挡视线也挡交互）。
+  settingsOpen.value = false;
+  mountDialogOpen.value = true;
 }
 
-const canPickMountDir = computed(() => typeof window.dbxPlugin?.fileTransfer?.pickDirectory === "function");
+function closeMountDialog() {
+  mountDialogOpen.value = false;
+}
 
-/** 系统目录选择器（宿主提供时）：选中即回填挂载位置。 */
-async function pickMountDirectory() {
-  const picker = window.dbxPlugin.fileTransfer?.pickDirectory;
-  if (!picker) return;
+/** MountDialog 确认：位置空 = sidecar 默认；显式位置由后端
+ * ensure_empty_mount_dir 校验（不存在自动建，非空报错）。 */
+async function onMountDialogConfirm(mountPoint: string) {
+  mountDialogOpen.value = false;
   try {
-    const picked = await picker();
-    if (!picked) return;
-    const target = typeof picked === "string" ? picked : picked.path;
-    if (target) confirmDraft.value = target;
-  } catch {
-    /* canceled native picker is intentionally silent */
+    const result = await call<MountResult>("files/mount", {
+      connectionId: mountTargetConnectionId.value || connectionId.value,
+      strategy: "auto",
+      ...(mountDialogRemotePath.value ? { path: mountDialogRemotePath.value } : {}),
+      ...(mountPoint ? { mountPoint } : {}),
+    });
+    await handleMountResult(result);
+  } catch (cause) {
+    showError(cause);
   }
 }
 
@@ -2615,6 +2610,10 @@ function onDocumentKeydown(event: KeyboardEvent) {
   }
   if (transferHistoryConfirmOpen.value) {
     transferHistoryConfirmOpen.value = false;
+    return;
+  }
+  if (mountDialogOpen.value) {
+    closeMountDialog();
     return;
   }
   if (settingsOpen.value) {
@@ -2955,6 +2954,14 @@ onBeforeUnmount(() => {
       <span>{{ previewTitle }}</span>
     </button>
 
+    <!-- 挂载到本机：独立顶层弹窗（内嵌本机目录浏览器，直接选目录）。 -->
+    <MountDialog
+      v-if="mountDialogOpen"
+      :t="t"
+      @close="closeMountDialog"
+      @confirm="onMountDialogConfirm"
+    />
+
     <!-- 独立设置弹窗（对标 ssh 插件 settings-modal）：左侧分类导航 + 右侧内容
          面板，Esc/遮罩/关闭钮均可关闭；Tab 焦点陷阱同预览弹窗。dock 只保留
          transfers/audit/connection，设置不再挤在 dock 页签里。 -->
@@ -3112,25 +3119,13 @@ onBeforeUnmount(() => {
       @confirm="onConfirm"
       @cancel="closeConfirm"
     >
-      <label v-if="confirmInput && confirmKind !== 'mount'" style="display: flex; flex-direction: column; gap: 4px">
+      <label v-if="confirmInput" style="display: flex; flex-direction: column; gap: 4px">
         <span v-if="confirmKind === 'newFolder'">{{ t("newFolderPlaceholder") }}</span>
         <span v-else-if="confirmKind === 'newFile'">{{ t("newFilePlaceholder") }}</span>
         <span v-else-if="confirmKind === 'rename'">{{ t("renameTitle") }}</span>
         <span v-else>{{ t("pathPlaceholder") }}</span>
         <input v-model="confirmDraft" spellcheck="false" @keydown.enter.prevent="!confirmDanger && onConfirm()" />
       </label>
-      <!-- 挂载对话框：目标连接/子目录在标题区说明，这里选本机挂载位置
-           （留空 = sidecar 默认；宿主提供 pickDirectory 时可系统选目录）。 -->
-      <div v-if="confirmKind === 'mount'" style="display: flex; flex-direction: column; gap: 6px">
-        <label style="display: flex; flex-direction: column; gap: 4px">
-          <span>{{ t("mountPointLabel") }}</span>
-          <input v-model="confirmDraft" class="wb-mono" spellcheck="false" :placeholder="t('mountPointPlaceholder')" @keydown.enter.prevent="onConfirm()" />
-        </label>
-        <div style="display: flex; align-items: center; gap: 8px">
-          <button v-if="canPickMountDir" class="wb-toolbar-button" type="button" @click="pickMountDirectory">{{ t("mountChooseDirectory") }}</button>
-          <span class="wb-muted" style="font-size: 11px">{{ t("mountPointHint") }}</span>
-        </div>
-      </div>
     </ConfirmDialog>
 
     <!-- 审计中#15：清空传输历史二次确认（危险度低于删文件，无需 danger 态）。 -->

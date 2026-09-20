@@ -140,15 +140,23 @@ describe("toolbar mount icon", () => {
   it("opens the mount dialog and mounts on confirm", async () => {
     mountWorkbench();
     await settle();
-    const spy = vi
-      .spyOn(window.dbxPlugin, "invoke")
-      .mockResolvedValueOnce({ mountId: "m9", strategy: "rclone", mountPoint: "/home/x/mnt" });
+    const raw = window.dbxPlugin.invoke.bind(window.dbxPlugin);
+    const spy = vi.spyOn(window.dbxPlugin, "invoke").mockImplementation(((
+      method: string,
+      params?: Record<string, unknown>,
+      options?: { timeoutMs?: number },
+    ) => {
+      if (method === "files/mount") {
+        return { mountId: "m9", strategy: "rclone", mountPoint: "/home/x/mnt" };
+      }
+      return raw(method, params, options);
+    }) as typeof window.dbxPlugin.invoke);
     await toolbarButton(workbenchMessage("en", "mountToLocal"))!.trigger("click");
     await settle();
     // 对话框先行：标题即挂载入口文案，确认后才发起 files/mount。
-    expect(wrapper!.find(".wb-dialog").text()).toContain(workbenchMessage("en", "mountToLocal"));
-    expect(spy).not.toHaveBeenCalled();
-    await wrapper!.find(".wb-dialog .wb-dialog-primary").trigger("click");
+    expect(wrapper!.find(".wb-mount-dialog").text()).toContain(workbenchMessage("en", "mountToLocal"));
+    expect(spy).not.toHaveBeenCalledWith("files/mount", expect.anything(), undefined);
+    await wrapper!.find(".wb-mount-dialog .wb-dialog-primary").trigger("click");
     await settle();
     expect(spy).toHaveBeenCalledWith("files/mount", expect.objectContaining({ strategy: "auto", path: expect.any(String) }), undefined);
     expect(wrapper!.get(".wb-notice").text()).toContain("Mounted read-only at");
