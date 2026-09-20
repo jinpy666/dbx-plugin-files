@@ -60,12 +60,7 @@ struct Plugin {
 impl Plugin {
     fn new() -> Result<Self, String> {
         let data_dir = Store::default_dir();
-        std::fs::create_dir_all(&data_dir).map_err(|error| {
-            format!(
-                "Failed to create plugin data directory {}: {error}",
-                data_dir.display()
-            )
-        })?;
+        init_data_dir(&data_dir);
         let runtime =
             Runtime::new().map_err(|error| format!("Failed to create async runtime: {error}"))?;
         let store = Arc::new(Store::new(data_dir.clone()));
@@ -2697,6 +2692,22 @@ fn to_plugin_error(error: String) -> PluginError {
     PluginError::new(-32000, error)
 }
 
+/// Best-effort creation of the plugin data dir. Non-fatal by design
+/// (issue #16): a data dir that cannot be created — a docker mount shadowing
+/// the path, a read-only home, a non-root container user — used to kill the
+/// sidecar before `serve()`, which the host only saw as `Broken pipe` on the
+/// first framed write. The sidecar now stays alive and every persisting call
+/// (prefs/transfers/audit writes) fails per call with a structured error.
+fn init_data_dir(data_dir: &std::path::Path) {
+    if let Err(error) = std::fs::create_dir_all(data_dir) {
+        eprintln!(
+            "[io.dbx.files] warning: cannot create data dir {}: {error}; \
+             prefs/transfer/audit persistence will fail until it is writable",
+            data_dir.display()
+        );
+    }
+}
+
 fn main() -> std::io::Result<()> {
     // Standalone MCP stdio server mode (`--mcp`, plugin-MCP design §0.2/§5
     // stdio row): serve the MCP tool surface over newline-delimited JSON-RPC
@@ -2706,7 +2717,24 @@ fn main() -> std::io::Result<()> {
     if wants_stdio_mode(std::env::args()) {
         return mcp::run_mcp_stdio(store::Store::default_dir());
     }
-    let plugin = Plugin::new().map_err(std::io::Error::other)?;
+    // Startup diagnostics (issue #16): everything below travels on stderr —
+    // stdout is the framed protocol — so users can paste the plugin log when
+    // reporting a failed initialization.
+    eprintln!(
+        "[io.dbx.files] plugin starting: version {} (framed stdio mode)",
+        env!("CARGO_PKG_VERSION")
+    );
+    eprintln!("[io.dbx.files] data dir: {}", Store::default_dir().display());
+    eprintln!("[io.dbx.files] {}", rclone::proc::startup_diagnostic());
+    let plugin = match Plugin::new() {
+        Ok(plugin) => plugin,
+        Err(error) => {
+            // The only surviving failure is the async runtime itself; make
+            // the reason visible before the process goes away.
+            eprintln!("[io.dbx.files] initialization failed: {error}");
+            return Err(std::io::Error::other(error));
+        }
+    };
     let metadata = PluginMetadata::new("io.dbx.files", env!("CARGO_PKG_VERSION"))
         .with_capability("connections")
         .with_capability("events")
@@ -2728,6 +2756,24 @@ fn wants_stdio_mode<I: Iterator<Item = String>>(mut args: I) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #16 regression: `init_data_dir` must never panic and must never
+    /// make startup fatal. A path whose parent is a regular file cannot be
+    /// created (the docker-mount scenario that used to kill the sidecar
+    /// before `serve()`, surfacing to the host as `Broken pipe`); a healthy
+    /// path is still created.
+    #[test]
+    fn init_data_dir_degrades_instead_of_dying() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"x").unwrap();
+        init_data_dir(&blocker.join("data")); // must not panic
+        assert!(!blocker.join("data").exists(), "no dir can appear under a file");
+
+        let healthy = dir.path().join("healthy").join("data");
+        init_data_dir(&healthy);
+        assert!(healthy.is_dir());
+    }
 
     #[test]
     fn wants_stdio_mode_matches_only_the_exact_flag() {

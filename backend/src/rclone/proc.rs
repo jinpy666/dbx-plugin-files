@@ -291,8 +291,17 @@ impl RcdSupervisor {
 /// Resolve the rclone binary: explicit env → bundled next to our own exe →
 /// PATH. Returns the first candidate whose version parses high enough.
 pub fn resolve_binary() -> Option<PathBuf> {
+    resolve_binary_with(|key| std::env::var_os(key))
+}
+
+/// Env-injectable core of [`resolve_binary`] (unit-testable without touching
+/// the real environment). A `None` lookup for `PATH` skips the PATH scan.
+pub fn resolve_binary_with(
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(env_binary) = std::env::var("DBX_FILES_RCLONE_BIN") {
+    if let Some(env_binary) = lookup("DBX_FILES_RCLONE_BIN") {
+        let env_binary = env_binary.to_string_lossy().to_string();
         if !env_binary.trim().is_empty() {
             candidates.push(PathBuf::from(env_binary));
         }
@@ -302,7 +311,7 @@ pub fn resolve_binary() -> Option<PathBuf> {
             candidates.push(dir.join(rclone_binary_name()));
         }
     }
-    if let Ok(path_var) = std::env::var("PATH") {
+    if let Some(path_var) = lookup("PATH") {
         for dir in std::env::split_paths(&path_var) {
             candidates.push(dir.join(rclone_binary_name()));
         }
@@ -310,6 +319,29 @@ pub fn resolve_binary() -> Option<PathBuf> {
     candidates
         .into_iter()
         .find(|candidate| candidate.is_file() && probe_version(candidate).is_ok())
+}
+
+/// One-line engine state for the startup log (issue #16): which rclone the
+/// engine will use, or the actionable "not found" guidance. The storage
+/// surface degrades to structured errors when this reports a missing binary;
+/// the line exists so users see the reason in the plugin log instead of
+/// discovering it on the first failed operation.
+pub fn startup_diagnostic() -> String {
+    match resolve_binary() {
+        Some(binary) => match probe_version(&binary) {
+            Ok((major, minor, patch)) => format!(
+                "rclone engine ready: {} v{major}.{minor}.{patch}",
+                binary.display()
+            ),
+            Err(error) => format!(
+                "rclone engine probe failed for {}: {error}",
+                binary.display()
+            ),
+        },
+        None => "rclone binary not found; storage calls will fail until \
+                 DBX_FILES_RCLONE_BIN is set or rclone >= 1.68 is on PATH"
+            .to_string(),
+    }
 }
 
 /// Runs `<binary> version` and checks the minimum version.
@@ -453,6 +485,71 @@ mod tests {
         // probe_version on a missing binary fails before version comparison;
         // assert the error mentions execution, not a panic.
         assert!(probe_version(&binary).is_err());
+    }
+
+    /// Issue #16 regression (resolution half): with no env override and no
+    /// PATH, resolution must return None — the structured "binary not found"
+    /// error branch — instead of panicking or guessing. The exe-sibling
+    /// candidate stays in play, but the cargo test dir never ships an rclone,
+    /// so None is deterministic.
+    #[test]
+    fn resolve_without_env_or_path_finds_nothing() {
+        let found = resolve_binary_with(|_| None);
+        assert_eq!(found, None, "unexpected rclone: {found:?}");
+    }
+
+    /// DBX_FILES_RCLONE_BIN wins over everything (bundled exe sibling and
+    /// PATH) and must pass its version probe. unix-only: the version stub is
+    /// a shell script.
+    #[cfg(unix)]
+    #[test]
+    fn resolve_prefers_dbx_files_rclone_bin() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let stub = dir.path().join("rclone");
+        std::fs::write(&stub, "#!/bin/sh\necho 'rclone v1.75.1'\n").expect("stub");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod");
+        }
+        let found = resolve_binary_with(|key| {
+            if key == "DBX_FILES_RCLONE_BIN" {
+                Some(std::ffi::OsString::from(stub.as_os_str()))
+            } else {
+                None
+            }
+        })
+        .expect("env override must resolve");
+        assert_eq!(found, stub);
+    }
+
+    /// The startup diagnostic is always a complete, actionable line: either
+    /// the engine's binary+version, or the explicit not-found guidance. This
+    /// is the line users paste when reporting a failed initialization
+    /// (issue #16), so "empty or partial" would be a bug.
+    #[test]
+    fn startup_diagnostic_is_always_actionable() {
+        let text = startup_diagnostic();
+        assert!(text.contains("rclone"), "{text}");
+        assert!(
+            text.contains("engine ready") || text.contains("not found") || text.contains("failed"),
+            "{text}"
+        );
+    }
+
+    /// Issue #16 regression (call half): when the engine process cannot be
+    /// started at all, the storage call answers the structured error string —
+    /// never a panic. The sidecar stays alive and the host keeps its side of
+    /// the stdio pipe.
+    #[tokio::test]
+    async fn engine_spawn_failure_yields_structured_error_not_panic() {
+        let mut supervisor = RcdSupervisor::new();
+        supervisor.set_binary(PathBuf::from("/nonexistent/dbx-rclone"));
+        let error = supervisor
+            .client_for("direct", None)
+            .await
+            .expect_err("spawn must fail for a missing binary");
+        assert!(error.contains("Failed to spawn"), "{error}");
     }
 
     /// Real-process smoke: needs rclone on PATH or DBX_FILES_RCLONE_BIN.

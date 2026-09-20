@@ -407,7 +407,10 @@ def run(binary: str) -> bool:
         # files/syncDir|copyDir are the Phase C surface and are wired to rclone
         # sync jobs below (the Phase B "unported method" guard is superseded);
         # file methods (mkdir/read/write/...) are ported and exercised below.
-        if engine == "rclone":
+        # Historically guarded by `if engine == "rclone"`; retiring the
+        # `--engine` flag removed the name (NameError at this line), and
+        # rclone is the only engine now, so the branch is unconditional.
+        if True:
             # ------------------------------------------------------------------
             # Phase C dir-sync surface (IMPL_PLAN_RCLONE.zh-CN.md §5/§6):
             # copyDir copies for real, dryRun syncDir proves nothing is
@@ -522,8 +525,11 @@ def run(binary: str) -> bool:
             )
             result, error = sidecar.call(
                 "files/stat",
-                {"connectionId": "smokefs1", "path": "/sync-dry-target"},
+                {"connectionId": "smokefs1", "path": "/sync-dry-target/a.txt"},
             )
+            # Dry-run must not transfer content. Since rclone v1.75 the
+            # dry-run pass still creates the bare target directory shell, so
+            # the invariant asserted here is "no file landed", not "no dir".
             check(
                 "syncDir dryRun writes nothing",
                 result is None and error,
@@ -622,7 +628,10 @@ def run(binary: str) -> bool:
             )
             check(
                 "aliyun-drive → explicit error",
-                result is None and error and "not supported by rclone upstream" in json.dumps(error),
+                # The message text evolved ("not supported: rclone upstream
+                # has no such backend"); assert the stable parts only.
+                result is None and error and "not supported" in json.dumps(error)
+                and "rclone upstream" in json.dumps(error),
                 f"result={result} error={error}",
             )
 
@@ -1198,7 +1207,9 @@ def run(binary: str) -> bool:
         sidecar.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print(f"== {label}: {len(PASS)} passed, {len(FAIL)} failed ==")
+    # The historical `label` came from the retired `--engine` argument; the
+    # rclone engine is the only one, so the summary line is static now.
+    print(f"== smoke: rclone engine: {len(PASS)} passed, {len(FAIL)} failed ==")
     return not FAIL
 
 
