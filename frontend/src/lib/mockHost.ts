@@ -194,7 +194,7 @@ export function installMockHost() {
     const config = connection.external_config as Record<string, unknown> | undefined;
     const protocol = typeof config?.protocol === "string" ? config.protocol.trim() : "";
     if (!protocol) throw new Error("Missing protocol in external_config");
-    const protocols = ["fs", "s3", "gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native", "aliyun-drive", "dropbox", "gdrive", "koofr", "onedrive", "pcloud", "seafile", "yandex-disk", "rclone-custom", ...GENERIC_PROTOCOL_IDS];
+    const protocols = ["fs", "s3", "gcs", "azblob", "obs", "oss", "cos", "qiniu", "webdav", "ftp", "sftp", "smb", "sftp-native", "aliyun-drive", "dropbox", "gdrive", "koofr", "onedrive", "pcloud", "seafile", "yandex-disk", "rclone-custom", ...GENERIC_PROTOCOL_IDS];
     if (!protocols.includes(protocol)) throw new Error(`Unsupported protocol '${protocol}'; expected one of ${protocols.join(", ")}`);
     if (GENERIC_PROTOCOL_IDS.has(protocol) || protocol === "rclone-custom") {
       // 对齐 sidecar 透传语义：通用协议的协议值即 rclone backend type，
