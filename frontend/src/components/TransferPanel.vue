@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { CircleCheck, CircleDashed, CircleX, FolderOpen, FileText, LoaderCircle, RotateCw, Trash2, X } from "@lucide/vue";
+import { CircleCheck, CircleDashed, CircleX, ExternalLink, FolderOpen, FileText, LoaderCircle, RotateCw, Trash2, X } from "@lucide/vue";
 import { formatBytes, formatTime } from "../lib/api";
 import { etaSeconds, formatEta, formatRate, isByteBased, isRetryableKind, percentOf, sortedJobs, splitTransferPath, transferPathLabel, type TransferJob } from "../lib/transfers";
 
@@ -18,6 +18,8 @@ const emit = defineEmits<{
   (event: "delete", jobId: string): void;
   (event: "reveal", path: string): void;
   (event: "open", path: string): void;
+  /** issue #11：用用户配置的外部应用打开（App 侧按偏好解析出 app 再下发）。 */
+  (event: "open-app", path: string): void;
 }>();
 
 const retryable = computed(() => new Set(props.retryableIds ?? []));
@@ -152,6 +154,8 @@ function timeLabel(job: TransferJob): string {
         <button v-if="canRetry(job)" class="wb-icon-button" v-tip="t('retryTransfer')" @click="emit('retry', job.jobId)"><RotateCw /></button>
         <button v-if="canReveal(job)" class="wb-icon-button" v-tip="t('revealInFolder')" @click="emit('reveal', job.localPath!)"><FolderOpen /></button>
         <button v-if="canReveal(job)" class="wb-icon-button" v-tip="t('openDownloadedFile')" @click="emit('open', job.localPath!)"><FileText /></button>
+        <!-- issue #11：外部应用打开（未配置偏好时 App 侧提示去设置页）。 -->
+        <button v-if="canReveal(job)" class="wb-icon-button" v-tip="t('openWithExternalApp')" @click="emit('open-app', job.localPath!)"><ExternalLink /></button>
         <button class="wb-icon-button wb-icon-danger" v-tip="t('deleteRecord')" @click="emit('delete', job.jobId)"><Trash2 /></button>
       </div>
       <div class="wb-transfer-meta">
