@@ -1217,16 +1217,31 @@ impl Plugin {
                 local_downloads::reveal_validated(&history, std::path::Path::new(path))?;
                 Ok(json!({ "success": true }))
             }
-            // 在默认应用中打开已完成的本机下载；同样只允许打开传输历史中记录
-            // 过的路径，避免把这个按钮变成任意本机路径执行入口。
+            // Validate a user-configured external open-with app path without
+            // launching it (issue #11). The settings panel calls this when
+            // persisting the preference so a typo surfaces immediately;
+            // files/local/open repeats the check for stale prefs.
+            "files/local/validate-open-app" => {
+                let path = params
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .ok_or("Missing path")?;
+                let path = local_downloads::validate_open_app(path)?;
+                Ok(json!({ "valid": true, "path": path.to_string_lossy() }))
+            }
+            // 在默认应用或用户配置的外部应用中打开已完成的本机下载；同样只允许
+            // 打开传输历史中记录过的路径，避免把这个按钮变成任意本机路径执行
+            // 入口。`app` 是可选的用户外部应用可执行文件绝对路径（issue #11，
+            // 单一路径、绝不接受 shell 命令行）；缺省走系统默认应用。
             "files/local/open" => {
                 let path = params
                     .get("path")
                     .and_then(Value::as_str)
                     .filter(|value| !value.is_empty())
                     .ok_or("Missing path")?;
+                let app = params.get("app").and_then(Value::as_str);
                 let history = self.store.load_transfers();
-                local_downloads::open_validated(&history, std::path::Path::new(path))?;
+                local_downloads::open_validated(&history, std::path::Path::new(path), app)?;
                 Ok(json!({ "success": true }))
             }
             "files/audit/list" => audit_list_response(&self.store, &params),

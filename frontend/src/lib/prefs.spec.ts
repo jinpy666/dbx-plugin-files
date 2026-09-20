@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadDownloadDir, loadUiPrefs, persistDownloadDir, saveUiPrefs, DOWNLOAD_DIR_KEY, UI_PREFS_KEY, type UiPrefs } from "./prefs";
+import { loadDownloadDir, loadOpenAppPrefs, loadUiPrefs, persistDownloadDir, persistOpenAppPrefs, saveUiPrefs, resolveOpenApp, DOWNLOAD_DIR_KEY, OPEN_APP_KEY, UI_PREFS_KEY, type OpenAppPrefs, type UiPrefs } from "./prefs";
 
 function brokenStorage(): Storage {
   const unavailable = () => {
@@ -97,5 +97,54 @@ describe("download dir preference (对标 ssh downloadDir)", () => {
     expect(loadDownloadDir(memoryStorage())).toBe("");
     expect(loadDownloadDir(brokenStorage())).toBe("");
     expect(() => persistDownloadDir("/x", brokenStorage())).not.toThrow();
+  });
+});
+
+describe("open-app preference (issue #11 对标 downloadDir)", () => {
+  const prefs: OpenAppPrefs = {
+    defaultApp: "/Applications/Notepad++.app",
+    mappings: [
+      { ext: "ini", app: "/usr/local/bin/np" },
+      { ext: "conf", app: "/usr/local/bin/vim" },
+    ],
+  };
+
+  it("round-trips prefs through storage", () => {
+    const storage = memoryStorage();
+    persistOpenAppPrefs(prefs, storage);
+    expect(JSON.parse(storage.getItem(OPEN_APP_KEY)!)).toEqual(prefs);
+    expect(loadOpenAppPrefs(storage)).toEqual(prefs);
+  });
+
+  it("falls back to the system default app for missing or corrupt data", () => {
+    expect(loadOpenAppPrefs(memoryStorage())).toEqual({ defaultApp: "", mappings: [] });
+    expect(loadOpenAppPrefs(brokenStorage())).toEqual({ defaultApp: "", mappings: [] });
+    expect(loadOpenAppPrefs(memoryStorage({ [OPEN_APP_KEY]: "{broken" }))).toEqual({ defaultApp: "", mappings: [] });
+  });
+
+  it("sanitizes extensions (lowercase, no leading dots) and drops half-filled rows", () => {
+    const storage = memoryStorage({
+      [OPEN_APP_KEY]: JSON.stringify({
+        defaultApp: "  /apps/np  ",
+        mappings: [
+          { ext: ".INI", app: " /apps/np " },
+          { ext: "orphan", app: "  " },
+          { ext: "", app: "/apps/x" },
+          "junk",
+        ],
+      }),
+    });
+    const loaded = loadOpenAppPrefs(storage);
+    expect(loaded.defaultApp).toBe("/apps/np");
+    expect(loaded.mappings).toEqual([{ ext: "ini", app: "/apps/np" }]);
+  });
+
+  it("resolveOpenApp prefers the extension mapping over the global default", () => {
+    const withDefault: OpenAppPrefs = { defaultApp: "/apps/fallback", mappings: [{ ext: "ini", app: "/apps/np" }] };
+    expect(resolveOpenApp(withDefault, "server.INI")).toBe("/apps/np");
+    expect(resolveOpenApp(withDefault, "/Downloads/report.pdf")).toBe("/apps/fallback");
+    // Extension-less names and dotfiles go straight to the default.
+    expect(resolveOpenApp(withDefault, "/Downloads/Makefile")).toBe("/apps/fallback");
+    expect(resolveOpenApp(withDefault, "/Downloads/.gitignore")).toBe("/apps/fallback");
   });
 });

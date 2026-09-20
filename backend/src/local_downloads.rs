@@ -6,7 +6,9 @@
 //! The sidecar therefore writes finished downloads to the user's Downloads
 //! folder so the completion notice can show a real path and the transfer
 //! panel can offer reveal/open. `files/local/reveal` opens the file manager
-//! and `files/local/open` opens the downloaded file in the OS default app.
+//! and `files/local/open` opens the downloaded file in the OS default app,
+//! or in a user-configured external application when the optional `app`
+//! preference is supplied (issue #11).
 //!
 //! Reveal/open are deliberately restricted to paths recorded by a completed
 //! local download in the persisted transfer history — never an arbitrary
@@ -86,6 +88,35 @@ pub fn validate_download_dir(raw: &str) -> Result<PathBuf, String> {
         return Err("Download directory path is not a directory".to_string());
     }
     Ok(directory.to_path_buf())
+}
+
+/// Validates a user-supplied external application path for `files/local/open`
+/// (issue #11). Must be a single existing absolute *file* — never a shell, a
+/// command line or a flag blob — so the sidecar only ever executes one binary
+/// the user explicitly pinned in the settings panel. The same check runs when
+/// the preference is saved (`files/local/validate-open-app`) and again at
+/// open time so a stale path cannot linger.
+pub fn validate_open_app(raw: &str) -> Result<PathBuf, String> {
+    let path_text = raw.trim();
+    if path_text.is_empty() {
+        return Err("External app path must not be empty".to_string());
+    }
+    if path_text
+        .chars()
+        .any(|character| character == '\0' || character.is_control())
+    {
+        return Err("External app path contains invalid control characters".to_string());
+    }
+    let path = Path::new(path_text);
+    if !path.is_absolute() {
+        return Err("External app path must be absolute".to_string());
+    }
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| format!("External app is not accessible: {error}"))?;
+    if !metadata.is_file() {
+        return Err("External app path is not a file".to_string());
+    }
+    Ok(path.to_path_buf())
 }
 
 /// Base directory downloads land in: explicit `download_dir` override (the
@@ -234,6 +265,44 @@ pub fn open_in_default_app(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("Failed to open downloaded file: {error}"))
 }
 
+/// Pure platform dispatch behind `open_in_app`, unit-testable on every host:
+/// how the configured external application is launched for a given platform.
+/// macOS routes through the `open` launcher (`open -a <app> <file>`, which
+/// also accepts .app bundle paths); Windows and Linux execute the configured
+/// path directly via `std::process::Command` — no shell, no parsing, so a
+/// path with spaces is passed through as one argument and nothing the user
+/// typed is ever interpreted as a command line.
+pub fn app_launch_command(platform: &str, app: &Path) -> (OsString, Vec<OsString>) {
+    if platform == "macos" {
+        (
+            OsString::from("open"),
+            vec![OsString::from("-a"), app.as_os_str().to_os_string()],
+        )
+    } else {
+        (app.as_os_str().to_os_string(), Vec::new())
+    }
+}
+
+/// Opens a downloaded file with the operating system's default application,
+/// or with the user-configured external application when `app` is `Some`
+/// (already validated by `validate_open_app`). Spawn failures surface as
+/// errors; like the default-app path the spawned process is not awaited.
+pub fn open_in_app(path: &Path, app: Option<&Path>) -> Result<(), String> {
+    if !path.is_file() {
+        return Err("Downloaded file no longer exists".to_string());
+    }
+    let Some(app) = app else {
+        return open_in_default_app(path);
+    };
+    let (program, mut args) = app_launch_command(platform_name(), app);
+    args.push(path.as_os_str().to_os_string());
+    std::process::Command::new(&program)
+        .args(&args)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Failed to launch the configured external app: {error}"))
+}
+
 /// Pure membership check behind `reveal_validated`/`open_validated`, unit
 /// testable without launching anything: only a completed download row that
 /// recorded this exact `localPath` may be opened. Survives sidecar restarts
@@ -258,9 +327,23 @@ pub fn reveal_validated(history: &[TransferRecord], path: &Path) -> Result<(), S
 }
 
 /// Same allowlist as reveal, but opens the file itself rather than its folder.
-pub fn open_validated(history: &[TransferRecord], path: &Path) -> Result<(), String> {
+/// `app` is the optional user-configured external application (issue #11):
+/// a blank value means the OS default app, anything else must pass
+/// `validate_open_app` (existing absolute file) before the download-history
+/// allowlist is consulted, so a stale preference fails with a config error
+/// even when the target file itself is still recorded.
+pub fn open_validated(
+    history: &[TransferRecord],
+    path: &Path,
+    app: Option<&str>,
+) -> Result<(), String> {
+    let app = app
+        .map(str::trim)
+        .filter(|app| !app.is_empty())
+        .map(validate_open_app)
+        .transpose()?;
     if is_recorded_download(history, path) {
-        open_in_default_app(path)
+        open_in_app(path, app.as_deref())
     } else {
         Err("Path was not saved by a completed download of this plugin".to_string())
     }
@@ -410,5 +493,66 @@ mod tests {
         let history = vec![record("t1", "download", "completed", Some("/Downloads/a.txt"))];
         assert!(is_recorded_download(&history, Path::new("/Downloads/a.txt")));
         assert!(!is_recorded_download(&history, Path::new("/etc/passwd")));
+    }
+
+    #[test]
+    fn validate_open_app_requires_existing_absolute_file() {
+        let parent = tempfile::tempdir().expect("tempdir");
+        let executable = parent.path().join("editor");
+        std::fs::write(&executable, b"MZ").expect("write");
+        let valid = validate_open_app(&format!("  {}  ", executable.display()))
+            .expect("existing absolute file should validate");
+        assert_eq!(valid, executable);
+
+        // A directory, a missing path, a relative path and control characters
+        // are all rejected: only one pinned binary may ever be executed.
+        assert!(validate_open_app(&parent.path().to_string_lossy()).is_err());
+        assert!(validate_open_app(&parent.path().join("missing").to_string_lossy()).is_err());
+        assert!(validate_open_app("editor").is_err());
+        assert!(validate_open_app("/tmp/bad\npath").is_err());
+        assert!(validate_open_app("   ").is_err());
+    }
+
+    #[test]
+    fn app_launch_command_routes_macos_through_open() {
+        let app = Path::new("/Applications/Notepad++.app");
+        let (program, args) = app_launch_command("macos", app);
+        assert_eq!(program, OsString::from("open"));
+        assert_eq!(
+            args,
+            vec![OsString::from("-a"), OsString::from("/Applications/Notepad++.app")]
+        );
+    }
+
+    #[test]
+    fn app_launch_command_executes_the_path_directly_elsewhere() {
+        // Windows and Linux must not go through a shell: the configured path
+        // is the program itself and the file is appended by the caller.
+        for platform in ["windows", "linux", "other"] {
+            let app = Path::new(if platform == "windows" {
+                r"C:\Program Files\Notepad++\notepad++.exe"
+            } else {
+                "/usr/bin/notepad-plus-plus"
+            });
+            let (program, args) = app_launch_command(platform, app);
+            assert_eq!(program, app.as_os_str().to_os_string());
+            assert!(args.is_empty());
+        }
+    }
+
+    #[test]
+    fn open_validated_rejects_stale_or_invalid_app_before_launching() {
+        let history = vec![record("t1", "download", "completed", Some("/Downloads/a.txt"))];
+        let target = Path::new("/Downloads/a.txt");
+        // An invalid app preference fails with a config error even though the
+        // target path is whitelisted — nothing is spawned either way.
+        let rejected = open_validated(&history, target, Some("relative/editor"));
+        assert!(rejected.unwrap_err().contains("must be absolute"));
+        // A blank app preference means the OS default app (only the history
+        // allowlist applies; a non-recorded path still errors without spawn).
+        let rejected = open_validated(&history, Path::new("/etc/passwd"), Some("   "));
+        assert!(rejected
+            .unwrap_err()
+            .contains("not saved by a completed download"));
     }
 }
