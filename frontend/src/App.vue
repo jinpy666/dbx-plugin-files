@@ -273,11 +273,14 @@ const auditRef = ref<InstanceType<typeof AuditPanel>>();
 
 // ---- 独立设置弹窗（对标 ssh 插件 settings-modal）：左导航分类 + 内容面板 --------
 type SettingsCategory = "downloads" | "openWith" | "mounts";
-const SETTINGS_CATEGORIES: ReadonlyArray<{ id: SettingsCategory; labelKey: string }> = [
-  { id: "downloads", labelKey: "settingsNav.downloads" },
-  { id: "openWith", labelKey: "settingsNav.openWith" },
-  { id: "mounts", labelKey: "settingsNav.mounts" },
-];
+// 「本地挂载」分类仅桌面端（canSaveLocal）可见：挂载发生在 sidecar 所在机器。
+const settingsCategories = computed<ReadonlyArray<{ id: SettingsCategory; labelKey: string }>>(() =>
+  [
+    { id: "downloads", labelKey: "settingsNav.downloads" },
+    { id: "openWith", labelKey: "settingsNav.openWith" },
+    ...(canSaveLocal.value ? [{ id: "mounts" as const, labelKey: "settingsNav.mounts" }] : []),
+  ],
+);
 const settingsOpen = ref(false);
 const settingsCategory = ref<SettingsCategory>("downloads");
 const settingsOverlayEl = ref<HTMLElement>();
@@ -548,7 +551,10 @@ function toolbarSelectionEntries(side: PaneSide): FileEntry[] {
 }
 
 /** 工具栏挂载入口：挂活动栏当前目录；本地 __local__ 栏没有远端可挂（禁用）。 */
-const canMountToolbar = computed(() => sideConnectionId(toolbarTarget.value.side) !== LOCAL_CONNECTION_ID);
+// 挂载是桌面能力：web/docker 下 sidecar 不在用户本机，挂载无从谈起
+// （mountStatus/mount 走的都是 sidecar 所在机器），入口整体隐藏。
+const canUseMount = computed(() => canSaveLocal.value);
+const canMountToolbar = computed(() => canUseMount.value && sideConnectionId(toolbarTarget.value.side) !== LOCAL_CONNECTION_ID);
 
 function mountToolbarTarget() {
   if (!canMountToolbar.value) return;
@@ -2045,6 +2051,10 @@ async function deleteTransferRecord(jobId: string) {
 let localCapabilities: Promise<{ canSaveLocal: boolean; downloadsDir: string } | undefined> | undefined;
 const localDownloadDir = ref("");
 const canSaveLocal = ref(false);
+// 宿主切到 web（canSaveLocal=false）时挂载分类/入口消失：当前分类回落到下载。
+watch(canSaveLocal, (can) => {
+  if (!can && settingsCategory.value === "mounts") settingsCategory.value = "downloads";
+});
 /** sidecar 平台标签（macos/windows/linux/other），驱动「打开方式」预设与文案。 */
 const localPlatform = ref("");
 function probeLocalCapabilities() {
@@ -2700,6 +2710,7 @@ onBeforeUnmount(() => {
       :connection-color="connection.color"
       :read-only="!canWrite"
       :conn-state="connState"
+      :show-mount="canUseMount"
       :can-mount="canMountToolbar"
       :t="t"
       @new-folder="startNewFolder(toolbarTarget.side)"
@@ -2983,7 +2994,7 @@ onBeforeUnmount(() => {
         <div class="wb-settings-layout">
           <nav class="wb-settings-nav" aria-label="settings categories">
             <button
-              v-for="cat in SETTINGS_CATEGORIES"
+              v-for="cat in settingsCategories"
               :key="cat.id"
               type="button"
               class="wb-settings-nav-item"
@@ -3069,7 +3080,7 @@ onBeforeUnmount(() => {
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('syncDir')"><ArrowRightLeft /> {{ t("transferKind.syncDir") }}…</button>
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('copyDir')"><FolderSymlink /> {{ t("transferKind.copyDir") }}…</button>
         <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('computeSize')"><Calculator /> {{ t("computeSize") }}</button>
-        <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('mountLocal')"><HardDrive /> {{ t("mountToLocal") }}</button>
+        <button v-if="canUseMount && contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('mountLocal')"><HardDrive /> {{ t("mountToLocal") }}</button>
         <button v-if="canWrite" role="menuitem" @click="menuAction('compress')"><FileArchive /> {{ t("compress") }}</button>
         <hr />
         <button v-if="canWrite" role="menuitem" @click="menuAction('copy')"><Copy /> {{ t("transferKind.copy") }}…</button>
@@ -3103,7 +3114,7 @@ onBeforeUnmount(() => {
       <button role="menuitem" @click="sideMenuAction('copyPath')"><Link2 /> {{ t("copyPath") }}</button>
       <button role="menuitem" @click="sideMenuAction('copyName')"><FileText /> {{ t("copyName") }}</button>
       <hr />
-      <button role="menuitem" @click="sideMenuAction('mountLocal')"><HardDrive /> {{ t("mountToLocal") }}</button>
+      <button v-if="canUseMount" role="menuitem" @click="sideMenuAction('mountLocal')"><HardDrive /> {{ t("mountToLocal") }}</button>
     </div>
 
     <ConfirmDialog

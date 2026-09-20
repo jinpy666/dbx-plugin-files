@@ -26,7 +26,8 @@ beforeEach(() => {
     rightSideCollapsed: false,
   });
   Reflect.deleteProperty(window, "dbxPlugin");
-  window.history.replaceState(null, "", "/?mock=1&locale=en&delay=0");
+  // 挂载分类/入口仅桌面端可见：mock 需 local=1。
+  window.history.replaceState(null, "", "/?mock=1&locale=en&delay=0&local=1");
   installMockHost();
 });
 

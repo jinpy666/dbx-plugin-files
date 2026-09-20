@@ -4,7 +4,7 @@
 // pickDirectory（Host API 1.x 未提供该能力）。挂载位置留空 = sidecar 默认
 // （~/dbx-files-mounts/<连接>）；所选目录不存在时由后端挂载时自动创建。
 import { computed, onMounted, ref } from "vue";
-import { ArrowUp, HardDrive, X } from "@lucide/vue";
+import { ArrowUp, Folder, HardDrive, X } from "@lucide/vue";
 import { normalizeEntries, type FileEntry } from "../lib/api";
 import { isNotFoundMessage } from "../lib/friendlyError";
 
@@ -59,9 +59,12 @@ async function browse(target: string) {
       "files/list",
       { connectionId: "__local__", path: clean },
     );
+    // 隐藏目录（. 开头）不进列表——home 下几十个 dot 目录会把浏览体验
+    // 淹没；需要时仍可手输路径进入（挂载点常在隐藏位置如 ~/.config）。
     dirs.value = normalizeEntries(result.entries ?? [])
-      .filter((entry) => entry.kind === "directory")
-      .map((entry) => entry.name);
+      .filter((entry) => entry.kind === "directory" && !entry.name.startsWith("."))
+      .map((entry) => entry.name)
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
     browsePath.value = clean;
     inputPath.value = clean;
   } catch (cause) {
@@ -144,14 +147,15 @@ function enter(name: string) {
         </template>
         <span v-else-if="browseError" class="wb-mount-error">{{ browseError }}</span>
         <span v-else-if="!dirs.length" class="wb-muted">{{ t("mountBrowseEmpty") }}</span>
-        <button
-          v-for="name in dirs"
-          v-else
-          :key="name"
-          type="button"
-          class="wb-mount-dir"
-          @click="enter(name)"
-        >📁 {{ name }}</button>
+        <template v-else>
+          <button
+            v-for="name in dirs"
+            :key="name"
+            type="button"
+            class="wb-mount-dir"
+            @click="enter(name)"
+          ><Folder class="wb-mount-dir-icon" /> <span class="wb-mount-dir-name">{{ name }}</span></button>
+        </template>
       </div>
       <footer>
         <span class="wb-muted wb-mount-foot-hint">{{ t("mountPointHint") }}</span>

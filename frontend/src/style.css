@@ -231,6 +231,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-mount-list { display: flex; flex-direction: column; gap: 1px; min-height: 120px; max-height: 240px; overflow-y: auto; margin: 8px 14px; border: 1px solid var(--border); border-radius: 6px; padding: 4px; font-size: 12px; }
 .wb-mount-dir { display: flex; align-items: center; gap: 6px; border: 0; background: transparent; cursor: pointer; border-radius: 4px; padding: 4px 8px; color: var(--foreground); text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wb-mount-dir:hover { background: var(--accent); }
+/* 目录条目：lucide 图标固定尺寸（emoji 在 WKWebView 里 glyph 偏大、基线
+   错位），行高显式声明避免宿主 reset 压扁行框。 */
+.wb-mount-dir .wb-mount-dir-icon { width: 14px; height: 14px; flex: 0 0 14px; color: var(--muted-foreground); }
+.wb-mount-dir .wb-mount-dir-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.5; }
 .wb-mount-error { margin: 4px 8px; color: var(--destructive); font-size: 11px; overflow-wrap: anywhere; }
 .wb-mount-dialog footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid var(--border); padding: 10px 14px; }
 .wb-mount-foot-hint { font-size: 10px; overflow-wrap: anywhere; }

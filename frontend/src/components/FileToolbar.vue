@@ -16,6 +16,8 @@ const props = defineProps<{
   connectionColor?: string;
   readOnly: boolean;
   connState: "connecting" | "connected" | "disconnected";
+  /** 挂载是桌面能力（web/docker 无本机可挂）：false 时整组入口隐藏。 */
+  showMount: boolean;
   /** 挂载入口只对远端连接面可用（本地 __local__ 栏没有可挂载的远端）。 */
   canMount: boolean;
   t: (key: string, values?: Record<string, string | number>) => string;
@@ -97,7 +99,7 @@ function onPicked(event: Event) {
       <!-- 审计#17：单一 dock 开关（高亮=已打开；图标/提示=当前页签）。 -->
       <button class="wb-icon-button wb-icon-neutral" v-tip="t(dockTipKey)" :class="{ 'is-active': dockOpen }" :aria-pressed="dockOpen" @click="emit('toggle-dock')"><component :is="dockIcon" /></button>
       <!-- 功能 icon（对标 ssh 工具栏）：挂载活动栏目录 + 打开独立设置弹窗。 -->
-      <button class="wb-icon-button wb-icon-emerald" v-tip="t('mountToLocal')" :disabled="!canMount" @click="emit('mount')"><HardDrive /></button>
+      <button v-if="showMount" class="wb-icon-button wb-icon-emerald" v-tip="t('mountToLocal')" :disabled="!canMount" @click="emit('mount')"><HardDrive /></button>
       <button class="wb-icon-button wb-icon-neutral" v-tip="t('settings')" @click="emit('open-settings')"><Settings /></button>
     </div>
   </header>
