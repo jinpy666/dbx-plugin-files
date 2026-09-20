@@ -64,15 +64,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux 侧车全静态 musl 构建：glibc 构建在 ubuntu-24.04（2.39）上，
+          # Kylin V10 等老发行版动态加载器直接失败（issue #28，exit status 1）。
+          # rust_target 同时喂给 rustup targets 与 CARGO_BUILD_TARGET。
           - os: linux
             runner: ubuntu-24.04
             target: linux-x64
+            rust_target: x86_64-unknown-linux-musl
             rclone_os: linux
             rclone_arch: amd64
             python: python3
           - os: linux
             runner: ubuntu-24.04-arm
             target: linux-arm64
+            rust_target: aarch64-unknown-linux-musl
             rclone_os: linux
             rclone_arch: arm64
             python: python3
@@ -102,16 +107,37 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install native dependencies
         if: matrix.os == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y pkg-config nasm
+        # musl-tools 提供 musl-gcc：aws-lc-sys（reqwest → rustls 的默认
+        # provider）在 musl target 下仍要编译 C 源码。nasm 仅服务 aws-lc-sys
+        # 的 MSVC 预置对象路径，Linux/musl 构建不需要。
+        run: sudo apt-get update && sudo apt-get install -y pkg-config musl-tools
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
           cache-on-failure: true
-      - run: cargo build --locked --release --manifest-path backend/Cargo.toml
+      # CARGO_BUILD_TARGET 经环境变量传导（cargo 原生支持）：同时约束这里的
+      # 预构建与 package 步骤里 CLI 内部的 cargo build（CLI 不传 --target）。
+      # 非 linux 条目 RUST_TARGET 为空，保持默认主机 target。
+      - name: Build sidecar
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+        run: |
+          if [ -n "$RUST_TARGET" ]; then export CARGO_BUILD_TARGET="$RUST_TARGET"; fi
+          cargo build --locked --release --manifest-path backend/Cargo.toml
+      # cargo 带 target 时输出在 backend/target/<triple>/release/；裸
+      # backend/target/release/ 预放一份 musl 产物兜底。plugin-cli 的打包
+      # 构建有独立 staging 目录，见下方 Package 步骤的垫片说明。
+      - name: Stage musl binary at the default target path
+        if: matrix.os == 'linux'
+        run: |
+          mkdir -p backend/target/release
+          cp -f "backend/target/${{ matrix.rust_target }}/release/dbx-plugin-files" backend/target/release/dbx-plugin-files
       - run: npm install --global "@dbx-app/plugin-cli@${PLUGIN_CLI_VERSION}"
       - name: Fetch pinned rclone
         # Bundles rclone next to the sidecar via [package].include "bin";
@@ -120,11 +146,39 @@ jobs:
       - name: Package .dbxp candidate
         # CARGO_TARGET_DIR points the CLI's own cargo build at the warm
         # backend/target from the step above instead of a throwaway staging dir.
+        # Linux musl 构建：plugin-cli 调 cargo 时不传 --target、固定从
+        # <dir>/release/ 拷贝，而 CARGO_BUILD_TARGET 会把产物重定向到
+        # <dir>/<triple>/release/——经 PATH 注入 cargo 垫片
+        # （scripts/cargo_target_shim.sh）在构建后把二进制同步回拷贝源。
         env:
           DBX_PLUGIN_TARGET: ${{ matrix.target }}
           CARGO_TARGET_DIR: ${{ github.workspace }}/backend/target
+          RUST_TARGET: ${{ matrix.rust_target }}
           NO_COLOR: "1"
-        run: dbx-plugin package .
+        run: |
+          if [ -n "$RUST_TARGET" ]; then
+            export CARGO_BUILD_TARGET="$RUST_TARGET"
+            shim_dir="$(mktemp -d)"
+            printf '#!/usr/bin/env bash\nexport REAL_CARGO="%s"\nexec bash "%s" "$@"\n' "$(command -v cargo)" "${{ github.workspace }}/scripts/cargo_target_shim.sh" > "$shim_dir/cargo"
+            chmod +x "$shim_dir/cargo"
+            export PATH="$shim_dir:$PATH"
+          fi
+          dbx-plugin package .
+      # 出货把关：包内 Linux 二进制必须全静态（issue #28 glibc 地板修复），
+      # 动态链接即失败——不允许带病发布。
+      - name: Verify packaged linux binary is statically linked
+        if: matrix.os == 'linux'
+        run: |
+          pkg="$(find dist -maxdepth 1 -type f -name '*.dbxp' | head -1)"
+          tmp="$(mktemp -d)"
+          unzip -q "$pkg" -d "$tmp"
+          bin="$(find "$tmp/bin" -type f -name dbx-plugin-files | head -1)"
+          [ -n "$bin" ] || { echo "FAIL: packaged dbx-plugin-files binary missing under $tmp/bin"; exit 1; }
+          file "$bin"
+          if file "$bin" | grep -q "dynamically linked"; then
+            echo "FAIL: packaged linux binary is dynamically linked; expected a static musl build (issue #28)" >&2
+            exit 1
+          fi
       - name: Check bundled rclone in candidate
         run: ${{ matrix.python }} scripts/check_rclone_package.py dist/*.dbxp --target "${{ matrix.target }}"
       - uses: actions/upload-artifact@v7
