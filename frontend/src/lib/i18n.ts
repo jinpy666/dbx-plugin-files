@@ -260,6 +260,8 @@ export const messages = {
     copyurlBody: "Downloads the resource and uploads it here (the name comes from the URL).",
     copyurlUrlLabel: "Resource URL (http/https)",
     copyurlDone: "Imported: {name}",
+    verifySumMenu: "Verify with checksum file",
+    verifySumStarted: "Verification started — watch the transfers panel",
     transferKind: {
       upload: "Upload",
       download: "Download",
@@ -598,6 +600,8 @@ export const messages = {
     copyurlBody: "Descarga el recurso y lo sube aquí (el nombre sale de la URL).",
     copyurlUrlLabel: "URL del recurso (http/https)",
     copyurlDone: "Importado: {name}",
+    verifySumMenu: "Verificar con archivo de suma",
+    verifySumStarted: "Verificación iniciada: mira el panel de transferencias",
     transferKind: {
       upload: "Subida",
       download: "Descarga",
@@ -930,6 +934,8 @@ export const messages = {
     copyurlBody: "Scarica la risorsa e la carica qui (il nome deriva dall'URL).",
     copyurlUrlLabel: "URL della risorsa (http/https)",
     copyurlDone: "Importato: {name}",
+    verifySumMenu: "Verifica con file di checksum",
+    verifySumStarted: "Verifica avviata: guarda il pannello trasferimenti",
     transferKind: {
       upload: "Caricamento",
       download: "Scaricamento",
@@ -1262,6 +1268,8 @@ export const messages = {
     copyurlBody: "リソースをダウンロードしてここへアップロードします（名前は URL から取得）。",
     copyurlUrlLabel: "リソース URL（http/https）",
     copyurlDone: "取り込み完了: {name}",
+    verifySumMenu: "チェックサムファイルで検証",
+    verifySumStarted: "検証を開始しました — 転送パネルで確認できます",
     transferKind: {
       upload: "アップロード",
       download: "ダウンロード",
@@ -1594,6 +1602,8 @@ export const messages = {
     copyurlBody: "Baixa o recurso e o envia para cá (o nome vem da URL).",
     copyurlUrlLabel: "URL do recurso (http/https)",
     copyurlDone: "Importado: {name}",
+    verifySumMenu: "Verificar com arquivo de checksum",
+    verifySumStarted: "Verificação iniciada — acompanhe no painel de transferências",
     transferKind: {
       upload: "Envio",
       download: "Download",
@@ -1927,6 +1937,8 @@ export const messages = {
     copyurlBody: "下载资源并上传到此目录（文件名取自 URL）。",
     copyurlUrlLabel: "资源 URL（http/https）",
     copyurlDone: "已导入：{name}",
+    verifySumMenu: "校验所在目录",
+    verifySumStarted: "校验已开始——请在传输面板查看结果",
     transferKind: {
       upload: "上传",
       download: "下载",
@@ -2259,6 +2271,8 @@ export const messages = {
     copyurlBody: "下載資源並上傳到此目錄（檔名取自 URL）。",
     copyurlUrlLabel: "資源 URL（http/https）",
     copyurlDone: "已匯入：{name}",
+    verifySumMenu: "校驗所在目錄",
+    verifySumStarted: "校驗已開始——請在傳輸面板查看結果",
     transferKind: {
       upload: "上傳",
       download: "下載",

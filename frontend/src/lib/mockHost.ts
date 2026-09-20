@@ -616,6 +616,19 @@ export function installMockHost() {
         runJob(jobId, "check", checkSrc, checkDst, () => {}, cancel, connectionIdOf(p.sourceConnectionId ?? p.connectionId), connectionIdOf(p.targetConnectionId ?? p.connectionId));
         return { jobId };
       }
+      case "files/checksum/verify": {
+        // SUM 校验（批次7）假实现：与 files/check 同形态的 check 作业，
+        // 被核验目录 = SUM 文件父目录（后端真实语义）。
+        const sumPath = str("sumPath");
+        assertOk(sumPath);
+        const parent = sumPath.split("/").filter(Boolean).slice(0, -1).join("/");
+        const dirPath = parent ? `/${parent}` : "/";
+        const jobId = `mock-job-${++jobSeq}`;
+        const cancel = { flag: false };
+        jobs.set(`__cancel_${jobId}`, cancel as unknown as Record<string, unknown>);
+        runJob(jobId, "check", dirPath, dirPath, () => {}, cancel, connectionIdOf(p.connectionId));
+        return { jobId };
+      }
       case "files/hashsum": {
         const hashPath = str("path");
         assertOk(hashPath);
