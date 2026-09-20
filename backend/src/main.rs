@@ -530,13 +530,20 @@ impl Plugin {
                         target_path: request.new_path.clone(),
                         dry_run: Some(false),
                         max_delete: None,
-            include: None,
-            exclude: None,
-            backup_dir: None,
-            suffix: None,
-            transfers: None,
-            checkers: None,
-            retries: None,
+                        include: None,
+                        exclude: None,
+                        backup_dir: None,
+                        suffix: None,
+                        // Directory rename carries no filters (rename
+                        // cannot be a filtered operation anyway).
+                        metadata: Some(false),
+                        min_size: None,
+                        max_size: None,
+                        min_age: None,
+                        max_age: None,
+                        transfers: None,
+                        checkers: None,
+                        retries: None,
                     };
                     let job_id = rclone_start_dir_job(
                         Arc::clone(&self.rclone),
@@ -2401,6 +2408,11 @@ async fn rclone_start_dir_job(
             exclude: request.exclude.clone(),
             backup_dir_rel: request.backup_dir.clone(),
             suffix: request.suffix.clone(),
+            metadata: request.metadata.unwrap_or(false),
+            min_size: request.min_size.clone(),
+            max_size: request.max_size.clone(),
+            min_age: request.min_age.clone(),
+            max_age: request.max_age.clone(),
             transfers: request.transfers,
             checkers: request.checkers,
             retries: request.retries,
@@ -2568,6 +2580,14 @@ async fn rclone_start_check_job(
             exclude: None,
             backup_dir_rel: None,
             suffix: None,
+            // Check/bisync never carry the size/age/metadata filters: rc
+            // would accept them (live-verified v1.75.1) but a filtered
+            // comparison quietly narrows the difference report.
+            metadata: false,
+            min_size: None,
+            max_size: None,
+            min_age: None,
+            max_age: None,
             transfers: None,
             checkers: None,
             retries: None,
@@ -2811,6 +2831,13 @@ async fn rclone_start_bisync_job(
             exclude: None,
             backup_dir_rel: None,
             suffix: None,
+            // Bisync never carries the size/age/metadata filters (see the
+            // check construction above); resync included.
+            metadata: false,
+            min_size: None,
+            max_size: None,
+            min_age: None,
+            max_age: None,
             transfers: None,
             checkers: None,
             retries: None,

@@ -12,7 +12,15 @@
 //!   composition (whole-bucket copy) fails loudly.
 //! - rc option keys are snake_case (`dry_run`, `max_delete`). The camelCase
 //!   CLI spellings (`dryRun`, `maxDelete`) are SILENTLY IGNORED by rc
-//!   parameter reshaping — a "dry run" would write to disk.
+//!   parameter reshaping — a "dry run" would write to disk. Live-verified
+//!   v1.75.1 for the batch-6 filters too: `minSize` is ignored while
+//!   `min_size` filters.
+//! - Unlike `transfers`/`checkers`/`retries`, the size/age filters are NOT
+//!   silently tolerated when malformed: rc rejects the REQUEST itself with
+//!   HTTP 500 (`couldn't parse config item "min_size" = "xyz" as
+//!   fs.SizeSuffix`, `"min_age" = "nonsense" as fs.Duration`) before any job
+//!   starts — `_async` included. [`start_job`] therefore surfaces those as a
+//!   plain error and no jobid is ever minted.
 //! - `max_delete` via rc: omitted = unlimited, `0` = refuse every deletion
 //!   (files kept, job ends `success:false` "failed to delete N files"),
 //!   `N` = allow exactly N deletions before the job fails.
@@ -97,6 +105,28 @@ pub struct SyncJobParams {
     /// `--suffix` appended to backed-up file names (pair with backup_dir to
     /// keep the originals distinguishable).
     pub suffix: Option<String>,
+    /// `--metadata`: preserve/copy object metadata (mode, times, extended
+    /// attributes — backend-dependent). Copy/Sync/Move only; live-verified
+    /// v1.75.1 that `operations/check` also accepts the flag, but filtering
+    /// or metadata-flagging a comparison silently narrows the report, so
+    /// check/bisync never carry it.
+    pub metadata: bool,
+    /// `--min-size`: files smaller than this (e.g. `"100k"`) are filtered
+    /// out. rc validates the value itself — a malformed string is rejected
+    /// with HTTP 500 before the job starts (NOT silently ignored).
+    pub min_size: Option<String>,
+    /// `--max-size`: files larger than this (e.g. `"1M"`) are filtered out.
+    /// Same rc-side validation as [`SyncJobParams::min_size`].
+    pub max_size: Option<String>,
+    /// `--min-age`: only files modified before this age/date (`"1d"`,
+    /// `"2024-01-01"`) travel. rc validates as `fs.Duration`; a far-future
+    /// value (live-verified `99999d`) is legal and skips EVERYTHING with a
+    /// successful zero-transfer job — that is how the tests pin the filter.
+    pub min_age: Option<String>,
+    /// `--max-age`: only files modified within this age/date (`"1h"`,
+    /// `"2024-01-01"`) travel. Same rc-side validation as
+    /// [`SyncJobParams::min_age`].
+    pub max_age: Option<String>,
     /// Per-job overrides of rclone's global concurrency/retry flags
     /// (`--transfers` / `--checkers` / `--retries`). rc parameter reshaping
     /// silently ignores values it cannot parse, so the request layer keeps
@@ -274,6 +304,47 @@ pub async fn start_job(
         .filter(|value| !value.is_empty())
     {
         body["suffix"] = Value::String(suffix.to_string());
+    }
+    // Batch-6 condition filters: sync/copy/move only. operations/check
+    // accepts the same snake_case params (live-verified v1.75.1) but a
+    // filtered/metadata-flagged comparison quietly narrows the difference
+    // report — a misleading "OK" — so check and bisync never receive them.
+    if matches!(params.kind, SyncKind::Copy | SyncKind::Sync | SyncKind::Move) {
+        if params.metadata {
+            body["metadata"] = Value::Bool(true);
+        }
+        if let Some(min_size) = params
+            .min_size
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            body["min_size"] = Value::String(min_size.to_string());
+        }
+        if let Some(max_size) = params
+            .max_size
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            body["max_size"] = Value::String(max_size.to_string());
+        }
+        if let Some(min_age) = params
+            .min_age
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            body["min_age"] = Value::String(min_age.to_string());
+        }
+        if let Some(max_age) = params
+            .max_age
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            body["max_age"] = Value::String(max_age.to_string());
+        }
     }
     if let Some(transfers) = params.transfers {
         body["transfers"] = Value::from(transfers);
@@ -655,6 +726,11 @@ mod tests {
             exclude: None,
             backup_dir_rel: None,
             suffix: None,
+            metadata: false,
+            min_size: None,
+            max_size: None,
+            min_age: None,
+            max_age: None,
             transfers: None,
             checkers: None,
             retries: None,
@@ -1171,6 +1247,81 @@ mod tests {
         assert_eq!(cleared.get("rate").and_then(Value::as_str), Some("off"));
         // Unparsable values are rejected by rcd itself (500 bad bwlimit).
         assert!(client.core_bwlimit(Some("notanumber")).await.is_err());
+    }
+
+    /// `min_size` (rc snake_case, live-verified v1.75.1) keeps small files
+    /// behind: only the 16k payload travels, both text sentinels stay. The
+    /// job still completes successfully — filtering is not an error.
+    #[tokio::test]
+    async fn min_size_filter_skips_small_files() {
+        let Some(binary) = resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
+        let (src, dst) = sandbox();
+        write_file(&src.path().join("sub").join("bulk.bin"), &"x".repeat(16 * 1024));
+        let mut job = params(SyncKind::Copy, src.path(), dst.path());
+        job.min_size = Some("10k".to_string());
+        let (on_event, mut rx) = event_channel();
+        let _handle = start_job(rcd.client(), job, on_event)
+            .await
+            .expect("start min-size copy");
+        let (_progress, event) = wait_terminal(&mut rx).await;
+        assert!(matches!(event, SyncEvent::Completed { .. }), "got {event:?}");
+        let names = dir_names(&dst.path());
+        assert!(names.contains(&"bulk.bin".to_string()), "big file travels: {names:?}");
+        assert!(
+            !names.contains(&"a.txt".to_string()),
+            "sentinel under 10k must stay: {names:?}"
+        );
+        assert!(!dst.path().join("deep").join("b.txt").is_file(), "deep small file stays");
+    }
+
+    /// `min_age` with a far-future value (live-verified `99999d` on
+    /// v1.75.1) is a legal filter that skips EVERYTHING: the job completes
+    /// with zero transfers and the destination stays untouched.
+    #[tokio::test]
+    async fn min_age_far_future_skips_every_file() {
+        let Some(binary) = resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
+        let (src, dst) = sandbox();
+        let mut job = params(SyncKind::Copy, src.path(), dst.path());
+        job.min_age = Some("99999d".to_string());
+        let (on_event, mut rx) = event_channel();
+        let _handle = start_job(rcd.client(), job, on_event)
+            .await
+            .expect("start far-future min-age copy");
+        let (_progress, event) = wait_terminal(&mut rx).await;
+        assert!(
+            matches!(event, SyncEvent::Completed { bytes: 0, files: 0 }),
+            "far-future min_age must complete empty, got {event:?}"
+        );
+        assert!(dir_names(&dst.path()).is_empty(), "nothing may land: {:?}", dir_names(dst.path()));
+    }
+
+    /// `metadata` (rc snake_case, live-verified v1.75.1) is accepted by
+    /// sync/copy without altering the outcome: the tree still mirrors.
+    #[tokio::test]
+    async fn metadata_flag_copies_with_metadata_preserved() {
+        let Some(binary) = resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
+        let (src, dst) = sandbox();
+        let mut job = params(SyncKind::Copy, src.path(), dst.path());
+        job.metadata = true;
+        let (on_event, mut rx) = event_channel();
+        let _handle = start_job(rcd.client(), job, on_event)
+            .await
+            .expect("start metadata copy");
+        let (_progress, event) = wait_terminal(&mut rx).await;
+        assert!(matches!(event, SyncEvent::Completed { files: 2, .. }), "got {event:?}");
+        assert_eq!(dir_names(dst.path()), vec!["a.txt", "deep"]);
     }
 
     #[tokio::test]

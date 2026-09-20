@@ -653,6 +653,28 @@ pub struct DirJobRequest {
     /// 缺省不加后缀。
     #[serde(default)]
     pub suffix: Option<String>,
+    /// rclone `--metadata` 对齐：true 时保留/同步对象元数据（mode、owner、
+    /// 时间戳、扩展属性等，后端支持程度各异）；缺省 false 不带元数据。
+    #[serde(default)]
+    pub metadata: Option<bool>,
+    /// rclone `--min-size` 对齐：小于该大小的文件被过滤（如 `"100k"`）；
+    /// 缺省不过滤。非法值由 rclone rc 直接拒绝（HTTP 500，作业不启动）。
+    #[serde(default)]
+    pub min_size: Option<String>,
+    /// rclone `--max-size` 对齐：大于该大小的文件被过滤（如 `"1M"`）；
+    /// 缺省不过滤。非法值由 rclone rc 直接拒绝（HTTP 500，作业不启动）。
+    #[serde(default)]
+    pub max_size: Option<String>,
+    /// rclone `--min-age` 对齐：仅传输修改时间早于该值/该日期的文件
+    /// （如 `"1d"`、`"2024-01-01"`）；缺省不过滤。非法值由 rclone rc
+    /// 直接拒绝（HTTP 500，作业不启动）。
+    #[serde(default)]
+    pub min_age: Option<String>,
+    /// rclone `--max-age` 对齐：仅传输修改时间晚于该值/该日期的文件
+    /// （如 `"1h"`、`"2024-01-01"`）；缺省不过滤。非法值由 rclone rc
+    /// 直接拒绝（HTTP 500，作业不启动）。
+    #[serde(default)]
+    pub max_age: Option<String>,
     /// rclone `--transfers` 对齐：本作业并行传输文件数覆盖（1–32）。
     #[serde(default)]
     pub transfers: Option<u32>,

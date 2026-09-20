@@ -14,6 +14,14 @@ export interface SyncDialogOptions {
   exclude: string[];
   backupDir: string;
   suffix: string;
+  /** --metadata：保留对象元数据；false = 不传。 */
+  metadata: boolean;
+  /** --min-size/--max-size（如 "100k"/"1M"）；空串 = 不传。 */
+  minSize: string;
+  maxSize: string;
+  /** --min-age/--max-age（如 "1d"、"2024-01-01"）；空串 = 不传。 */
+  minAge: string;
+  maxAge: string;
   transfers: number | null;
   checkers: number | null;
   retries: number | null;
@@ -47,6 +55,11 @@ const exclude = ref("");
 const backupDir = ref("");
 const suffix = ref("");
 const advancedOpen = ref(false);
+const metadata = ref(false);
+const minSize = ref("");
+const maxSize = ref("");
+const minAge = ref("");
+const maxAge = ref("");
 const transfers = ref("");
 const checkers = ref("");
 const retries = ref("");
@@ -77,6 +90,11 @@ function confirm() {
     exclude: parsePatterns(exclude.value),
     backupDir: backupDir.value.trim(),
     suffix: suffix.value.trim(),
+    metadata: metadata.value,
+    minSize: minSize.value.trim(),
+    maxSize: maxSize.value.trim(),
+    minAge: minAge.value.trim(),
+    maxAge: maxAge.value.trim(),
     transfers: parseCount(transfers.value, 1, 32),
     checkers: parseCount(checkers.value, 1, 64),
     retries: parseCount(retries.value, 1, 10),
@@ -154,6 +172,26 @@ function confirm() {
         <label class="wb-mount-field">
           <span>{{ t("syncRetriesLabel") }}</span>
           <input v-model="retries" class="wb-mono" inputmode="numeric" placeholder="3" />
+        </label>
+        <label class="wb-mount-field">
+          <span>{{ t("syncMinSizeLabel") }}</span>
+          <input v-model="minSize" class="wb-mono" spellcheck="false" placeholder="100k" />
+        </label>
+        <label class="wb-mount-field">
+          <span>{{ t("syncMaxSizeLabel") }}</span>
+          <input v-model="maxSize" class="wb-mono" spellcheck="false" placeholder="1M" />
+        </label>
+        <label class="wb-mount-field">
+          <span>{{ t("syncMinAgeLabel") }}</span>
+          <input v-model="minAge" class="wb-mono" spellcheck="false" placeholder="1d" />
+        </label>
+        <label class="wb-mount-field">
+          <span>{{ t("syncMaxAgeLabel") }}</span>
+          <input v-model="maxAge" class="wb-mono" spellcheck="false" placeholder="1d" />
+        </label>
+        <label class="wb-sync-check">
+          <input v-model="metadata" type="checkbox" />
+          <span>{{ t("syncMetadataLabel") }}</span>
         </label>
       </div>
 

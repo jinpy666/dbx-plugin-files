@@ -1337,6 +1337,13 @@ async function onSyncDialogConfirm(options: SyncDialogOptions) {
       ...(options.exclude.length ? { exclude: options.exclude } : {}),
       ...(options.backupDir ? { backupDir: options.backupDir } : {}),
       ...(options.suffix ? { suffix: options.suffix } : {}),
+      // 批次6条件过滤：仅 sync/copy 下发（bisync 不带过滤器，后端对
+      // check 也不注入——语义会收窄比对报告）。
+      ...(kind !== "bisync" && options.metadata ? { metadata: true } : {}),
+      ...(kind !== "bisync" && options.minSize ? { minSize: options.minSize } : {}),
+      ...(kind !== "bisync" && options.maxSize ? { maxSize: options.maxSize } : {}),
+      ...(kind !== "bisync" && options.minAge ? { minAge: options.minAge } : {}),
+      ...(kind !== "bisync" && options.maxAge ? { maxAge: options.maxAge } : {}),
       ...(options.transfers !== null ? { transfers: options.transfers } : {}),
       ...(options.checkers !== null ? { checkers: options.checkers } : {}),
       ...(options.retries !== null ? { retries: options.retries } : {}),

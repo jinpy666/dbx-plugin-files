@@ -49,7 +49,13 @@ describe("SyncDialog", () => {
     await wrapper.find('input[placeholder="4"]').setValue("999");
     await wrapper.find('input[placeholder="8"]').setValue("abc");
     await wrapper.find('input[placeholder="3"]').setValue("0");
+    // 批次6条件过滤：minSize 下发、minAge 填值（两个 age 输入共用 "1d"
+    // 占位符，find 取第一个 = minAge）；maxSize/maxAge 留空 = 不下发。
+    await wrapper.find('input[placeholder="100k"]').setValue("50M");
+    await wrapper.find('input[placeholder="1d"]').setValue("1h");
     await wrapper.find('input[type="checkbox"]').setValue(true);
+    // 第二个 checkbox 是高级区的「保留元数据」。
+    await wrapper.findAll('input[type="checkbox"]')[1].setValue(true);
 
     await wrapper.find(".wb-dialog-primary").trigger("click");
     const payload = wrapper.emitted("confirm")?.[0]?.[0] as Record<string, unknown>;
@@ -60,6 +66,11 @@ describe("SyncDialog", () => {
       exclude: ["*.tmp"],
       backupDir: "_backups/2024",
       suffix: ".bak",
+      metadata: true,
+      minSize: "50M",
+      maxSize: "",
+      minAge: "1h",
+      maxAge: "",
       transfers: 32,
       checkers: null,
       retries: 1,
