@@ -15,6 +15,7 @@
 
 pub mod archive;
 pub mod bytes_channel;
+pub mod mount;
 pub mod ops;
 pub mod proc;
 pub mod rc;

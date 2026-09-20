@@ -16,6 +16,7 @@
 
 mod archive;
 mod local_downloads;
+mod mount;
 mod mcp;
 mod model;
 mod policy;
@@ -55,6 +56,9 @@ struct Plugin {
     /// hold is a short sync section, nothing awaits under the lock), and the
     /// handle is backfilled once `start_job` answers.
     sync_jobs: Arc<std::sync::Mutex<HashMap<String, RcloneSyncRecord>>>,
+    /// Local mounts (`files/mount`): mountId → live record. Same std-Mutex
+    /// discipline as `sync_jobs` — short sync sections, no awaits held.
+    mounts: mount::MountTable,
 }
 
 impl Plugin {
@@ -85,6 +89,7 @@ impl Plugin {
         }
         let sync_jobs: Arc<std::sync::Mutex<HashMap<String, RcloneSyncRecord>>> =
             Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let mounts: mount::MountTable = Arc::new(std::sync::Mutex::new(HashMap::new()));
         let mut mcp = mcp::Mcp::new(data_dir);
         // The rclone engine is the only engine: the MCP storage tools route
         // through it too (same registry, same gates). The sync starter
@@ -105,6 +110,7 @@ impl Plugin {
             store,
             mcp,
             sync_jobs,
+            mounts,
         })
     }
 
@@ -193,6 +199,11 @@ impl Plugin {
                     .await?;
                 // Tear down the tunnel forwarder(s) alongside the remote.
                 self.rclone.release_tunnel(&connection_id).await;
+                // Local mounts follow the connection: unmount what is still
+                // reachable, drop the table entries (best-effort).
+                let _unmounted =
+                    mount::unmount_connection(&self.rclone, &self.mounts, &connection_id, None)
+                        .await;
                 // Idle-group teardown: when this was the group's last
                 // connection and no async work is in flight, stop its rcd.
                 // Groups still draining work are reaped by the keepalive
@@ -883,6 +894,38 @@ impl Plugin {
                 // The jobId doubles as the cancel/status taskId (shared
                 // namespace with the single-file taskIds).
                 Ok(json!({ "jobId": job_id }))
+            }
+            // ------------------------------------------------------------------
+            // Local mounts (docs/MOUNT.zh-CN.md, M1): rclone mount first,
+            // read-only WebDAV gateway fallback. `mount/mod.rs` owns the
+            // strategy; these arms only parse and route.
+            // ------------------------------------------------------------------
+            "files/mount" => {
+                let connection_id = connection_id_param(&params)?.to_string();
+                let request: model::MountRequest = parse(params)?;
+                mount::start_mount(&self.rclone, &self.mounts, &connection_id, &request).await
+            }
+            "files/unmount" => {
+                let connection_id = connection_id_param(&params)?.to_string();
+                let request: model::MountUnmountRequest = parse(params)?;
+                Ok(mount::unmount_connection(
+                    &self.rclone,
+                    &self.mounts,
+                    &connection_id,
+                    request.mount_id.as_deref(),
+                )
+                .await)
+            }
+            "files/mountStatus" => {
+                let connection_id = connection_id_param(&params)?.to_string();
+                let request: model::MountStatusRequest = parse(params)?;
+                mount::mount_status(
+                    &self.rclone,
+                    &self.mounts,
+                    &connection_id,
+                    request.mount_id.as_deref(),
+                )
+                .await
             }
             "files/transfer/status" => {
                 let request: model::JobRequest = parse(params)?;

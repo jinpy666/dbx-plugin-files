@@ -18,6 +18,7 @@ import {
   FolderOpen,
   FolderPlus,
   FolderSymlink,
+  HardDrive,
   Link,
   Link2,
   PanelLeft,
@@ -81,6 +82,8 @@ type MenuAction =
   | "syncDir" | "copyDir" | "copy" | "move" | "extract" | "archiveContents" | "compress"
   // 对标 rclone-dashboard：目录体积统计（files/size）与公开链接（files/publicLink）
   | "computeSize" | "copyPublicLink"
+  // 本地挂载（docs/MOUNT.zh-CN.md M1）：rclone mount 优先，WebDAV 网关兜底
+  | "mountLocal"
   // 批量（多选右键，P-FILES 压缩轮）
   | "downloadSelected" | "copySelected" | "moveSelected" | "deleteSelected" | "compressSelected";
 
@@ -2140,6 +2143,9 @@ function menuAction(action: MenuAction) {
     case "computeSize":
       void computeEntrySize(entry, side);
       break;
+    case "mountLocal":
+      void startMount(entry.path);
+      break;
     case "copyPublicLink":
       void copyPublicLink(entry, side);
       break;
@@ -2240,7 +2246,7 @@ function openSideMenu(side: PaneSide, payload: { path: string; name: string; x: 
   sideMenu.value = { ...payload, side };
 }
 
-function sideMenuAction(action: "open" | "openOther" | "copyPath" | "copyName") {
+function sideMenuAction(action: "open" | "openOther" | "copyPath" | "copyName" | "mountLocal") {
   const menu = sideMenu.value;
   sideMenu.value = undefined;
   if (!menu) return;
@@ -2253,8 +2259,41 @@ function sideMenuAction(action: "open" | "openOther" | "copyPath" | "copyName") 
     navigateQuickPath(side === "left" ? "right" : "left", target);
     return;
   }
+  if (action === "mountLocal") {
+    void startMount(target);
+    return;
+  }
   const value = action === "copyPath" ? target : name;
   void window.dbxPlugin.clipboard?.writeText(value).then(() => showNotice(t(action === "copyPath" ? "copiedPath" : "copiedName")));
+}
+
+// ---- 本地挂载（docs/MOUNT.zh-CN.md M1）：策略由 sidecar 决定 ---------------------
+// auto：rclone mount 优先；缺 FUSE 驱动时兜底 WebDAV 网关（URL 直接进剪贴板，
+// 交给系统「连接服务器」完成挂载）。M1 全程只读。
+
+interface MountResult {
+  mountId: string;
+  strategy: "rclone" | "webdav";
+  mountPoint?: string;
+  gatewayUrl?: string;
+  fallbackReason?: string;
+}
+
+async function startMount(path?: string) {
+  try {
+    const result = await call<MountResult>(
+      "files/mount",
+      path ? { strategy: "auto", path } : { strategy: "auto" },
+    );
+    if (result.strategy === "webdav" && result.gatewayUrl) {
+      await window.dbxPlugin.clipboard?.writeText(result.gatewayUrl);
+      showNotice(t("mountGatewayCopied"));
+    } else {
+      showNotice(t("mountRcloneOk", { point: result.mountPoint ?? "" }));
+    }
+  } catch (error) {
+    showNotice(t("mountFailed", { message: errorMessage(error) }));
+  }
 }
 
 // ---- lifecycle -----------------------------------------------------------------
@@ -2774,6 +2813,7 @@ onBeforeUnmount(() => {
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('syncDir')"><ArrowRightLeft /> {{ t("transferKind.syncDir") }}…</button>
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('copyDir')"><FolderSymlink /> {{ t("transferKind.copyDir") }}…</button>
         <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('computeSize')"><Calculator /> {{ t("computeSize") }}</button>
+        <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('mountLocal')"><HardDrive /> {{ t("mountToLocal") }}</button>
         <button v-if="canWrite" role="menuitem" @click="menuAction('compress')"><FileArchive /> {{ t("compress") }}</button>
         <hr />
         <button v-if="canWrite" role="menuitem" @click="menuAction('copy')"><Copy /> {{ t("transferKind.copy") }}…</button>
@@ -2806,6 +2846,8 @@ onBeforeUnmount(() => {
       <hr />
       <button role="menuitem" @click="sideMenuAction('copyPath')"><Link2 /> {{ t("copyPath") }}</button>
       <button role="menuitem" @click="sideMenuAction('copyName')"><FileText /> {{ t("copyName") }}</button>
+      <hr />
+      <button role="menuitem" @click="sideMenuAction('mountLocal')"><HardDrive /> {{ t("mountToLocal") }}</button>
     </div>
 
     <ConfirmDialog

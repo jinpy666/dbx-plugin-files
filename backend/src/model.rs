@@ -637,6 +637,42 @@ pub struct DirJobRequest {
     pub max_delete: Option<u64>,
 }
 
+/// `files/mount`: mount a connection (or a sub-path of it) onto the local
+/// filesystem. M1 is read-only on every path (docs/MOUNT.zh-CN.md §4).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MountRequest {
+    /// `auto` (default) tries rclone mount first and falls back to the
+    /// WebDAV gateway when the rclone path is unavailable on this host;
+    /// `rclone` and `webdav` pin one strategy and never fall back.
+    #[serde(default)]
+    pub strategy: Option<String>,
+    /// Optional sub-path relative to the connection root (policy-checked;
+    /// `lock_to_root` still rejects escapes).
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Explicit local mountpoint for the rclone strategy; auto-picked when
+    /// absent (`~/dbx-files-mounts/<remote>`, free drive letter on Windows).
+    #[serde(default)]
+    pub mount_point: Option<String>,
+}
+
+/// `files/unmount`: omit `mountId` to unmount every mount of the connection.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MountUnmountRequest {
+    #[serde(default)]
+    pub mount_id: Option<String>,
+}
+
+/// `files/mountStatus`: omit `mountId` to list every mount of the connection.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MountStatusRequest {
+    #[serde(default)]
+    pub mount_id: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TransfersListRequest {

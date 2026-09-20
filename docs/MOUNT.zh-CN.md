@@ -150,3 +150,35 @@ M1 交付后即可验证真实使用率：如果只读挂载已覆盖绝大多�
 - **定位一致**：与 `COMPARISON.zh-CN.md` 相同——不替代 rclone 的
   命令行与专业挂载生态；"像本地盘一样用"在本插件中定位为轻量的浏览
   与文档编辑体验，重同步、批量迁移仍走插件内传输与同步任务。
+
+## 6. 实现状态（M1，2026-09-20 落地）
+
+**策略与最终取舍**：与 §3 备选对比相比有两次修正——打包的 rclone fork
+（`scripts/fetch-rclone.sh`，`v1.75.1-dbx.1`）构建时已保留 mount 能力，
+且凭据经常驻 rcd 的 `config/create` 通道传递（不进 argv/env），备选 C 的
+"用户自装二进制 + 环境变量凭据"两条否决理由均已消失。**最终采用
+"rclone mount 优先、WebDAV 网关兜底"**（用户决策），而非 §2 的纯网关
+路线：
+
+| 策略 | 触发条件 | 语义 |
+| --- | --- | --- |
+| **rclone mount**（优先） | 平台探测有 FUSE 驱动，rcd `mount/mount` 成功 | 内核挂载，`vfsOpt.ReadOnly` 强制只读 |
+| **WebDAV 网关**（兜底） | 探测缺驱动（macFUSE/WinFsp/fusermount）或 mount 报错分类为环境不可用 | sidecar 内嵌只读 WebDAV（`/{token}/{connId}/` 路径鉴权，仅环回） |
+
+- **命令面**：`files/mount`（`strategy: auto|rclone|webdav`，`path` 相对
+  连接根，`mountPoint` 可指定）、`files/unmount`、`files/mountStatus`；
+  `connection/disconnect` 联动卸载。auto 失败回退时响应带
+  `fallbackReason`。
+- **实现偏差**：§2 的 dav-server 方案改为**零依赖手写最小只读 WebDAV**
+  （OPTIONS/PROPFIND/HEAD/GET，其余 405）——Cargo.lock 归 integrator
+  所有、不新增 crate；真实客户端暴露协议怪癖时 M2 再评估 dav-server。
+  §2 的"OpenDAL Operator 适配层"已随引擎迁移改为 rclone ops/serve_get
+  适配（`backend/src/mount/webdav_gateway.rs::EngineSource`）。
+- **门禁对齐**：网关数据面走 `ops::stat/list`/`serve_get`（与插件内浏览
+  同一条 `PathPolicy` 路径），协议层再封一道方法白名单；挂载期间持有
+  `start_work` 计数，keepalive 不会回收 rcd。
+- **M1 限制**：全程只读；网关无 Range/随机写/锁，单文件读取上限
+  256 MiB；Windows 映射 WebClient 对匿名+路径 token 的兼容性列入 M2
+  验证清单。M2（写支持/挂载向导）/M3（缓存）保持 §4 规划不变。
+- **入口**：工作台目录右键与侧栏目录行「挂载到本机」；webdav 兜底时
+  网关 URL 自动进剪贴板并给出平台指引。
