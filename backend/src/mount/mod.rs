@@ -133,14 +133,20 @@ fn on_rclone_failure(strategy: &str, error: &MountError) -> Decision {
 // fs / mountpoint helpers
 // ---------------------------------------------------------------------------
 
-/// The mount/gateway fs string: connection root, plus an optional
-/// policy-checked sub-path. `path` is interpreted relative to the
-/// connection root (the natural "mount this folder" reading); under
-/// `lock_to_root` anything escaping the root is still rejected.
-fn fs_with_subpath(binding: &RemoteBinding, subpath: Option<&str>) -> Result<String, String> {
+/// The mount surface for a connection (+ optional sub-path).
+///
+/// Returns `(fs, mount_path)`:
+/// - `fs` — the rclone fs string for the **kernel mount** (subdir appended;
+///   the kernel mount root must be the mounted folder itself).
+/// - `mount_path` — the mounted folder in **connection-space** absolute
+///   form (`""` = whole root). The WebDAV gateway keeps serving the
+///   connection's own fs and maps gateway-relative paths through
+///   `mount_path`, so every engine call stays on the standard
+///   policy-resolve path (no double-joined remotes).
+fn mount_surface(binding: &RemoteBinding, subpath: Option<&str>) -> Result<(String, String), String> {
     let base = rclone::call_fs(binding);
     let Some(sub) = subpath else {
-        return Ok(base);
+        return Ok((base.clone(), String::new()));
     };
     let policy = PathPolicy::from_parts(
         &binding.root,
@@ -154,16 +160,17 @@ fn fs_with_subpath(binding: &RemoteBinding, subpath: Option<&str>) -> Result<Str
         sub.trim_start_matches('/')
     );
     let resolved = policy.check_read(&joined)?;
-    if binding.backend_type == "local" {
-        Ok(format!("{}{}", base.trim_end_matches('/'), resolved.absolute))
+    let fs = if binding.backend_type == "local" {
+        format!("{}{}", base.trim_end_matches('/'), resolved.absolute)
     } else {
         let relative = resolved.relative.trim_matches('/');
         if relative.is_empty() {
-            Ok(base)
+            base
         } else {
-            Ok(format!("{}/{}", base.trim_end_matches('/'), relative))
+            format!("{}/{}", base.trim_end_matches('/'), relative)
         }
-    }
+    };
+    Ok((fs, resolved.absolute))
 }
 
 fn home_dir() -> Result<PathBuf, String> {
@@ -257,17 +264,29 @@ fn random_token() -> String {
 /// here at the source and at the WebDAV method gate.
 struct EngineSource {
     client: RcClient,
+    /// Always the **connection's** fs: the gateway maps paths in
+    /// plugin-space (`mount_path`), never by pre-joining the subdir into
+    /// the remote (that double-appended and 404'd sub-directory mounts).
     fs: String,
     root: String,
     lock_to_root: bool,
+    /// Mounted folder in connection-space absolute form; `""` = whole root.
+    mount_path: String,
 }
 
 impl EngineSource {
-    fn to_plugin_path(rel: &str) -> String {
-        if rel.is_empty() {
-            "/".to_string()
+    /// Gateway-relative `rel` → connection-space absolute plugin path.
+    fn plugin_path(&self, rel: &str) -> String {
+        if self.mount_path.is_empty() {
+            if rel.is_empty() {
+                "/".to_string()
+            } else {
+                format!("/{rel}")
+            }
+        } else if rel.is_empty() {
+            self.mount_path.clone()
         } else {
-            format!("/{rel}")
+            format!("{}/{}", self.mount_path.trim_end_matches('/'), rel)
         }
     }
 }
@@ -278,7 +297,7 @@ impl webdav_gateway::GatewaySource for EngineSource {
         let fs = self.fs.clone();
         let root = self.root.clone();
         let lock_to_root = self.lock_to_root;
-        let path = Self::to_plugin_path(rel);
+        let path = self.plugin_path(rel);
         Box::pin(async move {
             let entry = rclone::ops::stat(&client, &fs, &path, &root, lock_to_root).await?;
             Ok(to_stat_entry(&entry))
@@ -293,7 +312,7 @@ impl webdav_gateway::GatewaySource for EngineSource {
         let fs = self.fs.clone();
         let root = self.root.clone();
         let lock_to_root = self.lock_to_root;
-        let path = Self::to_plugin_path(rel);
+        let path = self.plugin_path(rel);
         Box::pin(async move {
             let entries =
                 rclone::ops::list(&client, &fs, &path, false, &root, lock_to_root).await?;
@@ -306,7 +325,7 @@ impl webdav_gateway::GatewaySource for EngineSource {
         let fs = self.fs.clone();
         let root = self.root.clone();
         let lock_to_root = self.lock_to_root;
-        let path = Self::to_plugin_path(rel);
+        let path = self.plugin_path(rel);
         Box::pin(async move {
             let policy = PathPolicy::from_parts(&root, lock_to_root, true, true);
             let resolved = policy.check_read(&path)?;
@@ -358,7 +377,7 @@ pub async fn start_mount(
     // outlive every kernel mount and gateway request against it.
     let work = engine.start_work(&rclone::registry::group_key_of(binding.proxy.as_ref()));
     let client = engine.client_for_binding(&binding).await?;
-    let fs = fs_with_subpath(&binding, request.path.as_deref())?;
+    let (fs, mount_path) = mount_surface(&binding, request.path.as_deref())?;
 
     let mut fallback_reason: Option<String> = None;
     let probe = rclone::mount::probe_driver();
@@ -429,9 +448,10 @@ pub async fn start_mount(
         token: token.clone(),
         source: Arc::new(EngineSource {
             client,
-            fs: fs.clone(),
+            fs: rclone::call_fs(&binding),
             root: binding.root.clone(),
             lock_to_root: binding.lock_to_root,
+            mount_path: mount_path.clone(),
         }),
     })
     .await?;
@@ -663,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn fs_subpath_joins_and_policy_checks() {
+    fn mount_surface_joins_and_policy_checks() {
         let mut binding = RemoteBinding {
             remote_fs: "dbxabc123:".to_string(),
             backend_type: "s3".to_string(),
@@ -673,21 +693,33 @@ mod tests {
             allow_delete: true,
             proxy: None,
         };
-        assert_eq!(fs_with_subpath(&binding, None).unwrap(), "dbxabc123:/data");
+        // Whole root: one fs string, no re-basing.
         assert_eq!(
-            fs_with_subpath(&binding, Some("/inside.txt")).unwrap(),
-            "dbxabc123:/data/inside.txt"
+            mount_surface(&binding, None).unwrap(),
+            ("dbxabc123:/data".to_string(), String::new())
+        );
+        // Sub-path: kernel fs carries the folder; gateway gets the
+        // connection-space mount dir for path mapping.
+        assert_eq!(
+            mount_surface(&binding, Some("/inside")).unwrap(),
+            (
+                "dbxabc123:/data/inside".to_string(),
+                "/data/inside".to_string()
+            )
         );
         // lock_to_root rejects escapes.
-        assert!(fs_with_subpath(&binding, Some("../../etc/passwd")).is_err());
+        assert!(mount_surface(&binding, Some("../../etc/passwd")).is_err());
 
         binding.backend_type = "local".to_string();
         binding.remote_fs = "/srv/data".to_string();
         binding.root = "/".to_string();
         binding.lock_to_root = false;
         assert_eq!(
-            fs_with_subpath(&binding, Some("/sub/dir")).unwrap(),
-            "/srv/data/sub/dir"
+            mount_surface(&binding, Some("/sub/dir")).unwrap(),
+            (
+                "/srv/data/sub/dir".to_string(),
+                "/sub/dir".to_string()
+            )
         );
     }
 
