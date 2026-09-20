@@ -163,6 +163,15 @@ describe("mockHost query and lifecycle contracts", () => {
     await expect(api.invoke("connection/connect", connection("__local__"))).rejects.toThrow("reserved for the built-in local filesystem");
   });
 
+  it("accepts the qiniu quick protocol added on the sidecar", async () => {
+    const api = await setup();
+    const qiniu = (id: string) => ({ connection: { id, external_config: { protocol: "qiniu", root: "/mock" } } });
+    expect(await api.invoke("connection/test", qiniu("probe"))).toEqual({ success: true, message: "Storage backend reachable" });
+    await api.invoke("connection/connect", qiniu("qiniu-conn"));
+    expect(await api.invoke("files/capabilities", { connectionId: "qiniu-conn" })).toMatchObject({ readOnly: false });
+    await expect(api.invoke("files/stat", { connectionId: "probe", path: "/" })).rejects.toThrow("Unknown connectionId 'probe'; connect first");
+  });
+
   it("supports a deterministic failed probe without preventing valid connect", async () => {
     const api = await setup("&connectionTest=fail");
     await expect(api.invoke("connection/test", connection("probe"))).rejects.toThrow("Storage check failed");

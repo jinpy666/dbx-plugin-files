@@ -136,14 +136,14 @@ const options = (key) => byKey[key].options.map((option) => option.value);
 // generic rclone backend reusing the common fields, with its remaining
 // options accepted through the JSON extras field.
 const ENDPOINT_PROTOCOLS = [
-  "s3", "gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp",
+  "s3", "gcs", "azblob", "obs", "oss", "cos", "qiniu", "webdav", "ftp", "sftp",
   "sftp-native", "smb", "koofr", "pcloud", "seafile",
   // generic backends whose service address has a dedicated field
   "azurefiles", "filefabric", "hdfs", "http", "imagekit", "netstorage",
   "qingstor", "quatrix", "sia",
 ];
 const ENDPOINT_REQUIRED = [
-  "gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp", "smb",
+  "gcs", "azblob", "obs", "oss", "cos", "qiniu", "webdav", "ftp", "sftp", "smb",
   "sftp-native", "koofr", "pcloud", "seafile",
   "filefabric", "hdfs", "http", "imagekit", "netstorage", "quatrix",
 ];
@@ -169,8 +169,8 @@ const PASSWORD_REQUIRED = [
   "iclouddrive", "internxt", "linkbox", "mega", "mailru", "netstorage",
   "opendrive", "pikpak", "protondrive",
 ];
-const KEY_VISIBLE_PROTOCOLS = ["s3", "obs", "oss", "azurefiles", "b2", "cloudinary", "imagekit", "internetarchive", "qingstor", "sugarsync"];
-const KEY_REQUIRED_PROTOCOLS = ["s3", "obs", "oss", "b2", "cloudinary", "imagekit"];
+const KEY_VISIBLE_PROTOCOLS = ["s3", "obs", "oss", "qiniu", "azurefiles", "b2", "cloudinary", "imagekit", "internetarchive", "qingstor", "sugarsync"];
+const KEY_REQUIRED_PROTOCOLS = ["s3", "obs", "oss", "qiniu", "b2", "cloudinary", "imagekit"];
 const OAUTH_CLIENT_VISIBLE = [
   "aliyun-drive", "dropbox", "gdrive", "onedrive",
   "box", "hidrive", "huaweidrive", "jottacloud", "mailru", "premiumizeme",
@@ -179,7 +179,7 @@ const OAUTH_CLIENT_VISIBLE = [
 const ACCESS_TOKEN_VISIBLE = ["dropbox", "gdrive", "onedrive", "yandex-disk", "box", "drime", "gofile"];
 const TOKEN_VISIBLE = ["fichier", "filefabric", "filelu", "filen", "linkbox", "pixeldrain", "quatrix", "shade", "storj", "ulozto"];
 const TOKEN_REQUIRED = ["filelu", "linkbox", "quatrix", "shade"];
-const QUICK_PROTOCOLS = new Set(["fs", "aliyun-drive", "dropbox", "gdrive", "onedrive", "yandex-disk", "s3", "gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp", "sftp-native", "smb", "koofr", "pcloud", "seafile"]);
+const QUICK_PROTOCOLS = new Set(["fs", "aliyun-drive", "dropbox", "gdrive", "onedrive", "yandex-disk", "s3", "gcs", "azblob", "obs", "oss", "cos", "qiniu", "webdav", "ftp", "sftp", "sftp-native", "smb", "koofr", "pcloud", "seafile"]);
 const GENERIC_PROTOCOLS = options("protocol").filter((value) => !QUICK_PROTOCOLS.has(value));
 assert(GENERIC_PROTOCOLS.length > 0, "generic rclone protocol options must exist");
 let scenarios = 0;
@@ -201,7 +201,7 @@ for (const protocol of options("protocol")) {
     // OSS (no default endpoint) but optional for S3 (AWS default endpoint).
     current.visible("endpoint", ENDPOINT_PROTOCOLS.includes(protocol));
     current.required("endpoint", ENDPOINT_REQUIRED.includes(protocol));
-    current.visible("bucket", ["s3", "gcs", "obs", "oss", "cos"].includes(protocol));
+    current.visible("bucket", ["s3", "gcs", "obs", "oss", "cos", "qiniu"].includes(protocol));
     // Bucket namespace (2026-09-17): s3/oss/cos/obs accept an empty bucket —
     // the connection root then lists all buckets and the first path segment
     // selects one. gcs stays required (its ListBuckets needs an OAuth token

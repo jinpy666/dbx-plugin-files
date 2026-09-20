@@ -59,7 +59,7 @@ import { createTransferTracker, isActive, isRetryableKind, type TransferJob, typ
 import { inspect, type DangerousHit } from "./lib/dangerousPaths";
 import { errorBannerOf, i18nTextOf, workbenchMessage, type ErrorBannerState, type I18nInput, type I18nText } from "./lib/i18n";
 import { isArchivePath } from "./lib/archive";
-import { PREVIEW_MIN, loadDownloadDir, loadUiPrefs, persistDownloadDir, saveUiPrefs, type PreviewWin } from "./lib/prefs";
+import { PREVIEW_MIN, loadDownloadDir, loadOpenAppPrefs, loadUiPrefs, persistDownloadDir, persistOpenAppPrefs, saveUiPrefs, resolveOpenApp, type OpenAppPrefs, type PreviewWin } from "./lib/prefs";
 import { sortEntries, toggleSortState, type SortColumn, type SortState } from "./lib/sorting";
 import { filterEntries } from "./lib/searchFilter";
 import { isLargeDirectory } from "./lib/largeDir";
@@ -2048,6 +2048,61 @@ async function openTransferTarget(path: string) {
   }
 }
 
+// —— 外部打开应用偏好（issue #11）—————————————————————————————
+// 设置面板改动先经 sidecar 校验（files/local/validate-open-app：存在的绝对
+// 路径可执行文件）再持久化；打开时按扩展名映射或全局默认解析出 app 下发。
+const openAppPrefs = ref<OpenAppPrefs>(loadOpenAppPrefs());
+const openAppError = ref("");
+let openAppValidationSerial = 0;
+async function onOpenAppPrefsChange(prefs: OpenAppPrefs) {
+  const serial = ++openAppValidationSerial;
+  // 与 prefs.ts 同一清洗规则；半成品映射行（缺扩展名或缺应用）不参与校验。
+  const normalized: OpenAppPrefs = {
+    defaultApp: prefs.defaultApp.trim(),
+    mappings: prefs.mappings
+      .map((mapping) => ({
+        ext: mapping.ext.trim().replace(/^\.+/, "").toLowerCase(),
+        app: mapping.app.trim(),
+      }))
+      .filter((mapping) => mapping.ext && mapping.app),
+  };
+  if (!normalized.defaultApp && !normalized.mappings.length) {
+    openAppError.value = "";
+    openAppPrefs.value = normalized;
+    persistOpenAppPrefs(normalized);
+    return;
+  }
+  try {
+    const apps = [...new Set([normalized.defaultApp, ...normalized.mappings.map((mapping) => mapping.app)])];
+    for (const app of apps) {
+      await window.dbxPlugin.invoke("files/local/validate-open-app", { path: app });
+    }
+    if (serial !== openAppValidationSerial) return;
+    openAppError.value = "";
+    openAppPrefs.value = normalized;
+    persistOpenAppPrefs(normalized);
+  } catch {
+    if (serial !== openAppValidationSerial) return;
+    openAppError.value = t("invalidExternalApp");
+  }
+}
+
+// 用用户配置的外部应用打开已完成的下载：按扩展名映射或全局默认解析出 app；
+// sidecar 仍按完成历史白名单二次校验。未配置时提示去设置页，不静默降级成
+// 系统默认应用（那会让这个入口失去意义）。
+async function openTransferWithApp(path: string) {
+  const app = resolveOpenApp(openAppPrefs.value, path);
+  if (!app) {
+    showNotice(t("openAppNotConfigured"));
+    return;
+  }
+  try {
+    await call("files/local/open", { path, app });
+  } catch (cause) {
+    showError(cause);
+  }
+}
+
 function invokeAdapter<T>(method: string, params?: unknown) {
   return window.dbxPlugin.invoke<T>(method, params);
 }
@@ -2372,7 +2427,10 @@ function onRightNavigate(target: string) {
 }
 
 watch([dockOpen, dockTab], ([open, tab]) => {
-  if (!open || tab !== "settings") saveDirError.value = "";
+  if (!open || tab !== "settings") {
+    saveDirError.value = "";
+    openAppError.value = "";
+  }
   if (tab === "audit") auditRef.value?.refresh();
 });
 
@@ -2620,6 +2678,7 @@ onBeforeUnmount(() => {
             @delete="deleteTransferRecord"
             @reveal="revealTransferTarget"
             @open="openTransferTarget"
+            @open-app="openTransferWithApp"
           />
           <AuditPanel v-else-if="dockTab === 'audit'" ref="auditRef" :t="t" />
           <SettingsPanel
@@ -2629,7 +2688,10 @@ onBeforeUnmount(() => {
             :save-dir="saveDirDraft"
             :default-save-dir="localDownloadDir"
             :download-dir-error="saveDirError"
+            :open-app="openAppPrefs"
+            :open-app-error="openAppError"
             @save-dir="onSaveDirChange"
+            @save-open-app="onOpenAppPrefsChange"
           />
           <div v-else style="display: flex; flex-direction: column; gap: 10px">
             <div class="wb-transfer-item">

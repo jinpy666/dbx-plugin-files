@@ -129,6 +129,87 @@ export function persistDownloadDir(value: string, storage?: Storage): void {
   }
 }
 
+// —— 外部打开应用（issue #11，补齐「默认应用打开」的自定义能力）—————————
+// 用户可为下载产物指定外部应用（如 notepad++）打开，覆盖系统默认应用：
+// defaultApp 是全局默认可执行文件路径，mappings 按扩展名覆盖（如 ini）。
+// 路径在前端只做基础清洗（trim/小写扩展名）；存在性与绝对路径校验由
+// sidecar 在保存偏好（files/local/validate-open-app）和打开（files/local/
+// open 的 app 参数）时执行。
+
+export const OPEN_APP_KEY = "dbx-files.openApp";
+
+/** 单条扩展名映射：ext 为小写、不含点；app 为可执行文件绝对路径。 */
+export interface OpenAppMapping {
+  ext: string;
+  app: string;
+}
+
+export interface OpenAppPrefs {
+  /** 全局默认外部应用；空串 = 跟随系统默认应用。 */
+  defaultApp: string;
+  /** 按扩展名覆盖，命中时优先于 defaultApp。 */
+  mappings: OpenAppMapping[];
+}
+
+/** 扩展名归一化：去前导点、trim、小写（ini / .INI 都映射到 ini）。 */
+function normalizeExt(raw: unknown): string {
+  return typeof raw === "string" ? raw.trim().replace(/^\.+/, "").toLowerCase() : "";
+}
+
+function sanitizeOpenAppPath(raw: unknown): string {
+  return typeof raw === "string" ? raw.trim() : "";
+}
+
+function sanitizeOpenAppPrefs(raw: unknown): OpenAppPrefs {
+  if (!raw || typeof raw !== "object") return { defaultApp: "", mappings: [] };
+  const value = raw as Record<string, unknown>;
+  const mappings: OpenAppMapping[] = [];
+  if (Array.isArray(value.mappings)) {
+    for (const entry of value.mappings) {
+      if (!entry || typeof entry !== "object") continue;
+      const record = entry as Record<string, unknown>;
+      const ext = normalizeExt(record.ext);
+      const app = sanitizeOpenAppPath(record.app);
+      // 半成品行（只填了扩展名或只填了应用）不落盘。
+      if (ext && app) mappings.push({ ext, app });
+    }
+  }
+  return { defaultApp: sanitizeOpenAppPath(value.defaultApp), mappings };
+}
+
+/** 读取外部应用偏好；损坏/缺失字段回退默认值（系统默认应用）。storage 可注入。 */
+export function loadOpenAppPrefs(storage?: Storage): OpenAppPrefs {
+  let raw: string | null = null;
+  try {
+    raw = (storage ?? window.localStorage).getItem(OPEN_APP_KEY);
+  } catch {
+    raw = null;
+  }
+  if (!raw) return { defaultApp: "", mappings: [] };
+  return sanitizeOpenAppPrefs(safeParse(raw));
+}
+
+/** 保存外部应用偏好；写入前按同一规则清洗（默认 + 空 mappings = 系统默认应用）。 */
+export function persistOpenAppPrefs(prefs: OpenAppPrefs, storage?: Storage): void {
+  const normalized = sanitizeOpenAppPrefs(prefs);
+  try {
+    (storage ?? window.localStorage).setItem(OPEN_APP_KEY, JSON.stringify(normalized));
+  } catch {
+    /* 沙箱/隐私模式：偏好仅对当前会话生效 */
+  }
+}
+
+/** 解析某文件应使用的外部应用：扩展名映射优先，其次全局默认；空串 = 系统默认应用。 */
+export function resolveOpenApp(prefs: OpenAppPrefs, fileName: string): string {
+  const dot = fileName.lastIndexOf(".");
+  if (dot >= 0 && dot + 1 < fileName.length) {
+    const ext = fileName.slice(dot + 1).toLowerCase();
+    const mapped = prefs.mappings.find((mapping) => mapping.ext === ext);
+    if (mapped) return mapped.app;
+  }
+  return prefs.defaultApp;
+}
+
 function safeParse(raw: string): unknown {
   try {
     return JSON.parse(raw);

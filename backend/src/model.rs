@@ -37,7 +37,7 @@ pub const JSON_CHUNK_BYTES: usize = 1024 * 1024;
 /// (stored `service` + JSON parameters). Stored connections from the
 /// OpenDAL era (`opendal-custom`) are normalized onto `rclone-custom` at
 /// parse time — the alias never reaches the engine.
-pub const PROTOCOLS: [&str; 71] = [
+pub const PROTOCOLS: [&str; 72] = [
     "fs",
     "s3",
     "gcs",
@@ -45,6 +45,7 @@ pub const PROTOCOLS: [&str; 71] = [
     "obs",
     "oss",
     "cos",
+    "qiniu",
     "webdav",
     "ftp",
     "sftp",
@@ -2138,7 +2139,7 @@ mod tests {
         // Protocol-gated field matrix: each protocol only surfaces its own
         // fields, global fields stay ungated.
         let expects: &[(&str, &[&str])] = &[
-            ("bucket", &["s3", "gcs", "obs", "oss", "cos"]),
+            ("bucket", &["s3", "gcs", "obs", "oss", "cos", "qiniu"]),
             ("container", &["azblob"]),
             ("account_name", &["azblob"]),
             ("account_key", &["azblob"]),
@@ -2146,19 +2147,19 @@ mod tests {
             ("scope", &["gcs"]),
             ("region", &["s3"]),
             ("access_key_id", &[
-                "s3", "obs", "oss",
+                "s3", "obs", "oss", "qiniu",
                 "azurefiles", "b2", "cloudinary", "imagekit", "internetarchive", "qingstor",
                 "sugarsync",
             ]),
             ("secret_access_key", &[
-                "s3", "obs", "oss",
+                "s3", "obs", "oss", "qiniu",
                 "azurefiles", "b2", "cloudinary", "imagekit", "internetarchive", "qingstor",
                 "sugarsync",
             ]),
             ("enable_virtual_host_style", &["s3"]),
             (
                 "endpoint",
-                &["s3", "gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native", "koofr", "pcloud", "seafile",
+                &["s3", "gcs", "azblob", "obs", "oss", "cos", "qiniu", "webdav", "ftp", "sftp", "smb", "sftp-native", "koofr", "pcloud", "seafile",
                   "azurefiles", "filefabric", "hdfs", "http", "imagekit", "netstorage", "qingstor", "quatrix", "sia"],
             ),
             ("secret_id", &["cos"]),
@@ -2433,7 +2434,7 @@ mod tests {
             "endpoint required_when must stay inside its visible_when"
         );
         for required_protocol in [
-            "gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native",
+            "gcs", "azblob", "obs", "oss", "cos", "qiniu", "webdav", "ftp", "sftp", "smb", "sftp-native",
             "koofr", "pcloud", "seafile", "filefabric", "hdfs", "http", "imagekit", "netstorage",
             "quatrix",
         ] {

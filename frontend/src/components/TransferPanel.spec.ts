@@ -177,6 +177,15 @@ describe("TransferPanel record interactions", () => {
     expect(wrapper.emitted("open")).toEqual([["/Users/me/Downloads/report.pdf"]]);
   });
 
+  it("history rows expose an open-with-external-app entry (issue #11)", async () => {
+    const wrapper = mountPanel([completedDownload()]);
+    const buttons = wrapper.findAll(".wb-transfer-item button");
+    const external = buttons.find((button) => (button.attributes("aria-label") ?? "") === "openWithExternalApp");
+    expect(external).toBeTruthy();
+    await external!.trigger("click");
+    expect(wrapper.emitted("open-app")).toEqual([["/Users/me/Downloads/report.pdf"]]);
+  });
+
   it("every history row offers single-record delete and emits the jobId", async () => {
     const wrapper = mountPanel([completedDownload()]);
     const buttons = wrapper.findAll(".wb-transfer-item button");
@@ -193,6 +202,7 @@ describe("TransferPanel record interactions", () => {
     const tips = wrapper.findAll(".wb-transfer-item button").map((button) => button.attributes("aria-label"));
     expect(tips).not.toContain("revealInFolder");
     expect(tips).not.toContain("openDownloadedFile");
+    expect(tips).not.toContain("openWithExternalApp");
     expect(tips).toContain("deleteRecord");
   });
 
