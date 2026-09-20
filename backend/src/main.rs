@@ -62,6 +62,11 @@ struct Plugin {
     /// `files/about` usage cache keyed by connectionId (60s TTL) — the
     /// sidebar renders it on every pane load and rc about is not free.
     about_cache: std::sync::Mutex<HashMap<String, (std::time::Instant, Value)>>,
+    /// 本机共享（files/serve/*）：serveId → (connectionId, serveType) 登记表。
+    /// serve 实例本身活在 rcd 进程里（rcd 死掉即随之消失），此表只做归属
+    /// 记账；serve/list 以 rc 的活跃 id 集合清理陈旧条目。同一 std-Mutex
+    /// 短临界区纪律（不持锁 await）。
+    serves: std::sync::Mutex<HashMap<String, (String, String)>>,
 }
 
 impl Plugin {
@@ -95,6 +100,8 @@ impl Plugin {
         let mounts: mount::MountTable = Arc::new(std::sync::Mutex::new(HashMap::new()));
         let about_cache: std::sync::Mutex<HashMap<String, (std::time::Instant, Value)>> =
             std::sync::Mutex::new(HashMap::new());
+        let serves: std::sync::Mutex<HashMap<String, (String, String)>> =
+            std::sync::Mutex::new(HashMap::new());
         let mut mcp = mcp::Mcp::new(data_dir);
         // The rclone engine is the only engine: the MCP storage tools route
         // through it too (same registry, same gates). The sync starter
@@ -117,6 +124,7 @@ impl Plugin {
             sync_jobs,
             mounts,
             about_cache,
+            serves,
         })
     }
 
@@ -1246,6 +1254,142 @@ impl Plugin {
                     .map_err(|error| error.to_string())?;
                 self.audit_id(&request.connection_id, "files/copyurl", &target_wire, "ok")?;
                 Ok(json!({ "path": target_wire, "filename": filename }))
+            }
+            // ------------------------------------------------------------------
+            // 本机共享（对标 rclone serve 家族）：把远端目录经 rcd 的 serve/start
+            // 以 HTTP/WebDAV 暴露给本机应用。serve 端点无鉴权，因此两条硬边界：
+            // 只绑 127.0.0.1 回环、只开放 http/webdav 两类（ftp/sftp/nfs 等
+            // 暴露面更大，一律拒绝）。
+            // ------------------------------------------------------------------
+            "files/serve/start" => {
+                let request: model::ServeStartRequest = parse(params)?;
+                // serve_type 白名单在进入 rc 调用前收口；空值/缺省 = http。
+                let serve_type = match request.serve_type.as_deref().map(str::trim) {
+                    None | Some("") | Some("http") => "http",
+                    Some("webdav") => "webdav",
+                    Some(other) => {
+                        return Err(format!(
+                            "unsupported serve type '{other}'; only http and webdav are allowed"
+                        ))
+                    }
+                };
+                let binding = self.rclone.binding(&request.connection_id)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                let remote = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    &request.path,
+                    crate::policy::PathPolicy::check_read,
+                )?;
+                let fs = rclone::sync::compose_fs(&rclone::call_fs(&binding), &remote);
+                // 安全：serve 无鉴权，绝不绑 0.0.0.0——回环绑定 + 端口 0 让
+                // rcd 自动挑选空闲端口并回传实际地址（实测 v1.75.1）。
+                const SERVE_ADDR: &str = "127.0.0.1:0";
+                let answer = client
+                    .serve_start(&fs, serve_type, SERVE_ADDR)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let serve_id = answer
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| "rc serve/start returned no id".to_string())?
+                    .to_string();
+                let addr = answer
+                    .get("addr")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| "rc serve/start returned no addr".to_string())?
+                    .to_string();
+                {
+                    let mut serves = rclone_lock(&self.serves);
+                    serves.insert(
+                        serve_id.clone(),
+                        (request.connection_id.clone(), serve_type.to_string()),
+                    );
+                }
+                self.audit_id(&request.connection_id, "files/serve/start", &request.path, "ok")?;
+                Ok(json!({
+                    "serveId": serve_id,
+                    "url": format!("http://{addr}"),
+                    "serveType": serve_type,
+                }))
+            }
+            "files/serve/stop" => {
+                let request: model::ServeStopRequest = parse(params)?;
+                // 归属校验：只能停本连接名下的实例（登记表无此 id = 实例已随
+                // rcd 消失，走幂等成功，不再泄露归属信息）。
+                if let Some((owner, _)) = rclone_lock(&self.serves).get(&request.serve_id) {
+                    if *owner != request.connection_id {
+                        return Err(format!(
+                            "serve '{}' does not belong to this connection",
+                            request.serve_id
+                        ));
+                    }
+                }
+                let binding = self.rclone.binding(&request.connection_id)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                // 幂等：未知 id 在 rc 侧报错，但目标状态就是“不存在”，按成功处理。
+                if let Err(error) = client.serve_stop(&request.serve_id).await {
+                    eprintln!("[io.dbx.files] files/serve/stop idempotent ignore: {error}");
+                }
+                rclone_lock(&self.serves).remove(&request.serve_id);
+                self.audit_id(&request.connection_id, "files/serve/stop", &request.serve_id, "ok")?;
+                Ok(json!({ "success": true }))
+            }
+            "files/serve/list" => {
+                let request: model::ServeListRequest = parse(params)?;
+                let binding = self.rclone.binding(&request.connection_id)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                let answer = client
+                    .serve_list()
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let list = answer
+                    .get("list")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                // rc 返回的活跃 id 集合是事实源：登记表里不在集合内的条目是
+                // rcd 重启/serve 已停留下的陈旧记录，先行清理。
+                let active: std::collections::HashSet<&str> = list
+                    .iter()
+                    .filter_map(|entry| entry.get("id").and_then(Value::as_str))
+                    .collect();
+                let addr_of = |serve_id: &str| -> Option<String> {
+                    list.iter()
+                        .find(|entry| entry.get("id").and_then(Value::as_str) == Some(serve_id))
+                        .and_then(|entry| {
+                            entry
+                                .get("addr")
+                                .and_then(Value::as_str)
+                                .or_else(|| {
+                                    entry
+                                        .get("params")
+                                        .and_then(|params| params.get("addr"))
+                                        .and_then(Value::as_str)
+                                })
+                                .map(str::to_string)
+                        })
+                };
+                let entries = {
+                    let mut serves = rclone_lock(&self.serves);
+                    serves.retain(|serve_id, _| active.contains(serve_id.as_str()));
+                    serves
+                        .iter()
+                        .filter(|(_, (owner, _))| owner == &request.connection_id)
+                        .filter_map(|(serve_id, (_, serve_type))| {
+                            addr_of(serve_id).map(|addr| {
+                                json!({
+                                    "serveId": serve_id,
+                                    "url": format!("http://{addr}"),
+                                    "serveType": serve_type,
+                                })
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                };
+                Ok(json!({ "serves": entries }))
             }
             // ------------------------------------------------------------------
             // Local mounts (docs/MOUNT.zh-CN.md, M1): rclone mount first,

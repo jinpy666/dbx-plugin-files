@@ -104,8 +104,9 @@ describe("standalone settings dialog", () => {
   it("lists mounts via files/mountStatus and unmounts from the mounts pane", async () => {
     mountWorkbench();
     await settle();
-    // 批次5 起 mountStatus 后面会跟一次 files/mount/stats（best-effort 摘要），
-    // stub 按方法分流而不是按次数 Once，避免摘要调用吃掉卸载后的 status 响应。
+    // 批次5 起 mountStatus 后面会跟一次 files/mount/stats；批次8 起打开挂载
+    // 分类还会拉一次 files/serve/list。stub 按方法分流而不是按次数 Once，
+    // 避免摘要/共享调用吃掉卸载后的 status 响应。
     const statuses = [
       { mounts: [{ mountId: "m1", strategy: "rclone", mountPoint: "/home/x/dbx-files-mounts/dbxabc", mounted: true }] },
     ];
@@ -114,6 +115,7 @@ describe("standalone settings dialog", () => {
     ) => {
       if (method === "files/mountStatus") return Promise.resolve(statuses.shift() ?? { mounts: [] });
       if (method === "files/mount/stats") return Promise.resolve({ mounts: [], skipped: 0 });
+      if (method === "files/serve/list") return Promise.resolve({ serves: [] });
       return Promise.resolve({});
     }) as typeof window.dbxPlugin.invoke);
     await toolbarButton(workbenchMessage("en", "settings"))!.trigger("click");

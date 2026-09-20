@@ -312,6 +312,44 @@ impl RcClient {
         .await
     }
 
+    /// Starts an rclone serve instance over `fs` (serve/start, live-verified
+    /// v1.75.1): `addr: "127.0.0.1:0"` makes rcd pick a free loopback port
+    /// and report it back — the answer is `{"addr": "127.0.0.1:<port>",
+    /// "id": "http-<suffix>"}`. `serve_type` is a bare serve family name
+    /// ("http" / "webdav"); the full fs path (named remote included) goes
+    /// into `fs` verbatim.
+    pub async fn serve_start(
+        &self,
+        fs: &str,
+        serve_type: &str,
+        addr: &str,
+    ) -> Result<Value, RcError> {
+        self.call(
+            "serve/start",
+            &serde_json::json!({
+                "type": serve_type,
+                "fs": fs,
+                "addr": addr,
+            }),
+        )
+        .await
+    }
+
+    /// Stops one serve instance by id (serve/stop). rclone answers `{}`;
+    /// an unknown id answers an rclone error — the caller decides whether
+    /// that means idempotent success.
+    pub async fn serve_stop(&self, id: &str) -> Result<Value, RcError> {
+        self.call("serve/stop", &serde_json::json!({ "id": id })).await
+    }
+
+    /// Lists the rcd process's active serve instances (serve/list):
+    /// `{"list": [{"id", "addr", "params": {"addr", "fs", "type"}}]}`.
+    /// Bookkeeping only — serves die with the rcd process (respawn clears
+    /// the list), so callers must tolerate stale ids.
+    pub async fn serve_list(&self) -> Result<Value, RcError> {
+        self.call("serve/list", &serde_json::json!({})).await
+    }
+
     /// Empties the remote's trash (fs-level; local fs rejects with
     /// "doesn't support cleanup", which surfaces to the caller).
     pub async fn operations_cleanup(&self, fs: &str) -> Result<Value, RcError> {

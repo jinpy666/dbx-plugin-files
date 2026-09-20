@@ -746,6 +746,34 @@ pub struct CopyUrlRequest {
     pub filename: Option<String>,
 }
 
+/// `files/serve/start`：把远端目录经 rclone serve 分享给本机应用。`serve_type`
+/// 仅允许 `http`（缺省）/`webdav`——serve 无鉴权，ftp/sftp 等暴露面更大的
+/// 类型不开放。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServeStartRequest {
+    pub connection_id: String,
+    pub path: String,
+    #[serde(default)]
+    pub serve_type: Option<String>,
+}
+
+/// `files/serve/stop`：按 serveId 停一个分享实例（幂等——id 已随 rcd 消失
+/// 或 rc 报未知 id 时按成功处理）。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServeStopRequest {
+    pub connection_id: String,
+    pub serve_id: String,
+}
+
+/// `files/serve/list`：当前连接的活跃分享实例（陈旧 id 先行清理）。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServeListRequest {
+    pub connection_id: String,
+}
+
 /// `files/bisync/start`：双向同步作业。`mode` 缺省 `run`（增量双向）；
 /// `resync` 为首次/修复初始化（按 `resyncMode` 决定冲突侧，默认 newer，
 /// 破坏性——两侧都收敛到所选基准）。状态文件持久化在插件数据目录的

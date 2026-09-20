@@ -235,4 +235,67 @@ describe("advanced ops UI", () => {
     expect(usage.exists()).toBe(true);
     expect(usage.text()).toContain(workbenchMessage("en", "sideUsage"));
   });
+
+  it("starts an HTTP share from the directory context menu", async () => {
+    mountWorkbench();
+    await settle();
+    const spy = stubInvoke((method) =>
+      method === "files/serve/start"
+        ? { serveId: "http-abc123", url: "http://127.0.0.1:41234", serveType: "http" }
+        : undefined,
+    );
+    await openEntryMenu(dirEntry);
+    await menuItem(workbenchMessage("en", "shareHttpMenu"))!.trigger("click");
+    await settle();
+    expect(spy).toHaveBeenCalledWith(
+      "files/serve/start",
+      expect.objectContaining({ path: "/docs", serveType: "http" }),
+      undefined,
+    );
+    expect(wrapper!.find(".wb-notice").text()).toContain("http://127.0.0.1:41234");
+  });
+
+  it("renders the local shares block in the mounts settings category", async () => {
+    // 挂载分类仅桌面端可见：测试内重装 mock（?local=1），再挂载 workbench。
+    Reflect.deleteProperty(window, "dbxPlugin");
+    window.history.replaceState(null, "", "/?mock=1&locale=en&delay=0&local=1");
+    installMockHost();
+    const spy = stubInvoke((method) =>
+      method === "files/serve/list"
+        ? { serves: [{ serveId: "http-abc123", url: "http://127.0.0.1:41234", serveType: "webdav" }] }
+        : undefined,
+    );
+    mountWorkbench();
+    await settle();
+    await toolbarButton(workbenchMessage("en", "settings"))!.trigger("click");
+    await navButton(workbenchMessage("en", "settingsNav.mounts"))!.trigger("click");
+    await settle();
+    expect(spy).toHaveBeenCalledWith("files/serve/list", expect.objectContaining({ connectionId: expect.any(String) }), undefined);
+    const shares = wrapper!.find(".wb-shares-title");
+    expect(shares.exists()).toBe(true);
+    expect(shares.text()).toContain(workbenchMessage("en", "shareSectionTitle"));
+    expect(wrapper!.text()).toContain("http://127.0.0.1:41234");
+    // 停止按钮（v-tip 同步 aria-label）调 files/serve/stop。
+    const stop = wrapper!
+      .findAll("button")
+      .find((button) => button.attributes("aria-label") === workbenchMessage("en", "shareStop"));
+    expect(stop).toBeTruthy();
+    await stop!.trigger("click");
+    await settle();
+    expect(spy).toHaveBeenCalledWith("files/serve/stop", expect.objectContaining({ serveId: "http-abc123" }), undefined);
+  });
+
+  function toolbarButton(label: string) {
+    return wrapper!
+      .get(".wb-toolbar-actions")
+      .findAll("button")
+      .find((button) => button.attributes("aria-label") === label);
+  }
+
+  function navButton(label: string) {
+    return wrapper!
+      .get(".wb-settings-nav")
+      .findAll("button")
+      .find((button) => button.text() === label);
+  }
 });

@@ -338,6 +338,12 @@ export function installMockHost() {
   const mockMounts = new Map<string, { strategy: string; gatewayPort: number; connectionId: unknown }>();
   let mockMountSeq = 0;
 
+  // ---- 本机共享（files/serve/*，对标 rclone serve 家族）-----------------------
+  // 内存 map 假身（serveId → 行）：start 分配伪回环 URL，list 按连接过滤，
+  // stop 幂等删除。不发真实网络请求（runJob 不需要）。
+  const mockServes = new Map<string, { serveType: string; url: string; connectionId: string }>();
+  let mockServeSeq = 0;
+
   // ---- 监听器 ---------------------------------------------------------------
   const eventListeners: Array<(event: DbxPluginEvent) => void> = [];
   // mock 镜像当前宿主桥的二进制事件形状（零拷贝 data 字段），与真实宿主一致。
@@ -772,6 +778,33 @@ export function installMockHost() {
         if (mountId && !mockMounts.delete(mountId)) throw new Error("Mount not found");
         if (!mountId) mockMounts.clear();
         return { removed: 1 };
+      }
+      case "files/serve/start": {
+        // serve_type 白名单与真实 sidecar 对齐：缺省 http，仅 http/webdav。
+        const rawType = typeof p.serveType === "string" && p.serveType.trim() ? p.serveType.trim() : "http";
+        if (rawType !== "http" && rawType !== "webdav") throw new Error(`unsupported serve type '${rawType}'; only http and webdav are allowed`);
+        const serveId = `mock-serve-${++mockServeSeq}`;
+        const port = 42000 + (mockServeSeq % 1000);
+        const row = { serveType: rawType, url: `http://127.0.0.1:${port}`, connectionId: connectionIdOf(p.connectionId) };
+        mockServes.set(serveId, row);
+        recordAudit(method, str("path"), p.connectionId);
+        return { serveId, url: row.url, serveType: rawType };
+      }
+      case "files/serve/stop": {
+        const serveId = str("serveId");
+        const owner = mockServes.get(serveId);
+        if (owner && owner.connectionId !== connectionIdOf(p.connectionId)) throw new Error(`serve '${serveId}' does not belong to this connection`);
+        // 幂等：未知 serveId 也按成功处理（真实侧 rcd 可能已重启）。
+        mockServes.delete(serveId);
+        return { success: true };
+      }
+      case "files/serve/list": {
+        const wanted = connectionIdOf(p.connectionId);
+        return {
+          serves: [...mockServes.entries()]
+            .filter(([, row]) => row.connectionId === wanted)
+            .map(([serveId, row]) => ({ serveId, url: row.url, serveType: row.serveType })),
+        };
       }
       case "files/transfer/cancel": {
         if (typeof p.taskId !== "string") throw new Error("Invalid request parameters: taskId must be a string");
