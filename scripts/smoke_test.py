@@ -723,6 +723,7 @@ def run_s3_section(client: SidecarClient) -> None:
     bucket2 = os.environ.get("DBX_FILES_S3_BUCKET2")
     if bucket2:
         scenario_namespace_cross_bucket(runner, bucket, bucket2, endpoint, access, secret)
+    scenario_qiniu_alias(runner, bucket, endpoint, access, secret)
 
 
 def scenario_namespace_cross_bucket(runner: Runner, bucket: str, bucket2: str, endpoint: str, access: str, secret: str) -> None:
@@ -769,6 +770,48 @@ def scenario_namespace_cross_bucket(runner: Runner, bucket: str, bucket2: str, e
         stat = client.request("files/stat", {"connectionId": ns, "path": f"/{bucket}/ns-cross-2.txt"})
         assert stat["entry"]["size"] == len(b"cross-bucket"), f"same-bucket copy size mismatch: {stat}"
     runner.step("namespace-same-bucket-native-copy", _same_bucket_native_copy)
+
+
+def scenario_qiniu_alias(runner: Runner, bucket: str, endpoint: str, access: str, secret: str) -> None:
+    """qiniu 一级协议的实例覆盖：qiniu 只是 rclone s3 后端 provider=Qiniu 的
+    别名，这里把别名连接打在同一个 MinIO 实例上，证明 provider 映射、
+    path-style 签名与 bucket 留空=namespace 根的家族语义端到端可用。"""
+    client = runner.client
+    qn = "smoke-qiniu"
+    connect(client, qn, {
+        "protocol": "qiniu",
+        "bucket": "",
+        "endpoint": endpoint,
+        "access_key_id": access,
+    }, secrets={"secret_access_key": secret})
+    payload = base64.b64encode(b"qiniu-alias").decode()
+
+    def _namespace_root_lists_buckets():
+        entries = client.request("files/list", {"connectionId": qn, "path": "/"}).get("entries", [])
+        names = [entry["name"].rstrip("/") for entry in entries]
+        assert bucket in names, f"qiniu namespace root missing bucket: {names}"
+    runner.step("qiniu-namespace-root-lists-buckets", _namespace_root_lists_buckets)
+
+    def _upload_read_roundtrip():
+        client.request("files/write", {"connectionId": qn, "path": f"/{bucket}/qiniu-alias.txt", "dataBase64": payload})
+        result = client.request("files/read", {"connectionId": qn, "path": f"/{bucket}/qiniu-alias.txt"})
+        assert base64.b64decode(result["dataBase64"]) == b"qiniu-alias", "qiniu alias round-trip mismatch"
+    runner.step("qiniu-upload-read", _upload_read_roundtrip)
+
+    def _same_bucket_copy():
+        result = client.request("files/copy", {"connectionId": qn, "sourcePath": f"/{bucket}/qiniu-alias.txt", "targetPath": f"/{bucket}/qiniu-alias-2.txt"})
+        job_id = result.get("jobId")
+        if job_id:
+            state = wait_job(runner, job_id)
+            assert state == "completed", f"qiniu alias copy job ended as {state}"
+        stat = client.request("files/stat", {"connectionId": qn, "path": f"/{bucket}/qiniu-alias-2.txt"})
+        assert int(stat["entry"]["size"]) == len(b"qiniu-alias"), f"qiniu alias copy size mismatch: {stat}"
+    runner.step("qiniu-same-bucket-copy", _same_bucket_copy)
+
+    def _cleanup():
+        for path in (f"/{bucket}/qiniu-alias.txt", f"/{bucket}/qiniu-alias-2.txt"):
+            client.request("files/delete", {"connectionId": qn, "path": path})
+    runner.step("qiniu-cleanup", _cleanup)
 
 
 def run_sftp_section(client: SidecarClient) -> None:
