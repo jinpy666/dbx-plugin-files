@@ -63,6 +63,11 @@ pub enum SyncKind {
     /// report (missingOnSrc/missingOnDst/differ/error lists); differences
     /// are data, not a job failure.
     Check,
+    /// `sync/bisync`: bidirectional sync (rclone beta). Both paths are
+    /// written and deleted; the first ever run of a pair must be a resync.
+    /// Terminal event: [`SyncEvent::BisyncFinished`] with rclone's session
+    /// report (session name, workdir, log tail).
+    Bisync,
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +110,16 @@ pub struct SyncJobParams {
     /// Check-only: compare by downloading instead of trusting stored hashes
     /// (for backends whose hashes are unreliable or absent).
     pub check_download: bool,
+    /// Bisync-only: persistent state directory. rclone's default (its own
+    /// cache dir) outlives our temp config but is shared and unmanaged —
+    /// the wiring layer pins it under the plugin data dir instead.
+    pub bisync_workdir: Option<String>,
+    /// Bisync-only: first run of a pair (initializes listings; both sides
+    /// converge to the newer/asked-for side per `bisync_resync_mode`).
+    pub bisync_resync: bool,
+    /// Bisync-only resync conflict policy (`newer`/`older`/`larger`/…);
+    /// only sent alongside `bisync_resync`.
+    pub bisync_resync_mode: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -114,6 +129,11 @@ pub enum SyncEvent {
     /// Check jobs only: rclone's comparison report (`output` of the finished
     /// job). Fired instead of `Completed`; differences are not failures.
     CheckFinished { report: Value },
+    /// Bisync jobs only: rclone's session report (`output` of the finished
+    /// job — session name, workdir, log tail). `success` mirrors the job's
+    /// own flag: false means bisync aborted (caller extracts the ERROR
+    /// lines from the report log for a readable message).
+    BisyncFinished { report: Value, success: bool },
     Failed { message: String },
     Canceled,
 }
@@ -122,6 +142,7 @@ pub enum SyncEvent {
 pub struct SyncJobHandle {
     pub jobid: u64,
     pub group: String,
+    pub kind: SyncKind,
 }
 
 /// Job groups+ids marked stopped by [`stop_job`] and not yet consumed by
@@ -149,7 +170,7 @@ fn take_canceled(group: &str, jobid: u64) -> bool {
 /// reads `remote:/abs` as an absolute remote path — named-local remotes
 /// would list their CWD, see plan semantics #7); everything else joins
 /// with `/`.
-fn compose_fs(fs: &str, rel: &str) -> String {
+pub(crate) fn compose_fs(fs: &str, rel: &str) -> String {
     let rel = rel.trim_matches('/');
     if rel.is_empty() {
         return fs.to_string();
@@ -203,6 +224,7 @@ pub async fn start_job(
         SyncKind::Sync => "sync/sync",
         SyncKind::Move => "sync/move",
         SyncKind::Check => "operations/check",
+        SyncKind::Bisync => "sync/bisync",
     };
     let mut body = serde_json::json!({
         "srcFs": compose_fs(&params.src_fs, &params.src_rel),
@@ -270,6 +292,34 @@ pub async fn start_job(
             body["download"] = Value::Bool(true);
         }
     }
+    if params.kind == SyncKind::Bisync {
+        // Bisync names its sides path1/path2 (full fs strings, same shape
+        // the sync family composes). Params probed live against v1.75.1:
+        // `workdir`, `resync`, `resyncMode`, `dry_run` all honored.
+        let path1 = body["srcFs"].take();
+        let path2 = body["dstFs"].take();
+        body["path1"] = path1;
+        body["path2"] = path2;
+        if let Some(workdir) = params
+            .bisync_workdir
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            body["workdir"] = Value::String(workdir.to_string());
+        }
+        if params.bisync_resync {
+            body["resync"] = Value::Bool(true);
+            if let Some(mode) = params
+                .bisync_resync_mode
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                body["resyncMode"] = Value::String(mode.to_string());
+            }
+        }
+    }
     let response = client
         .call(method, &body)
         .await
@@ -283,7 +333,7 @@ pub async fn start_job(
     if let Ok(mut jobs) = canceled_jobs().lock() {
         jobs.remove(&(params.task_id.clone(), jobid));
     }
-    let handle = SyncJobHandle { jobid, group: params.task_id };
+    let handle = SyncJobHandle { jobid, group: params.task_id, kind: params.kind };
     let callback = Arc::new(Mutex::new(on_event));
     tokio::spawn(poll_job(client, handle.clone(), callback));
     Ok(handle)
@@ -383,6 +433,18 @@ async fn poll_job(
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .trim();
+                // Bisync jobs always answer with a session report — success
+                // or abort — so hand the decision to the caller.
+                if let Some(report) = status
+                    .get("output")
+                    .filter(|output| output.get("session").is_some())
+                {
+                    emit(SyncEvent::BisyncFinished {
+                        report: report.clone(),
+                        success: status.get("success").and_then(Value::as_bool).unwrap_or(false),
+                    });
+                    return;
+                }
                 // Check jobs carry their report in `output` (live-verified
                 // v1.75.1: missingOnSrc/missingOnDst/differ/error arrays +
                 // a human `status` line). Presence of the report beats the
@@ -425,6 +487,17 @@ async fn poll_job(
                 return;
             }
             Err(error) => {
+                // A FAILED bisync job can surface as a repeated rc error
+                // response (HTTP 500 with an `error` body) instead of a
+                // readable status record — treat that as the terminal abort
+                // signal rather than losing track of the job.
+                if handle.kind == SyncKind::Bisync && rc_error_body(&error).is_some() {
+                    emit(SyncEvent::BisyncFinished {
+                        report: Value::Object(serde_json::Map::new()),
+                        success: false,
+                    });
+                    return;
+                }
                 poll_errors += 1;
                 if poll_errors >= MAX_POLL_ERRORS {
                     emit(SyncEvent::Failed {
@@ -475,6 +548,16 @@ async fn reset_group_stats(client: &RcClient, handle: &SyncJobHandle) -> Result<
 /// `job not found` recognition: rcd answers HTTP 500 with a JSON error body
 /// for expired/unknown jobids; both that and a (theoretical) 200-with-error
 /// envelope map onto the same condition.
+/// Error-body text for structured rc failures (HTTP/JSON envelope), `None`
+/// for transport-level hiccups.
+fn rc_error_body(error: &RcError) -> Option<String> {
+    match error {
+        RcError::Http { body, .. } => Some(body.clone()),
+        RcError::Rclone { message } => Some(message.clone()),
+        _ => None,
+    }
+}
+
 fn is_job_not_found(error: &RcError) -> bool {
     let body = match error {
         RcError::Http { body, .. } => body.as_str(),
@@ -526,6 +609,7 @@ mod tests {
             match tokio::time::timeout(remaining, rx.recv()).await {
                 Ok(Some(event @ (SyncEvent::Completed { .. }
                 | SyncEvent::CheckFinished { .. }
+                | SyncEvent::BisyncFinished { .. }
                 | SyncEvent::Failed { .. }
                 | SyncEvent::Canceled))) => return (progress, event),
                 Ok(Some(event @ SyncEvent::Progress { .. })) => progress.push(event),
@@ -576,6 +660,9 @@ mod tests {
             retries: None,
             check_one_way: false,
             check_download: false,
+            bisync_workdir: None,
+            bisync_resync: false,
+            bisync_resync_mode: None,
         }
     }
 
@@ -912,6 +999,86 @@ mod tests {
         assert!(empty("missingOnDst") && empty("differ"), "identical overlap: {report}");
     }
 
+    /// Full bisync lifecycle against real rclone (live-verified v1.75.1):
+    /// resync initializes the pair, edits on BOTH sides converge on the next
+    /// run, and the state survives an rcd restart (workdir outlives the
+    /// temp config). The aborted run without prior state reports failure.
+    #[tokio::test]
+    async fn bisync_resync_run_and_restart_survival() {
+        let Some(binary) = resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let p1 = tempfile::tempdir().expect("p1");
+        let p2 = tempfile::tempdir().expect("p2");
+        let workdir = tempfile::tempdir().expect("workdir");
+        write_file(&p1.path().join("a.txt"), "one");
+        write_file(&p2.path().join("c.txt"), "three");
+        let workdir_s = workdir.path().to_string_lossy().into_owned();
+        let mut job = params(SyncKind::Bisync, p1.path(), p2.path());
+        job.src_rel = String::new();
+        job.bisync_workdir = Some(workdir_s.clone());
+
+        // A plain run without prior state must fail (needs resync first).
+        {
+            let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
+            let (on_event, mut rx) = event_channel();
+            let _handle = start_job(rcd.client(), job.clone(), on_event)
+                .await
+                .expect("start aborted bisync");
+            let (_progress, event) = wait_terminal(&mut rx).await;
+            let SyncEvent::BisyncFinished { success, .. } = event else {
+                panic!("expected BisyncFinished, got {event:?}");
+            };
+            assert!(!success, "first-ever run without resync must abort");
+        }
+
+        // Resync initializes the session, converging both sides.
+        let mut resync_job = job.clone();
+        resync_job.bisync_resync = true;
+        resync_job.bisync_resync_mode = Some("newer".to_string());
+        {
+            let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
+            let (on_event, mut rx) = event_channel();
+            let _handle = start_job(rcd.client(), resync_job, on_event)
+                .await
+                .expect("start resync");
+            let (_progress, event) = wait_terminal(&mut rx).await;
+            let SyncEvent::BisyncFinished { success, report } = event else {
+                panic!("expected BisyncFinished, got {event:?}");
+            };
+            assert!(success, "resync must succeed: {report:?}");
+            assert!(report.get("session").and_then(Value::as_str).is_some());
+        }
+        assert!(p1.path().join("c.txt").is_file(), "resync copies p2 → p1");
+        assert!(p2.path().join("a.txt").is_file(), "resync copies p1 → p2");
+
+        // State files landed in OUR workdir (not rclone's global cache).
+        let names = dir_names(workdir.path());
+        assert!(
+            names.iter().any(|name| name.ends_with(".path1.lst")),
+            "session listing must live in the pinned workdir: {names:?}"
+        );
+
+        // Kill the rcd and run again on a FRESH handle with edits on both
+        // sides — state must survive the restart and converge the changes.
+        let mut rcd = RcdHandle::start(&binary, None).await.expect("rcd respawn");
+        write_file(&p1.path().join("from-p1.txt"), "edited on p1");
+        write_file(&p2.path().join("from-p2.txt"), "edited on p2");
+        let (on_event, mut rx) = event_channel();
+        let _handle = start_job(rcd.client(), job.clone(), on_event)
+            .await
+            .expect("start incremental bisync");
+        let (_progress, event) = wait_terminal(&mut rx).await;
+        let SyncEvent::BisyncFinished { success, report } = event else {
+            panic!("expected BisyncFinished, got {event:?}");
+        };
+        assert!(success, "incremental run must succeed: {report:?}");
+        assert!(p1.path().join("from-p2.txt").is_file(), "p2 edit traveled to p1");
+        assert!(p2.path().join("from-p1.txt").is_file(), "p1 edit traveled to p2");
+        drop(rcd);
+    }
+
     /// `core/bwlimit` set + read roundtrip on the shared rcd (live-verified
     /// shape: the response echoes the canonical rate string, "off" clears).
     #[tokio::test]
@@ -985,7 +1152,11 @@ mod tests {
         assert_eq!(status.get("group").and_then(Value::as_str), Some(handle.group.as_str()));
 
         // Unknown/expired jobid → None, not Err.
-        let ghost = SyncJobHandle { jobid: i64::MAX as u64, group: "ghost".to_string() };
+        let ghost = SyncJobHandle {
+            jobid: i64::MAX as u64,
+            group: "ghost".to_string(),
+            kind: SyncKind::Copy,
+        };
         assert_eq!(query_status(&rcd.client(), &ghost).await.expect("query ghost"), None);
     }
 }

@@ -17,13 +17,17 @@ export interface SyncDialogOptions {
   transfers: number | null;
   checkers: number | null;
   retries: number | null;
+  /** 双向同步：本次是否以 resync 模式初始化/修复（破坏性）。 */
+  bisyncResync: boolean;
 }
 
 const props = defineProps<{
   t: (key: string, values?: Record<string, string | number>) => string;
-  kind: "syncDir" | "copyDir";
+  kind: "syncDir" | "copyDir" | "bisync";
   sourcePath: string;
   defaultTarget: string;
+  /** 双向同步状态：null = 查询中；"new" = 首次（必须 resync）；"synced" = 增量。 */
+  bisyncState?: "synced" | "new" | null;
 }>();
 
 const emit = defineEmits<{
@@ -35,6 +39,9 @@ const t = (key: string, values?: Record<string, string | number>) => props.t(key
 
 const targetPath = ref(props.defaultTarget);
 const dryRun = ref(false);
+const bisyncResync = ref(false);
+// 首次运行（无状态）：resync 是唯一入口，直接勾上且不可取消。
+if (props.kind === "bisync" && props.bisyncState === "new") bisyncResync.value = true;
 const include = ref("");
 const exclude = ref("");
 const backupDir = ref("");
@@ -73,6 +80,7 @@ function confirm() {
     transfers: parseCount(transfers.value, 1, 32),
     checkers: parseCount(checkers.value, 1, 64),
     retries: parseCount(retries.value, 1, 10),
+    bisyncResync: props.kind === "bisync" ? bisyncResync.value : false,
   });
 }
 </script>
@@ -81,10 +89,20 @@ function confirm() {
   <div class="wb-mount-backdrop" role="dialog" aria-modal="true" :aria-label="t('syncOptionsTitle')" @click.self="emit('close')">
     <div class="wb-mount-dialog wb-sync-dialog">
       <header>
-        <strong>{{ kind === "syncDir" ? t("transferKind.syncDir") : t("transferKind.copyDir") }}</strong>
+        <strong>{{ kind === "bisync" ? t("transferKind.bisync") : kind === "syncDir" ? t("transferKind.syncDir") : t("transferKind.copyDir") }}</strong>
         <button class="wb-icon-button wb-icon-neutral" v-tip="t('close')" @click="emit('close')"><X /></button>
       </header>
-      <p class="wb-mount-hint">{{ kind === "syncDir" ? t("syncDirBody") : t("copyDirBody") }}</p>
+      <p v-if="kind === 'bisync'" class="wb-mount-hint">{{ t("bisyncBetaWarn") }}</p>
+      <p v-else class="wb-mount-hint">{{ kind === "syncDir" ? t("syncDirBody") : t("copyDirBody") }}</p>
+
+      <template v-if="kind === 'bisync'">
+        <label class="wb-sync-check">
+          <input v-model="bisyncResync" type="checkbox" :disabled="bisyncState === 'new'" />
+          <span>{{ t("bisyncResyncLabel") }}</span>
+        </label>
+        <p v-if="bisyncState === 'new'" class="wb-mount-hint">{{ t("bisyncFirstRun") }}</p>
+        <p v-if="bisyncResync" class="wb-mount-hint">{{ t("bisyncResyncWarn") }}</p>
+      </template>
 
       <label class="wb-mount-field">
         <span>{{ t("syncSourceLabel") }}</span>
@@ -101,7 +119,7 @@ function confirm() {
       </label>
       <p v-if="dryRun" class="wb-mount-hint">{{ t("syncDryRunHint") }}</p>
 
-      <div class="wb-sync-grid">
+      <div v-if="kind !== 'bisync'" class="wb-sync-grid">
         <label class="wb-mount-field">
           <span>{{ t("syncIncludeLabel") }}</span>
           <input v-model="include" class="wb-mono" spellcheck="false" :placeholder="t('syncIncludePlaceholder')" />
@@ -121,7 +139,7 @@ function confirm() {
       </div>
       <p class="wb-mount-hint">{{ t("syncBackupDirHint") }}</p>
 
-      <button type="button" class="wb-sync-advanced-toggle" @click="advancedOpen = !advancedOpen">
+      <button v-if="kind !== 'bisync'" type="button" class="wb-sync-advanced-toggle" @click="advancedOpen = !advancedOpen">
         {{ advancedOpen ? t("syncAdvancedHide") : t("syncAdvancedShow") }}
       </button>
       <div v-show="advancedOpen" class="wb-sync-grid">

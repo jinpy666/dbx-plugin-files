@@ -150,6 +150,34 @@ describe("advanced ops UI", () => {
     expect(wrapper!.find(".wb-notice").text()).toContain(workbenchMessage("en", "cleanupDone"));
   });
 
+  it("opens the two-way sync dialog and starts a bisync job", async () => {
+    mountWorkbench();
+    await settle();
+    const spy = stubInvoke((method) => {
+      if (method === "files/bisync/state") return { session: "mock-pair", state: "synced" };
+      if (method === "files/bisync/start") return { jobId: "job-bisync-1" };
+      return undefined;
+    });
+    await openEntryMenu(dirEntry);
+    await menuItem(workbenchMessage("en", "bisyncMenu"))!.trigger("click");
+    await settle();
+    const dialog = () => wrapper!.find(".wb-sync-dialog");
+    expect(dialog().exists()).toBe(true);
+    expect(dialog().text()).toContain(workbenchMessage("en", "bisyncBetaWarn"));
+    // 已有状态：resync 默认关，确认时也不带 mode=resync。
+    expect(spy).toHaveBeenCalledWith("files/bisync/state", expect.objectContaining({ sourcePath: "/docs" }), undefined);
+    await dialog().find(".wb-dialog-primary").trigger("click");
+    await settle();
+    expect(spy).toHaveBeenCalledWith(
+      "files/bisync/start",
+      expect.objectContaining({ sourcePath: "/docs", targetPath: expect.any(String) }),
+      undefined,
+    );
+    const params = spy.mock.calls.find(([method]) => method === "files/bisync/start")?.[1] ?? {};
+    expect(params).not.toHaveProperty("mode");
+    expect(wrapper!.find(".wb-notice").text()).toContain(workbenchMessage("en", "bisyncStarted"));
+  });
+
   it("renders the remote usage footer from files/about", async () => {
     mountWorkbench();
     await settle();

@@ -7,7 +7,7 @@ import { formatBytes } from "./api";
 
 export type TransferState = "queued" | "running" | "completed" | "failed" | "canceled";
 
-export type TransferKind = "upload" | "download" | "copyDir" | "syncDir" | "copy" | "move" | "rename" | "extract" | "compress" | "delete" | "check";
+export type TransferKind = "upload" | "download" | "copyDir" | "syncDir" | "copy" | "move" | "rename" | "extract" | "compress" | "delete" | "check" | "bisync";
 
 export interface TransferPathParts {
   parent: string;

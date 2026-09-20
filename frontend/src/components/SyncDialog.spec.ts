@@ -63,6 +63,7 @@ describe("SyncDialog", () => {
       transfers: 32,
       checkers: null,
       retries: 1,
+      bisyncResync: false,
     });
     wrapper.unmount();
   });
@@ -79,3 +80,37 @@ describe("SyncDialog", () => {
     wrapper.unmount();
   });
 });
+
+describe("SyncDialog bisync mode", () => {
+  function bisyncDialog(state: "synced" | "new" | null) {
+    return mount(SyncDialog, {
+      props: {
+        t,
+        kind: "bisync" as const,
+        sourcePath: "/docs",
+        defaultTarget: "/mirror/docs",
+        bisyncState: state,
+      },
+    });
+  }
+
+  it("shows the beta warning; first runs force resync on and locked", async () => {
+    const first = bisyncDialog("new");
+    expect(first.text()).toContain(workbenchMessage("en", "bisyncBetaWarn"));
+    expect(first.text()).toContain(workbenchMessage("en", "bisyncFirstRun"));
+    const checkbox = first.find('input[type="checkbox"]');
+    expect((checkbox.element as HTMLInputElement).checked).toBe(true);
+    expect(checkbox.attributes("disabled")).toBeDefined();
+    await first.find(".wb-dialog-primary").trigger("click");
+    const payload = first.emitted("confirm")?.[0]?.[0] as Record<string, unknown>;
+    expect(payload.bisyncResync).toBe(true);
+    first.unmount();
+
+    // 已有状态：resync 默认关、可勾选。
+    const incremental = bisyncDialog("synced");
+    const box = incremental.find('input[type="checkbox"]');
+    expect((box.element as HTMLInputElement).checked).toBe(false);
+    expect(box.attributes("disabled")).toBeUndefined();
+    incremental.unmount();
+  });
+})

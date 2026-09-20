@@ -694,6 +694,38 @@ pub struct HashsumRequest {
     pub hash_type: Option<String>,
 }
 
+/// `files/bisync/start`：双向同步作业。`mode` 缺省 `run`（增量双向）；
+/// `resync` 为首次/修复初始化（按 `resyncMode` 决定冲突侧，默认 newer，
+/// 破坏性——两侧都收敛到所选基准）。状态文件持久化在插件数据目录的
+/// `bisync-workdir/` 下，跨 rcd 重启存活。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BisyncStartRequest {
+    pub source_connection_id: String,
+    pub source_path: String,
+    pub target_connection_id: String,
+    pub target_path: String,
+    /// `run`（缺省）| `resync`。
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// resync 冲突策略：`newer`（缺省）/`older`/`larger`/`smaller`/`path1`/`path2`。
+    #[serde(default)]
+    pub resync_mode: Option<String>,
+    #[serde(default)]
+    pub dry_run: Option<bool>,
+}
+
+/// `files/bisync/state`：查询路径对是否已有双向同步状态（决定 UI 提示首次
+/// 需要 resync）。按 rclone 的 session 命名规则在 workdir 下检查。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BisyncStateRequest {
+    pub source_connection_id: String,
+    pub source_path: String,
+    pub target_connection_id: String,
+    pub target_path: String,
+}
+
 /// `files/cleanup`：清空远端回收站（fs 级动作，本地 fs 会拒绝）。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

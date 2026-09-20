@@ -554,6 +554,21 @@ export function installMockHost() {
         recordAudit(method, source, sourceId);
         return { success: true, transport: "native", jobId: null };
       }
+      case "files/bisync/state": {
+        // mock：默认视为已有同步状态；URL 带 bisyncNew=1 时返回首次态。
+        const isNew = new URLSearchParams(window.location.search).has("bisyncNew");
+        return { session: "mock-pair", state: isNew ? "new" : "synced" };
+      }
+      case "files/bisync/start": {
+        const bs = str("sourcePath");
+        const bt = str("targetPath");
+        assertOk(bs);
+        const bJobId = `mock-job-${++jobSeq}`;
+        const bCancel = { flag: false };
+        jobs.set(`__cancel_${bJobId}`, bCancel as unknown as Record<string, unknown>);
+        runJob(bJobId, "bisync", bs, bt, () => {}, bCancel, connectionIdOf(p.sourceConnectionId ?? p.connectionId), connectionIdOf(p.targetConnectionId ?? p.connectionId));
+        return { jobId: bJobId };
+      }
       case "files/about": {
         // 本地内存树的假容量：按条目数粗略估算，让侧栏占用条有东西可渲染。
         const aboutId = connectionIdOf(p.connectionId);

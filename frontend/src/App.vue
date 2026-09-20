@@ -90,6 +90,8 @@ type MenuAction =
   | "computeSize" | "copyPublicLink"
   // rclone 深度能力：SUM 校验文件 / 清理空目录 / 目录内容比对（files/check）
   | "hashsum" | "rmdirs" | "checkDir"
+  // rclone 双向同步（sync/bisync，beta）
+  | "bisyncDir"
   // 本地挂载（docs/MOUNT.zh-CN.md M1）：rclone mount 优先，WebDAV 网关兜底
   | "mountLocal"
   // 批量（多选右键，P-FILES 压缩轮）
@@ -384,7 +386,7 @@ function transferRequest(id: string, method: string, params: Record<string, unkn
       ...params,
       connectionId: id,
       // DirJobRequest 不接受 connectionId 作为源/目标连接的默认值。
-      ...(method === "files/copyDir" || method === "files/syncDir" || method === "files/check" ? { sourceConnectionId: id, targetConnectionId: id } : {}),
+      ...(method === "files/copyDir" || method === "files/syncDir" || method === "files/check" || method === "files/bisync/start" ? { sourceConnectionId: id, targetConnectionId: id } : {}),
     },
   };
 }
@@ -1261,7 +1263,7 @@ function startDelete(targets: FileEntry[], side: PaneSide = "left") {
   });
 }
 
-function startDirJob(kind: "syncDir" | "copyDir", entry: FileEntry, side: PaneSide) {
+function startDirJob(kind: "syncDir" | "copyDir" | "bisync", entry: FileEntry, side: PaneSide) {
   const defaultTarget = joinPath("/", `${baseName(entry.path) || "copy"}`);
   // 同步选项走独立顶层 SyncDialog（dry-run/过滤/备份/并发参数），连接在打开
   // 时固化——双栏下右键动作挂该栏连接，而不是活动栏。
@@ -1271,16 +1273,41 @@ function startDirJob(kind: "syncDir" | "copyDir", entry: FileEntry, side: PaneSi
   syncDialogDraft.value = defaultTarget;
   syncDialogSourceConnectionId.value = sideConnectionId(side) ?? connectionId.value;
   syncDialogOpen.value = true;
+  // 双向同步：先查路径对状态（决定 resync 引导），查完前 state 为 null。
+  if (kind === "bisync") {
+    const source = entry;
+    const target = defaultTarget;
+    const id = syncDialogSourceConnectionId.value;
+    syncDialogBisyncState.value = null;
+    void call<{ state: "synced" | "new" }>("files/bisync/state", {
+      connectionId: id,
+      sourceConnectionId: id,
+      targetConnectionId: id,
+      sourcePath: source.path,
+      targetPath: target,
+    })
+      .then((result) => {
+        if (syncDialogOpen.value && syncDialogEntry.value?.path === source.path) {
+          syncDialogBisyncState.value = result.state;
+        }
+      })
+      .catch(() => {
+        if (syncDialogOpen.value) syncDialogBisyncState.value = "new";
+      });
+  } else {
+    syncDialogBisyncState.value = null;
+  }
 }
 
 // ---- 目录同步/复制（独立顶层弹窗 SyncDialog）--------------------------------
 const syncDialogOpen = ref(false);
-const syncDialogKind = ref<"syncDir" | "copyDir">("syncDir");
+const syncDialogKind = ref<"syncDir" | "copyDir" | "bisync">("syncDir");
 const syncDialogEntry = ref<FileEntry | null>(null);
 const syncDialogSide = ref<PaneSide>("right");
 const syncDialogDraft = ref("");
 const syncDialogSourceConnectionId = ref("");
 const syncDialogBusy = ref(false);
+const syncDialogBisyncState = ref<"synced" | "new" | null>(null);
 
 function closeSyncDialog() {
   syncDialogOpen.value = false;
@@ -1298,9 +1325,11 @@ async function onSyncDialogConfirm(options: SyncDialogOptions) {
   const id = syncDialogSourceConnectionId.value;
   let jobStarted = false;
   try {
-    const retry = transferRequest(id, `files/${kind}`, {
+    const method = kind === "bisync" ? "files/bisync/start" : `files/${kind}`;
+    const retry = transferRequest(id, method, {
       sourcePath: entry.path,
       targetPath: options.targetPath,
+      ...(kind === "bisync" && options.bisyncResync ? { mode: "resync", resyncMode: "newer" } : {}),
       ...(options.dryRun ? { dryRun: true } : {}),
       ...(options.include.length ? { include: options.include } : {}),
       ...(options.exclude.length ? { exclude: options.exclude } : {}),
@@ -1312,12 +1341,16 @@ async function onSyncDialogConfirm(options: SyncDialogOptions) {
     });
     const result = await call<{ jobId: string }>(retry.method, retry.params);
     if (result.jobId) {
-      trackSidecarJob(result.jobId, kind, `${entry.path} → ${options.targetPath}`, retry);
+      trackSidecarJob(result.jobId, kind === "bisync" ? "bisync" : kind, `${entry.path} ⇄ ${options.targetPath}`, retry);
     }
     jobStarted = true;
     closeSyncDialog();
     refreshAuditPanel();
-    showNotice(t(options.dryRun ? "syncDryRunStarted" : "jobStarted", { name: baseName(options.targetPath) }));
+    showNotice(
+      kind === "bisync"
+        ? t("bisyncStarted")
+        : t(options.dryRun ? "syncDryRunStarted" : "jobStarted", { name: baseName(options.targetPath) }),
+    );
   } catch (cause) {
     showError(cause);
   } finally {
@@ -2348,6 +2381,9 @@ function menuAction(action: MenuAction) {
     case "rmdirs":
       void runRmdirs(entry, side);
       break;
+    case "bisyncDir":
+      startDirJob("bisync", entry, side);
+      break;
     case "checkDir":
       openConfirm("check", {
         title: { key: "checkTitle", values: { path: baseName(entry.path) || entry.path } },
@@ -3168,6 +3204,7 @@ onBeforeUnmount(() => {
       :kind="syncDialogKind"
       :source-path="syncDialogEntry?.path ?? ''"
       :default-target="syncDialogDraft"
+      :bisync-state="syncDialogBisyncState"
       @close="closeSyncDialog"
       @confirm="onSyncDialogConfirm"
     />
@@ -3297,6 +3334,7 @@ onBeforeUnmount(() => {
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('hashsum')"><FileCheck /> {{ t("hashsumMenu") }}</button>
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('rmdirs')"><FolderMinus /> {{ t("rmdirsMenu") }}</button>
         <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('checkDir')"><Scale /> {{ t("checkDirMenu") }}</button>
+        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('bisyncDir')"><ArrowRightLeft /> {{ t("bisyncMenu") }}</button>
         <button v-if="canUseMount && contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('mountLocal')"><HardDrive /> {{ t("mountToLocal") }}</button>
         <button v-if="canWrite" role="menuitem" @click="menuAction('compress')"><FileArchive /> {{ t("compress") }}</button>
         <hr />

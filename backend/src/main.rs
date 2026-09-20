@@ -1078,6 +1078,48 @@ impl Plugin {
                 self.audit_id(&request.connection_id, "files/rmdirs", &request.path, "ok")?;
                 Ok(json!({ "success": true }))
             }
+            "files/bisync/start" => {
+                let request: model::BisyncStartRequest = parse(params)?;
+                let job_id = rclone_start_bisync_job(
+                    Arc::clone(&self.rclone),
+                    Arc::clone(&self.sync_jobs),
+                    Arc::clone(&self.store),
+                    &request,
+                    Some(emitter),
+                )
+                .await?;
+                Ok(json!({ "jobId": job_id }))
+            }
+            "files/bisync/state" => {
+                let request: model::BisyncStateRequest = parse(params)?;
+                let source_binding = self.rclone.binding(&request.source_connection_id)?;
+                let target_binding = self.rclone.binding(&request.target_connection_id)?;
+                let src_rel = rclone_gate(
+                    &source_binding.root,
+                    source_binding.lock_to_root,
+                    &request.source_path,
+                    crate::policy::PathPolicy::check_read,
+                )?;
+                let dst_rel = rclone_gate(
+                    &target_binding.root,
+                    target_binding.lock_to_root,
+                    &request.target_path,
+                    crate::policy::PathPolicy::check_read,
+                )?;
+                let session = bisync_session_name(
+                    &rclone::sync::compose_fs(&rclone::call_fs(&source_binding), &src_rel),
+                    &rclone::sync::compose_fs(&rclone::call_fs(&target_binding), &dst_rel),
+                );
+                let marker = self
+                    .store
+                    .data_dir()
+                    .join("bisync-workdir")
+                    .join(format!("{session}.path1.lst"));
+                Ok(json!({
+                    "session": session,
+                    "state": if marker.exists() { "synced" } else { "new" },
+                }))
+            }
             // ------------------------------------------------------------------
             // Local mounts (docs/MOUNT.zh-CN.md, M1): rclone mount first,
             // read-only WebDAV gateway fallback. `mount/mod.rs` owns the
@@ -1143,6 +1185,7 @@ impl Plugin {
                         .map(|handle| rclone::sync::SyncJobHandle {
                             jobid: handle.jobid,
                             group: handle.group.clone(),
+                            kind: handle.kind,
                         })
                 };
                 if let (Some(handle), Some(record)) = (handle, {
@@ -1360,6 +1403,7 @@ impl Plugin {
                                             rclone::sync::SyncJobHandle {
                                                 jobid: handle.jobid,
                                                 group: handle.group.clone(),
+                                                kind: handle.kind,
                                             },
                                             record.src_conn.clone(),
                                         )))
@@ -1984,6 +2028,9 @@ struct RcloneSyncRecord {
     /// Check jobs: one-line difference summary from the terminal report
     /// (`None` while running and for sync/copy/move jobs).
     check_summary: Option<String>,
+    /// Bisync jobs: rclone session name from the terminal report (`p1..p2`),
+    /// used to stamp the last-synced pref on success.
+    bisync_session: Option<String>,
     /// In-flight marker for the source connection's proxy group: dropped
     /// with the record on terminal removal, releasing the idle-group
     /// teardown hold. Clones share the guard's done flag.
@@ -2075,6 +2122,7 @@ async fn rclone_start_dir_job(
         files_done: 0,
         files_total: None,
         check_summary: None,
+        bisync_session: None,
         // Source and target share one proxy group (enforced above), so the
         // source group's key tracks the rcd the job runs on.
         work: rclone.start_work(&rclone::registry::group_key_of(
@@ -2228,6 +2276,7 @@ async fn rclone_start_dir_job(
             }
             // Dir jobs never emit the check report; exhaustive match only.
             rclone::sync::SyncEvent::CheckFinished { .. } => {}
+            rclone::sync::SyncEvent::BisyncFinished { .. } => {}
         });
     // Plan finding #11: the transfer client drops the wall-clock
     // timeout — long mirror runs would die inside the 30s default.
@@ -2255,6 +2304,9 @@ async fn rclone_start_dir_job(
             retries: request.retries,
             check_one_way: false,
             check_download: false,
+            bisync_workdir: None,
+            bisync_resync: false,
+            bisync_resync_mode: None,
         },
         on_event,
     )
@@ -2332,6 +2384,7 @@ async fn rclone_start_check_job(
         files_done: 0,
         files_total: None,
         check_summary: None,
+        bisync_session: None,
         work: rclone.start_work(&rclone::registry::group_key_of(
             source_binding.proxy.as_ref(),
         )),
@@ -2395,6 +2448,8 @@ async fn rclone_start_check_job(
                     None,
                 );
             }
+            // Check jobs never emit bisync reports; exhaustive match only.
+            rclone::sync::SyncEvent::BisyncFinished { .. } => {}
         });
     let started = rclone::sync::start_job(
         rclone.client_for_binding(&source_binding).await?.transfer_client(),
@@ -2416,6 +2471,252 @@ async fn rclone_start_check_job(
             retries: None,
             check_one_way: request.one_way.unwrap_or(false),
             check_download: request.download.unwrap_or(false),
+            bisync_workdir: None,
+            bisync_resync: false,
+            bisync_resync_mode: None,
+        },
+        on_event,
+    )
+    .await;
+    match started {
+        Ok(handle) => {
+            if let Some(record) = rclone_lock(&sync_jobs).get_mut(&job_id) {
+                record.handle = Some(handle);
+            }
+        }
+        Err(error) => {
+            rclone_lock(&rclone.jobs).remove(&job_id);
+            rclone_lock(&sync_jobs).remove(&job_id);
+            return Err(error);
+        }
+    }
+    Ok(job_id)
+}
+
+/// rclone bisync session name for a path pair (sanitize rule pinned against
+/// v1.75.1 probes: leading `/` dropped, everything outside
+/// `[A-Za-z0-9._-]` → `_`, joined with `..`).
+fn bisync_session_name(path1: &str, path2: &str) -> String {
+    fn sanitize(path: &str) -> String {
+        path.trim_start_matches('/')
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' })
+            .collect()
+    }
+    format!("{}..{}", sanitize(path1), sanitize(path2))
+}
+
+/// Extracts a readable failure hint from a bisync abort log (the last
+/// `ERROR :` line, ANSI stripped). Falls back to the raw error text.
+fn bisync_failure_message(report: &Value, fallback: &str) -> String {
+    let log = report
+        .get("output")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let last_error = log
+        .lines()
+        .filter(|line| line.contains("ERROR :"))
+        .next_back()
+        .map(|line| {
+            let cleaned: String = line
+                .chars()
+                .filter(|c| !c.is_control())
+                .collect::<String>()
+                .replace("[31m", "")
+                .replace("[32m", "")
+                .replace("[0m", "");
+            cleaned.trim().to_string()
+        });
+    match last_error {
+        Some(line) if !line.is_empty() => {
+            if line.contains("Must run --resync") {
+                format!("{line} (run the comparison/sync again in resync mode to recover)")
+            } else {
+                line
+            }
+        }
+        _ => fallback.to_string(),
+    }
+}
+
+/// Starts one `sync/bisync` job (`files/bisync/start`): bidirectional sync
+/// over the shared job mirror. State files live under
+/// `<data dir>/bisync-workdir/` so sessions survive rcd respawns and sidecar
+/// restarts; a successful run stamps `bisyncLast.<session>` in prefs.
+async fn rclone_start_bisync_job(
+    rclone: Arc<rclone::RcloneEngine>,
+    sync_jobs: Arc<std::sync::Mutex<HashMap<String, RcloneSyncRecord>>>,
+    store: Arc<Store>,
+    request: &model::BisyncStartRequest,
+    emitter: Option<&PluginEmitter>,
+) -> Result<String, String> {
+    let source_binding = rclone.binding(&request.source_connection_id)?;
+    let target_binding = rclone.binding(&request.target_connection_id)?;
+    rclone::ensure_same_proxy_group(&source_binding, &target_binding)?;
+    // Bisync writes AND deletes on both sides.
+    ensure_binding_writable(&source_binding)?;
+    ensure_binding_deletable(&source_binding)?;
+    ensure_binding_writable(&target_binding)?;
+    ensure_binding_deletable(&target_binding)?;
+    let src_rel = rclone_gate(
+        &source_binding.root,
+        source_binding.lock_to_root,
+        &request.source_path,
+        crate::policy::PathPolicy::check_write,
+    )?;
+    let dst_rel = rclone_gate(
+        &target_binding.root,
+        target_binding.lock_to_root,
+        &request.target_path,
+        crate::policy::PathPolicy::check_write,
+    )?;
+    // Persistent state dir (best-effort create; rclone recreates as needed).
+    let workdir = store.data_dir().join("bisync-workdir");
+    if let Err(error) = std::fs::create_dir_all(&workdir) {
+        eprintln!("[io.dbx.files] bisync workdir create failed: {error}");
+    }
+    let resync = request.mode.as_deref().map(str::trim) == Some("resync");
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let job = transfers::TransferJob {
+        task_id: job_id.clone(),
+        connection_id: request.source_connection_id.clone(),
+        kind: transfers::TransferKind::Upload, // placeholder; projected via dir_job_value
+        remote_path: request.source_path.clone(),
+        total_bytes: None,
+        transferred_bytes: 0,
+        status: transfers::JobStatus::Queued,
+        error: None,
+        started_at: Some(store::unix_millis_now()),
+        finished_at: None,
+        local_path: None,
+    };
+    rclone_lock(&rclone.jobs).insert(job_id.clone(), job);
+    let record = RcloneSyncRecord {
+        handle: None,
+        kind: rclone::sync::SyncKind::Bisync,
+        src_conn: request.source_connection_id.clone(),
+        src_rel: src_rel.clone(),
+        dst_conn: request.target_connection_id.clone(),
+        dst_rel: dst_rel.clone(),
+        dry_run: request.dry_run.unwrap_or(false),
+        max_delete: None,
+        files_done: 0,
+        files_total: None,
+        check_summary: None,
+        bisync_session: None,
+        work: rclone.start_work(&rclone::registry::group_key_of(
+            source_binding.proxy.as_ref(),
+        )),
+    };
+    rclone_lock(&sync_jobs).insert(job_id.clone(), record);
+
+    let engine = Arc::clone(&rclone);
+    let shared_jobs = Arc::clone(&sync_jobs);
+    let event_emitter = emitter.cloned();
+    let event_job_id = job_id.clone();
+    let prefs_store = Arc::clone(&store);
+    let on_event: Box<dyn FnMut(rclone::sync::SyncEvent) + Send> =
+        Box::new(move |event| match event {
+            rclone::sync::SyncEvent::BisyncFinished { report, success } => {
+                let session = report
+                    .get("session")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                if let Some(session) = &session {
+                    if let Some(record) = rclone_lock(&shared_jobs).get_mut(&event_job_id) {
+                        record.bisync_session = Some(session.clone());
+                    }
+                    // Stamp last-synced time per session (success only).
+                    if success {
+                        let mut prefs = prefs_store.load_prefs();
+                        if let Some(object) = prefs.as_object_mut() {
+                            object.insert(
+                                format!("bisyncLast.{session}"),
+                                json!(store::unix_millis_now()),
+                            );
+                        }
+                        let _ = prefs_store.save_prefs(&prefs);
+                    }
+                }
+                let terminal = if success {
+                    (transfers::JobStatus::Completed, None)
+                } else {
+                    (
+                        transfers::JobStatus::Failed,
+                        Some(bisync_failure_message(&report, "bisync aborted")),
+                    )
+                };
+                rclone_sync_terminal(
+                    &engine.jobs,
+                    &shared_jobs,
+                    event_emitter.as_ref(),
+                    &event_job_id,
+                    terminal.0,
+                    terminal.1,
+                    None,
+                );
+            }
+            rclone::sync::SyncEvent::Completed { .. } => {
+                rclone_sync_terminal(
+                    &engine.jobs,
+                    &shared_jobs,
+                    event_emitter.as_ref(),
+                    &event_job_id,
+                    transfers::JobStatus::Completed,
+                    None,
+                    None,
+                );
+            }
+            rclone::sync::SyncEvent::Progress { .. } => {}
+            // Check jobs never emit bisync reports; exhaustive match only.
+            rclone::sync::SyncEvent::CheckFinished { .. } => {}
+            rclone::sync::SyncEvent::BisyncFinished { .. } => {}
+            rclone::sync::SyncEvent::Failed { message } => {
+                rclone_sync_terminal(
+                    &engine.jobs,
+                    &shared_jobs,
+                    event_emitter.as_ref(),
+                    &event_job_id,
+                    transfers::JobStatus::Failed,
+                    Some(message),
+                    None,
+                );
+            }
+            rclone::sync::SyncEvent::Canceled => {
+                rclone_sync_terminal(
+                    &engine.jobs,
+                    &shared_jobs,
+                    event_emitter.as_ref(),
+                    &event_job_id,
+                    transfers::JobStatus::Canceled,
+                    None,
+                    None,
+                );
+            }
+        });
+    let started = rclone::sync::start_job(
+        rclone.client_for_binding(&source_binding).await?.transfer_client(),
+        rclone::sync::SyncJobParams {
+            task_id: job_id.clone(),
+            kind: rclone::sync::SyncKind::Bisync,
+            src_fs: rclone::call_fs(&source_binding),
+            dst_fs: rclone::call_fs(&target_binding),
+            src_rel,
+            dst_rel,
+            dry_run: request.dry_run.unwrap_or(false),
+            max_delete: None,
+            include: None,
+            exclude: None,
+            backup_dir_rel: None,
+            suffix: None,
+            transfers: None,
+            checkers: None,
+            retries: None,
+            check_one_way: false,
+            check_download: false,
+            bisync_workdir: Some(workdir.to_string_lossy().into_owned()),
+            bisync_resync: resync,
+            bisync_resync_mode: request.resync_mode.clone(),
         },
         on_event,
     )
@@ -2543,6 +2844,7 @@ fn rclone_sync_event_from(job: &transfers::TransferJob, record: &RcloneSyncRecor
             rclone::sync::SyncKind::Copy => "copyDir",
             rclone::sync::SyncKind::Move => "moveDir",
             rclone::sync::SyncKind::Check => "check",
+            rclone::sync::SyncKind::Bisync => "bisync",
         },
         "remotePath": job.remote_path,
     });
@@ -2573,6 +2875,7 @@ fn rclone_sync_dir_job_value(job: &transfers::TransferJob, record: &RcloneSyncRe
             rclone::sync::SyncKind::Copy => "copyDir",
             rclone::sync::SyncKind::Move => "moveDir",
             rclone::sync::SyncKind::Check => "check",
+            rclone::sync::SyncKind::Bisync => "bisync",
         },
         "filesDone": record.files_done,
         "filesTotal": record.files_total,
@@ -3476,6 +3779,16 @@ mod tests {
         assert_eq!(hydrated.status, transfers::JobStatus::Completed);
         assert_eq!(hydrated.kind, transfers::TransferKind::Download);
         assert_eq!(hydrated.total_bytes, Some(11));
+    }
+
+    #[test]
+    fn bisync_session_name_matches_rclone_sanitization() {
+        // Live-verified v1.75.1 session names for these shapes.
+        assert_eq!(
+            bisync_session_name("/tmp/rc-bisync/p1", "/tmp/rc-bisync/p2"),
+            "tmp_rc-bisync_p1..tmp_rc-bisync_p2"
+        );
+        assert_eq!(bisync_session_name("bx:p1", "bx:p2"), "bx_p1..bx_p2");
     }
 
     #[test]
