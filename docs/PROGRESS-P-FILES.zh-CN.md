@@ -1807,3 +1807,46 @@ cargo-zigbuild 低 glibc 基线 + `CGO_ENABLED=0`；`validate_artifact_set.py`
 `scripts/build.sh` 的 `~/.cargo/bin` PATH 前置改条件式（防压回 CI 包装
 器）。详见上层仓 `docs/CI_MULTI_PLATFORM.zh-CN.md`「Linux glibc 基线」节
 与 ssh PROGRESS 同日条目。
+
+## 连接表单通用后端一等字段 + 选项校验（2026-09-20）
+
+用户复核指出：通用 rclone 后端此前只有一颗裸 JSON 输入框（`config` 即整个
+参数集），无提示、无校验；且 gphotos/oos 两个协议在捆绑引擎（v1.75.1-dbx.1
+`config providers`）中根本不存在，选了必坏。本轮收口：
+
+- **通用后端一等字段**：endpoint/username/password/share/access-key 对/
+  OAuth 四件套按 rclone 选项语义扩展到通用后端（如 mega/oclouddrive 的
+  user+pass、b2 的 account+key、qingstor 的 AK/SK+endpoint），新增密钥绑定的
+  `token` 字段（fichier/filelu/pixeldrain/quatrix/shade/ulozto/linkbox/storj/
+  filen/filefabric 的 API key/令牌）。映射表 `GENERIC_FIELD_MAP` 全部对齐
+  providers 元数据；结构化字段为非空时覆盖 JSON 同名键。40/50 个通用后端
+  不再必须手写 JSON。
+- **选项校验**：sidecar 内嵌精简 providers 表（`providers_v1.75.1.json`，
+  按捆绑 fork 的 `rclone config providers` 生成；换 rclone 版本须重新生成），
+  `params_for` 对 generic/rclone-custom 组装结果做未知键（回显有效选项名，
+  必填项标 `*`）与必填缺失校验——实测 rcd `config/create` 对两者都静默，
+  首次操作才报错。filen 的 password/api_key 二选一以 `REQUIRED_ANY_OF` 表达。
+- **`config` 降级为「高级选项（JSON）」**：对全部 50 个通用后端保留（额外
+  选项 + alias/crypt/union 等结构引擎的主输入），文案给出键名来源与校验
+  行为说明。
+- **下架 gphotos/oos**：引擎无此二后端，从 manifest 协议下拉与
+  PROTOCOLS/GENERIC_PROTOCOLS（71/50）移除（opendal-custom 同例）。
+- 契约同步：verify.mjs 期望矩阵 + SECRET_FIELDS(token)；model.rs expects
+  矩阵/required_when 期望（required ⊆ visible 放宽，AK/SK、token 部分协议
+  必填）；MCP stdio schema/映射 + 联动测试新增 token；registry 矩阵样例
+  config 改为按协议的最小合法集（结构引擎样例携带各自必填选项）。
+
+### 回归证据
+
+- `node scripts/connection-forms/verify.mjs files`：PASS（70 协议 ×2 =
+  140 组合，七语标签/描述/占位符/选项断言）。
+- `cargo test --locked`：309 全过（含重写的 generic passthrough 用例：
+  字段优先于 JSON、必填缺失与未知键的可操作报错）。
+- `python3 scripts/validate_repo.py`、frontend typecheck/test/build：全过。
+
+### 剩余风险
+
+- es/it/ja/pt-BR 新文案为单轮翻译，建议集成者复查措辞。
+- 内嵌 providers 表与捆绑 rclone 版本钉死：`fetch-rclone.sh` 升版本时必须
+  重新生成 `providers_v1.75.1.json`（文件名含版本号，漏改会在 include_str!
+  编译期暴露缺文件，但内容过期无守卫）。

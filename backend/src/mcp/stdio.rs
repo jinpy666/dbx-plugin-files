@@ -148,6 +148,7 @@ pub(crate) fn stored_connection_from_inline(connection: &Value) -> Result<Stored
         ("accessToken", "access_token"),
         ("clientSecret", "client_secret"),
         ("refreshToken", "refresh_token"),
+        ("token", "token"),
         ("proxyPassword", "proxy_password"),
     ] {
         if let Some(value) = map.get(inline_key).and_then(Value::as_str) {
@@ -217,6 +218,7 @@ pub(crate) fn inline_connection_properties() -> Value {
     "proxyPassword": { "type": "string", "description": "Proxy password (optional; stays in process memory only)" },
     "tunnelJumpHosts": { "type": "string", "description": "SSH tunnel jump chain, ssh -J syntax: comma-separated [user@]host[:port]; the last entry is the login target. Key auth only; rclone engine only; empty = no tunnel" },
     "tunnelIdentityFile": { "type": "string", "description": "Private key path for the SSH tunnel (optional; empty = ssh defaults/agent)" },
+    "token": { "type": "string", "description": "API key or token for token-authenticated generic backends (fichier/filelu/pixeldrain/quatrix/shade/ulozto/linkbox/storj/filen/filefabric; stays in process memory only)" },
     "share": { "type": "string", "description": "Share (smb)" },
     "domain": { "type": "string", "description": "Domain (smb)" },
     "service": { "type": "string", "description": "Custom rclone backend type (rclone-custom)" },

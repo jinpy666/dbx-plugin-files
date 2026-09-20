@@ -1532,6 +1532,7 @@ fn inline_connection_schema_covers_every_mapped_key() {
         "accessToken",
         "clientSecret",
         "refreshToken",
+        "token",
         "proxyPassword",
     ];
     for key in mapped {
@@ -1637,6 +1638,7 @@ fn manifest_fields_are_fully_covered_by_inline_mapping() {
         ("access_token", "accessToken"),
         ("client_secret", "clientSecret"),
         ("refresh_token", "refreshToken"),
+        ("token", "token"),
         ("proxy_password", "proxyPassword"),
     ];
     let mut covered: Vec<&str> = Vec::new();
@@ -1661,10 +1663,11 @@ fn manifest_fields_are_fully_covered_by_inline_mapping() {
         if *source == "service" {
             continue; // legacy-only mapped key (see note above)
         }
-        if source.starts_with("proxy_") {
-            // MCP-only: egress proxy deliberately stays out of the form (the
-            // proxy comes from the DBX host environment); the keys remain so
-            // the proxy E2E and per-proxy rcd grouping stay drivable.
+        if source.starts_with("proxy_") || source.starts_with("tunnel_") {
+            // MCP-only: egress proxy and SSH tunnels deliberately stay out of
+            // the form (the proxy comes from the DBX host environment; tunnels
+            // are advanced external_config setups); the keys remain so the
+            // proxy/tunnel E2E scenarios stay drivable.
             continue;
         }
         assert!(

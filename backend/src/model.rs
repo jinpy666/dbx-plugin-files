@@ -37,7 +37,7 @@ pub const JSON_CHUNK_BYTES: usize = 1024 * 1024;
 /// (stored `service` + JSON parameters). Stored connections from the
 /// OpenDAL era (`opendal-custom`) are normalized onto `rclone-custom` at
 /// parse time — the alias never reaches the engine.
-pub const PROTOCOLS: [&str; 73] = [
+pub const PROTOCOLS: [&str; 71] = [
     "fs",
     "s3",
     "gcs",
@@ -80,7 +80,6 @@ pub const PROTOCOLS: [&str; 73] = [
     "filen",
     "filescom",
     "gofile",
-    "gphotos",
     "hasher",
     "hdfs",
     "hidrive",
@@ -95,7 +94,6 @@ pub const PROTOCOLS: [&str; 73] = [
     "mailru",
     "mega",
     "netstorage",
-    "oos",
     "opendrive",
     "pikpak",
     "pixeldrain",
@@ -119,12 +117,12 @@ pub const PROTOCOLS: [&str; 73] = [
 /// Protocols whose backend type is the protocol value itself and whose
 /// parameters travel verbatim in the `config` JSON field (`external_config.
 /// config` → `config/create` parameters). The form carries the same list.
-pub const GENERIC_PROTOCOLS: [&str; 52] = [
+pub const GENERIC_PROTOCOLS: [&str; 50] = [
     "alias", "archive", "azurefiles", "b2", "box", "chunker", "cloudinary", "combine",
     "compress", "crypt", "doi", "drime", "fichier", "filefabric", "filelu", "filen",
-    "filescom", "gofile", "gphotos", "hasher", "hdfs", "hidrive", "http",
+    "filescom", "gofile", "hasher", "hdfs", "hidrive", "http",
     "huaweidrive", "iclouddrive", "imagekit", "internetarchive", "internxt",
-    "jottacloud", "linkbox", "mailru", "mega", "netstorage", "oos", "opendrive",
+    "jottacloud", "linkbox", "mailru", "mega", "netstorage", "opendrive",
     "pikpak", "pixeldrain", "premiumizeme", "protondrive", "putio", "qingstor",
     "quatrix", "shade", "sharefile", "sia", "storj", "sugarsync", "swift",
     "tardigrade", "ulozto", "union", "zoho",
@@ -277,14 +275,19 @@ pub struct StoredConnection {
     /// Optional STS session token (`connection_secrets.security_token`).
     pub security_token: String,
     // --- OAuth / drive services ---
-    /// OAuth access token for Dropbox/GDrive/OneDrive/Yandex Disk.
+    /// OAuth access token for Dropbox/GDrive/OneDrive/Yandex Disk and the
+    /// access-token cloud backends (box/drime/gofile).
     pub access_token: String,
     /// OAuth refresh token for drive services.
     pub refresh_token: String,
-    /// OAuth client identifier for Aliyun Drive/Dropbox/GDrive/OneDrive.
+    /// OAuth client identifier for the OAuth-configured backends.
     pub client_id: String,
     /// Secret OAuth client credential.
     pub client_secret: String,
+    /// API key / token for token-authenticated backends (fichier, filelu,
+    /// pixeldrain, quatrix, shade, ulozto, linkbox, storj, filen,
+    /// filefabric). Secret (`connection_secrets.token`).
+    pub token: String,
     /// Aliyun Drive storage type (resource/share/backup).
     pub drive_type: String,
     /// Koofr account email.
@@ -433,6 +436,7 @@ impl StoredConnection {
             refresh_token: secret_string(connection_secrets, "refresh_token"),
             client_id: optional_string(external_config, "client_id"),
             client_secret: secret_string(connection_secrets, "client_secret"),
+            token: secret_string(connection_secrets, "token"),
             drive_type: optional_string(external_config, "drive_type"),
             email: optional_string(external_config, "email"),
             repo_name: optional_string(external_config, "repo_name"),
@@ -2141,31 +2145,61 @@ mod tests {
             ("credential", &["gcs"]),
             ("scope", &["gcs"]),
             ("region", &["s3"]),
-            ("access_key_id", &["s3", "obs", "oss"]),
-            ("secret_access_key", &["s3", "obs", "oss"]),
+            ("access_key_id", &[
+                "s3", "obs", "oss",
+                "azurefiles", "b2", "cloudinary", "imagekit", "internetarchive", "qingstor",
+                "sugarsync",
+            ]),
+            ("secret_access_key", &[
+                "s3", "obs", "oss",
+                "azurefiles", "b2", "cloudinary", "imagekit", "internetarchive", "qingstor",
+                "sugarsync",
+            ]),
             ("enable_virtual_host_style", &["s3"]),
             (
                 "endpoint",
-                &["s3", "gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native", "koofr", "pcloud", "seafile"],
+                &["s3", "gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native", "koofr", "pcloud", "seafile",
+                  "azurefiles", "filefabric", "hdfs", "http", "imagekit", "netstorage", "qingstor", "quatrix", "sia"],
             ),
             ("secret_id", &["cos"]),
             ("secret_key", &["cos"]),
             ("security_token", &["cos"]),
-            ("username", &["webdav", "smb", "pcloud", "seafile"]),
+            ("username", &[
+                "webdav", "smb", "pcloud", "seafile",
+                "azurefiles", "cloudinary", "filen", "filescom", "hdfs", "iclouddrive",
+                "internxt", "linkbox", "mega", "mailru", "netstorage", "opendrive", "pikpak",
+                "protondrive", "swift", "ulozto",
+            ]),
             ("user", &["ftp", "sftp", "sftp-native"]),
-            ("share", &["smb"]),
+            ("share", &["smb", "azurefiles"]),
             ("domain", &["smb"]),
             // password deliberately excludes `sftp`: the rclone sftp backend
             // accepts password auth, but the plain-sftp form keeps key-only
             // semantics; password accounts belong to `sftp-native`.
-            ("password", &["webdav", "ftp", "smb", "sftp-native", "koofr", "pcloud", "seafile"]),
+            ("password", &[
+                "webdav", "ftp", "smb", "sftp-native", "koofr", "pcloud", "seafile",
+                "filen", "filescom", "iclouddrive", "internxt", "linkbox", "mega", "mailru",
+                "netstorage", "opendrive", "pikpak", "protondrive", "sia", "swift", "ulozto",
+            ]),
             ("key", &["sftp", "sftp-native"]),
             ("known_hosts_strategy", &["sftp", "sftp-native"]),
             ("config", &GENERIC_PROTOCOLS),
-            ("access_token", &["dropbox", "gdrive", "onedrive", "yandex-disk"]),
-            ("client_id", &["aliyun-drive", "dropbox", "gdrive", "onedrive"]),
-            ("client_secret", &["aliyun-drive", "dropbox", "gdrive", "onedrive"]),
+            ("access_token", &["dropbox", "gdrive", "onedrive", "yandex-disk", "box", "drime", "gofile"]),
+            ("client_id", &[
+                "aliyun-drive", "dropbox", "gdrive", "onedrive",
+                "box", "hidrive", "huaweidrive", "jottacloud", "mailru", "premiumizeme",
+                "putio", "sharefile", "zoho",
+            ]),
+            ("client_secret", &[
+                "aliyun-drive", "dropbox", "gdrive", "onedrive",
+                "box", "hidrive", "huaweidrive", "jottacloud", "mailru", "premiumizeme",
+                "putio", "sharefile", "zoho",
+            ]),
             ("refresh_token", &["aliyun-drive", "dropbox", "gdrive", "onedrive"]),
+            ("token", &[
+                "fichier", "filefabric", "filelu", "filen", "linkbox", "pixeldrain",
+                "quatrix", "shade", "storj", "ulozto",
+            ]),
             ("drive_type", &["aliyun-drive"]),
             ("email", &["koofr"]),
             ("repo_name", &["seafile"]),
@@ -2253,6 +2287,7 @@ mod tests {
             "secret_key",
             "email",
             "repo_name",
+            "token",
         ];
         for key in conditionally_required {
             let item = field_of(key);
@@ -2266,9 +2301,29 @@ mod tests {
             let required_when = item.get("required_when").unwrap_or_else(|| {
                 panic!("field '{key}' must pair visible_when with required_when")
             });
-            assert_eq!(
-                visible_when, required_when,
-                "field '{key}' required_when must match its visible_when"
+            // required may cover a SUBSET of the visible protocols (e.g. the
+            // access-key pair stays optional where the backend ships an
+            // env-auth or default-endpoint path); it must never demand a
+            // value on a protocol that hides the field.
+            let visible: Vec<&str> = visible_when["one_of"]
+                .as_array()
+                .expect("visible_when.one_of")
+                .iter()
+                .map(|value| value.as_str().expect("one_of value"))
+                .collect();
+            let required: Vec<&str> = required_when["one_of"]
+                .as_array()
+                .expect("required_when.one_of")
+                .iter()
+                .map(|value| value.as_str().expect("one_of value"))
+                .collect();
+            assert!(
+                !required.is_empty(),
+                "field '{key}' carries required_when with no protocols"
+            );
+            assert!(
+                required.iter().all(|value| visible.contains(value)),
+                "field '{key}' required_when must stay inside its visible_when"
             );
         }
         // bucket is conditionally required on a SUBSET of its visible
@@ -2311,9 +2366,18 @@ mod tests {
         assert!(share.get("required_when").is_none());
 
         for (name, expected) in [
-            ("username", &["pcloud", "seafile"][..]),
-            ("password", &["koofr", "pcloud", "seafile"][..]),
+            ("username", &[
+                "pcloud", "seafile",
+                "cloudinary", "filen", "iclouddrive", "internxt", "linkbox", "mega", "mailru",
+                "netstorage", "opendrive", "pikpak", "protondrive",
+            ][..]),
+            ("password", &[
+                "koofr", "pcloud", "seafile",
+                "iclouddrive", "internxt", "linkbox", "mega", "mailru", "netstorage",
+                "opendrive", "pikpak", "protondrive",
+            ][..]),
             ("access_token", &["yandex-disk"][..]),
+            ("token", &["filelu", "linkbox", "quatrix", "shade"][..]),
         ] {
             let item = field_of(name);
             let visible: Vec<&str> = item["visible_when"]["one_of"]
@@ -2368,7 +2432,11 @@ mod tests {
                 .all(|value| endpoint_visible.contains(value)),
             "endpoint required_when must stay inside its visible_when"
         );
-        for required_protocol in ["gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native", "koofr", "pcloud", "seafile"] {
+        for required_protocol in [
+            "gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native",
+            "koofr", "pcloud", "seafile", "filefabric", "hdfs", "http", "imagekit", "netstorage",
+            "quatrix",
+        ] {
             assert!(
                 endpoint_required.contains(&required_protocol),
                 "endpoint must be conditionally required for '{required_protocol}'"
@@ -2377,6 +2445,11 @@ mod tests {
         assert!(
             !endpoint_required.contains(&"s3"),
             "endpoint stays optional for s3 (AWS default endpoint)"
+        );
+        assert!(
+            !endpoint_required.contains(&"qingstor") && !endpoint_required.contains(&"sia")
+                && !endpoint_required.contains(&"azurefiles"),
+            "endpoint stays optional where the backend ships a default address"
         );
     }
 

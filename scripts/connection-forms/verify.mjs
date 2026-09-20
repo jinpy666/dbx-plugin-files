@@ -101,6 +101,7 @@ for (const [index, field] of fields.entries()) {
 const SECRET_FIELDS = new Set([
   "key",
   "password",
+  "token",
   "secret_access_key",
   "secret_id",
   "secret_key",
@@ -132,9 +133,53 @@ for (const key of SECRET_FIELDS) {
 
 const options = (key) => byKey[key].options.map((option) => option.value);
 // Protocols with a dedicated quick form; every other protocol value is a
-// generic rclone backend entering its parameters through the JSON field.
-const ENDPOINT_PROTOCOLS = ["s3", "gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp", "sftp-native", "smb", "koofr", "pcloud", "seafile"];
-const QUICK_PROTOCOLS = new Set(["fs", "aliyun-drive", "dropbox", "gdrive", "onedrive", "yandex-disk", ...ENDPOINT_PROTOCOLS]);
+// generic rclone backend reusing the common fields, with its remaining
+// options accepted through the JSON extras field.
+const ENDPOINT_PROTOCOLS = [
+  "s3", "gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp",
+  "sftp-native", "smb", "koofr", "pcloud", "seafile",
+  // generic backends whose service address has a dedicated field
+  "azurefiles", "filefabric", "hdfs", "http", "imagekit", "netstorage",
+  "qingstor", "quatrix", "sia",
+];
+const ENDPOINT_REQUIRED = [
+  "gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp", "smb",
+  "sftp-native", "koofr", "pcloud", "seafile",
+  "filefabric", "hdfs", "http", "imagekit", "netstorage", "quatrix",
+];
+const USERNAME_VISIBLE = [
+  "webdav", "smb", "pcloud", "seafile",
+  "azurefiles", "cloudinary", "filen", "filescom", "hdfs", "iclouddrive",
+  "internxt", "linkbox", "mega", "mailru", "netstorage", "opendrive",
+  "pikpak", "protondrive", "swift", "ulozto",
+];
+const USERNAME_REQUIRED = [
+  "pcloud", "seafile",
+  "cloudinary", "filen", "iclouddrive", "internxt", "linkbox", "mega",
+  "mailru", "netstorage", "opendrive", "pikpak", "protondrive",
+];
+const PASSWORD_VISIBLE = [
+  "webdav", "ftp", "smb", "sftp-native", "koofr", "pcloud", "seafile",
+  "filen", "filescom", "iclouddrive", "internxt", "linkbox", "mega",
+  "mailru", "netstorage", "opendrive", "pikpak", "protondrive", "sia",
+  "swift", "ulozto",
+];
+const PASSWORD_REQUIRED = [
+  "koofr", "pcloud", "seafile",
+  "iclouddrive", "internxt", "linkbox", "mega", "mailru", "netstorage",
+  "opendrive", "pikpak", "protondrive",
+];
+const KEY_VISIBLE_PROTOCOLS = ["s3", "obs", "oss", "azurefiles", "b2", "cloudinary", "imagekit", "internetarchive", "qingstor", "sugarsync"];
+const KEY_REQUIRED_PROTOCOLS = ["s3", "obs", "oss", "b2", "cloudinary", "imagekit"];
+const OAUTH_CLIENT_VISIBLE = [
+  "aliyun-drive", "dropbox", "gdrive", "onedrive",
+  "box", "hidrive", "huaweidrive", "jottacloud", "mailru", "premiumizeme",
+  "putio", "sharefile", "zoho",
+];
+const ACCESS_TOKEN_VISIBLE = ["dropbox", "gdrive", "onedrive", "yandex-disk", "box", "drime", "gofile"];
+const TOKEN_VISIBLE = ["fichier", "filefabric", "filelu", "filen", "linkbox", "pixeldrain", "quatrix", "shade", "storj", "ulozto"];
+const TOKEN_REQUIRED = ["filelu", "linkbox", "quatrix", "shade"];
+const QUICK_PROTOCOLS = new Set(["fs", "aliyun-drive", "dropbox", "gdrive", "onedrive", "yandex-disk", "s3", "gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp", "sftp-native", "smb", "koofr", "pcloud", "seafile"]);
 const GENERIC_PROTOCOLS = options("protocol").filter((value) => !QUICK_PROTOCOLS.has(value));
 assert(GENERIC_PROTOCOLS.length > 0, "generic rclone protocol options must exist");
 let scenarios = 0;
@@ -155,7 +200,7 @@ for (const protocol of options("protocol")) {
     // Object storage (S3 / OSS): bucket+keys required; endpoint required for
     // OSS (no default endpoint) but optional for S3 (AWS default endpoint).
     current.visible("endpoint", ENDPOINT_PROTOCOLS.includes(protocol));
-    current.required("endpoint", ["gcs", "azblob", "obs", "oss", "cos", "webdav", "ftp", "sftp", "smb", "sftp-native", "koofr", "pcloud", "seafile"].includes(protocol));
+    current.required("endpoint", ENDPOINT_REQUIRED.includes(protocol));
     current.visible("bucket", ["s3", "gcs", "obs", "oss", "cos"].includes(protocol));
     // Bucket namespace (2026-09-17): s3/oss/cos/obs accept an empty bucket —
     // the connection root then lists all buckets and the first path segment
@@ -173,27 +218,27 @@ for (const protocol of options("protocol")) {
     current.visible("scope", protocol === "gcs");
     current.visible("region", protocol === "s3");
     current.visible("enable_virtual_host_style", protocol === "s3");
-    current.visible("access_key_id", ["s3", "obs", "oss"].includes(protocol));
-    current.required("access_key_id", ["s3", "obs", "oss"].includes(protocol));
-    current.visible("secret_access_key", ["s3", "obs", "oss"].includes(protocol));
-    current.required("secret_access_key", ["s3", "obs", "oss"].includes(protocol));
+    current.visible("access_key_id", KEY_VISIBLE_PROTOCOLS.includes(protocol));
+    current.required("access_key_id", KEY_REQUIRED_PROTOCOLS.includes(protocol));
+    current.visible("secret_access_key", KEY_VISIBLE_PROTOCOLS.includes(protocol));
+    current.required("secret_access_key", KEY_REQUIRED_PROTOCOLS.includes(protocol));
     current.visible("secret_id", protocol === "cos");
     current.required("secret_id", protocol === "cos");
     current.visible("secret_key", protocol === "cos");
     current.required("secret_key", protocol === "cos");
     current.visible("security_token", protocol === "cos");
     current.required("security_token", false);
-    // Generic rclone backends (no quick form) enter their parameters as one
-    // JSON object; every other protocol hides it.
+    // Generic rclone backends (no quick form) enter their extra options as
+    // one JSON object; every other protocol hides it.
     current.visible("config", GENERIC_PROTOCOLS.includes(protocol));
     // Remote service accounts, per protocol family.
-    current.visible("username", ["webdav", "smb", "pcloud", "seafile"].includes(protocol));
-    current.required("username", ["pcloud", "seafile"].includes(protocol));
+    current.visible("username", USERNAME_VISIBLE.includes(protocol));
+    current.required("username", USERNAME_REQUIRED.includes(protocol));
     current.visible("user", ["ftp", "sftp", "sftp-native"].includes(protocol));
-    current.visible("share", protocol === "smb");
+    current.visible("share", ["smb", "azurefiles"].includes(protocol));
     current.visible("domain", protocol === "smb");
-    current.visible("password", ["webdav", "ftp", "smb", "sftp-native", "koofr", "pcloud", "seafile"].includes(protocol));
-    current.required("password", ["koofr", "pcloud", "seafile"].includes(protocol));
+    current.visible("password", PASSWORD_VISIBLE.includes(protocol));
+    current.required("password", PASSWORD_REQUIRED.includes(protocol));
     current.visible("key", ["sftp", "sftp-native"].includes(protocol));
     current.visible("known_hosts_strategy", ["sftp", "sftp-native"].includes(protocol));
     // Egress proxy: deliberately absent from the form — the proxy comes from
@@ -206,18 +251,18 @@ for (const protocol of options("protocol")) {
     current.visible("proxy_password", false);
     current.visible("connection_mode", false);
     current.visible("dbx_ssh_connection", false);
-    // SSH tunnel (rclone engine): the flat ssh -J pair is shown for every
-    // protocol except fs and is never required; dedicated scenarios below
-    // re-check the boundary states.
-    current.visible("tunnel_jump_hosts", protocol !== "fs");
-    current.required("tunnel_jump_hosts", false);
-    current.visible("tunnel_identity_file", protocol !== "fs");
-    current.required("tunnel_identity_file", false);
-    current.visible("access_token", ["dropbox", "gdrive", "onedrive", "yandex-disk"].includes(protocol));
+    // SSH tunnel (rclone engine): likewise absent from the form — egress
+    // networking is host-owned, and tunnels remain an external_config-only
+    // feature (MCP/API), never a per-connection form field.
+    current.visible("tunnel_jump_hosts", false);
+    current.visible("tunnel_identity_file", false);
+    current.visible("access_token", ACCESS_TOKEN_VISIBLE.includes(protocol));
     current.required("access_token", protocol === "yandex-disk");
-    current.visible("client_id", ["aliyun-drive", "dropbox", "gdrive", "onedrive"].includes(protocol));
-    current.visible("client_secret", ["aliyun-drive", "dropbox", "gdrive", "onedrive"].includes(protocol));
+    current.visible("client_id", OAUTH_CLIENT_VISIBLE.includes(protocol));
+    current.visible("client_secret", OAUTH_CLIENT_VISIBLE.includes(protocol));
     current.visible("refresh_token", ["aliyun-drive", "dropbox", "gdrive", "onedrive"].includes(protocol));
+    current.visible("token", TOKEN_VISIBLE.includes(protocol));
+    current.required("token", TOKEN_REQUIRED.includes(protocol));
     current.visible("drive_type", protocol === "aliyun-drive");
     current.visible("email", protocol === "koofr");
     current.required("email", protocol === "koofr");
@@ -228,37 +273,24 @@ for (const protocol of options("protocol")) {
   }
 }
 
-// SSH tunnel contract (rclone engine, flat ssh -J fields): the
-// visible_when gate must target protocol and cover exactly the protocol
-// option set minus fs (the generic loop above already asserts target
-// precedence and that every gate value is a real protocol option).
-for (const key of ["tunnel_jump_hosts", "tunnel_identity_file"]) {
-  const gate = byKey[key].visible_when;
-  assert.equal(gate?.field, "protocol", `${key}: tunnel gate must target protocol`);
-  assert.deepEqual(
-    [...gate.one_of].sort(),
-    options("protocol").filter((value) => value !== "fs").sort(),
-    `${key}: tunnel gate must cover every protocol except fs`,
-  );
-  assert.equal(byKey[key].required_when, undefined, `${key}: tunnel fields are always optional`);
-  assert.equal(byKey[key].binding, "config", `${key}: tunnel fields bind to config`);
+// Proxy and SSH tunnel fields are banned from the form, not merely hidden:
+// the DBX host environment owns egress networking (HTTP_PROXY/HTTPS_PROXY),
+// so the per-connection proxy fields were dropped first and the tunnel pair
+// followed. Tunnels stay configurable via external_config (MCP/API) only —
+// a field reappearing here means the host-owned networking story regressed.
+for (const key of [
+  "proxy_type",
+  "proxy_host",
+  "proxy_port",
+  "proxy_username",
+  "proxy_password",
+  "connection_mode",
+  "dbx_ssh_connection",
+  "tunnel_jump_hosts",
+  "tunnel_identity_file",
+]) {
+  assert(!(key in byKey), `${key}: must stay out of the form (egress networking is host-owned)`);
 }
-
-// (d) S3 surfaces the tunnel pair, both optional: object storage without any
-// FTP/SFTP baggage can still reach a private network through the jump chain.
-const s3Tunnel = state({ protocol: "s3", read_only: false });
-s3Tunnel.visible("tunnel_jump_hosts", true);
-s3Tunnel.required("tunnel_jump_hosts", false);
-s3Tunnel.visible("tunnel_identity_file", true);
-s3Tunnel.required("tunnel_identity_file", false);
-
-// (e) fs hides the tunnel pair entirely: the gate excludes fs, so neither
-// field (nor any requirement) can leak into a local-filesystem form.
-const fsTunnel = state({ protocol: "fs", read_only: false });
-fsTunnel.visible("tunnel_jump_hosts", false);
-fsTunnel.required("tunnel_jump_hosts", false);
-fsTunnel.visible("tunnel_identity_file", false);
-fsTunnel.required("tunnel_identity_file", false);
 
 assert.equal(byKey.key.binding, "secret");
 assert.equal(byKey.key.type, "textarea");

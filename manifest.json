@@ -3,7 +3,7 @@
   "manifest_version": 1,
   "id": "io.dbx.files",
   "name": "Files Studio",
-  "version": "0.1.59",
+  "version": "0.1.60",
   "publisher": "jinpy",
   "description": "A unified file workspace for local folders, S3-compatible storage, Azure Blob, Google Cloud Storage, Huawei OBS, Tencent COS, WebDAV, FTP, SFTP, SMB/CIFS, and other rclone storage backends.",
   "source": "https://github.com/jinpy666/dbx-plugin-files",
@@ -44,7 +44,8 @@
           "type": "text",
           "binding": "name",
           "required": true,
-          "default": "Storage"
+          "default": "Storage",
+          "description": "Name shown in the connection list."
         },
         {
           "key": "protocol",
@@ -207,10 +208,6 @@
               "value": "gofile"
             },
             {
-              "label": "Google Photos",
-              "value": "gphotos"
-            },
-            {
               "label": "Hasher",
               "value": "hasher"
             },
@@ -265,10 +262,6 @@
             {
               "label": "Akamai NetStorage",
               "value": "netstorage"
-            },
-            {
-              "label": "Oracle Object Storage",
-              "value": "oos"
             },
             {
               "label": "OpenDrive",
@@ -342,7 +335,8 @@
               "label": "Zoho WorkDrive",
               "value": "zoho"
             }
-          ]
+          ],
+          "description": "Pick a storage backend: popular backends get a dedicated form; generic backends reuse the common fields and take extra options as JSON."
         },
         {
           "key": "endpoint",
@@ -350,8 +344,6 @@
           "type": "text",
           "binding": "config",
           "default": "",
-          "placeholder": "https://storage.example.com",
-          "description": "Service address: https://host for object storage and WebDAV; ftp(s)://host[:21] for FTP; ssh://user@host[:22] for SFTP; host[:445] for SMB.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
@@ -368,7 +360,16 @@
               "sftp-native",
               "koofr",
               "pcloud",
-              "seafile"
+              "seafile",
+              "azurefiles",
+              "filefabric",
+              "hdfs",
+              "http",
+              "imagekit",
+              "netstorage",
+              "qingstor",
+              "quatrix",
+              "sia"
             ]
           },
           "required_when": {
@@ -386,18 +387,23 @@
               "sftp-native",
               "koofr",
               "pcloud",
-              "seafile"
+              "seafile",
+              "filefabric",
+              "hdfs",
+              "http",
+              "imagekit",
+              "netstorage",
+              "quatrix"
             ]
-          }
+          },
+          "description": "Service address. Object storage/WebDAV: https://host; FTP: ftp(s)://host[:21]; SFTP: ssh://user@host[:22]; SMB: host[:445]; http: full URL; hdfs: namenode:8020; netstorage/quatrix: host name; azurefiles: optional service URL."
         },
         {
           "key": "config",
-          "label": "Parameters (JSON)",
+          "label": "Advanced options (JSON)",
           "type": "textarea",
           "binding": "config",
           "default": "{}",
-          "placeholder": "{ \"endpoint\": \"https://host\", \"user\": \"me\" }",
-          "description": "JSON object with the selected backend's options; see rclone's docs for each backend's keys.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
@@ -419,7 +425,6 @@
               "filen",
               "filescom",
               "gofile",
-              "gphotos",
               "hasher",
               "hdfs",
               "hidrive",
@@ -434,7 +439,6 @@
               "mailru",
               "mega",
               "netstorage",
-              "oos",
               "opendrive",
               "pikpak",
               "pixeldrain",
@@ -454,7 +458,9 @@
               "union",
               "zoho"
             ]
-          }
+          },
+          "placeholder": "{ \"encoding\": \"Slash,Dot\" }",
+          "description": "Optional extra options for the selected backend as a JSON object, using the option names from rclone's docs. Unknown options are rejected with the list of valid names; common settings have dedicated fields above."
         },
         {
           "key": "access_token",
@@ -468,7 +474,10 @@
               "dropbox",
               "gdrive",
               "onedrive",
-              "yandex-disk"
+              "yandex-disk",
+              "box",
+              "drime",
+              "gofile"
             ]
           },
           "required_when": {
@@ -476,7 +485,8 @@
             "one_of": [
               "yandex-disk"
             ]
-          }
+          },
+          "description": "OAuth or API access token issued by the provider (drive services, box, drime, gofile); add a refresh token for OAuth so it renews automatically."
         },
         {
           "key": "client_id",
@@ -490,9 +500,20 @@
               "aliyun-drive",
               "dropbox",
               "gdrive",
-              "onedrive"
+              "onedrive",
+              "box",
+              "hidrive",
+              "huaweidrive",
+              "jottacloud",
+              "mailru",
+              "premiumizeme",
+              "putio",
+              "sharefile",
+              "zoho"
             ]
-          }
+          },
+          "placeholder": "your-app-client-id",
+          "description": "OAuth client ID of a registered application, for OAuth-configured cloud backends (drive services, box, hidrive, huaweidrive, jottacloud, mailru, premiumizeme, putio, sharefile, zoho)."
         },
         {
           "key": "client_secret",
@@ -506,9 +527,19 @@
               "aliyun-drive",
               "dropbox",
               "gdrive",
-              "onedrive"
+              "onedrive",
+              "box",
+              "hidrive",
+              "huaweidrive",
+              "jottacloud",
+              "mailru",
+              "premiumizeme",
+              "putio",
+              "sharefile",
+              "zoho"
             ]
-          }
+          },
+          "description": "OAuth client secret of the registered application, kept in the host secret binding."
         },
         {
           "key": "refresh_token",
@@ -524,7 +555,8 @@
               "gdrive",
               "onedrive"
             ]
-          }
+          },
+          "description": "OAuth refresh token used to mint new access tokens when the current one expires."
         },
         {
           "key": "drive_type",
@@ -551,7 +583,8 @@
             "one_of": [
               "aliyun-drive"
             ]
-          }
+          },
+          "description": "Which Alibaba Drive space to open: personal (resource), shared, or backup."
         },
         {
           "key": "email",
@@ -565,12 +598,14 @@
               "koofr"
             ]
           },
+          "placeholder": "you@example.com",
           "required_when": {
             "field": "protocol",
             "one_of": [
               "koofr"
             ]
-          }
+          },
+          "description": "Koofr account email used to sign in."
         },
         {
           "key": "repo_name",
@@ -584,12 +619,14 @@
               "seafile"
             ]
           },
+          "placeholder": "My Library",
           "required_when": {
             "field": "protocol",
             "one_of": [
               "seafile"
             ]
-          }
+          },
+          "description": "Name of an existing Seafile library to open."
         },
         {
           "key": "bucket",
@@ -743,14 +780,19 @@
           "type": "text",
           "binding": "config",
           "default": "",
-          "placeholder": "my-access-key-id",
-          "description": "Access key ID for S3/OBS/OSS.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
               "s3",
               "obs",
-              "oss"
+              "oss",
+              "azurefiles",
+              "b2",
+              "cloudinary",
+              "imagekit",
+              "internetarchive",
+              "qingstor",
+              "sugarsync"
             ]
           },
           "required_when": {
@@ -758,9 +800,13 @@
             "one_of": [
               "s3",
               "obs",
-              "oss"
+              "oss",
+              "b2",
+              "cloudinary",
+              "imagekit"
             ]
-          }
+          },
+          "description": "Access key or public identifier: S3/OBS/OSS access key ID; b2 account ID; azurefiles storage account; qingstor/internetarchive/sugarsync access key; cloudinary API key; imagekit public key."
         },
         {
           "key": "secret_access_key",
@@ -768,13 +814,19 @@
           "type": "password",
           "binding": "secret",
           "default": "",
-          "description": "Secret key kept in the host secret binding.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
               "s3",
               "obs",
-              "oss"
+              "oss",
+              "azurefiles",
+              "b2",
+              "cloudinary",
+              "imagekit",
+              "internetarchive",
+              "qingstor",
+              "sugarsync"
             ]
           },
           "required_when": {
@@ -782,9 +834,46 @@
             "one_of": [
               "s3",
               "obs",
-              "oss"
+              "oss",
+              "b2",
+              "cloudinary",
+              "imagekit"
             ]
-          }
+          },
+          "description": "Secret kept in the host secret binding: S3/OBS/OSS secret key; b2 application key; azurefiles account key; qingstor/internetarchive access secret; sugarsync private access key; cloudinary API secret; imagekit private key."
+        },
+        {
+          "key": "token",
+          "label": "API key / token",
+          "type": "password",
+          "binding": "secret",
+          "default": "",
+          "placeholder": "your-api-key-or-token",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "fichier",
+              "filefabric",
+              "filelu",
+              "filen",
+              "linkbox",
+              "pixeldrain",
+              "quatrix",
+              "shade",
+              "storj",
+              "ulozto"
+            ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
+              "filelu",
+              "linkbox",
+              "quatrix",
+              "shade"
+            ]
+          },
+          "description": "API key, token, or access grant, kept in the host secret binding: fichier/filelu/pixeldrain/quatrix/shade API key, ulozto app token, linkbox token, storj access grant, filen API key, filefabric permanent token."
         },
         {
           "key": "secret_id",
@@ -803,7 +892,8 @@
             "one_of": [
               "cos"
             ]
-          }
+          },
+          "description": "Tencent Cloud SecretId of the API key pair."
         },
         {
           "key": "secret_key",
@@ -822,7 +912,8 @@
             "one_of": [
               "cos"
             ]
-          }
+          },
+          "description": "Tencent Cloud SecretKey, kept in the host secret binding."
         },
         {
           "key": "security_token",
@@ -835,7 +926,8 @@
             "one_of": [
               "cos"
             ]
-          }
+          },
+          "description": "Session token required when signing in with temporary (STS) credentials; leave empty for permanent keys."
         },
         {
           "key": "share",
@@ -843,14 +935,14 @@
           "type": "text",
           "binding": "config",
           "default": "",
-          "placeholder": "media",
-          "description": "Optional SMB share; leave empty to list server shares. share/sub/path uses the sub-path as the root.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
-              "smb"
+              "smb",
+              "azurefiles"
             ]
-          }
+          },
+          "description": "Optional share for SMB and azurefiles; leave empty to list server shares. share/sub/path uses the sub-path as the root."
         },
         {
           "key": "username",
@@ -858,24 +950,50 @@
           "type": "text",
           "binding": "config",
           "default": "",
-          "placeholder": "user",
-          "description": "Login user for WebDAV/SMB.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
               "webdav",
               "smb",
               "pcloud",
-              "seafile"
+              "seafile",
+              "azurefiles",
+              "cloudinary",
+              "filen",
+              "filescom",
+              "hdfs",
+              "iclouddrive",
+              "internxt",
+              "linkbox",
+              "mega",
+              "mailru",
+              "netstorage",
+              "opendrive",
+              "pikpak",
+              "protondrive",
+              "swift",
+              "ulozto"
             ]
           },
           "required_when": {
             "field": "protocol",
             "one_of": [
               "pcloud",
-              "seafile"
+              "seafile",
+              "cloudinary",
+              "filen",
+              "iclouddrive",
+              "internxt",
+              "linkbox",
+              "mega",
+              "mailru",
+              "netstorage",
+              "opendrive",
+              "pikpak",
+              "protondrive"
             ]
-          }
+          },
+          "description": "Login name. WebDAV/SMB/pCloud/Seafile user; azurefiles/netstorage: account; cloudinary: cloud name; iclouddrive: Apple ID; filen/internxt/linkbox: email; hdfs/swift/ulozto/protondrive: user name."
         },
         {
           "key": "user",
@@ -915,7 +1033,6 @@
           "type": "password",
           "binding": "secret",
           "default": "",
-          "description": "Login password (WebDAV/FTP/SMB; FTP with empty user = anonymous). Native SFTP accepts passwords; plain SFTP is key-only.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
@@ -925,7 +1042,21 @@
               "sftp-native",
               "koofr",
               "pcloud",
-              "seafile"
+              "seafile",
+              "filen",
+              "filescom",
+              "iclouddrive",
+              "internxt",
+              "linkbox",
+              "mega",
+              "mailru",
+              "netstorage",
+              "opendrive",
+              "pikpak",
+              "protondrive",
+              "sia",
+              "swift",
+              "ulozto"
             ]
           },
           "required_when": {
@@ -933,9 +1064,19 @@
             "one_of": [
               "koofr",
               "pcloud",
-              "seafile"
+              "seafile",
+              "iclouddrive",
+              "internxt",
+              "linkbox",
+              "mega",
+              "mailru",
+              "netstorage",
+              "opendrive",
+              "pikpak",
+              "protondrive"
             ]
-          }
+          },
+          "description": "Login password or secret. WebDAV/FTP/SMB password (FTP with empty user = anonymous); native SFTP accepts passwords, plain SFTP is key-only; swift: storage key; sia: API daemon password; netstorage: account secret."
         },
         {
           "key": "key",
@@ -981,176 +1122,6 @@
             ]
           },
           "description": "Strict verifies against known host keys; Tolerate accepts new hosts but rejects changed keys; Trust skips verification (insecure)."
-        },
-        {
-          "key": "tunnel_jump_hosts",
-          "label": "SSH tunnel jump hosts",
-          "type": "text",
-          "binding": "config",
-          "default": "",
-          "placeholder": "ops@j1.example.com:2222, j2.corp",
-          "visible_when": {
-            "field": "protocol",
-            "one_of": [
-              "s3",
-              "gcs",
-              "azblob",
-              "obs",
-              "oss",
-              "cos",
-              "webdav",
-              "ftp",
-              "sftp",
-              "sftp-native",
-              "smb",
-              "aliyun-drive",
-              "dropbox",
-              "gdrive",
-              "koofr",
-              "onedrive",
-              "pcloud",
-              "seafile",
-              "yandex-disk",
-              "alias",
-              "archive",
-              "azurefiles",
-              "b2",
-              "box",
-              "chunker",
-              "cloudinary",
-              "combine",
-              "compress",
-              "crypt",
-              "doi",
-              "drime",
-              "fichier",
-              "filefabric",
-              "filelu",
-              "filen",
-              "filescom",
-              "gofile",
-              "gphotos",
-              "hasher",
-              "hdfs",
-              "hidrive",
-              "http",
-              "huaweidrive",
-              "iclouddrive",
-              "imagekit",
-              "internetarchive",
-              "internxt",
-              "jottacloud",
-              "linkbox",
-              "mailru",
-              "mega",
-              "netstorage",
-              "oos",
-              "opendrive",
-              "pikpak",
-              "pixeldrain",
-              "premiumizeme",
-              "protondrive",
-              "putio",
-              "qingstor",
-              "quatrix",
-              "shade",
-              "sharefile",
-              "sia",
-              "storj",
-              "sugarsync",
-              "swift",
-              "tardigrade",
-              "ulozto",
-              "union",
-              "zoho"
-            ]
-          },
-          "description": "Optional SSH jump chain (ssh -J syntax): comma-separated [user@]host[:port]; the last hop is the login target. Key-based auth only; rclone engine only."
-        },
-        {
-          "key": "tunnel_identity_file",
-          "label": "SSH tunnel private key",
-          "type": "text",
-          "binding": "config",
-          "default": "",
-          "placeholder": "~/.ssh/id_ed25519",
-          "visible_when": {
-            "field": "protocol",
-            "one_of": [
-              "s3",
-              "gcs",
-              "azblob",
-              "obs",
-              "oss",
-              "cos",
-              "webdav",
-              "ftp",
-              "sftp",
-              "sftp-native",
-              "smb",
-              "aliyun-drive",
-              "dropbox",
-              "gdrive",
-              "koofr",
-              "onedrive",
-              "pcloud",
-              "seafile",
-              "yandex-disk",
-              "alias",
-              "archive",
-              "azurefiles",
-              "b2",
-              "box",
-              "chunker",
-              "cloudinary",
-              "combine",
-              "compress",
-              "crypt",
-              "doi",
-              "drime",
-              "fichier",
-              "filefabric",
-              "filelu",
-              "filen",
-              "filescom",
-              "gofile",
-              "gphotos",
-              "hasher",
-              "hdfs",
-              "hidrive",
-              "http",
-              "huaweidrive",
-              "iclouddrive",
-              "imagekit",
-              "internetarchive",
-              "internxt",
-              "jottacloud",
-              "linkbox",
-              "mailru",
-              "mega",
-              "netstorage",
-              "oos",
-              "opendrive",
-              "pikpak",
-              "pixeldrain",
-              "premiumizeme",
-              "protondrive",
-              "putio",
-              "qingstor",
-              "quatrix",
-              "shade",
-              "sharefile",
-              "sia",
-              "storj",
-              "sugarsync",
-              "swift",
-              "tardigrade",
-              "ulozto",
-              "union",
-              "zoho"
-            ]
-          },
-          "description": "Optional private key path for the tunnel; leave empty to use ssh default keys and the agent."
         },
         {
           "key": "root",
@@ -1225,7 +1196,8 @@
           "description": "基于 rclone 的存储连接：本地文件系统、S3/MinIO、阿里云 OSS、腾讯云 COS、Azure Blob、Google Cloud Storage、华为云 OBS、WebDAV、FTP、SFTP、SMB/CIFS 或任意其他 rclone 后端。",
           "fields": {
             "display_name": {
-              "label": "连接名称"
+              "label": "连接名称",
+              "description": "显示在连接列表中的名称。"
             },
             "protocol": {
               "label": "协议",
@@ -1268,7 +1240,6 @@
                 "filen": "Filen",
                 "filescom": "Files.com",
                 "gofile": "Gofile",
-                "gphotos": "Google 相册",
                 "hasher": "Hasher",
                 "hdfs": "HDFS",
                 "hidrive": "HiDrive",
@@ -1283,7 +1254,6 @@
                 "mailru": "Mail.ru Cloud",
                 "mega": "Mega",
                 "netstorage": "Akamai NetStorage",
-                "oos": "Oracle Object Storage",
                 "opendrive": "OpenDrive",
                 "pikpak": "PikPak",
                 "pixeldrain": "Pixeldrain",
@@ -1302,7 +1272,8 @@
                 "ulozto": "Uloz.to",
                 "union": "Union",
                 "zoho": "Zoho WorkDrive"
-              }
+              },
+              "description": "选择存储后端：常见后端有专属表单；通用后端复用下方通用字段，额外选项以 JSON 提供。"
             },
             "root": {
               "label": "根路径",
@@ -1314,9 +1285,9 @@
               "description": "拒绝任何超出所配置根路径的操作。"
             },
             "config": {
-              "label": "参数（JSON）",
-              "placeholder": "{ \"endpoint\": \"https://host\", \"user\": \"me\" }",
-              "description": "所选协议的连接参数（JSON 对象）；各键名见 rclone 文档。"
+              "label": "高级选项（JSON）",
+              "placeholder": "{ \"encoding\": \"Slash,Dot\" }",
+              "description": "所选后端的可选附加选项，以 JSON 对象填写，键名为 rclone 文档中的选项名。未知选项会被拒绝并列出有效名称；常用设置请使用上方对应字段。"
             },
             "container": {
               "label": "容器",
@@ -1349,13 +1320,11 @@
             },
             "endpoint": {
               "label": "端点",
-              "placeholder": "http://127.0.0.1:9000",
-              "description": "服务地址：对象存储/WebDAV 用 https://host；FTP 用 ftp(s)://host[:21]；SFTP 用 ssh://user@host[:22]；SMB 用 host[:445]。"
+              "description": "服务地址。对象存储/WebDAV：https://host；FTP：ftp(s)://host[:21]；SFTP：ssh://user@host[:22]；SMB：host[:445]；http：完整 URL；hdfs：namenode:8020；netstorage/quatrix：主机名；azurefiles：可选服务 URL。"
             },
             "share": {
               "label": "共享名",
-              "placeholder": "media",
-              "description": "SMB 共享名可选；留空则列出服务器共享。共享名/子路径形式以子路径为根目录。"
+              "description": "SMB 与 azurefiles 的可选共享名；留空则列出服务器共享。share/sub/path 以子路径作为根目录。"
             },
             "region": {
               "label": "区域",
@@ -1364,26 +1333,27 @@
             },
             "access_key_id": {
               "label": "Access Key ID",
-              "placeholder": "my-access-key-id",
-              "description": "S3/OSS 的 Access Key ID。"
+              "description": "访问密钥或公开标识：S3/OBS/OSS 的 Access Key ID；b2 账户 ID；azurefiles 存储账户；qingstor/internetarchive/sugarsync 访问密钥；cloudinary API 密钥；imagekit 公钥。"
             },
             "secret_access_key": {
               "label": "Secret Access Key",
-              "description": "密钥由宿主 secret binding 保管。"
+              "description": "由宿主 secret binding 保管的机密：S3/OBS/OSS 的 Secret Key；b2 应用密钥；azurefiles 账户密钥；qingstor/internetarchive 访问私钥；sugarsync 私有访问密钥；cloudinary API 密钥；imagekit 私钥。"
             },
             "secret_id": {
-              "label": "Secret ID"
+              "label": "Secret ID",
+              "description": "腾讯云 API 密钥对的 SecretId。"
             },
             "secret_key": {
-              "label": "Secret Key"
+              "label": "Secret Key",
+              "description": "腾讯云 SecretKey，由宿主 secret binding 保管。"
             },
             "security_token": {
-              "label": "Security Token（可选）"
+              "label": "Security Token（可选）",
+              "description": "使用临时（STS）密钥时必填的会话令牌；永久密钥留空即可。"
             },
             "username": {
               "label": "用户名",
-              "placeholder": "user",
-              "description": "WebDAV/SMB 的登录用户。"
+              "description": "登录名。WebDAV/SMB/pCloud/Seafile 用户；azurefiles/netstorage：账户；cloudinary：云空间名称；iclouddrive：Apple ID；filen/internxt/linkbox：邮箱；hdfs/swift/ulozto/protondrive：用户名。"
             },
             "domain": {
               "label": "域",
@@ -1397,7 +1367,7 @@
             },
             "password": {
               "label": "密码",
-              "description": "登录密码（WebDAV/FTP/SMB；FTP 用户留空即匿名）。SFTP（原生）支持密码；SFTP 仅支持密钥。"
+              "description": "登录密码或机密。WebDAV/FTP/SMB 密码（FTP 用户留空即匿名）；SFTP（原生）支持密码，SFTP 仅支持密钥；swift：存储密钥；sia：API 守护进程密码；netstorage：账户机密。"
             },
             "key": {
               "label": "私钥或私钥路径",
@@ -1413,27 +1383,22 @@
                 "Trust": "信任任意（不安全）"
               }
             },
-            "tunnel_jump_hosts": {
-              "label": "SSH 隧道跳板链",
-              "placeholder": "ops@j1.example.com:2222, j2.corp",
-              "description": "可选 SSH 跳板链（ssh -J 语法）：逗号分隔 [user@]host[:port]，最后一个为登录目标。仅支持密钥认证；仅 rclone 引擎。"
-            },
-            "tunnel_identity_file": {
-              "label": "SSH 隧道私钥",
-              "placeholder": "~/.ssh/id_ed25519",
-              "description": "隧道使用的私钥路径（可选）；留空使用 ssh 默认密钥与 agent。"
-            },
             "access_token": {
-              "label": "Access Token"
+              "label": "Access Token",
+              "description": "服务商签发的 OAuth 或 API 访问令牌（网盘服务及 box、drime、gofile）；OAuth 场景建议同时填写刷新令牌以便自动续期。"
             },
             "client_id": {
-              "label": "OAuth 客户端 ID"
+              "label": "OAuth 客户端 ID",
+              "placeholder": "your-app-client-id",
+              "description": "已注册应用的 OAuth 客户端 ID，用于配置了 OAuth 的云后端（网盘服务及 box、hidrive、huaweidrive、jottacloud、mailru、premiumizeme、putio、sharefile、zoho）。"
             },
             "client_secret": {
-              "label": "OAuth 客户端密钥"
+              "label": "OAuth 客户端密钥",
+              "description": "已注册应用的 OAuth 客户端密钥，由宿主 secret binding 保管。"
             },
             "refresh_token": {
-              "label": "OAuth 刷新令牌"
+              "label": "OAuth 刷新令牌",
+              "description": "OAuth 刷新令牌，用于在访问令牌过期后换取新令牌。"
             },
             "drive_type": {
               "label": "云盘类型",
@@ -1441,13 +1406,18 @@
                 "resource": "资源盘",
                 "share": "共享盘",
                 "backup": "备份盘"
-              }
+              },
+              "description": "选择要打开的阿里云盘空间：资源盘（个人）、共享盘或备份盘。"
             },
             "email": {
-              "label": "账户邮箱"
+              "label": "账户邮箱",
+              "placeholder": "you@example.com",
+              "description": "用于登录的 Koofr 账户邮箱。"
             },
             "repo_name": {
-              "label": "资料库名称"
+              "label": "资料库名称",
+              "placeholder": "My Library",
+              "description": "要打开的 Seafile 资料库名称（需已存在）。"
             },
             "read_only": {
               "label": "只读",
@@ -1464,6 +1434,11 @@
             "enable_virtual_host_style": {
               "label": "虚拟主机风格",
               "description": "以虚拟主机名（bucket.host）而非路径风格 URL 寻址存储桶；服务商要求时开启。"
+            },
+            "token": {
+              "label": "API 密钥 / 令牌",
+              "placeholder": "your-api-key-or-token",
+              "description": "API 密钥、令牌或访问授权，由宿主 secret binding 保管：fichier/filelu/pixeldrain/quatrix/shade 的 API 密钥、ulozto 应用令牌、linkbox 令牌、storj 访问授权、filen API 密钥、filefabric 永久令牌。"
             }
           }
         },
@@ -1482,7 +1457,8 @@
           "description": "基於 rclone 的儲存連線：本機檔案系統、S3/MinIO、阿里雲 OSS、騰訊雲 COS、Azure Blob、Google Cloud Storage、華為雲 OBS、WebDAV、FTP、SFTP、SMB/CIFS 或任意其他 rclone 後端。",
           "fields": {
             "display_name": {
-              "label": "連線名稱"
+              "label": "連線名稱",
+              "description": "顯示在連線清單中的名稱。"
             },
             "protocol": {
               "label": "通訊協定",
@@ -1525,7 +1501,6 @@
                 "filen": "Filen",
                 "filescom": "Files.com",
                 "gofile": "Gofile",
-                "gphotos": "Google 相簿",
                 "hasher": "Hasher",
                 "hdfs": "HDFS",
                 "hidrive": "HiDrive",
@@ -1540,7 +1515,6 @@
                 "mailru": "Mail.ru Cloud",
                 "mega": "Mega",
                 "netstorage": "Akamai NetStorage",
-                "oos": "Oracle Object Storage",
                 "opendrive": "OpenDrive",
                 "pikpak": "PikPak",
                 "pixeldrain": "Pixeldrain",
@@ -1559,7 +1533,8 @@
                 "ulozto": "Uloz.to",
                 "union": "Union",
                 "zoho": "Zoho WorkDrive"
-              }
+              },
+              "description": "選擇儲存後端：常見後端有專屬表單；通用後端重複使用下方通用欄位，額外選項以 JSON 提供。"
             },
             "root": {
               "label": "根路徑",
@@ -1571,9 +1546,9 @@
               "description": "拒絕任何超出所設定根路徑的操作。"
             },
             "config": {
-              "label": "參數（JSON）",
-              "placeholder": "{ \"endpoint\": \"https://host\", \"user\": \"me\" }",
-              "description": "所選協定的連線參數（JSON 物件）；各鍵名見 rclone 文件。"
+              "label": "進階選項（JSON）",
+              "placeholder": "{ \"encoding\": \"Slash,Dot\" }",
+              "description": "所選後端的可選附加選項，以 JSON 物件填寫，鍵名為 rclone 文件中的選項名。未知選項會被拒絕並列出有效名稱；常用設定請使用上方對應欄位。"
             },
             "container": {
               "label": "容器",
@@ -1606,13 +1581,11 @@
             },
             "endpoint": {
               "label": "端點",
-              "placeholder": "http://127.0.0.1:9000",
-              "description": "服務位址：物件儲存/WebDAV 用 https://host；FTP 用 ftp(s)://host[:21]；SFTP 用 ssh://user@host[:22]；SMB 用 host[:445]。"
+              "description": "服務位址。物件儲存/WebDAV：https://host；FTP：ftp(s)://host[:21]；SFTP：ssh://user@host[:22]；SMB：host[:445]；http：完整 URL；hdfs：namenode:8020；netstorage/quatrix：主機名稱；azurefiles：可選服務 URL。"
             },
             "share": {
               "label": "共用名稱",
-              "placeholder": "media",
-              "description": "SMB 共用名稱可選；留空則列出伺服器共用。共用名稱/子路徑形式以子路徑為根目錄。"
+              "description": "SMB 與 azurefiles 的可選共享名稱；留空則列出伺服器共享。share/sub/path 以子路徑作為根目錄。"
             },
             "region": {
               "label": "區域",
@@ -1621,26 +1594,27 @@
             },
             "access_key_id": {
               "label": "Access Key ID",
-              "placeholder": "my-access-key-id",
-              "description": "S3/OSS 的 Access Key ID。"
+              "description": "存取金鑰或公開識別：S3/OBS/OSS 的 Access Key ID；b2 帳戶 ID；azurefiles 儲存體帳戶；qingstor/internetarchive/sugarsync 存取金鑰；cloudinary API 金鑰；imagekit 公鑰。"
             },
             "secret_access_key": {
               "label": "Secret Access Key",
-              "description": "金鑰由宿主 secret binding 保管。"
+              "description": "由宿主 secret binding 保管的機密：S3/OBS/OSS 的 Secret Key；b2 應用程式金鑰；azurefiles 帳戶金鑰；qingstor/internetarchive 存取私鑰；sugarsync 私有存取金鑰；cloudinary API 金鑰；imagekit 私鑰。"
             },
             "secret_id": {
-              "label": "Secret ID"
+              "label": "Secret ID",
+              "description": "騰訊雲 API 金鑰對的 SecretId。"
             },
             "secret_key": {
-              "label": "Secret Key"
+              "label": "Secret Key",
+              "description": "騰訊雲 SecretKey，由宿主 secret binding 保管。"
             },
             "security_token": {
-              "label": "Security Token（選填）"
+              "label": "Security Token（選填）",
+              "description": "使用暫時（STS）金鑰時必填的工作階段權杖；永久金鑰留空即可。"
             },
             "username": {
               "label": "使用者名稱",
-              "placeholder": "user",
-              "description": "WebDAV/SMB 的登入使用者。"
+              "description": "登入名稱。WebDAV/SMB/pCloud/Seafile 使用者；azurefiles/netstorage：帳戶；cloudinary：雲端空間名稱；iclouddrive：Apple ID；filen/internxt/linkbox：信箱；hdfs/swift/ulozto/protondrive：使用者名稱。"
             },
             "domain": {
               "label": "網域",
@@ -1654,7 +1628,7 @@
             },
             "password": {
               "label": "密碼",
-              "description": "登入密碼（WebDAV/FTP/SMB；FTP 使用者留空即匿名）。SFTP（原生）支援密碼；SFTP 僅支援金鑰。"
+              "description": "登入密碼或機密。WebDAV/FTP/SMB 密碼（FTP 使用者留空即匿名）；SFTP（原生）支援密碼，SFTP 僅支援金鑰；swift：儲存金鑰；sia：API 常駐程式密碼；netstorage：帳戶機密。"
             },
             "key": {
               "label": "私鑰或私鑰路徑",
@@ -1670,27 +1644,22 @@
                 "Trust": "信任任意（不安全）"
               }
             },
-            "tunnel_jump_hosts": {
-              "label": "SSH 通道跳板鏈",
-              "placeholder": "ops@j1.example.com:2222, j2.corp",
-              "description": "可選 SSH 跳板鏈（ssh -J 語法）：逗號分隔 [user@]host[:port]，最後一個為登入目標。僅支援金鑰認證；僅 rclone 引擎。"
-            },
-            "tunnel_identity_file": {
-              "label": "SSH 通道私鑰",
-              "placeholder": "~/.ssh/id_ed25519",
-              "description": "通道使用的私鑰路徑（可選）；留空使用 ssh 預設金鑰與 agent。"
-            },
             "access_token": {
-              "label": "Access Token"
+              "label": "Access Token",
+              "description": "服務商簽發的 OAuth 或 API 存取權杖（網盤服務及 box、drime、gofile）；OAuth 場景建議同時填寫重新整理權杖以便自動續期。"
             },
             "client_id": {
-              "label": "OAuth 用戶端 ID"
+              "label": "OAuth 用戶端 ID",
+              "placeholder": "your-app-client-id",
+              "description": "已註冊應用的 OAuth 用戶端 ID，用於設定了 OAuth 的雲端後端（網盤服務及 box、hidrive、huaweidrive、jottacloud、mailru、premiumizeme、putio、sharefile、zoho）。"
             },
             "client_secret": {
-              "label": "OAuth 用戶端密鑰"
+              "label": "OAuth 用戶端密鑰",
+              "description": "已註冊應用的 OAuth 用戶端金鑰，由宿主 secret binding 保管。"
             },
             "refresh_token": {
-              "label": "OAuth 更新權杖"
+              "label": "OAuth 更新權杖",
+              "description": "OAuth 重新整理權杖，用於在存取權杖過期後換取新權杖。"
             },
             "drive_type": {
               "label": "雲端硬碟類型",
@@ -1698,13 +1667,18 @@
                 "resource": "資源硬碟",
                 "share": "共用硬碟",
                 "backup": "備份硬碟"
-              }
+              },
+              "description": "選擇要開啟的阿里雲盤空間：資源盤（個人）、共享盤或備份盤。"
             },
             "email": {
-              "label": "帳戶電子郵件"
+              "label": "帳戶電子郵件",
+              "placeholder": "you@example.com",
+              "description": "用於登入的 Koofr 帳戶信箱。"
             },
             "repo_name": {
-              "label": "資料庫名稱"
+              "label": "資料庫名稱",
+              "placeholder": "My Library",
+              "description": "要開啟的 Seafile 資料庫名稱（需已存在）。"
             },
             "read_only": {
               "label": "唯讀",
@@ -1721,6 +1695,11 @@
             "enable_virtual_host_style": {
               "label": "虛擬主機風格",
               "description": "以虛擬主機名（bucket.host）而非路徑風格 URL 定址儲存桶；服務商要求時開啟。"
+            },
+            "token": {
+              "label": "API 金鑰 / 權杖",
+              "placeholder": "your-api-key-or-token",
+              "description": "API 金鑰、權杖或存取授權，由宿主 secret binding 保管：fichier/filelu/pixeldrain/quatrix/shade 的 API 金鑰、ulozto 應用程式權杖、linkbox 權杖、storj 存取授權、filen API 金鑰、filefabric 永久權杖。"
             }
           }
         },
@@ -1739,7 +1718,8 @@
           "description": "Storage connection backed by rclone: local filesystem, S3/MinIO, Azure Blob, Google Cloud Storage, Huawei OBS, Alibaba OSS, Tencent COS, WebDAV, FTP, SFTP, SMB/CIFS, or any other rclone backend.",
           "fields": {
             "display_name": {
-              "label": "Connection name"
+              "label": "Connection name",
+              "description": "Name shown in the connection list."
             },
             "protocol": {
               "label": "Protocol",
@@ -1782,7 +1762,6 @@
                 "filen": "Filen",
                 "filescom": "Files.com",
                 "gofile": "Gofile",
-                "gphotos": "Google Photos",
                 "hasher": "Hasher",
                 "hdfs": "HDFS",
                 "hidrive": "HiDrive",
@@ -1797,7 +1776,6 @@
                 "mailru": "Mail.ru Cloud",
                 "mega": "Mega",
                 "netstorage": "Akamai NetStorage",
-                "oos": "Oracle Object Storage",
                 "opendrive": "OpenDrive",
                 "pikpak": "PikPak",
                 "pixeldrain": "Pixeldrain",
@@ -1816,7 +1794,8 @@
                 "ulozto": "Uloz.to",
                 "union": "Union",
                 "zoho": "Zoho WorkDrive"
-              }
+              },
+              "description": "Pick a storage backend: popular backends get a dedicated form; generic backends reuse the common fields and take extra options as JSON."
             },
             "root": {
               "label": "Root path",
@@ -1828,9 +1807,9 @@
               "description": "Reject any path outside the configured root."
             },
             "config": {
-              "label": "Parameters (JSON)",
-              "placeholder": "{ \"endpoint\": \"https://host\", \"user\": \"me\" }",
-              "description": "Parameters for the selected protocol as a JSON object; see rclone's docs for each backend's keys."
+              "label": "Advanced options (JSON)",
+              "placeholder": "{ \"encoding\": \"Slash,Dot\" }",
+              "description": "Optional extra options for the selected backend as a JSON object, using the option names from rclone's docs. Unknown options are rejected with the list of valid names; common settings have dedicated fields above."
             },
             "container": {
               "label": "Container",
@@ -1863,13 +1842,11 @@
             },
             "endpoint": {
               "label": "Endpoint",
-              "placeholder": "http://127.0.0.1:9000",
-              "description": "Service address: https://host for object storage and WebDAV; ftp(s)://host[:21] for FTP; ssh://user@host[:22] for SFTP; host[:445] for SMB."
+              "description": "Service address. Object storage/WebDAV: https://host; FTP: ftp(s)://host[:21]; SFTP: ssh://user@host[:22]; SMB: host[:445]; http: full URL; hdfs: namenode:8020; netstorage/quatrix: host name; azurefiles: optional service URL."
             },
             "share": {
               "label": "Share",
-              "placeholder": "media",
-              "description": "Optional SMB share; leave empty to list server shares. share/sub/path uses the sub-path as the root."
+              "description": "Optional share for SMB and azurefiles; leave empty to list server shares. share/sub/path uses the sub-path as the root."
             },
             "region": {
               "label": "Region",
@@ -1878,26 +1855,27 @@
             },
             "access_key_id": {
               "label": "Access key ID",
-              "placeholder": "my-access-key-id",
-              "description": "Access key ID for S3/OSS."
+              "description": "Access key or public identifier: S3/OBS/OSS access key ID; b2 account ID; azurefiles storage account; qingstor/internetarchive/sugarsync access key; cloudinary API key; imagekit public key."
             },
             "secret_access_key": {
               "label": "Secret access key",
-              "description": "Secret key kept in the host secret binding."
+              "description": "Secret kept in the host secret binding: S3/OBS/OSS secret key; b2 application key; azurefiles account key; qingstor/internetarchive access secret; sugarsync private access key; cloudinary API secret; imagekit private key."
             },
             "secret_id": {
-              "label": "Secret ID"
+              "label": "Secret ID",
+              "description": "Tencent Cloud SecretId of the API key pair."
             },
             "secret_key": {
-              "label": "Secret key"
+              "label": "Secret key",
+              "description": "Tencent Cloud SecretKey, kept in the host secret binding."
             },
             "security_token": {
-              "label": "Security token (optional)"
+              "label": "Security token (optional)",
+              "description": "Session token required when signing in with temporary (STS) credentials; leave empty for permanent keys."
             },
             "username": {
               "label": "Username",
-              "placeholder": "user",
-              "description": "Login user for WebDAV/SMB."
+              "description": "Login name. WebDAV/SMB/pCloud/Seafile user; azurefiles/netstorage: account; cloudinary: cloud name; iclouddrive: Apple ID; filen/internxt/linkbox: email; hdfs/swift/ulozto/protondrive: user name."
             },
             "domain": {
               "label": "Domain",
@@ -1911,7 +1889,7 @@
             },
             "password": {
               "label": "Password",
-              "description": "Login password (WebDAV/FTP/SMB; FTP with empty user = anonymous). Native SFTP accepts passwords; plain SFTP is key-only."
+              "description": "Login password or secret. WebDAV/FTP/SMB password (FTP with empty user = anonymous); native SFTP accepts passwords, plain SFTP is key-only; swift: storage key; sia: API daemon password; netstorage: account secret."
             },
             "key": {
               "label": "Private key or path",
@@ -1927,27 +1905,22 @@
                 "Trust": "Trust (any key, insecure)"
               }
             },
-            "tunnel_jump_hosts": {
-              "label": "SSH tunnel jump hosts",
-              "placeholder": "ops@j1.example.com:2222, j2.corp",
-              "description": "Optional SSH jump chain (ssh -J syntax): comma-separated [user@]host[:port]; the last hop is the login target. Key-based auth only; rclone engine only."
-            },
-            "tunnel_identity_file": {
-              "label": "SSH tunnel private key",
-              "placeholder": "~/.ssh/id_ed25519",
-              "description": "Optional private key path for the tunnel; leave empty to use ssh default keys and the agent."
-            },
             "access_token": {
-              "label": "Access token"
+              "label": "Access token",
+              "description": "OAuth or API access token issued by the provider (drive services, box, drime, gofile); add a refresh token for OAuth so it renews automatically."
             },
             "client_id": {
-              "label": "OAuth client ID"
+              "label": "OAuth client ID",
+              "placeholder": "your-app-client-id",
+              "description": "OAuth client ID of a registered application, for OAuth-configured cloud backends (drive services, box, hidrive, huaweidrive, jottacloud, mailru, premiumizeme, putio, sharefile, zoho)."
             },
             "client_secret": {
-              "label": "OAuth client secret"
+              "label": "OAuth client secret",
+              "description": "OAuth client secret of the registered application, kept in the host secret binding."
             },
             "refresh_token": {
-              "label": "OAuth refresh token"
+              "label": "OAuth refresh token",
+              "description": "OAuth refresh token used to mint new access tokens when the current one expires."
             },
             "drive_type": {
               "label": "Drive type",
@@ -1955,13 +1928,18 @@
                 "resource": "Resource drive",
                 "share": "Share drive",
                 "backup": "Backup drive"
-              }
+              },
+              "description": "Which Alibaba Drive space to open: personal (resource), shared, or backup."
             },
             "email": {
-              "label": "Account email"
+              "label": "Account email",
+              "placeholder": "you@example.com",
+              "description": "Koofr account email used to sign in."
             },
             "repo_name": {
-              "label": "Library name"
+              "label": "Library name",
+              "placeholder": "My Library",
+              "description": "Name of an existing Seafile library to open."
             },
             "read_only": {
               "label": "Read only",
@@ -1978,6 +1956,11 @@
             "enable_virtual_host_style": {
               "label": "Virtual-host style",
               "description": "Address buckets as virtual hostnames (bucket.host) instead of path-style URLs; enable when the provider requires it."
+            },
+            "token": {
+              "label": "API key / token",
+              "placeholder": "your-api-key-or-token",
+              "description": "API key, token, or access grant, kept in the host secret binding: fichier/filelu/pixeldrain/quatrix/shade API key, ulozto app token, linkbox token, storj access grant, filen API key, filefabric permanent token."
             }
           }
         },
@@ -1996,7 +1979,8 @@
           "description": "Conexión de almacenamiento basada en rclone: sistema de archivos local, S3/MinIO, OSS de Alibaba, COS de Tencent, Azure Blob, Google Cloud Storage, OBS de Huawei, WebDAV, FTP, SFTP, SMB/CIFS o cualquier otro backend de rclone.",
           "fields": {
             "display_name": {
-              "label": "Nombre de la conexión"
+              "label": "Nombre de la conexión",
+              "description": "Nombre mostrado en la lista de conexiones."
             },
             "protocol": {
               "label": "Protocolo",
@@ -2039,7 +2023,6 @@
                 "filen": "Filen",
                 "filescom": "Files.com",
                 "gofile": "Gofile",
-                "gphotos": "Google Photos",
                 "hasher": "Hasher",
                 "hdfs": "HDFS",
                 "hidrive": "HiDrive",
@@ -2054,7 +2037,6 @@
                 "mailru": "Mail.ru Cloud",
                 "mega": "Mega",
                 "netstorage": "Akamai NetStorage",
-                "oos": "Oracle Object Storage",
                 "opendrive": "OpenDrive",
                 "pikpak": "PikPak",
                 "pixeldrain": "Pixeldrain",
@@ -2073,7 +2055,8 @@
                 "ulozto": "Uloz.to",
                 "union": "Union",
                 "zoho": "Zoho WorkDrive"
-              }
+              },
+              "description": "Elija un backend de almacenamiento: los más comunes tienen formulario propio; los genéricos reutilizan los campos comunes y aceptan opciones extra en JSON."
             },
             "root": {
               "label": "Ruta raíz",
@@ -2085,9 +2068,9 @@
               "description": "Rechaza cualquier ruta fuera de la raíz configurada."
             },
             "config": {
-              "label": "Parámetros (JSON)",
-              "placeholder": "{ \"endpoint\": \"https://host\", \"user\": \"me\" }",
-              "description": "Parámetros del protocolo elegido como objeto JSON; consulta la documentación de rclone para las claves de cada backend."
+              "label": "Opciones avanzadas (JSON)",
+              "placeholder": "{ \"encoding\": \"Slash,Dot\" }",
+              "description": "Opciones extra opcionales del backend seleccionado como objeto JSON, con los nombres de opción de la documentación de rclone. Las opciones desconocidas se rechazan con la lista de nombres válidos; los ajustes comunes tienen campos propios más arriba."
             },
             "container": {
               "label": "Contenedor",
@@ -2120,13 +2103,11 @@
             },
             "endpoint": {
               "label": "Endpoint",
-              "placeholder": "http://127.0.0.1:9000",
-              "description": "Dirección del servicio: https://host para object storage y WebDAV; ftp(s)://host[:21] para FTP; ssh://user@host[:22] para SFTP; host[:445] para SMB."
+              "description": "Dirección del servicio. Almacenamiento de objetos/WebDAV: https://host; FTP: ftp(s)://host[:21]; SFTP: ssh://user@host[:22]; SMB: host[:445]; http: URL completa; hdfs: namenode:8020; netstorage/quatrix: nombre de host; azurefiles: URL de servicio opcional."
             },
             "share": {
               "label": "Recurso compartido",
-              "placeholder": "media",
-              "description": "Recurso compartido SMB opcional; déjelo vacío para listar los recursos del servidor. recurso/subruta usa la subruta como raíz."
+              "description": "Recurso compartido opcional para SMB y azurefiles; déjelo vacío para listar los recursos del servidor. share/sub/path usa la subruta como raíz."
             },
             "region": {
               "label": "Región",
@@ -2135,26 +2116,27 @@
             },
             "access_key_id": {
               "label": "ID de clave de acceso",
-              "placeholder": "mi-id-de-acceso",
-              "description": "ID de clave de acceso para S3/OSS."
+              "description": "Clave de acceso o identificador público: Access Key ID de S3/OBS/OSS; ID de cuenta de b2; cuenta de almacenamiento de azurefiles; clave de acceso de qingstor/internetarchive/sugarsync; clave de API de cloudinary; clave pública de imagekit."
             },
             "secret_access_key": {
               "label": "Clave de acceso secreta",
-              "description": "Clave secreta guardada en el secret binding del host."
+              "description": "Secreto guardado en el binding secreto del host: clave secreta de S3/OBS/OSS; clave de aplicación de b2; clave de cuenta de azurefiles; secreto de acceso de qingstor/internetarchive; clave de acceso privada de sugarsync; secreto de API de cloudinary; clave privada de imagekit."
             },
             "secret_id": {
-              "label": "ID secreto"
+              "label": "ID secreto",
+              "description": "SecretId del par de claves de API de Tencent Cloud."
             },
             "secret_key": {
-              "label": "Clave secreta"
+              "label": "Clave secreta",
+              "description": "SecretKey de Tencent Cloud, guardado en el binding secreto del host."
             },
             "security_token": {
-              "label": "Token de seguridad (opcional)"
+              "label": "Token de seguridad (opcional)",
+              "description": "Token de sesión necesario al autenticarse con credenciales temporales (STS); déjelo vacío para claves permanentes."
             },
             "username": {
               "label": "Usuario",
-              "placeholder": "usuario",
-              "description": "Usuario de inicio de sesión para WebDAV/SMB."
+              "description": "Nombre de inicio de sesión. Usuario de WebDAV/SMB/pCloud/Seafile; azurefiles/netstorage: cuenta; cloudinary: nombre de la nube; iclouddrive: Apple ID; filen/internxt/linkbox: correo; hdfs/swift/ulozto/protondrive: nombre de usuario."
             },
             "domain": {
               "label": "Dominio",
@@ -2168,7 +2150,7 @@
             },
             "password": {
               "label": "Contraseña",
-              "description": "Contraseña de inicio de sesión (WebDAV/FTP/SMB; FTP con usuario vacío = anónimo). SFTP (nativo) acepta contraseñas; SFTP normal solo acepta clave."
+              "description": "Contraseña o secreto de inicio de sesión. Contraseña de WebDAV/FTP/SMB (FTP con usuario vacío = anónimo); SFTP (nativo) acepta contraseñas, SFTP normal solo clave; swift: clave de almacenamiento; sia: contraseña del demonio API; netstorage: secreto de la cuenta."
             },
             "key": {
               "label": "Clave privada o ruta",
@@ -2184,27 +2166,22 @@
                 "Trust": "Confiar (cualquier clave, inseguro)"
               }
             },
-            "tunnel_jump_hosts": {
-              "label": "Saltos del túnel SSH",
-              "placeholder": "ops@j1.example.com:2222, j2.corp",
-              "description": "Cadena opcional de saltos SSH (sintaxis ssh -J): [usuario@]host[:puerto] separados por comas; el último salto es el destino de login. Solo autenticación por clave; solo motor rclone."
-            },
-            "tunnel_identity_file": {
-              "label": "Clave privada del túnel SSH",
-              "placeholder": "~/.ssh/id_ed25519",
-              "description": "Ruta opcional de la clave privada para el túnel; déjela vacía para usar las claves predeterminadas de ssh y el agente."
-            },
             "access_token": {
-              "label": "Token de acceso"
+              "label": "Token de acceso",
+              "description": "Token de acceso OAuth o de API emitido por el proveedor (servicios de unidad, box, drime, gofile); para OAuth añada un token de renovación para que se renueve automáticamente."
             },
             "client_id": {
-              "label": "ID de cliente OAuth"
+              "label": "ID de cliente OAuth",
+              "placeholder": "your-app-client-id",
+              "description": "ID de cliente OAuth de una aplicación registrada, para los backends en la nube configurados con OAuth (servicios de unidad, box, hidrive, huaweidrive, jottacloud, mailru, premiumizeme, putio, sharefile, zoho)."
             },
             "client_secret": {
-              "label": "Secreto de cliente OAuth"
+              "label": "Secreto de cliente OAuth",
+              "description": "Secreto de cliente OAuth de la aplicación registrada, guardado en el binding secreto del host."
             },
             "refresh_token": {
-              "label": "Token de actualización OAuth"
+              "label": "Token de actualización OAuth",
+              "description": "Token de renovación OAuth usado para obtener nuevos tokens de acceso cuando el actual caduca."
             },
             "drive_type": {
               "label": "Tipo de unidad",
@@ -2212,13 +2189,18 @@
                 "resource": "Unidad de recursos",
                 "share": "Unidad compartida",
                 "backup": "Unidad de respaldo"
-              }
+              },
+              "description": "Espacio de Alibaba Drive que se abrirá: personal (recurso), compartido o de copia de seguridad."
             },
             "email": {
-              "label": "Correo de la cuenta"
+              "label": "Correo de la cuenta",
+              "placeholder": "you@example.com",
+              "description": "Correo de la cuenta de Koofr usado para iniciar sesión."
             },
             "repo_name": {
-              "label": "Nombre de biblioteca"
+              "label": "Nombre de biblioteca",
+              "placeholder": "My Library",
+              "description": "Nombre de una biblioteca de Seafile existente que se abrirá."
             },
             "read_only": {
               "label": "Solo lectura",
@@ -2235,6 +2217,11 @@
             "enable_virtual_host_style": {
               "label": "Estilo virtual-host",
               "description": "Direcciona el bucket como nombre de host virtual (bucket.host) en vez de URL estilo ruta; actívalo si el proveedor lo exige."
+            },
+            "token": {
+              "label": "Clave de API / token",
+              "placeholder": "your-api-key-or-token",
+              "description": "Clave de API, token o access grant, guardado en el binding secreto del host: clave de API de fichier/filelu/pixeldrain/quatrix/shade, token de aplicación de ulozto, token de linkbox, access grant de storj, clave de API de filen, token permanente de filefabric."
             }
           }
         },
@@ -2253,7 +2240,8 @@
           "description": "Connessione di archiviazione basata su rclone: filesystem locale, S3/MinIO, OSS di Alibaba, COS Tencent, Azure Blob, Google Cloud Storage, OBS di Huawei, WebDAV, FTP, SFTP, SMB/CIFS o qualsiasi altro backend rclone.",
           "fields": {
             "display_name": {
-              "label": "Nome connessione"
+              "label": "Nome connessione",
+              "description": "Nome mostrato nell'elenco delle connessioni."
             },
             "protocol": {
               "label": "Protocollo",
@@ -2296,7 +2284,6 @@
                 "filen": "Filen",
                 "filescom": "Files.com",
                 "gofile": "Gofile",
-                "gphotos": "Google Photos",
                 "hasher": "Hasher",
                 "hdfs": "HDFS",
                 "hidrive": "HiDrive",
@@ -2311,7 +2298,6 @@
                 "mailru": "Mail.ru Cloud",
                 "mega": "Mega",
                 "netstorage": "Akamai NetStorage",
-                "oos": "Oracle Object Storage",
                 "opendrive": "OpenDrive",
                 "pikpak": "PikPak",
                 "pixeldrain": "Pixeldrain",
@@ -2330,7 +2316,8 @@
                 "ulozto": "Uloz.to",
                 "union": "Union",
                 "zoho": "Zoho WorkDrive"
-              }
+              },
+              "description": "Scegliere un backend di archiviazione: i più comuni hanno un modulo dedicato; quelli generici riutilizzano i campi comuni e accettano opzioni extra in JSON."
             },
             "root": {
               "label": "Percorso radice",
@@ -2342,9 +2329,9 @@
               "description": "Rifiuta qualsiasi percorso fuori dalla radice configurata."
             },
             "config": {
-              "label": "Parametri (JSON)",
-              "placeholder": "{ \"endpoint\": \"https://host\", \"user\": \"me\" }",
-              "description": "Parametri del protocollo scelto come oggetto JSON; vedi la documentazione di rclone per le chiavi di ogni backend."
+              "label": "Opzioni avanzate (JSON)",
+              "placeholder": "{ \"encoding\": \"Slash,Dot\" }",
+              "description": "Opzioni extra facoltative del backend selezionato come oggetto JSON, con i nomi di opzione della documentazione di rclone. Le opzioni sconosciute vengono rifiutate con l'elenco dei nomi validi; le impostazioni comuni hanno i campi dedicati sopra."
             },
             "container": {
               "label": "Contenitore",
@@ -2377,13 +2364,11 @@
             },
             "endpoint": {
               "label": "Endpoint",
-              "placeholder": "http://127.0.0.1:9000",
-              "description": "Indirizzo del servizio: https://host per object storage e WebDAV; ftp(s)://host[:21] per FTP; ssh://user@host[:22] per SFTP; host[:445] per SMB."
+              "description": "Indirizzo del servizio. Object storage/WebDAV: https://host; FTP: ftp(s)://host[:21]; SFTP: ssh://user@host[:22]; SMB: host[:445]; http: URL completo; hdfs: namenode:8020; netstorage/quatrix: nome host; azurefiles: URL di servizio opzionale."
             },
             "share": {
               "label": "Condivisione",
-              "placeholder": "media",
-              "description": "Condivisione SMB facoltativa; vuoto per elencare le condivisioni del server. condivisione/sottopercorso usa il sottopercorso come radice."
+              "description": "Condivisione opzionale per SMB e azurefiles; lasciare vuoto per elencare le condivisioni del server. share/sub/path usa il sottopercorso come radice."
             },
             "region": {
               "label": "Regione",
@@ -2392,26 +2377,27 @@
             },
             "access_key_id": {
               "label": "ID chiave di accesso",
-              "placeholder": "mio-id-accesso",
-              "description": "ID chiave di accesso per S3/OSS."
+              "description": "Chiave di accesso o identificatore pubblico: Access Key ID di S3/OBS/OSS; ID account di b2; account di archiviazione di azurefiles; chiave di accesso di qingstor/internetarchive/sugarsync; chiave API di cloudinary; chiave pubblica di imagekit."
             },
             "secret_access_key": {
               "label": "Chiave di accesso segreta",
-              "description": "Chiave segreta custodita nel secret binding dell'host."
+              "description": "Segreto conservato nel binding segreto dell'host: chiave segreta di S3/OBS/OSS; chiave applicazione di b2; chiave account di azurefiles; segreto di accesso di qingstor/internetarchive; chiave di accesso privata di sugarsync; segreto API di cloudinary; chiave privata di imagekit."
             },
             "secret_id": {
-              "label": "ID segreto"
+              "label": "ID segreto",
+              "description": "SecretId della coppia di chiavi API di Tencent Cloud."
             },
             "secret_key": {
-              "label": "Chiave segreta"
+              "label": "Chiave segreta",
+              "description": "SecretKey di Tencent Cloud, conservato nel binding segreto dell'host."
             },
             "security_token": {
-              "label": "Token di sicurezza (opzionale)"
+              "label": "Token di sicurezza (opzionale)",
+              "description": "Token di sessione richiesto con credenziali temporanee (STS); lasciare vuoto per chiavi permanenti."
             },
             "username": {
               "label": "Nome utente",
-              "placeholder": "utente",
-              "description": "Utente di accesso per WebDAV/SMB."
+              "description": "Nome di accesso. Utente WebDAV/SMB/pCloud/Seafile; azurefiles/netstorage: account; cloudinary: nome cloud; iclouddrive: Apple ID; filen/internxt/linkbox: email; hdfs/swift/ulozto/protondrive: nome utente."
             },
             "domain": {
               "label": "Dominio",
@@ -2425,7 +2411,7 @@
             },
             "password": {
               "label": "Password",
-              "description": "Password di accesso (WebDAV/FTP/SMB; FTP con utente vuoto = anonimo). SFTP (nativo) accetta password; SFTP normale solo chiavi."
+              "description": "Password o segreto di accesso. Password WebDAV/FTP/SMB (FTP con utente vuoto = anonimo); SFTP (nativo) accetta password, SFTP normale solo chiavi; swift: chiave di storage; sia: password del demone API; netstorage: segreto dell'account."
             },
             "key": {
               "label": "Chiave privata o percorso",
@@ -2441,27 +2427,22 @@
                 "Trust": "Fiducia (qualsiasi chiave, non sicuro)"
               }
             },
-            "tunnel_jump_hosts": {
-              "label": "Jump host del tunnel SSH",
-              "placeholder": "ops@j1.example.com:2222, j2.corp",
-              "description": "Catena facoltativa di jump host SSH (sintassi ssh -J): voci [utente@]host[:porta] separate da virgole; l'ultimo salto è la destinazione di accesso. Solo autenticazione a chiave; solo motore rclone."
-            },
-            "tunnel_identity_file": {
-              "label": "Chiave privata del tunnel SSH",
-              "placeholder": "~/.ssh/id_ed25519",
-              "description": "Percorso facoltativo della chiave privata per il tunnel; lasciare vuoto per usare le chiavi predefinite di ssh e l'agente."
-            },
             "access_token": {
-              "label": "Token di accesso"
+              "label": "Token di accesso",
+              "description": "Token di accesso OAuth o API rilasciato dal provider (servizi drive, box, drime, gofile); per OAuth aggiungere un refresh token per il rinnovo automatico."
             },
             "client_id": {
-              "label": "ID client OAuth"
+              "label": "ID client OAuth",
+              "placeholder": "your-app-client-id",
+              "description": "Client ID OAuth di un'applicazione registrata, per i backend cloud configurati con OAuth (servizi drive, box, hidrive, huaweidrive, jottacloud, mailru, premiumizeme, putio, sharefile, zoho)."
             },
             "client_secret": {
-              "label": "Segreto client OAuth"
+              "label": "Segreto client OAuth",
+              "description": "Client secret OAuth dell'applicazione registrata, conservato nel binding segreto dell'host."
             },
             "refresh_token": {
-              "label": "Token di aggiornamento OAuth"
+              "label": "Token di aggiornamento OAuth",
+              "description": "Refresh token OAuth usato per ottenere nuovi token di accesso alla scadenza di quello corrente."
             },
             "drive_type": {
               "label": "Tipo di drive",
@@ -2469,13 +2450,18 @@
                 "resource": "Drive risorse",
                 "share": "Drive condiviso",
                 "backup": "Drive di backup"
-              }
+              },
+              "description": "Spazio di Alibaba Drive da aprire: personale (resource), condiviso o di backup."
             },
             "email": {
-              "label": "Email account"
+              "label": "Email account",
+              "placeholder": "you@example.com",
+              "description": "Email dell'account Koofr usata per l'accesso."
             },
             "repo_name": {
-              "label": "Nome libreria"
+              "label": "Nome libreria",
+              "placeholder": "My Library",
+              "description": "Nome di una libreria Seafile esistente da aprire."
             },
             "read_only": {
               "label": "Sola lettura",
@@ -2492,6 +2478,11 @@
             "enable_virtual_host_style": {
               "label": "Stile virtual-host",
               "description": "Indirizza il bucket come nome host virtuale (bucket.host) invece che URL in stile percorso; attivalo se il provider lo richiede."
+            },
+            "token": {
+              "label": "Chiave API / token",
+              "placeholder": "your-api-key-or-token",
+              "description": "Chiave API, token o access grant, conservato nel binding segreto dell'host: chiave API di fichier/filelu/pixeldrain/quatrix/shade, token applicazione di ulozto, token di linkbox, access grant di storj, chiave API di filen, token permanente di filefabric."
             }
           }
         },
@@ -2510,7 +2501,8 @@
           "description": "rclone ベースのストレージ接続：ローカルファイルシステム、S3/MinIO、Alibaba OSS、Tencent COS、Azure Blob、Google Cloud Storage、Huawei OBS、WebDAV、FTP、SFTP、SMB/CIFS、またはその他の任意の rclone バックエンド。",
           "fields": {
             "display_name": {
-              "label": "接続名"
+              "label": "接続名",
+              "description": "接続リストに表示される名前です。"
             },
             "protocol": {
               "label": "プロトコル",
@@ -2553,7 +2545,6 @@
                 "filen": "Filen",
                 "filescom": "Files.com",
                 "gofile": "Gofile",
-                "gphotos": "Google Photos",
                 "hasher": "Hasher",
                 "hdfs": "HDFS",
                 "hidrive": "HiDrive",
@@ -2568,7 +2559,6 @@
                 "mailru": "Mail.ru Cloud",
                 "mega": "Mega",
                 "netstorage": "Akamai NetStorage",
-                "oos": "Oracle Object Storage",
                 "opendrive": "OpenDrive",
                 "pikpak": "PikPak",
                 "pixeldrain": "Pixeldrain",
@@ -2587,7 +2577,8 @@
                 "ulozto": "Uloz.to",
                 "union": "Union",
                 "zoho": "Zoho WorkDrive"
-              }
+              },
+              "description": "ストレージバックエンドを選択します。主要なバックエンドには専用フォームがあり、汎用バックエンドは共通フィールドを再利用し、追加オプションは JSON で設定します。"
             },
             "root": {
               "label": "ルートパス",
@@ -2599,9 +2590,9 @@
               "description": "設定されたルート外のパスを拒否します。"
             },
             "config": {
-              "label": "パラメーター（JSON）",
-              "placeholder": "{ \"endpoint\": \"https://host\", \"user\": \"me\" }",
-              "description": "選択したプロトコルの接続パラメーター（JSON オブジェクト）。キー名は rclone のドキュメントを参照。"
+              "label": "詳細オプション（JSON）",
+              "placeholder": "{ \"encoding\": \"Slash,Dot\" }",
+              "description": "選択したバックエンドの任意の追加オプションを JSON オブジェクトで設定します。キーは rclone ドキュメントのオプション名です。不明なオプションは有効な名前一覧とともに拒否されます。よく使う設定は上の専用フィールドをご利用ください。"
             },
             "container": {
               "label": "コンテナー",
@@ -2634,13 +2625,11 @@
             },
             "endpoint": {
               "label": "エンドポイント",
-              "placeholder": "http://127.0.0.1:9000",
-              "description": "サービスのアドレス：オブジェクトストレージ/WebDAV は https://host、FTP は ftp(s)://host[:21]、SFTP は ssh://user@host[:22]、SMB は host[:445]。"
+              "description": "サービスアドレス。オブジェクトストレージ/WebDAV：https://host、FTP：ftp(s)://host[:21]、SFTP：ssh://user@host[:22]、SMB：host[:445]、http：完全な URL、hdfs：namenode:8020、netstorage/quatrix：ホスト名、azurefiles：任意のサービス URL。"
             },
             "share": {
               "label": "共有名",
-              "placeholder": "media",
-              "description": "SMB 共有名（任意）。空欄でサーバーの共有一覧を表示します。共有名/サブパス形式ではサブパスをルートにします。"
+              "description": "SMB と azurefiles の任意の共有名。空欄でサーバーの共有一覧を表示します。share/sub/path はサブパスをルートとして扱います。"
             },
             "region": {
               "label": "リージョン",
@@ -2649,26 +2638,27 @@
             },
             "access_key_id": {
               "label": "アクセスキー ID",
-              "placeholder": "my-access-key-id",
-              "description": "S3/OSS のアクセスキー ID。"
+              "description": "アクセスキーまたは公開識別子：S3/OBS/OSS の Access Key ID、b2 のアカウント ID、azurefiles のストレージアカウント、qingstor/internetarchive/sugarsync のアクセスキー、cloudinary の API キー、imagekit の公開キー。"
             },
             "secret_access_key": {
               "label": "シークレットアクセスキー",
-              "description": "シークレットはホストの secret binding で保管されます。"
+              "description": "ホストの secret binding に保存されるシークレット：S3/OBS/OSS のシークレットキー、b2 のアプリケーションキー、azurefiles のアカウントキー、qingstor/internetarchive のアクセスシークレット、sugarsync のプライベートアクセスキー、cloudinary の API シークレット、imagekit の秘密キー。"
             },
             "secret_id": {
-              "label": "Secret ID"
+              "label": "Secret ID",
+              "description": "Tencent Cloud API キーペアの SecretId です。"
             },
             "secret_key": {
-              "label": "Secret key"
+              "label": "Secret key",
+              "description": "Tencent Cloud の SecretKey です。ホストの secret binding に保存されます。"
             },
             "security_token": {
-              "label": "セキュリティトークン（任意）"
+              "label": "セキュリティトークン（任意）",
+              "description": "一時的な（STS）認証情報でサインインする場合に必要なセッショントークンです。永続キーでは空欄のままにします。"
             },
             "username": {
               "label": "ユーザー名",
-              "placeholder": "user",
-              "description": "WebDAV/SMB のログインユーザー。"
+              "description": "ログイン名。WebDAV/SMB/pCloud/Seafile のユーザー、azurefiles/netstorage：アカウント、cloudinary：クラウド名、iclouddrive：Apple ID、filen/internxt/linkbox：メールアドレス、hdfs/swift/ulozto/protondrive：ユーザー名。"
             },
             "domain": {
               "label": "ドメイン",
@@ -2682,7 +2672,7 @@
             },
             "password": {
               "label": "パスワード",
-              "description": "ログインパスワード（WebDAV/FTP/SMB。FTP はユーザー空欄で匿名）。SFTP（ネイティブ）はパスワード対応、SFTP は鍵認証専用です。"
+              "description": "ログインパスワードまたはシークレット。WebDAV/FTP/SMB のパスワード（FTP はユーザー空欄で匿名）。SFTP（ネイティブ）はパスワード対応、SFTP は鍵認証専用。swift：ストレージキー、sia：API デーモンパスワード、netstorage：アカウントシークレット。"
             },
             "key": {
               "label": "秘密鍵またはパス",
@@ -2698,27 +2688,22 @@
                 "Trust": "信頼（任意の鍵・非安全）"
               }
             },
-            "tunnel_jump_hosts": {
-              "label": "SSH トンネルジャンプホスト",
-              "placeholder": "ops@j1.example.com:2222, j2.corp",
-              "description": "SSH ジャンプホスト連鎖（任意）：ssh -J 構文で [user@]host[:port] をカンマ区切り。最後のホップがログイン先。鍵認証のみ／rclone エンジン限定。"
-            },
-            "tunnel_identity_file": {
-              "label": "SSH トンネル秘密鍵",
-              "placeholder": "~/.ssh/id_ed25519",
-              "description": "トンネルで使う秘密鍵のパス（任意）。空欄で ssh の既定の鍵とエージェントを使用します。"
-            },
             "access_token": {
-              "label": "アクセストークン"
+              "label": "アクセストークン",
+              "description": "プロバイダーが発行した OAuth または API のアクセストークン（ドライブ系サービス、box、drime、gofile）。OAuth の場合はリフレッシュトークンを併せて設定すると自動更新されます。"
             },
             "client_id": {
-              "label": "OAuth クライアント ID"
+              "label": "OAuth クライアント ID",
+              "placeholder": "your-app-client-id",
+              "description": "登録済みアプリケーションの OAuth クライアント ID。OAuth 設定済みのクラウドバックエンド（ドライブ系サービス、box、hidrive、huaweidrive、jottacloud、mailru、premiumizeme、putio、sharefile、zoho）で使用します。"
             },
             "client_secret": {
-              "label": "OAuth クライアントシークレット"
+              "label": "OAuth クライアントシークレット",
+              "description": "登録済みアプリケーションの OAuth クライアントシークレットです。ホストの secret binding に保存されます。"
             },
             "refresh_token": {
-              "label": "OAuth リフレッシュトークン"
+              "label": "OAuth リフレッシュトークン",
+              "description": "OAuth リフレッシュトークンです。アクセストークンの期限切れ時に新しいトークンを取得します。"
             },
             "drive_type": {
               "label": "ドライブ種別",
@@ -2726,13 +2711,18 @@
                 "resource": "リソースドライブ",
                 "share": "共有ドライブ",
                 "backup": "バックアップドライブ"
-              }
+              },
+              "description": "開く Alibaba Drive のスペースを選択します：個人用（リソース）、共有、バックアップ。"
             },
             "email": {
-              "label": "アカウントメール"
+              "label": "アカウントメール",
+              "placeholder": "you@example.com",
+              "description": "サインインに使う Koofr アカウントのメールアドレスです。"
             },
             "repo_name": {
-              "label": "ライブラリ名"
+              "label": "ライブラリ名",
+              "placeholder": "My Library",
+              "description": "開く既存の Seafile ライブラリ名です。"
             },
             "read_only": {
               "label": "読み取り専用",
@@ -2749,6 +2739,11 @@
             "enable_virtual_host_style": {
               "label": "バーチャルホスト形式",
               "description": "パス形式ではなく仮想ホスト名（bucket.host）でバケットを指定します。プロバイダーが要求する場合に有効化します。"
+            },
+            "token": {
+              "label": "API キー / トークン",
+              "placeholder": "your-api-key-or-token",
+              "description": "API キー・トークン・アクセスグラント。ホストの secret binding に保存されます：fichier/filelu/pixeldrain/quatrix/shade の API キー、ulozto のアプリトークン、linkbox のトークン、storj のアクセスグラント、filen の API キー、filefabric の永久トークン。"
             }
           }
         },
@@ -2767,7 +2762,8 @@
           "description": "Conexão de armazenamento baseada no rclone: sistema de arquivos local, S3/MinIO, OSS da Alibaba, COS da Tencent, Azure Blob, Google Cloud Storage, OBS da Huawei, WebDAV, FTP, SFTP, SMB/CIFS ou qualquer outro backend do rclone.",
           "fields": {
             "display_name": {
-              "label": "Nome da conexão"
+              "label": "Nome da conexão",
+              "description": "Nome exibido na lista de conexões."
             },
             "protocol": {
               "label": "Protocolo",
@@ -2810,7 +2806,6 @@
                 "filen": "Filen",
                 "filescom": "Files.com",
                 "gofile": "Gofile",
-                "gphotos": "Google Photos",
                 "hasher": "Hasher",
                 "hdfs": "HDFS",
                 "hidrive": "HiDrive",
@@ -2825,7 +2820,6 @@
                 "mailru": "Mail.ru Cloud",
                 "mega": "Mega",
                 "netstorage": "Akamai NetStorage",
-                "oos": "Oracle Object Storage",
                 "opendrive": "OpenDrive",
                 "pikpak": "PikPak",
                 "pixeldrain": "Pixeldrain",
@@ -2844,7 +2838,8 @@
                 "ulozto": "Uloz.to",
                 "union": "Union",
                 "zoho": "Zoho WorkDrive"
-              }
+              },
+              "description": "Escolha um backend de armazenamento: os mais comuns têm formulário próprio; os genéricos reutilizam os campos comuns e aceitam opções extras em JSON."
             },
             "root": {
               "label": "Caminho raiz",
@@ -2856,9 +2851,9 @@
               "description": "Rejeita qualquer caminho fora da raiz configurada."
             },
             "config": {
-              "label": "Parâmetros (JSON)",
-              "placeholder": "{ \"endpoint\": \"https://host\", \"user\": \"me\" }",
-              "description": "Parâmetros do protocolo escolhido como objeto JSON; veja a documentação do rclone para as chaves de cada backend."
+              "label": "Opções avançadas (JSON)",
+              "placeholder": "{ \"encoding\": \"Slash,Dot\" }",
+              "description": "Opções extras opcionais do backend selecionado como objeto JSON, usando os nomes de opção da documentação do rclone. Opções desconhecidas são rejeitadas com a lista de nomes válidos; as configurações comuns têm campos próprios acima."
             },
             "container": {
               "label": "Contêiner",
@@ -2891,13 +2886,11 @@
             },
             "endpoint": {
               "label": "Endpoint",
-              "placeholder": "http://127.0.0.1:9000",
-              "description": "Endereço do serviço: https://host para armazenamento de objetos e WebDAV; ftp(s)://host[:21] para FTP; ssh://user@host[:22] para SFTP; host[:445] para SMB."
+              "description": "Endereço do serviço. Armazenamento de objetos/WebDAV: https://host; FTP: ftp(s)://host[:21]; SFTP: ssh://user@host[:22]; SMB: host[:445]; http: URL completa; hdfs: namenode:8020; netstorage/quatrix: nome do host; azurefiles: URL de serviço opcional."
             },
             "share": {
               "label": "Compartilhamento",
-              "placeholder": "media",
-              "description": "Compartilhamento SMB opcional; deixe vazio para listar os compartilhamentos do servidor. compartilhamento/subcaminho usa o subcaminho como raiz."
+              "description": "Compartilhamento opcional para SMB e azurefiles; deixe vazio para listar os compartilhamentos do servidor. share/sub/path usa o subcaminho como raiz."
             },
             "region": {
               "label": "Região",
@@ -2906,26 +2899,27 @@
             },
             "access_key_id": {
               "label": "ID da chave de acesso",
-              "placeholder": "meu-id-de-acesso",
-              "description": "ID da chave de acesso para S3/OSS."
+              "description": "Chave de acesso ou identificador público: Access Key ID de S3/OBS/OSS; ID de conta do b2; conta de armazenamento do azurefiles; chave de acesso de qingstor/internetarchive/sugarsync; chave de API do cloudinary; chave pública do imagekit."
             },
             "secret_access_key": {
               "label": "Chave de acesso secreta",
-              "description": "Chave secreta mantida no secret binding do host."
+              "description": "Segredo guardado no binding secreto do host: chave secreta de S3/OBS/OSS; chave de aplicativo do b2; chave de conta do azurefiles; segredo de acesso de qingstor/internetarchive; chave de acesso privada do sugarsync; segredo de API do cloudinary; chave privada do imagekit."
             },
             "secret_id": {
-              "label": "ID secreto"
+              "label": "ID secreto",
+              "description": "SecretId do par de chaves de API da Tencent Cloud."
             },
             "secret_key": {
-              "label": "Chave secreta"
+              "label": "Chave secreta",
+              "description": "SecretKey da Tencent Cloud, guardado no binding secreto do host."
             },
             "security_token": {
-              "label": "Token de segurança (opcional)"
+              "label": "Token de segurança (opcional)",
+              "description": "Token de sessão necessário ao autenticar com credenciais temporárias (STS); deixe vazio para chaves permanentes."
             },
             "username": {
               "label": "Nome de usuário",
-              "placeholder": "usuario",
-              "description": "Usuário de login para WebDAV/SMB."
+              "description": "Nome de login. Usuário de WebDAV/SMB/pCloud/Seafile; azurefiles/netstorage: conta; cloudinary: nome da nuvem; iclouddrive: Apple ID; filen/internxt/linkbox: e-mail; hdfs/swift/ulozto/protondrive: nome de usuário."
             },
             "domain": {
               "label": "Domínio",
@@ -2939,7 +2933,7 @@
             },
             "password": {
               "label": "Senha",
-              "description": "Senha de login (WebDAV/FTP/SMB; FTP com usuário vazio = anônimo). SFTP (nativo) aceita senha; SFTP normal aceita apenas chave."
+              "description": "Senha ou segredo de login. Senha de WebDAV/FTP/SMB (FTP com usuário vazio = anônimo); SFTP (nativo) aceita senha, SFTP normal apenas chave; swift: chave de armazenamento; sia: senha do daemon de API; netstorage: segredo da conta."
             },
             "key": {
               "label": "Chave privada ou caminho",
@@ -2955,27 +2949,22 @@
                 "Trust": "Confiar (qualquer chave, inseguro)"
               }
             },
-            "tunnel_jump_hosts": {
-              "label": "Saltos do túnel SSH",
-              "placeholder": "ops@j1.example.com:2222, j2.corp",
-              "description": "Cadeia opcional de jump hosts SSH (sintaxe ssh -J): [usuário@]host[:porta] separados por vírgulas; o último salto é o destino de login. Apenas autenticação por chave; apenas motor rclone."
-            },
-            "tunnel_identity_file": {
-              "label": "Chave privada do túnel SSH",
-              "placeholder": "~/.ssh/id_ed25519",
-              "description": "Caminho opcional da chave privada para o túnel; deixe vazio para usar as chaves padrão do ssh e o agente."
-            },
             "access_token": {
-              "label": "Token de acesso"
+              "label": "Token de acesso",
+              "description": "Token de acesso OAuth ou de API emitido pelo provedor (serviços de drive, box, drime, gofile); para OAuth adicione um refresh token para renová-lo automaticamente."
             },
             "client_id": {
-              "label": "ID do cliente OAuth"
+              "label": "ID do cliente OAuth",
+              "placeholder": "your-app-client-id",
+              "description": "Client ID OAuth de um aplicativo registrado, para backends de nuvem configurados com OAuth (serviços de drive, box, hidrive, huaweidrive, jottacloud, mailru, premiumizeme, putio, sharefile, zoho)."
             },
             "client_secret": {
-              "label": "Segredo do cliente OAuth"
+              "label": "Segredo do cliente OAuth",
+              "description": "Client secret OAuth do aplicativo registrado, guardado no binding secreto do host."
             },
             "refresh_token": {
-              "label": "Token de atualização OAuth"
+              "label": "Token de atualização OAuth",
+              "description": "Refresh token OAuth usado para obter novos tokens de acesso quando o atual expira."
             },
             "drive_type": {
               "label": "Tipo de unidade",
@@ -2983,13 +2972,18 @@
                 "resource": "Unidade de recursos",
                 "share": "Unidade compartilhada",
                 "backup": "Unidade de backup"
-              }
+              },
+              "description": "Espaço do Alibaba Drive a abrir: pessoal (resource), compartilhado ou backup."
             },
             "email": {
-              "label": "E-mail da conta"
+              "label": "E-mail da conta",
+              "placeholder": "you@example.com",
+              "description": "E-mail da conta Koofr usado para entrar."
             },
             "repo_name": {
-              "label": "Nome da biblioteca"
+              "label": "Nome da biblioteca",
+              "placeholder": "My Library",
+              "description": "Nome de uma biblioteca Seafile existente a ser aberta."
             },
             "read_only": {
               "label": "Somente leitura",
@@ -3006,6 +3000,11 @@
             "enable_virtual_host_style": {
               "label": "Estilo virtual-host",
               "description": "Endereça o bucket como nome de host virtual (bucket.host) em vez de URL estilo caminho; ative se o provedor exigir."
+            },
+            "token": {
+              "label": "Chave de API / token",
+              "placeholder": "your-api-key-or-token",
+              "description": "Chave de API, token ou access grant, guardado no binding secreto do host: chave de API de fichier/filelu/pixeldrain/quatrix/shade, token de aplicativo do ulozto, token do linkbox, access grant do storj, chave de API do filen, token permanente do filefabric."
             }
           }
         },

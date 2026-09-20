@@ -61,6 +61,368 @@ const PASSWORD_KEYS: [&str; 6] = [
     "service_account_credentials",
 ];
 
+/// Structured form fields that carry over onto generic rclone backends.
+///
+/// The generic form used to be a bare JSON textarea; these mappings let the
+/// same first-class fields the quick protocols use (endpoint, username,
+/// password, keys, OAuth material) feed the matching rclone option for each
+/// generic backend, so only genuinely extra options still travel in the
+/// `config` JSON. Option names verified against the embedded provider table
+/// (`providers_v1.75.1.json`, generated from the pinned fork's
+/// `rclone config providers`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GenericField {
+    Endpoint,
+    Username,
+    Password,
+    Share,
+    AccessKeyId,
+    SecretAccessKey,
+    ClientId,
+    ClientSecret,
+    AccessToken,
+    Token,
+}
+
+/// protocol → (field, rclone option name) pairs. Partial by design: an
+/// option with no clean semantic match stays in the `config` JSON extras.
+const GENERIC_FIELD_MAP: &[(&str, &[(GenericField, &str)])] = &[
+    ("azurefiles", &[
+        (GenericField::Endpoint, "endpoint"),
+        (GenericField::Username, "account"),
+        (GenericField::AccessKeyId, "account"),
+        (GenericField::SecretAccessKey, "key"),
+        (GenericField::Share, "share_name"),
+    ]),
+    ("b2", &[
+        (GenericField::AccessKeyId, "account"),
+        (GenericField::SecretAccessKey, "key"),
+    ]),
+    ("box", &[
+        (GenericField::ClientId, "client_id"),
+        (GenericField::ClientSecret, "client_secret"),
+        (GenericField::AccessToken, "access_token"),
+    ]),
+    ("cloudinary", &[
+        (GenericField::Username, "cloud_name"),
+        (GenericField::AccessKeyId, "api_key"),
+        (GenericField::SecretAccessKey, "api_secret"),
+    ]),
+    ("drime", &[(GenericField::AccessToken, "access_token")]),
+    ("fichier", &[(GenericField::Token, "api_key")]),
+    ("filefabric", &[
+        (GenericField::Endpoint, "url"),
+        (GenericField::Token, "permanent_token"),
+    ]),
+    ("filelu", &[(GenericField::Token, "key")]),
+    ("filen", &[
+        (GenericField::Username, "email"),
+        (GenericField::Password, "password"),
+        (GenericField::Token, "api_key"),
+    ]),
+    ("filescom", &[
+        (GenericField::Username, "username"),
+        (GenericField::Password, "password"),
+    ]),
+    ("gofile", &[(GenericField::AccessToken, "access_token")]),
+    ("hdfs", &[
+        (GenericField::Endpoint, "namenode"),
+        (GenericField::Username, "username"),
+    ]),
+    ("hidrive", &[
+        (GenericField::ClientId, "client_id"),
+        (GenericField::ClientSecret, "client_secret"),
+    ]),
+    ("http", &[(GenericField::Endpoint, "url")]),
+    ("huaweidrive", &[
+        (GenericField::ClientId, "client_id"),
+        (GenericField::ClientSecret, "client_secret"),
+    ]),
+    ("iclouddrive", &[
+        (GenericField::Username, "apple_id"),
+        (GenericField::Password, "password"),
+    ]),
+    ("imagekit", &[
+        (GenericField::Endpoint, "endpoint"),
+        (GenericField::AccessKeyId, "public_key"),
+        (GenericField::SecretAccessKey, "private_key"),
+    ]),
+    ("internetarchive", &[
+        (GenericField::AccessKeyId, "access_key_id"),
+        (GenericField::SecretAccessKey, "secret_access_key"),
+    ]),
+    ("internxt", &[
+        (GenericField::Username, "email"),
+        (GenericField::Password, "pass"),
+    ]),
+    ("jottacloud", &[
+        (GenericField::ClientId, "client_id"),
+        (GenericField::ClientSecret, "client_secret"),
+    ]),
+    ("linkbox", &[
+        (GenericField::Token, "token"),
+        (GenericField::Username, "email"),
+        (GenericField::Password, "password"),
+    ]),
+    ("mailru", &[
+        (GenericField::Username, "user"),
+        (GenericField::Password, "pass"),
+        (GenericField::ClientId, "client_id"),
+        (GenericField::ClientSecret, "client_secret"),
+    ]),
+    ("mega", &[
+        (GenericField::Username, "user"),
+        (GenericField::Password, "pass"),
+    ]),
+    ("netstorage", &[
+        (GenericField::Endpoint, "host"),
+        (GenericField::Username, "account"),
+        (GenericField::Password, "secret"),
+    ]),
+    ("opendrive", &[
+        (GenericField::Username, "username"),
+        (GenericField::Password, "password"),
+    ]),
+    ("pikpak", &[
+        (GenericField::Username, "user"),
+        (GenericField::Password, "pass"),
+    ]),
+    ("pixeldrain", &[(GenericField::Token, "api_key")]),
+    ("premiumizeme", &[
+        (GenericField::ClientId, "client_id"),
+        (GenericField::ClientSecret, "client_secret"),
+    ]),
+    ("protondrive", &[
+        (GenericField::Username, "username"),
+        (GenericField::Password, "password"),
+    ]),
+    ("putio", &[
+        (GenericField::ClientId, "client_id"),
+        (GenericField::ClientSecret, "client_secret"),
+    ]),
+    ("qingstor", &[
+        (GenericField::AccessKeyId, "access_key_id"),
+        (GenericField::SecretAccessKey, "secret_access_key"),
+        (GenericField::Endpoint, "endpoint"),
+    ]),
+    ("quatrix", &[
+        (GenericField::Endpoint, "host"),
+        (GenericField::Token, "api_key"),
+    ]),
+    ("shade", &[(GenericField::Token, "api_key")]),
+    ("sharefile", &[
+        (GenericField::ClientId, "client_id"),
+        (GenericField::ClientSecret, "client_secret"),
+    ]),
+    ("sia", &[
+        (GenericField::Endpoint, "api_url"),
+        (GenericField::Password, "api_password"),
+    ]),
+    ("storj", &[(GenericField::Token, "access_grant")]),
+    ("sugarsync", &[
+        (GenericField::AccessKeyId, "access_key_id"),
+        (GenericField::SecretAccessKey, "private_access_key"),
+    ]),
+    ("swift", &[
+        (GenericField::Username, "user"),
+        (GenericField::Password, "key"),
+    ]),
+    ("ulozto", &[
+        (GenericField::Token, "app_token"),
+        (GenericField::Username, "username"),
+        (GenericField::Password, "password"),
+    ]),
+    ("zoho", &[
+        (GenericField::ClientId, "client_id"),
+        (GenericField::ClientSecret, "client_secret"),
+    ]),
+];
+
+fn generic_field_param(protocol: &str, field: GenericField) -> Option<&'static str> {
+    GENERIC_FIELD_MAP
+        .iter()
+        .find(|(entry_protocol, _)| *entry_protocol == protocol)?
+        .1
+        .iter()
+        .find(|(entry_field, _)| *entry_field == field)
+        .map(|(_, param)| *param)
+}
+
+/// Reads the connection's value for one structured field; `None`/empty
+/// (whitespace-only) means "not set" so a stale superset from another
+/// protocol's form never leaks an empty option onto the generic backend.
+fn generic_field_value<'a>(
+    connection: &'a StoredConnection,
+    field: GenericField,
+) -> Option<&'a str> {
+    let value = match field {
+        GenericField::Endpoint => &connection.endpoint,
+        GenericField::Username => &connection.username,
+        GenericField::Password => &connection.password,
+        GenericField::Share => &connection.share,
+        GenericField::AccessKeyId => &connection.access_key_id,
+        GenericField::SecretAccessKey => &connection.secret_access_key,
+        GenericField::ClientId => &connection.client_id,
+        GenericField::ClientSecret => &connection.client_secret,
+        GenericField::AccessToken => &connection.access_token,
+        GenericField::Token => &connection.token,
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+/// Overlays the structured fields onto the generic backend's `config` JSON:
+/// a non-empty structured field wins over the same option in the JSON
+/// (fields are the primary path, JSON carries only genuine extras).
+fn merge_generic_fields(
+    protocol: &str,
+    params: &mut Map<String, Value>,
+    connection: &StoredConnection,
+) {
+    for field in [
+        GenericField::Endpoint,
+        GenericField::Username,
+        GenericField::Password,
+        GenericField::Share,
+        GenericField::AccessKeyId,
+        GenericField::SecretAccessKey,
+        GenericField::ClientId,
+        GenericField::ClientSecret,
+        GenericField::AccessToken,
+        GenericField::Token,
+    ] {
+        let Some(param) = generic_field_param(protocol, field) else {
+            continue;
+        };
+        if let Some(value) = generic_field_value(connection, field) {
+            params.insert(param.to_string(), Value::String(value.to_string()));
+        }
+    }
+}
+
+/// One trimmed option of a provider, from the embedded
+/// `providers_v1.75.1.json` (generated from the pinned fork's
+/// `rclone config providers`; regenerate that file whenever
+/// `scripts/fetch-rclone.sh` pins a new rclone version).
+struct ProviderOption {
+    name: &'static str,
+    /// Required by rclone AND carrying no default, so it must be supplied.
+    required: bool,
+    #[allow(dead_code)]
+    is_password: bool,
+}
+
+fn providers_table() -> &'static HashMap<&'static str, Vec<ProviderOption>> {
+    use std::sync::OnceLock;
+    static TABLE: OnceLock<HashMap<&'static str, Vec<ProviderOption>>> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        let raw: HashMap<
+            &'static str,
+            Vec<[serde_json::Value; 4]>,
+        > = serde_json::from_str(include_str!("providers_v1.75.1.json"))
+            .expect("embedded providers table parses");
+        raw.into_iter()
+            .map(|(name, options)| {
+                (
+                    name,
+                    options
+                        .into_iter()
+                        .map(|opt| ProviderOption {
+                            name: opt[0]
+                                .as_str()
+                                .expect("option name")
+                                .to_string()
+                                .leak() as &'static str,
+                            required: opt[1].as_bool().unwrap_or(false),
+                            is_password: opt[2].as_bool().unwrap_or(false),
+                        })
+                        .collect(),
+                )
+            })
+            .collect()
+    })
+}
+
+/// Alternative-shape required options the flat `required` flag cannot
+/// express: filen authenticates with email+password OR an api_key, so
+/// neither secret alone may be demanded.
+const REQUIRED_ANY_OF: &[(&str, &[&str])] = &[("filen", &["password", "api_key"])];
+
+/// Pre-flight option validation for JSON-configured backends: rclone's
+/// `config/create` stores unknown keys and missing required options
+/// silently (verified on v1.75.1) and only fails at first operation —
+/// this reports both problems at save/test time, with the valid names.
+fn validate_provider_options(
+    backend_type: &str,
+    params: &Map<String, Value>,
+) -> Result<(), String> {
+    let Some(options) = providers_table().get(backend_type) else {
+        return Ok(()); // unknown backend type: the engine reports it
+    };
+    let mut unknown: Vec<&String> = params
+        .keys()
+        .filter(|key| !options.iter().any(|option| option.name == key.as_str()))
+        .collect();
+    unknown.sort();
+    if !unknown.is_empty() {
+        let valid: Vec<String> = options
+            .iter()
+            .map(|option| {
+                if option.required {
+                    format!("{}*", option.name)
+                } else {
+                    option.name.to_string()
+                }
+            })
+            .collect();
+        return Err(format!(
+            "{backend_type}: unknown option(s) {} — valid options: {} (options marked '*' are required)",
+            unknown
+                .iter()
+                .map(|key| format!("'{key}'"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            valid.join(", "),
+        ));
+    }
+    let is_missing = |name: &str| match params.get(name) {
+        None | Some(Value::Null) => true,
+        Some(Value::String(value)) => value.trim().is_empty(),
+        Some(_) => false, // bool/number/object options count as provided
+    };
+    let mut missing: Vec<&str> = options
+        .iter()
+        .filter(|option| option.required && is_missing(option.name))
+        .map(|option| option.name)
+        .collect();
+    let any_of = REQUIRED_ANY_OF
+        .iter()
+        .find(|(name, _)| *name == backend_type)
+        .map(|(_, group)| *group);
+    if let Some(group) = any_of {
+        // The group replaces its members: satisfied when ANY member is set.
+        let satisfied = group.iter().any(|name| !is_missing(name));
+        missing.retain(|name| !group.contains(name));
+        if !satisfied {
+            return Err(format!(
+                "{backend_type}: one of {} is required",
+                group.join(" / ")
+            ));
+        }
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "{backend_type}: missing required option(s): {}",
+            missing.join(", ")
+        ));
+    }
+    Ok(())
+}
+
 /// The ops-layer view of a connected storage target.
 ///
 /// `remote_fs` is what rc calls accept as their `fs` argument: `"dbxAb12Cd34:"`
@@ -162,14 +524,29 @@ pub fn params_for(connection: &StoredConnection) -> Result<(String, Value, bool)
         // provider's IsPassword-class option and only rcd knows that set.
         "rclone-custom" => {
             let backend_type = custom_rclone_type(&connection.service)?;
-            (backend_type, connection.custom_config.clone(), true)
+            let parameters = connection.custom_config.clone();
+            if let Some(object) = parameters.as_object() {
+                validate_provider_options(&backend_type, object)?;
+            }
+            (backend_type, parameters, true)
         }
-        // Generic backends: the protocol value IS the rclone backend type
-        // and the `config` JSON is the whole parameter set — the flattened
-        // form of the pass-through. obscure rides along unconditionally for
-        // the same reason as the aliases above.
+        // Generic backends: the protocol value IS the rclone backend type.
+        // The structured form fields (endpoint/username/password/keys/OAuth/
+        // token) overlay the `config` JSON so only genuinely extra options
+        // travel there; every submitted option is validated against the
+        // embedded provider table. obscure rides along unconditionally: the
+        // JSON may carry any provider's IsPassword-class option and only rcd
+        // knows that set.
         p if crate::model::GENERIC_PROTOCOLS.contains(&p) => {
-            (p.to_string(), connection.custom_config.clone(), true)
+            let mut parameters = connection.custom_config.clone();
+            if let Some(object) = parameters.as_object_mut() {
+                merge_generic_fields(p, object, connection);
+            }
+            let object = parameters
+                .as_object()
+                .ok_or_else(|| "config parameters must be a JSON object".to_string())?;
+            validate_provider_options(p, object)?;
+            (p.to_string(), parameters, true)
         }
         _ => {
             let backend_type = rclone_type(connection.protocol.as_str()).ok_or_else(|| {
@@ -1009,6 +1386,7 @@ mod tests {
             refresh_token: String::new(),
             client_id: String::new(),
             client_secret: String::new(),
+            token: String::new(),
             drive_type: String::new(),
             email: String::new(),
             repo_name: String::new(),
@@ -1082,25 +1460,59 @@ mod tests {
 
     #[test]
     fn params_for_generic_protocols_use_the_protocol_as_backend_type() {
-        for protocol in ["b2", "http", "mega", "protondrive", "hdfs"] {
-            let mut connection = fixture(protocol);
-            connection.custom_config = serde_json::json!({ "user": "u", "pass": secret("pw") });
-            let (backend_type, parameters, obscure) = params_for(&connection).expect("params");
-            assert_eq!(backend_type, protocol);
-            assert_eq!(
-                parameters,
-                serde_json::json!({ "user": "u", "pass": secret("pw") }),
-                "config JSON travels verbatim"
-            );
-            assert!(obscure, "generic pass-through obscures unconditionally");
+        // The protocol value is the rclone backend type. Structured form
+        // fields merge onto their mapped options and win over the JSON
+        // extras; every option is validated against the provider table.
+        let mut b2 = fixture("b2");
+        b2.access_key_id = "account-id".into();
+        b2.secret_access_key = secret("appkey");
+        b2.custom_config = serde_json::json!({ "endpoint": "https://custom.example" });
+        let (backend_type, parameters, obscure) = params_for(&b2).expect("params");
+        assert_eq!(backend_type, "b2");
+        assert_eq!(
+            parameters,
+            serde_json::json!({
+                "endpoint": "https://custom.example",
+                "account": "account-id",
+                "key": secret("appkey"),
+            })
+        );
+        assert!(obscure, "generic pass-through obscures unconditionally");
 
-            // An empty config stays assemblable — rclone validates the
-            // options when the remote is actually used.
-            let empty = fixture(protocol);
-            let (backend_type, parameters, _) = params_for(&empty).expect("empty config");
-            assert_eq!(backend_type, protocol);
-            assert!(parameters.as_object().expect("object").is_empty());
-        }
+        // A structured field wins over the same option in the JSON extras.
+        let mut b2_conflict = fixture("b2");
+        b2_conflict.access_key_id = "from-field".into();
+        b2_conflict.secret_access_key = secret("appkey");
+        b2_conflict.custom_config = serde_json::json!({ "account": "from-json" });
+        let (_, parameters, _) = params_for(&b2_conflict).expect("params");
+        assert_eq!(parameters["account"], "from-field", "field beats JSON");
+
+        // Backends whose required options are all mapped assemble from the
+        // structured fields alone; a required option missing from BOTH the
+        // fields and the JSON is reported at assembly time (rclone's
+        // config/create would store the gap silently and fail at first use).
+        let mut mega = fixture("mega");
+        mega.username = "user@example.com".into();
+        mega.password = secret("mega-pass");
+        let (backend_type, parameters, _) = params_for(&mega).expect("mega params");
+        assert_eq!(backend_type, "mega");
+        assert_eq!(
+            parameters,
+            serde_json::json!({ "user": "user@example.com", "pass": secret("mega-pass") })
+        );
+
+        let empty = fixture("b2");
+        let error = params_for(&empty).expect_err("required options missing");
+        assert!(error.contains("b2: missing required option(s)"), "{error}");
+
+        // Unknown option names are rejected with the valid list.
+        let mut b2_bogus = fixture("b2");
+        b2_bogus.access_key_id = "a".into();
+        b2_bogus.secret_access_key = secret("k");
+        b2_bogus.custom_config = serde_json::json!({ "acount": "typo" });
+        let error = params_for(&b2_bogus).expect_err("unknown option");
+        assert!(error.contains("unknown option(s) 'acount'"), "{error}");
+        assert!(error.contains("account*"), "{error}"); // required marker
     }
 
     // -- per-protocol parameter tables --------------------------------------
@@ -1608,7 +2020,7 @@ mod tests {
         assert!(obscure);
 
         connection.service = "mega".into();
-        connection.custom_config = serde_json::json!({ "pass": secret("mega-pass") });
+        connection.custom_config = serde_json::json!({ "user": "u", "pass": secret("mega-pass") });
         let params = param_map(&connection);
         assert_eq!(params["pass"], secret("mega-pass"));
 
@@ -2268,10 +2680,30 @@ mod manifest_matrix {
                 "ftp" => "ftp://127.0.0.1:2121",
                 "sftp" | "sftp-native" => "127.0.0.1:22",
                 "smb" => "nas.local:445",
+                // generic backends with a mapped service-address field
+                "http" | "filefabric" => "https://svc.example.com",
+                "hdfs" => "namenode:8020",
+                "netstorage" => "netstorage.example.com",
+                "quatrix" => "example.quatrix.it",
+                "qingstor" => "https://storage.qingstor.com",
+                "sia" => "http://127.0.0.1:9980",
+                "azurefiles" => "https://account.file.core.windows.net",
+                "imagekit" => "https://ik.example.com",
                 _ => "",
             }),
             "service" => json!("memory"),
-            "config" => json!({ "root": "/tmp/dbx-matrix-root" }),
+            // Structural engines keep their required wiring options in the
+            // JSON extras (no structured field matches them); everything
+            // else samples an empty extras object.
+            "config" => match protocol {
+                "alias" | "chunker" | "hasher" => json!({ "remote": "src" }),
+                "combine" | "union" => json!({ "upstreams": "src1 src2" }),
+                "compress" => json!({ "remote": "src", "level": 9 }),
+                "crypt" => json!({ "remote": "src", "password": secret("cryptpass") }),
+                "doi" => json!({ "doi": "10.1000/xyz" }),
+                "shade" => json!({ "drive_id": "1" }),
+                _ => json!({}),
+            },
             "access_token" => json!(secret("access")),
             "refresh_token" => match protocol {
                 "dropbox" | "gdrive" | "onedrive" => json!(""),
@@ -2279,6 +2711,7 @@ mod manifest_matrix {
             },
             "client_id" => json!("client-id"),
             "client_secret" => json!(secret("client")),
+            "token" => json!(secret("token")),
             "drive_type" => json!("resource"),
             "email" => json!("alice@example.com"),
             "repo_name" => json!("library"),
@@ -2372,6 +2805,47 @@ mod manifest_matrix {
             .expect("matrix lifecycle params must always parse")
     }
 
+    /// Parameter keys the structured-field merge can contribute to a generic
+    /// backend: the rclone option names of its GENERIC_FIELD_MAP entries,
+    /// plus the structural engines' required wiring options that only ever
+    /// travel in the config JSON sample.
+    fn generic_expected_keys(protocol: &str) -> Vec<&'static str> {
+        let mut keys: Vec<&'static str> = Vec::new();
+        for field in [
+            GenericField::Endpoint,
+            GenericField::Username,
+            GenericField::Password,
+            GenericField::Share,
+            GenericField::AccessKeyId,
+            GenericField::SecretAccessKey,
+            GenericField::ClientId,
+            GenericField::ClientSecret,
+            GenericField::AccessToken,
+            GenericField::Token,
+        ] {
+            if let Some(param) = generic_field_param(protocol, field) {
+                if !keys.contains(&param) {
+                    keys.push(param);
+                }
+            }
+        }
+        let config_keys: &[&str] = match protocol {
+            "alias" | "chunker" | "hasher" => &["remote"],
+            "combine" | "union" => &["upstreams"],
+            "compress" => &["remote", "level"],
+            "crypt" => &["remote", "password"],
+            "doi" => &["doi"],
+            "shade" => &["drive_id"],
+            _ => &[],
+        };
+        for key in config_keys {
+            if !keys.contains(key) {
+                keys.push(key);
+            }
+        }
+        keys
+    }
+
     /// The maximal parameter key set each protocol may emit when every form
     /// field carries a value (the stale superset). A key outside this table
     /// means a foreign protocol's value leaked into the remote config.
@@ -2397,8 +2871,8 @@ mod manifest_matrix {
             "seafile" => vec!["url", "user", "pass", "library"],
             "koofr" => vec!["endpoint", "user", "password"],
             "pcloud" => vec!["username", "password", "hostname", "token"],
-            "rclone-custom" => vec!["root"], // sample config object, passed through
-            p if crate::model::GENERIC_PROTOCOLS.contains(&p) => vec!["root"], // ditto
+            "rclone-custom" => vec![], // empty sample config, passed through
+            p if crate::model::GENERIC_PROTOCOLS.contains(&p) => generic_expected_keys(p),
             other => panic!("no expected key table for '{other}'"),
         }
     }
@@ -2539,8 +3013,17 @@ mod manifest_matrix {
                 let connection = parse(&lifecycle_params(&protocol, &overrides));
                 if let Err(error) = params_for(&connection) {
                     let form_required = gated_on(&field, &protocol, "required_when");
+                    // Structural engines keep required wiring options in the
+                    // JSON extras; clearing that field legitimately fails the
+                    // provider validation with the missing-required message.
+                    let structural = matches!(
+                        protocol.as_str(),
+                        "alias" | "chunker" | "combine" | "compress" | "crypt" | "doi"
+                            | "hasher" | "shade" | "union"
+                    ) && key == "config";
                     assert!(
                         form_required
+                            || structural
                             || matches!(protocol.as_str(), "gdrive" | "onedrive" | "dropbox" | "yandex-disk" | "pcloud")
                                 && matches!(key.as_str(), "access_token" | "refresh_token" | "username" | "password"),
                         "empty optional field must not break assembly: {protocol}/{key}: {error}"
