@@ -365,11 +365,21 @@ mod tests {
             panic!("mount failed with unexpected error: {error}");
         }
 
-        let listed = list_mount_points(&client).await.expect("listmounts");
-        assert!(
-            listed.iter().any(|point| point.contains("mnt")),
-            "mounted point missing from listmounts: {listed:?}"
-        );
+        // Registration can lag the mount() answer — poll instead of a single
+        // read (CI runners under parallel live-rcd load have shown empty
+        // first reads).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let listed = loop {
+            let listed = list_mount_points(&client).await.expect("listmounts");
+            if listed.iter().any(|point| point.contains("mnt")) {
+                break listed;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "mounted point missing from listmounts: {listed:?}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        };
 
         // Read through the mount proves the kernel side is live.
         let via_mount = mount_point.join("hello.txt");
