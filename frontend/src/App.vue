@@ -21,6 +21,7 @@ import {
   FolderOpen,
   FolderPlus,
   FolderSymlink,
+  Globe,
   HardDrive,
   Link,
   Link2,
@@ -30,6 +31,7 @@ import {
   RefreshCw,
   Search,
   Scale,
+  Share2,
   Trash2,
   X,
 } from "@lucide/vue";
@@ -96,6 +98,8 @@ type MenuAction =
   | "copyurl"
   // 本地挂载（docs/MOUNT.zh-CN.md M1）：rclone mount 优先，WebDAV 网关兜底
   | "mountLocal"
+  // 本机共享（对标 rclone serve 家族）：远端目录经回环 HTTP/WebDAV 分享
+  | "serveHttp" | "serveWebdav"
   // 批量（多选右键，P-FILES 压缩轮）
   | "downloadSelected" | "copySelected" | "moveSelected" | "deleteSelected" | "compressSelected";
 
@@ -299,7 +303,10 @@ const settingsOverlayEl = ref<HTMLElement>();
 function openSettings(category: SettingsCategory = "downloads") {
   settingsCategory.value = category;
   settingsOpen.value = true;
-  if (category === "mounts") void loadMounts();
+  if (category === "mounts") {
+    void loadMounts();
+    void loadShares();
+  }
   void nextTick(() => document.querySelector<HTMLElement>(".wb-settings-nav .is-active")?.focus());
 }
 
@@ -309,7 +316,10 @@ function closeSettings() {
 
 watch(settingsCategory, (category) => {
   if (category === "transfer") void loadBwlimit();
-  if (category === "mounts") void loadMounts();
+  if (category === "mounts") {
+    void loadMounts();
+    void loadShares();
+  }
 });
 
 /** 焦点陷阱：Tab 在设置弹窗内循环（同预览/确认弹窗实现）。 */
@@ -2476,6 +2486,10 @@ function menuAction(action: MenuAction) {
     case "mountLocal":
       openMountDialog(entry.path, sideConnectionId(side) ?? connectionId.value);
       break;
+    case "serveHttp":
+    case "serveWebdav":
+      void startServe(entry, side, action === "serveHttp" ? "http" : "webdav");
+      break;
     case "copyPublicLink":
       void copyPublicLink(entry, side);
       break;
@@ -2570,6 +2584,23 @@ async function copyPublicLink(entry: FileEntry, side: PaneSide) {
     });
     await window.dbxPlugin.clipboard?.writeText(result.url);
     showNotice(t("copiedPublicLink"));
+  } catch (cause) {
+    showNotice(t("operationFailed", { error: errorMessage(cause) }));
+  }
+}
+
+/** 本机共享（对标 rclone serve）：回环 HTTP/WebDAV 暴露远端目录；URL 复制
+ * 到剪贴板（与 copyPublicLink 同法），剪贴板失败不吞成功提示。 */
+async function startServe(entry: FileEntry, side: PaneSide, serveType: "http" | "webdav") {
+  const id = sideConnectionId(side) ?? connectionId.value;
+  try {
+    const result = await call<{ serveId: string; url: string; serveType: string }>("files/serve/start", {
+      connectionId: id,
+      path: entry.path,
+      serveType,
+    });
+    await window.dbxPlugin.clipboard?.writeText(result.url).catch(() => undefined);
+    showNotice(t("shareStarted", { url: result.url }));
   } catch (cause) {
     showNotice(t("operationFailed", { error: errorMessage(cause) }));
   }
@@ -2763,6 +2794,49 @@ async function unmountMount(row: MountRow) {
 
 function mountStrategyLabel(strategy: string) {
   return strategy === "rclone" ? t("mountStrategy.rclone") : t("mountStrategy.webdav");
+}
+
+// ---- 设置弹窗「本机共享」区块（对标 rclone serve 家族）：files/serve/list
+// 列表 + 逐条停止。与 loadMounts 同触发点（打开设置/切到本地挂载分类时），
+// sidecar 按 connectionId 过滤（call 注入）。
+
+interface ShareRow {
+  serveId: string;
+  url: string;
+  serveType: string;
+}
+
+const sharesLoading = ref(false);
+const sharesError = ref("");
+const sharesList = ref<ShareRow[]>([]);
+const shareBusyId = ref("");
+
+async function loadShares() {
+  if (sharesLoading.value) return;
+  sharesLoading.value = true;
+  sharesError.value = "";
+  try {
+    const result = await call<{ serves: ShareRow[] }>("files/serve/list", {});
+    sharesList.value = Array.isArray(result.serves) ? result.serves : [];
+  } catch (cause) {
+    sharesError.value = errorMessage(cause);
+  } finally {
+    sharesLoading.value = false;
+  }
+}
+
+async function stopShare(row: ShareRow) {
+  if (shareBusyId.value) return;
+  shareBusyId.value = row.serveId;
+  try {
+    await call("files/serve/stop", { serveId: row.serveId });
+    showNotice(t("shareStopDone"));
+    await loadShares();
+  } catch (cause) {
+    showError(cause);
+  } finally {
+    shareBusyId.value = "";
+  }
 }
 
 // ---- lifecycle -----------------------------------------------------------------
@@ -3379,6 +3453,22 @@ onBeforeUnmount(() => {
                   <button class="wb-icon-button wb-icon-neutral" :disabled="unmountBusyId === row.mountId" v-tip="t('mounts.unmount')" @click="unmountMount(row)"><Eject /></button>
                 </li>
               </ul>
+              <!-- 本机共享（files/serve/*）：挂载列表下方常驻区块 -->
+              <p class="wb-settings-help wb-shares-title">{{ t("shareSectionTitle") }}</p>
+              <div class="wb-mounts-actions">
+                <button class="wb-icon-button wb-icon-neutral" v-tip="t('refresh')" :disabled="sharesLoading" @click="loadShares"><RefreshCw :class="{ 'wb-spin': sharesLoading }" /></button>
+              </div>
+              <p v-if="sharesError" class="wb-settings-error" role="alert">{{ t("operationFailed", { error: sharesError }) }}</p>
+              <p v-else-if="!sharesLoading && !sharesList.length" class="wb-settings-help">{{ t("shareEmpty") }}</p>
+              <ul v-else-if="sharesList.length" class="wb-shares-list">
+                <li v-for="row in sharesList" :key="row.serveId">
+                  <div class="wb-mounts-main">
+                    <strong>{{ row.serveType.toUpperCase() }}</strong>
+                    <span class="wb-mono">{{ row.url }}</span>
+                  </div>
+                  <button class="wb-icon-button wb-icon-neutral" :disabled="shareBusyId === row.serveId" v-tip="t('shareStop')" @click="stopShare(row)"><X /></button>
+                </li>
+              </ul>
             </div>
           </div>
         </div>
@@ -3414,6 +3504,8 @@ onBeforeUnmount(() => {
         <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('checkDir')"><Scale /> {{ t("checkDirMenu") }}</button>
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('bisyncDir')"><ArrowRightLeft /> {{ t("bisyncMenu") }}</button>
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('copyurl')"><Link /> {{ t("copyurlMenu") }}</button>
+        <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('serveHttp')"><Globe /> {{ t("shareHttpMenu") }}</button>
+        <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('serveWebdav')"><Share2 /> {{ t("shareWebdavMenu") }}</button>
         <button v-if="canUseMount && contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('mountLocal')"><HardDrive /> {{ t("mountToLocal") }}</button>
         <button v-if="canWrite" role="menuitem" @click="menuAction('compress')"><FileArchive /> {{ t("compress") }}</button>
         <hr />

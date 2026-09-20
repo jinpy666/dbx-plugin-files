@@ -109,6 +109,9 @@ describe("standalone settings dialog", () => {
       .mockResolvedValueOnce({
         mounts: [{ mountId: "m1", strategy: "rclone", mountPoint: "/home/x/dbx-files-mounts/dbxabc", mounted: true }],
       })
+      // 打开挂载分类还会拉一次「本机共享」区块（files/serve/list，批次8）。
+      .mockResolvedValueOnce({ serves: [] })
+      .mockResolvedValueOnce({ success: true })
       .mockResolvedValueOnce({ mounts: [] });
     await toolbarButton(workbenchMessage("en", "settings"))!.trigger("click");
     await navButton(workbenchMessage("en", "settingsNav.mounts"))!.trigger("click");

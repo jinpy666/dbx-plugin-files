@@ -182,6 +182,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-mounts-main strong { font-weight: 500; font-size: 12px; }
 .wb-mounts-main span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wb-mounts-badge { flex: 0 0 auto; border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; color: var(--muted-foreground); font-size: 10px; }
+/* 本机共享（files/serve/*）区块标题：与 mounts 区块视觉分隔（顶部留白 + 分隔线）。 */
+.wb-shares-title { margin-top: 6px; padding-top: 10px; border-top: 1px solid color-mix(in srgb, var(--border) 45%, transparent); font-weight: 500; }
+/* 共享行复用 mounts 行的列表/主列样式（独立类名，避免与 mounts 测试选择器耦合）。 */
+.wb-shares-list { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 6px; padding: 0; margin: 0; list-style: none; }
+.wb-shares-list li { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); padding: 6px 8px; font-size: 11px; }
+.wb-shares-list li:last-child { border-bottom: 0; }
 
 /* ---- transfer panel --------------------------------------------------------- */
 .wb-transfer-item { border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 8px; margin-bottom: 6px; }

@@ -1384,4 +1384,94 @@ mod tests {
         };
         assert_eq!(query_status(&rcd.client(), &ghost).await.expect("query ghost"), None);
     }
+
+    /// 本机共享 live 冒烟（serve/start → 回环 GET → serve/list → serve/stop，
+    /// 实测锚点 rclone v1.75.1）：端口 0 让 rcd 自动挑空闲回环端口并回传
+    /// 实际地址；用 std TcpStream 直取文件内容证明分享真的可用。
+    #[tokio::test]
+    async fn serve_start_fetch_and_stop_roundtrip() {
+        let Some(binary) = resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
+        let dir = tempfile::tempdir().expect("serve tempdir");
+        write_file(&dir.path().join("hello.txt"), "serve-sentinel");
+
+        let answer = rcd
+            .client()
+            .serve_start(&dir.path().to_string_lossy(), "http", "127.0.0.1:0")
+            .await
+            .expect("serve/start");
+        let serve_id = answer
+            .get("id")
+            .and_then(Value::as_str)
+            .expect("serve id")
+            .to_string();
+        let addr = answer
+            .get("addr")
+            .and_then(Value::as_str)
+            .expect("serve addr")
+            .to_string();
+        assert!(serve_id.starts_with("http-"), "unexpected id {serve_id}");
+        assert!(addr.starts_with("127.0.0.1:"), "unexpected addr {addr}");
+
+        let body = http_get(&addr, "/hello.txt");
+        assert_eq!(body, "serve-sentinel");
+
+        let list = rcd.client().serve_list().await.expect("serve/list");
+        let ids: Vec<&str> = list
+            .get("list")
+            .and_then(Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| entry.get("id").and_then(Value::as_str))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(ids.contains(&serve_id.as_str()), "list misses {serve_id}: {list}");
+
+        rcd.client().serve_stop(&serve_id).await.expect("serve/stop");
+        let list = rcd
+            .client()
+            .serve_list()
+            .await
+            .expect("serve/list after stop");
+        assert!(
+            list.get("list")
+                .and_then(Value::as_array)
+                .map(|entries| entries.is_empty())
+                .unwrap_or(true),
+            "serve list not empty after stop: {list}"
+        );
+        // rcd 对未知 id 报 rclone 错误 → RcError（幂等停止由分发臂按成功处理）。
+        assert!(rcd.client().serve_stop(&serve_id).await.is_err());
+    }
+
+    /// Minimal loopback HTTP GET over std TcpStream (sidecar tests carry no
+    /// HTTP client dependency): returns the body after the blank line.
+    /// HTTP/1.0 + `Connection: close` keeps rclone's answer non-chunked for
+    /// known-length files, so read-to-EOF captures the whole body.
+    fn http_get(addr: &str, path: &str) -> String {
+        use std::io::{Read, Write};
+        let mut parts = addr.splitn(2, ':');
+        let host = parts.next().unwrap_or("127.0.0.1");
+        let port: u16 = parts
+            .next()
+            .and_then(|port| port.parse().ok())
+            .expect("serve port");
+        let mut stream = std::net::TcpStream::connect((host, port)).expect("tcp connect");
+        write!(
+            stream,
+            "GET {path} HTTP/1.0\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+        )
+        .expect("write request");
+        let mut response = String::new();
+        stream.read_to_string(&mut response).expect("read response");
+        response
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body.to_string())
+            .unwrap_or_default()
+    }
 }
