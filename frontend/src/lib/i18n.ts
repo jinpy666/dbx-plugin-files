@@ -61,6 +61,11 @@ export const messages = {
     sizeResult: "{count} items · {size}",
     copyPublicLink: "Copy public link",
     copiedPublicLink: "Public link copied",
+    // 本地挂载（docs/MOUNT.zh-CN.md M1）：rclone mount 优先，WebDAV 网关兜底
+    mountToLocal: "Mount to local",
+    mountRcloneOk: "Mounted read-only at {point}",
+    mountGatewayCopied: "WebDAV gateway URL copied — connect from your file manager to mount it (read-only)",
+    mountFailed: "Mount failed: {message}",
     // 预览浮窗最小化 pill
     minimizePreview: "Minimize preview",
     // P-FILES 右键/侧栏增强
@@ -304,6 +309,10 @@ export const messages = {
     sizeResult: "{count} elementos · {size}",
     copyPublicLink: "Copiar enlace público",
     copiedPublicLink: "Enlace público copiado",
+    mountToLocal: "Montar en local",
+    mountRcloneOk: "Montado en solo lectura en {point}",
+    mountGatewayCopied: "URL del gateway WebDAV copiada: conéctala desde tu gestor de archivos (solo lectura)",
+    mountFailed: "Error al montar: {message}",
     // 预览浮窗最小化 pill
     minimizePreview: "Minimizar vista previa",
     // P-FILES 右键/侧栏增强
@@ -537,6 +546,10 @@ export const messages = {
     sizeResult: "{count} voci · {size}",
     copyPublicLink: "Copia link pubblico",
     copiedPublicLink: "Link pubblico copiato",
+    mountToLocal: "Monta in locale",
+    mountRcloneOk: "Montato in sola lettura su {point}",
+    mountGatewayCopied: "URL del gateway WebDAV copiato: connettiti dal file manager per montarlo (sola lettura)",
+    mountFailed: "Montaggio non riuscito: {message}",
     // 预览浮窗最小化 pill
     minimizePreview: "Minimizza anteprima",
     // P-FILES 右键/侧栏增强
@@ -770,6 +783,10 @@ export const messages = {
     sizeResult: "{count} 項目 · {size}",
     copyPublicLink: "公開リンクをコピー",
     copiedPublicLink: "公開リンクをコピーしました",
+    mountToLocal: "ローカルにマウント",
+    mountRcloneOk: "読み取り専用で {point} にマウントしました",
+    mountGatewayCopied: "WebDAV ゲートウェイの URL をコピーしました — ファイルマネージャーの「サーバへ接続」で貼り付けてマウントしてください（読み取り専用）",
+    mountFailed: "マウントに失敗しました: {message}",
     // 预览浮窗最小化 pill
     minimizePreview: "プレビューを最小化",
     // P-FILES 右键/侧栏增强
@@ -1003,6 +1020,10 @@ export const messages = {
     sizeResult: "{count} itens · {size}",
     copyPublicLink: "Copiar link público",
     copiedPublicLink: "Link público copiado",
+    mountToLocal: "Montar localmente",
+    mountRcloneOk: "Montado somente leitura em {point}",
+    mountGatewayCopied: "URL do gateway WebDAV copiada — conecte pelo gerenciador de arquivos para montar (somente leitura)",
+    mountFailed: "Falha ao montar: {message}",
     // 预览浮窗最小化 pill
     minimizePreview: "Minimizar visualização",
     // P-FILES 右键/侧栏增强
@@ -1236,6 +1257,11 @@ export const messages = {
     sizeResult: "{count} 项 · {size}",
     copyPublicLink: "复制公开链接",
     copiedPublicLink: "公开链接已复制",
+    // 本地挂载（docs/MOUNT.zh-CN.md M1）：rclone mount 优先，WebDAV 网关兜底
+    mountToLocal: "挂载到本机",
+    mountRcloneOk: "已只读挂载到 {point}",
+    mountGatewayCopied: "网关地址已复制：在文件管理器「连接服务器」粘贴即可挂载（只读）",
+    mountFailed: "挂载失败：{message}",
     // 预览浮窗最小化 pill
     minimizePreview: "最小化预览",
     // P-FILES 右键/侧栏增强
@@ -1469,6 +1495,10 @@ export const messages = {
     sizeResult: "{count} 項 · {size}",
     copyPublicLink: "複製公開連結",
     copiedPublicLink: "公開連結已複製",
+    mountToLocal: "掛載到本機",
+    mountRcloneOk: "已唯讀掛載到 {point}",
+    mountGatewayCopied: "網關位址已複製：在檔案管理器「連線伺服器」貼上即可掛載（唯讀）",
+    mountFailed: "掛載失敗：{message}",
     // 预览浮窗最小化 pill
     minimizePreview: "最小化預覽",
     // P-FILES 右键/侧栏增强
