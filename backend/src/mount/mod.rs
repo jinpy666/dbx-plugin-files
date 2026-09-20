@@ -252,6 +252,33 @@ async fn mount_webdav_volume(_url: &str) -> Option<PathBuf> {
     None
 }
 
+/// Mount the gateway at the user-chosen directory (not a /Volumes volume):
+/// `mount_webdav -S <url> <node>` accepts an arbitrary empty mountpoint, so
+/// the WebDAV fallback honors the same "pick a directory" contract as the
+/// rclone path. `-S` suppresses auth/disconnect dialogs for silent backend
+/// use; the gateway is anonymous (token lives in the URL path). Returns
+/// false on refusal/timeout — the caller falls back to a /Volumes volume.
+#[cfg(target_os = "macos")]
+async fn mount_webdav_at(url: &str, point: &Path) -> bool {
+    matches!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            tokio::process::Command::new("mount_webdav")
+                .arg("-S")
+                .arg(url)
+                .arg(point)
+                .output(),
+        )
+        .await,
+        Ok(Ok(output)) if output.status.success(),
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn mount_webdav_at(_url: &str, _point: &Path) -> bool {
+    false
+}
+
 /// rclone requires an existing, empty mountpoint; create or validate it.
 fn ensure_empty_mount_dir(point: &Path) -> Result<(), String> {
     match std::fs::metadata(point) {
@@ -506,9 +533,23 @@ pub async fn start_mount(
     })
     .await?;
     let url = format!("http://127.0.0.1:{}/{}/{}/", gateway.port, token, connection_id);
-    // 系统级自动挂载：macOS 上直接让 WebDAVFS 挂成卷（/Volumes + Finder
-    // 侧边栏可见），不成功再退到「复制地址手动连接」。
-    let volume = mount_webdav_volume(&url).await;
+    // 系统级自动挂载，优先尊重用户在对话框里选的挂载位置（mount_webdav
+    // 支持任意空目录，与 rclone 路径同一"选目录"语义）；选点失败退到
+    // /Volumes 网络卷，再失败才退到「复制地址手动连接」。
+    let mut volume_fallback = false;
+    let volume: Option<PathBuf> = match request.mount_point.as_deref() {
+        Some(explicit) => {
+            let point = PathBuf::from(explicit);
+            ensure_empty_mount_dir(&point)?;
+            if mount_webdav_at(&url, &point).await {
+                Some(point)
+            } else {
+                volume_fallback = true;
+                mount_webdav_volume(&url).await
+            }
+        }
+        None => mount_webdav_volume(&url).await,
+    };
     let mount_id = Uuid::new_v4().simple().to_string();
     lock_table(mounts)?.insert(
         mount_id.clone(),
@@ -529,10 +570,11 @@ pub async fn start_mount(
         "gatewayUrl": url,
         "readOnly": true,
         "mounted": volume.is_some(),
+        "volumeFallback": volume_fallback && volume.is_some(),
     });
     if let Some(point) = &volume {
         response["mountPoint"] = Value::String(point.display().to_string());
-        response["hint"] = Value::String(format!("已通过 WebDAV 挂载为卷 {}", point.display()));
+        response["hint"] = Value::String(format!("已通过 WebDAV 挂载到 {}", point.display()));
     } else {
         response["hint"] = Value::String(mount_hint("webdav", Path::new(&url)));
     }

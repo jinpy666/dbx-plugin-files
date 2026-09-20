@@ -167,7 +167,35 @@ describe("mount to local UI", () => {
       expect.objectContaining({ path: "/Volumes/conn1" }),
       undefined,
     );
-    expect(wrapper!.get(".wb-notice").text()).toContain("Mounted as a WebDAV volume");
+    expect(wrapper!.get(".wb-notice").text()).toContain("Mounted (read-only) at /Volumes/conn1");
+  });
+
+  it("explains the volume fallback when the chosen mount point is rejected", async () => {
+    mountWorkbench();
+    await settle();
+    const spy = stubInvoke((method) =>
+      method === "files/mount"
+        ? {
+            mountId: "m5",
+            strategy: "webdav",
+            mounted: true,
+            volumeFallback: true,
+            mountPoint: "/Volumes/conn1",
+            gatewayUrl: "http://127.0.0.1:54321/tok/conn1/",
+          }
+        : undefined,
+    );
+    await openEntryMenu(dirEntry);
+    await menuItem(workbenchMessage("en", "mountToLocal"))!.trigger("click");
+    await settle();
+    await wrapper!.find(".wb-mount-field input").setValue("/tmp/chose");
+    await confirmMountDialog();
+    expect(spy).toHaveBeenCalledWith(
+      "files/mount",
+      expect.objectContaining({ path: "/docs", strategy: "auto", mountPoint: "/tmp/chose" }),
+      undefined,
+    );
+    expect(wrapper!.get(".wb-notice").text()).toContain("mounted as a WebDAV volume at /Volumes/conn1");
   });
 
   it("copies the gateway URL when the webdav fallback answers", async () => {
