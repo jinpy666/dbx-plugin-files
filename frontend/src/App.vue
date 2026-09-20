@@ -2044,16 +2044,37 @@ async function deleteTransferRecord(jobId: string) {
 let localCapabilities: Promise<{ canSaveLocal: boolean; downloadsDir: string } | undefined> | undefined;
 const localDownloadDir = ref("");
 const canSaveLocal = ref(false);
+/** sidecar 平台标签（macos/windows/linux/other），驱动「打开方式」预设与文案。 */
+const localPlatform = ref("");
 function probeLocalCapabilities() {
   localCapabilities ??= window.dbxPlugin
-    .invoke<{ canSaveLocal: boolean; downloadsDir: string }>("files/local/capabilities")
+    .invoke<{ canSaveLocal: boolean; downloadsDir: string; platform?: string }>("files/local/capabilities")
     .then((result) => {
       localDownloadDir.value = result.downloadsDir || "";
       canSaveLocal.value = !!result.canSaveLocal;
+      localPlatform.value = result.platform || "";
       return result;
     })
     .catch(() => undefined);
   return localCapabilities;
+}
+
+// —— 平台「打开方式」预设（issue #11 延伸）——————————————————————
+// files/local/detect-apps 只回报告本机真实存在的候选（WPS/Excel/LibreOffice/...
+// 按平台默认安装路径探测）；方法缺失（旧 sidecar）时整组隐藏，手动输入仍可用。
+interface AppPreset {
+  id: string;
+  name: string;
+  path: string;
+}
+const appPresets = ref<AppPreset[]>([]);
+async function probeAppPresets() {
+  try {
+    const result = await window.dbxPlugin.invoke<{ apps?: AppPreset[] }>("files/local/detect-apps");
+    appPresets.value = Array.isArray(result.apps) ? result.apps : [];
+  } catch {
+    appPresets.value = [];
+  }
 }
 
 /** 「保存到」偏好（localStorage），空串 = 跟随 sidecar 默认下载目录。 */
@@ -2075,6 +2096,7 @@ async function onSaveDirChange(dir: string) {
     saveDirError.value = "";
     persistDownloadDir(normalized);
     saveDirDraft.value = loadDownloadDir();
+    showNotice(t("settingsSaved"));
   } catch {
     if (serial !== saveDirValidationSerial) return;
     saveDirError.value = t("invalidDownloadDirectory");
@@ -2122,6 +2144,7 @@ async function onOpenAppPrefsChange(prefs: OpenAppPrefs) {
     openAppError.value = "";
     openAppPrefs.value = normalized;
     persistOpenAppPrefs(normalized);
+    showNotice(t("settingsSaved"));
     return;
   }
   try {
@@ -2133,6 +2156,7 @@ async function onOpenAppPrefsChange(prefs: OpenAppPrefs) {
     openAppError.value = "";
     openAppPrefs.value = normalized;
     persistOpenAppPrefs(normalized);
+    showNotice(t("settingsSaved"));
   } catch {
     if (serial !== openAppValidationSerial) return;
     openAppError.value = t("invalidExternalApp");
@@ -2589,8 +2613,10 @@ onMounted(() => {
   document.addEventListener("keydown", onDocumentKeydown);
   window.addEventListener("resize", syncViewportLayout);
   syncViewportLayout();
-  // 本机落盘能力探测（决定下载走 sidecar 落盘还是宿主/浏览器兜底）。
+  // 本机落盘能力探测（决定下载走 sidecar 落盘还是宿主/浏览器兜底）+ 平台
+  // 打开方式预设探测（旧 sidecar 方法缺失时隐藏预设区）。
   void probeLocalCapabilities();
+  void probeAppPresets();
   void initialize().catch((cause) => {
     loading.value = false;
     listingFailed.value = true;
@@ -2876,6 +2902,7 @@ onBeforeUnmount(() => {
         @saved="onPreviewSaved"
         @download="onPreviewDownload"
         @minimize="minimizePreview"
+        @open-settings="openSettings('openWith')"
       />
       <div
         class="wb-preview-grip"
@@ -2930,6 +2957,7 @@ onBeforeUnmount(() => {
               :download-dir-error="saveDirError"
               :open-app="openAppPrefs"
               :open-app-error="openAppError"
+              :presets="appPresets"
               @save-dir="onSaveDirChange"
               @save-open-app="onOpenAppPrefsChange"
             />
@@ -2943,6 +2971,7 @@ onBeforeUnmount(() => {
               :download-dir-error="saveDirError"
               :open-app="openAppPrefs"
               :open-app-error="openAppError"
+              :presets="appPresets"
               @save-dir="onSaveDirChange"
               @save-open-app="onOpenAppPrefsChange"
             />

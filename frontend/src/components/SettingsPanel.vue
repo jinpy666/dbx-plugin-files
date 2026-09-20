@@ -6,6 +6,13 @@ import type { OpenAppMapping, OpenAppPrefs } from "../lib/prefs";
 /** 独立设置弹窗按分类只渲染一个 section；不传 section 时两段都渲染（兼容旧用法）。 */
 export type SettingsSection = "downloads" | "openWith";
 
+/** 平台预设（files/local/detect-apps 探测到的本机已装应用）。 */
+export interface AppPresetOption {
+  id: string;
+  name: string;
+  path: string;
+}
+
 const props = defineProps<{
   t: (key: string, values?: Record<string, string | number>) => string;
   canSaveLocal: boolean;
@@ -16,6 +23,8 @@ const props = defineProps<{
   openApp: OpenAppPrefs;
   openAppError?: string;
   section?: SettingsSection;
+  /** 本机检测到的应用预设；空数组（旧 sidecar/未探测到）时隐藏预设区。 */
+  presets?: AppPresetOption[];
 }>();
 
 const emit = defineEmits<{
@@ -93,6 +102,13 @@ function removeMapping(index: number) {
   mappingDrafts.value.splice(index, 1);
   emitOpenApp(appDraft.value, mappingDrafts.value);
 }
+
+/** 平台预设一键应用：填入默认应用并走既有校验持久化链路；未装/路径变化由
+ * openAppError 行内提示（sidecar 校验是唯一真源）。 */
+function applyPreset(preset: AppPresetOption) {
+  appDraft.value = preset.path;
+  emitOpenApp(preset.path, mappingDrafts.value);
+}
 </script>
 
 <template>
@@ -147,6 +163,22 @@ function removeMapping(index: number) {
       <p class="wb-settings-help">{{ t("externalAppHelp") }}</p>
 
       <template v-if="canSaveLocal">
+        <!-- 平台预设（files/local/detect-apps）：本机探测到的 WPS/Excel/... 一键设为默认应用。 -->
+        <div v-if="presets?.length" class="wb-presets">
+          <span class="wb-muted">{{ t("presetsTitle") }}</span>
+          <div class="wb-presets-row">
+            <button
+              v-for="preset in presets"
+              :key="preset.id"
+              type="button"
+              class="wb-preset-chip"
+              :title="preset.path"
+              :aria-label="`${t('presetsApply')}: ${preset.name}`"
+              @click="applyPreset(preset)"
+            >{{ preset.name }}</button>
+          </div>
+          <p class="wb-settings-help">{{ t("presetsHint") }}</p>
+        </div>
         <div class="wb-settings-path-row">
           <input
             class="wb-mono"

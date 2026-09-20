@@ -86,6 +86,13 @@ export const messages = {
       rclone: "rclone mount",
       webdav: "WebDAV gateway",
     },
+    // 平台「打开方式」预设 + 保存反馈 + 预览外部打开引导
+    presetsTitle: "Detected applications",
+    presetsHint: "Click to set as the default open-with app — the path is validated on this machine.",
+    presetsApply: "Use as default app",
+    settingsSaved: "Settings saved",
+    previewExternalHint: "This format can't be previewed in-plugin. Configure an external app (WPS, Excel, …) to open it.",
+    openInSettings: "Open settings",
     // 预览浮窗最小化 pill
     minimizePreview: "Minimize preview",
     // P-FILES 右键/侧栏增强
@@ -353,6 +360,13 @@ export const messages = {
       rclone: "rclone mount",
       webdav: "Pasarela WebDAV",
     },
+    // 平台「打开方式」预设 + 保存反馈 + 预览外部打开引导
+    presetsTitle: "Aplicaciones detectadas",
+    presetsHint: "Haz clic para establecerla como aplicación predeterminada; la ruta se valida en esta máquina.",
+    presetsApply: "Usar como aplicación predeterminada",
+    settingsSaved: "Ajustes guardados",
+    previewExternalHint: "Este formato no se puede previsualizar en el plugin. Configura una aplicación externa (WPS, Excel, …) para abrirlo.",
+    openInSettings: "Abrir ajustes",
     // 预览浮窗最小化 pill
     minimizePreview: "Minimizar vista previa",
     // P-FILES 右键/侧栏增强
@@ -610,6 +624,13 @@ export const messages = {
       rclone: "rclone mount",
       webdav: "Gateway WebDAV",
     },
+    // 平台「打开方式」预设 + 保存反馈 + 预览外部打开引导
+    presetsTitle: "Applicazioni rilevate",
+    presetsHint: "Fai clic per impostarla come app predefinita: il percorso viene verificato su questa macchina.",
+    presetsApply: "Usa come app predefinita",
+    settingsSaved: "Impostazioni salvate",
+    previewExternalHint: "Questo formato non può essere visualizzato nel plugin. Configura un'app esterna (WPS, Excel, …) per aprirlo.",
+    openInSettings: "Apri impostazioni",
     // 预览浮窗最小化 pill
     minimizePreview: "Minimizza anteprima",
     // P-FILES 右键/侧栏增强
@@ -867,6 +888,13 @@ export const messages = {
       rclone: "rclone マウント",
       webdav: "WebDAV ゲートウェイ",
     },
+    // 平台「打开方式」预设 + 保存反馈 + 预览外部打开引导
+    presetsTitle: "検出されたアプリ",
+    presetsHint: "クリックで既定の起動アプリに設定します。パスはこのマシンで検証されます。",
+    presetsApply: "既定のアプリに設定",
+    settingsSaved: "設定を保存しました",
+    previewExternalHint: "この形式はプラグイン内でプレビューできません。外部アプリ（WPS、Excel など）を設定して開いてください。",
+    openInSettings: "設定を開く",
     // 预览浮窗最小化 pill
     minimizePreview: "プレビューを最小化",
     // P-FILES 右键/侧栏增强
@@ -1124,6 +1152,13 @@ export const messages = {
       rclone: "rclone mount",
       webdav: "Gateway WebDAV",
     },
+    // 平台「打开方式」预设 + 保存反馈 + 预览外部打开引导
+    presetsTitle: "Aplicativos detectados",
+    presetsHint: "Clique para definir como aplicativo padrão — o caminho é validado nesta máquina.",
+    presetsApply: "Usar como aplicativo padrão",
+    settingsSaved: "Configurações salvas",
+    previewExternalHint: "Este formato não pode ser pré-visualizado no plugin. Configure um aplicativo externo (WPS, Excel, …) para abri-lo.",
+    openInSettings: "Abrir configurações",
     // 预览浮窗最小化 pill
     minimizePreview: "Minimizar visualização",
     // P-FILES 右键/侧栏增强
@@ -1382,6 +1417,13 @@ export const messages = {
       rclone: "rclone 挂载",
       webdav: "WebDAV 网关",
     },
+    // 平台「打开方式」预设 + 保存反馈 + 预览外部打开引导
+    presetsTitle: "检测到的应用",
+    presetsHint: "点击设为默认打开应用，路径会在本机校验。",
+    presetsApply: "设为默认应用",
+    settingsSaved: "设置已保存",
+    previewExternalHint: "该格式无法在插件内预览，可配置外部应用（WPS、Excel 等）打开。",
+    openInSettings: "打开设置",
     // 预览浮窗最小化 pill
     minimizePreview: "最小化预览",
     // P-FILES 右键/侧栏增强
@@ -1639,6 +1681,13 @@ export const messages = {
       rclone: "rclone 掛載",
       webdav: "WebDAV 閘道",
     },
+    // 平台「打开方式」预设 + 保存反馈 + 预览外部打开引导
+    presetsTitle: "偵測到的應用程式",
+    presetsHint: "點擊設為預設開啟應用程式，路徑會在本機驗證。",
+    presetsApply: "設為預設應用程式",
+    settingsSaved: "設定已儲存",
+    previewExternalHint: "該格式無法在插件內預覽，可設定外部應用程式（WPS、Excel 等）開啟。",
+    openInSettings: "開啟設定",
     // 预览浮窗最小化 pill
     minimizePreview: "最小化預覽",
     // P-FILES 右键/侧栏增强

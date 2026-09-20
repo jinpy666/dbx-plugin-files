@@ -213,6 +213,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-settings-error { margin: 0; color: var(--destructive); font-size: 11px; overflow-wrap: anywhere; }
 .wb-settings-path-row { display: flex; align-items: center; gap: 6px; }
 .wb-settings-path-row input { flex: 1 1 auto; min-width: 0; height: 26px; padding: 0 7px; font-size: 11px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--background); color: var(--foreground); }
+/* 平台「打开方式」预设 chips（files/local/detect-apps 探测结果一键应用）。 */
+.wb-presets { display: flex; flex-direction: column; gap: 6px; }
+.wb-presets-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.wb-preset-chip { border: 1px solid var(--border); background: transparent; cursor: pointer; border-radius: 999px; padding: 3px 10px; color: var(--foreground); font-size: 11px; }
+.wb-preset-chip:hover { border-color: color-mix(in srgb, var(--primary) 55%, var(--border)); background: var(--accent); }
+/* 预览错误面板的动作行（外部打开引导 + 下载兜底）。 */
+.wb-preview-notice-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 /* ---- audit panel -------------------------------------------------------------- */
 .wb-audit-list { display: flex; flex-direction: column; gap: 4px; }
