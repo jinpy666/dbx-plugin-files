@@ -475,7 +475,7 @@ pub fn is_supported(protocol: &str) -> bool {
 fn rclone_type(protocol: &str) -> Option<String> {
     let backend: &str = match protocol {
         "fs" => "local",
-        "s3" | "oss" | "cos" | "obs" => "s3",
+        "s3" | "oss" | "cos" | "obs" | "qiniu" => "s3",
         "gcs" => "gcs",
         "azblob" => "azureblob",
         "webdav" => "webdav",
@@ -554,7 +554,7 @@ pub fn params_for(connection: &StoredConnection) -> Result<(String, Value, bool)
             })?;
             let mut parameters = match connection.protocol.as_str() {
                 "fs" => Value::Object(Map::new()),
-                "s3" | "oss" | "cos" | "obs" => s3_family_parameters(connection)?,
+                "s3" | "oss" | "cos" | "obs" | "qiniu" => s3_family_parameters(connection)?,
                 "gcs" => gcs_parameters(connection)?,
                 "azblob" => azblob_parameters(connection),
                 "webdav" => webdav_parameters(connection)?,
@@ -1033,21 +1033,33 @@ fn oauth_token_json(connection: &StoredConnection) -> Option<String> {
     Some(Value::Object(token).to_string())
 }
 
-/// s3 + the S3-compatible quick protocols (oss/cos/obs), all mapping onto the
-/// rclone `s3` backend. Provider values verified against `rclone config
-/// providers s3` Examples on v1.75.1.
+/// s3 + the S3-compatible quick protocols (oss/cos/obs/qiniu), all mapping
+/// onto the rclone `s3` backend. Provider values verified against `rclone
+/// config providers s3` Examples on v1.75.1.
 fn s3_family_parameters(connection: &StoredConnection) -> Result<Value, String> {
     let mut params = Map::new();
     let provider = match connection.protocol.as_str() {
         "oss" => "Alibaba",
         "cos" => "TencentCOS",
         "obs" => "HuaweiOBS",
+        // Qiniu Object Storage (Kodo): provider yaml on v1.75.1
+        // (backend/s3/provider/Qiniu.yaml). Regions are endpoint-addressed
+        // (s3-<region>.qiniucs.com); there is no global default endpoint, so
+        // one is mandatory — enforced below, not by a provider fallback.
+        "qiniu" => "Qiniu",
         // A custom endpoint without a dedicated provider: `Other` ("Any other
         // S3 compatible provider") is the generic signature set.
         _ if connection.endpoint.trim().is_empty() => "AWS",
         _ => "Other",
     };
     insert_str(&mut params, "provider", provider);
+    if connection.protocol == "qiniu" && connection.endpoint.trim().is_empty() {
+        return Err(
+            "qiniu connection requires a non-empty endpoint (http/https URL, \
+             e.g. https://s3-cn-east-1.qiniucs.com)"
+                .to_string(),
+        );
+    }
     // The COS form fields normalize onto the shared s3 keys.
     let access_key = if connection.protocol == "cos" {
         &connection.secret_id
@@ -1083,6 +1095,9 @@ fn s3_family_parameters(connection: &StoredConnection) -> Result<Value, String> 
         };
         insert_str(&mut params, "region", region);
     }
+    // qiniu deliberately sends no region/force_path_style: the provider's
+    // own quirks pin path-style access (force_path_style: true, v1.75.1
+    // Qiniu.yaml) and addressing is endpoint-driven.
     Ok(Value::Object(params))
 }
 
@@ -1629,6 +1644,42 @@ mod tests {
         assert_eq!(params["endpoint"], "http://10.20.30.40:9000");
         assert!(params.get("bucket").is_none());
         assert!(params.get("force_path_style").is_none());
+    }
+
+    #[test]
+    fn params_for_qiniu_maps_provider_and_keeps_path_style_provider_owned() {
+        let mut connection = fixture("qiniu");
+        connection.access_key_id = "qiniu-ak".into();
+        connection.secret_access_key = secret("qiniu-sk");
+        connection.endpoint = "https://s3-cn-east-1.qiniucs.com".into();
+        let params = param_map(&connection);
+        // Provider string from the Qiniu.yaml `name` on v1.75.1.
+        assert_eq!(params["provider"], "Qiniu");
+        assert_eq!(params["access_key_id"], "qiniu-ak");
+        assert_eq!(params["secret_access_key"], secret("qiniu-sk"));
+        assert_eq!(params["endpoint"], "https://s3-cn-east-1.qiniucs.com");
+        // Qiniu.yaml quirks pin force_path_style: true on v1.75.1 — the
+        // provider owns path-style, so no local override may appear (the
+        // virtual-host toggle stays s3-only).
+        assert!(
+            params.get("force_path_style").is_none(),
+            "qiniu must not override the provider-owned path style"
+        );
+        assert!(params.get("region").is_none());
+        assert!(params.get("bucket").is_none(), "bucket travels in the path");
+        assert!(params_for(&connection).expect("tuple").2, "obscure on secret key");
+
+        // No global default endpoint exists for Qiniu: an empty one must be
+        // rejected with an actionable message, never mapped onto AWS/Other.
+        let mut connection = fixture("qiniu");
+        connection.access_key_id = "qiniu-ak".into();
+        connection.secret_access_key = secret("qiniu-sk");
+        let error = params_for(&connection).expect_err("empty endpoint");
+        assert!(error.contains("endpoint"), "{error}");
+        assert!(error.contains("qiniucs.com"), "{error}");
+        // Whitespace-only input takes the same guard.
+        connection.endpoint = "   ".into();
+        assert!(params_for(&connection).is_err(), "whitespace endpoint rejected");
     }
 
     #[test]
@@ -2533,6 +2584,11 @@ mod tests {
                 c.secret_key = secret("key");
                 c.security_token = secret("token");
             }),
+            maximal_case("qiniu", &|c: &mut StoredConnection| {
+                c.access_key_id = "AK".into();
+                c.secret_access_key = secret("sk");
+                c.endpoint = "https://s3-cn-east-1.qiniucs.com".into();
+            }),
             maximal_case("obs", &|c: &mut StoredConnection| {
                 c.access_key_id = "AK".into();
                 c.secret_access_key = secret("sk");
@@ -2724,7 +2780,7 @@ mod manifest_matrix {
             "display_name" => json!("Matrix"),
             "protocol" => json!(protocol),
             "endpoint" => json!(match protocol {
-                "s3" | "gcs" | "azblob" | "obs" | "oss" | "cos" | "webdav" | "seafile"
+                "s3" | "gcs" | "azblob" | "obs" | "oss" | "cos" | "qiniu" | "webdav" | "seafile"
                 | "koofr" | "pcloud" => "https://svc.example.com",
                 "ftp" => "ftp://127.0.0.1:2121",
                 "sftp" | "sftp-native" => "127.0.0.1:22",
@@ -2906,6 +2962,7 @@ mod manifest_matrix {
                 "force_path_style",
             ],
             "oss" | "obs" => vec!["provider", "access_key_id", "secret_access_key", "endpoint"],
+            "qiniu" => vec!["provider", "access_key_id", "secret_access_key", "endpoint"],
             "cos" => vec![
                 "provider", "access_key_id", "secret_access_key", "session_token", "endpoint",
             ],

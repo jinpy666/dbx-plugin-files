@@ -37,7 +37,7 @@ pub const JSON_CHUNK_BYTES: usize = 1024 * 1024;
 /// (stored `service` + JSON parameters). Stored connections from the
 /// OpenDAL era (`opendal-custom`) are normalized onto `rclone-custom` at
 /// parse time — the alias never reaches the engine.
-pub const PROTOCOLS: [&str; 71] = [
+pub const PROTOCOLS: [&str; 72] = [
     "fs",
     "s3",
     "gcs",
@@ -45,6 +45,7 @@ pub const PROTOCOLS: [&str; 71] = [
     "obs",
     "oss",
     "cos",
+    "qiniu",
     "webdav",
     "ftp",
     "sftp",
