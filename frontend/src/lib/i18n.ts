@@ -66,6 +66,26 @@ export const messages = {
     mountRcloneOk: "Mounted read-only at {point}",
     mountGatewayCopied: "WebDAV gateway URL copied — connect from your file manager to mount it (read-only)",
     mountFailed: "Mount failed: {message}",
+    // 独立设置弹窗（对标 ssh settings-modal）：分类导航 + 挂载面板
+    settingsNav: {
+      downloads: "Downloads",
+      openWith: "Open with",
+      mounts: "Local mounts",
+    },
+    mounts: {
+      help: "Mount a connection read-only into your file system: rclone mount when a FUSE driver is available, otherwise a loopback WebDAV gateway — paste the copied URL into your file manager's \"Connect to server\".",
+      empty: "No active mounts for this connection.",
+      loadFailed: "Could not load mount status",
+      mountNow: "Mount this connection",
+      unmount: "Unmount",
+      unmounted: "Unmounted",
+      readOnly: "read-only",
+      stale: "Stale — rclone no longer reports this mount point",
+    },
+    mountStrategy: {
+      rclone: "rclone mount",
+      webdav: "WebDAV gateway",
+    },
     // 预览浮窗最小化 pill
     minimizePreview: "Minimize preview",
     // P-FILES 右键/侧栏增强
@@ -313,6 +333,26 @@ export const messages = {
     mountRcloneOk: "Montado en solo lectura en {point}",
     mountGatewayCopied: "URL del gateway WebDAV copiada: conéctala desde tu gestor de archivos (solo lectura)",
     mountFailed: "Error al montar: {message}",
+    // 独立设置弹窗（对标 ssh settings-modal）：分类导航 + 挂载面板
+    settingsNav: {
+      downloads: "Descargas",
+      openWith: "Abrir con",
+      mounts: "Montajes locales",
+    },
+    mounts: {
+      help: "Monta una conexión en solo lectura en tu sistema de archivos: rclone mount si hay un driver FUSE disponible; si no, una pasarela WebDAV en localhost: pega la URL copiada en «Conectar con el servidor» de tu gestor de archivos.",
+      empty: "No hay montajes activos para esta conexión.",
+      loadFailed: "No se pudo cargar el estado de los montajes",
+      mountNow: "Montar esta conexión",
+      unmount: "Desmontar",
+      unmounted: "Desmontado",
+      readOnly: "solo lectura",
+      stale: "Obsoleto: rclone ya no informa de este punto de montaje",
+    },
+    mountStrategy: {
+      rclone: "rclone mount",
+      webdav: "Pasarela WebDAV",
+    },
     // 预览浮窗最小化 pill
     minimizePreview: "Minimizar vista previa",
     // P-FILES 右键/侧栏增强
@@ -550,6 +590,26 @@ export const messages = {
     mountRcloneOk: "Montato in sola lettura su {point}",
     mountGatewayCopied: "URL del gateway WebDAV copiato: connettiti dal file manager per montarlo (sola lettura)",
     mountFailed: "Montaggio non riuscito: {message}",
+    // 独立设置弹窗（对标 ssh settings-modal）：分类导航 + 挂载面板
+    settingsNav: {
+      downloads: "Download",
+      openWith: "Apri con",
+      mounts: "Mount locali",
+    },
+    mounts: {
+      help: "Monta una connessione in sola lettura nel file system: rclone mount se è disponibile un driver FUSE, altrimenti un gateway WebDAV su localhost: incolla l'URL copiato in «Connetti al server» del file manager.",
+      empty: "Nessun mount attivo per questa connessione.",
+      loadFailed: "Impossibile caricare lo stato dei mount",
+      mountNow: "Monta questa connessione",
+      unmount: "Smonta",
+      unmounted: "Smontato",
+      readOnly: "sola lettura",
+      stale: "Non aggiornato: rclone non segnala più questo punto di mount",
+    },
+    mountStrategy: {
+      rclone: "rclone mount",
+      webdav: "Gateway WebDAV",
+    },
     // 预览浮窗最小化 pill
     minimizePreview: "Minimizza anteprima",
     // P-FILES 右键/侧栏增强
@@ -787,6 +847,26 @@ export const messages = {
     mountRcloneOk: "読み取り専用で {point} にマウントしました",
     mountGatewayCopied: "WebDAV ゲートウェイの URL をコピーしました — ファイルマネージャーの「サーバへ接続」で貼り付けてマウントしてください（読み取り専用）",
     mountFailed: "マウントに失敗しました: {message}",
+    // 独立设置弹窗（对标 ssh settings-modal）：分类导航 + 挂载面板
+    settingsNav: {
+      downloads: "ダウンロード",
+      openWith: "開くアプリ",
+      mounts: "ローカルマウント",
+    },
+    mounts: {
+      help: "接続を読み取り専用でファイルシステムにマウントします。FUSE ドライバーがあれば rclone mount、なければループバックの WebDAV ゲートウェイを使用します。コピーした URL をファイルマネージャーの「サーバへ接続」に貼り付けてください。",
+      empty: "この接続にアクティブなマウントはありません。",
+      loadFailed: "マウント状態を読み込めませんでした",
+      mountNow: "この接続をマウント",
+      unmount: "アンマウント",
+      unmounted: "アンマウントしました",
+      readOnly: "読み取り専用",
+      stale: "無効: rclone はこのマウントポイントを報告していません",
+    },
+    mountStrategy: {
+      rclone: "rclone マウント",
+      webdav: "WebDAV ゲートウェイ",
+    },
     // 预览浮窗最小化 pill
     minimizePreview: "プレビューを最小化",
     // P-FILES 右键/侧栏增强
@@ -1024,6 +1104,26 @@ export const messages = {
     mountRcloneOk: "Montado somente leitura em {point}",
     mountGatewayCopied: "URL do gateway WebDAV copiada — conecte pelo gerenciador de arquivos para montar (somente leitura)",
     mountFailed: "Falha ao montar: {message}",
+    // 独立设置弹窗（对标 ssh settings-modal）：分类导航 + 挂载面板
+    settingsNav: {
+      downloads: "Downloads",
+      openWith: "Abrir com",
+      mounts: "Montagens locais",
+    },
+    mounts: {
+      help: "Monta uma conexão somente leitura no seu sistema de arquivos: rclone mount quando houver driver FUSE; caso contrário, um gateway WebDAV local — cole a URL copiada no \"Conectar ao servidor\" do gerenciador de arquivos.",
+      empty: "Nenhuma montagem ativa para esta conexão.",
+      loadFailed: "Não foi possível carregar o status das montagens",
+      mountNow: "Montar esta conexão",
+      unmount: "Desmontar",
+      unmounted: "Desmontado",
+      readOnly: "somente leitura",
+      stale: "Desatualizado — o rclone não reporta mais este ponto de montagem",
+    },
+    mountStrategy: {
+      rclone: "rclone mount",
+      webdav: "Gateway WebDAV",
+    },
     // 预览浮窗最小化 pill
     minimizePreview: "Minimizar visualização",
     // P-FILES 右键/侧栏增强
@@ -1262,6 +1362,26 @@ export const messages = {
     mountRcloneOk: "已只读挂载到 {point}",
     mountGatewayCopied: "网关地址已复制：在文件管理器「连接服务器」粘贴即可挂载（只读）",
     mountFailed: "挂载失败：{message}",
+    // 独立设置弹窗（对标 ssh settings-modal）：分类导航 + 挂载面板
+    settingsNav: {
+      downloads: "下载",
+      openWith: "打开方式",
+      mounts: "本地挂载",
+    },
+    mounts: {
+      help: "把连接只读挂载进本机文件系统：有 FUSE 驱动时走 rclone mount，否则退到本机 WebDAV 网关——把复制的地址粘贴到文件管理器「连接服务器」。",
+      empty: "当前连接暂无活动挂载。",
+      loadFailed: "挂载状态加载失败",
+      mountNow: "挂载当前连接",
+      unmount: "卸载",
+      unmounted: "已卸载",
+      readOnly: "只读",
+      stale: "已失效——rclone 不再报告该挂载点",
+    },
+    mountStrategy: {
+      rclone: "rclone 挂载",
+      webdav: "WebDAV 网关",
+    },
     // 预览浮窗最小化 pill
     minimizePreview: "最小化预览",
     // P-FILES 右键/侧栏增强
@@ -1499,6 +1619,26 @@ export const messages = {
     mountRcloneOk: "已唯讀掛載到 {point}",
     mountGatewayCopied: "網關位址已複製：在檔案管理器「連線伺服器」貼上即可掛載（唯讀）",
     mountFailed: "掛載失敗：{message}",
+    // 独立设置弹窗（对标 ssh settings-modal）：分类导航 + 挂载面板
+    settingsNav: {
+      downloads: "下載",
+      openWith: "開啟方式",
+      mounts: "本機掛載",
+    },
+    mounts: {
+      help: "把連線唯讀掛載進本機檔案系統：有 FUSE 驅動時走 rclone mount，否則退到本機 WebDAV 閘道——把複製的位址貼到檔案管理器「連線伺服器」。",
+      empty: "目前連線尚無作用中的掛載。",
+      loadFailed: "掛載狀態載入失敗",
+      mountNow: "掛載目前連線",
+      unmount: "卸載",
+      unmounted: "已卸載",
+      readOnly: "唯讀",
+      stale: "已失效——rclone 不再回報該掛載點",
+    },
+    mountStrategy: {
+      rclone: "rclone 掛載",
+      webdav: "WebDAV 閘道",
+    },
     // 预览浮窗最小化 pill
     minimizePreview: "最小化預覽",
     // P-FILES 右键/侧栏增强

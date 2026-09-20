@@ -663,7 +663,8 @@ describe("audit medium round: os drop, menu keys, dock tabs, preview dialog", ()
     await settle();
     await showTransfers();
     const tabs = () => wrapper!.get(".wb-dock-tabs").findAll('[role="tab"]');
-    expect(tabs()).toHaveLength(4);
+    // settings 已拆为独立设置弹窗，dock 只剩 transfers/audit/connection 三页签。
+    expect(tabs()).toHaveLength(3);
     expect(tabs()[0]!.attributes("aria-selected")).toBe("true");
     expect(tabs()[1]!.attributes("aria-selected")).toBe("false");
     expect(tabs()[1]!.attributes("tabindex")).toBe("-1");

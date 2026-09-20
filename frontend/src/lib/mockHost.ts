@@ -324,6 +324,12 @@ export function installMockHost() {
   const uploads = new Map<string, { path: string; size: number; received: number; bytes: Uint8Array; connectionId: unknown }>();
   const downloads = new Map<string, { path: string; size: number; received: number; connectionId: unknown; timer: number; canceled: boolean }>();
 
+  // ---- 本地挂载（mock 演示 webdav 策略；不触达真实网关/挂载点）----------------
+  // files/mount 固定走 webdav 兜底（mock 无 FUSE 概念），mountStatus/unmount
+  // 按连接过滤，供设置弹窗「本地挂载」面板走查。
+  const mockMounts = new Map<string, { strategy: string; gatewayPort: number; connectionId: unknown }>();
+  let mockMountSeq = 0;
+
   // ---- 监听器 ---------------------------------------------------------------
   const eventListeners: Array<(event: DbxPluginEvent) => void> = [];
   // mock 镜像当前宿主桥的二进制事件形状（零拷贝 data 字段），与真实宿主一致。
@@ -582,6 +588,25 @@ export function installMockHost() {
       case "files/local/capabilities": {
         // mock 模拟 web 宿主：无本机落盘，前端走宿主保存/浏览器兜底路径。
         return { canSaveLocal: false, downloadsDir: "", platform: "web" };
+      }
+      case "files/mount": {
+        const mountId = `mock-mount-${++mockMountSeq}`;
+        const gatewayPort = 40000 + (mockMountSeq % 1000);
+        mockMounts.set(mountId, { strategy: "webdav", gatewayPort, connectionId: connectionIdOf(p.connectionId) });
+        return { mountId, strategy: "webdav", gatewayPort, gatewayUrl: `http://127.0.0.1:${gatewayPort}/tok/${mountId}/`, fallbackReason: "mock: no FUSE driver" };
+      }
+      case "files/mountStatus": {
+        const wanted = p.connectionId == null ? null : connectionIdOf(p.connectionId);
+        const mounts = [...mockMounts.entries()]
+          .filter(([, row]) => wanted == null || row.connectionId === wanted)
+          .map(([mountId, row]) => ({ mountId, strategy: row.strategy, readOnly: true, gatewayPort: row.gatewayPort, mounted: true }));
+        return { mounts };
+      }
+      case "files/unmount": {
+        const mountId = str("mountId");
+        if (mountId && !mockMounts.delete(mountId)) throw new Error("Mount not found");
+        if (!mountId) mockMounts.clear();
+        return { removed: 1 };
       }
       case "files/transfer/cancel": {
         if (typeof p.taskId !== "string") throw new Error("Invalid request parameters: taskId must be a string");

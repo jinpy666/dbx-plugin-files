@@ -3,6 +3,9 @@ import { computed, ref, watch } from "vue";
 import { FolderOpen, Plus, RotateCcw, X } from "@lucide/vue";
 import type { OpenAppMapping, OpenAppPrefs } from "../lib/prefs";
 
+/** 独立设置弹窗按分类只渲染一个 section；不传 section 时两段都渲染（兼容旧用法）。 */
+export type SettingsSection = "downloads" | "openWith";
+
 const props = defineProps<{
   t: (key: string, values?: Record<string, string | number>) => string;
   canSaveLocal: boolean;
@@ -12,6 +15,7 @@ const props = defineProps<{
   /** 外部打开应用偏好（issue #11）：全局默认 + 按扩展名映射。 */
   openApp: OpenAppPrefs;
   openAppError?: string;
+  section?: SettingsSection;
 }>();
 
 const emit = defineEmits<{
@@ -93,7 +97,7 @@ function removeMapping(index: number) {
 
 <template>
   <section class="wb-settings-panel" :aria-label="t('settingsPanel')">
-    <div class="wb-settings-section">
+    <div v-if="!props.section || props.section === 'downloads'" class="wb-settings-section">
       <div class="wb-settings-heading">
         <strong>{{ t("downloadDirectory") }}</strong>
         <span class="wb-muted">{{ t("settings") }}</span>
@@ -135,7 +139,7 @@ function removeMapping(index: number) {
     </div>
 
     <!-- issue #11：为下载产物指定外部打开应用（默认 + 按扩展名覆盖）。 -->
-    <div class="wb-settings-section">
+    <div v-if="!props.section || props.section === 'openWith'" class="wb-settings-section">
       <div class="wb-settings-heading">
         <strong>{{ t("externalApp") }}</strong>
         <span class="wb-muted">{{ t("settings") }}</span>

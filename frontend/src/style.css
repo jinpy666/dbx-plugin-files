@@ -161,6 +161,28 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-dock-tabs button.is-active { background: var(--accent); color: var(--foreground); }
 .wb-dock-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 6px 8px; }
 
+/* ---- settings dialog（对标 ssh 插件 settings-modal：独立弹窗 + 左导航）--------
+   设置不再挤在 dock 页签里；左栏为分类导航，右栏为当前分类内容面板。 */
+.wb-settings-backdrop { position: fixed; inset: 0; z-index: 55; display: grid; place-items: center; background: var(--overlay); }
+.wb-settings-modal { display: flex; flex-direction: column; width: min(680px, calc(100vw - 40px)); height: min(560px, calc(100vh - 40px)); overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--popover); box-shadow: 0 16px 40px rgb(0 0 0 / 45%); animation: wb-pop-in 160ms ease; }
+.wb-settings-modal header { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--border); padding: 10px 14px; color: var(--foreground); }
+.wb-settings-modal header strong { font-weight: 600; }
+.wb-settings-layout { display: flex; min-height: 0; flex: 1 1 auto; }
+.wb-settings-nav { display: flex; flex: 0 0 148px; flex-direction: column; gap: 2px; overflow-y: auto; border-right: 1px solid var(--border); padding: 8px 10px; }
+.wb-settings-nav-item { border: 0; background: transparent; cursor: pointer; border-radius: var(--radius); padding: 5px 8px; color: var(--muted-foreground); font-size: 12px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-settings-nav-item:hover { background: var(--accent); color: var(--foreground); }
+.wb-settings-nav-item.is-active { background: var(--foreground); color: var(--background); font-weight: 500; }
+.wb-settings-content { flex: 1 1 auto; min-width: 0; overflow-y: auto; padding: 12px 14px; }
+.wb-settings-pane { display: flex; flex-direction: column; gap: 10px; }
+.wb-mounts-actions { display: flex; align-items: center; gap: 6px; }
+.wb-mounts-list { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 6px; padding: 0; margin: 0; list-style: none; }
+.wb-mounts-list li { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); padding: 6px 8px; font-size: 11px; }
+.wb-mounts-list li:last-child { border-bottom: 0; }
+.wb-mounts-main { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
+.wb-mounts-main strong { font-weight: 500; font-size: 12px; }
+.wb-mounts-main span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-mounts-badge { flex: 0 0 auto; border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; color: var(--muted-foreground); font-size: 10px; }
+
 /* ---- transfer panel --------------------------------------------------------- */
 .wb-transfer-item { border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 8px; margin-bottom: 6px; }
 .wb-transfer-title { display: flex; align-items: center; gap: 6px; }
@@ -335,6 +357,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .wb-search-box { width: 112px; }
   .wb-pane-target { min-width: 200px; }
   .wb-dock { flex-basis: 240px; min-width: 200px; }
+  /* 设置弹窗窄视口：左导航转为顶部横排（对标 ssh settings-modal 响应式）。 */
+  .wb-settings-layout { flex-direction: column; }
+  .wb-settings-nav { flex: 0 0 auto; flex-direction: row; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--border); }
 }
 
 /* ---- skeleton（A-FILES ④d） -------------------------------------------------------- */
