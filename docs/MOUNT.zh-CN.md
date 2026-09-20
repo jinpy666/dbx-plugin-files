@@ -136,6 +136,19 @@ sidecar 进程
 M1 交付后即可验证真实使用率：如果只读挂载已覆盖绝大多数诉求，M2/M3
 的优先级可再评估，避免为低频写场景提前投入。
 
+### 4.1 实现状态追加：macOS 自动挂载（2026-09-20）
+
+webdav 网关启动后，macOS 直接调用系统 WebDAV 客户端完成挂载
+（`osascript -e 'mount volume "<gateway-url>"'`，与 Finder「连接服务器」
+同一 WebDAVFS 栈）：卷出现在 `/Volumes/<connId>` 与 Finder 侧边栏，
+`files/mount` 响应带 `mounted: true` + `mountPoint`，前端自动 reveal。
+`files/unmount` 对 webdav 卷执行 `diskutil unmount force` 后关停网关。
+osascript 被拒/超时（20s）或非 macOS 平台时保持原行为（复制地址 +
+手动连接指引）；Windows `net use` / Linux `gio mount` 留待 M2。
+
+**挂载形态语义**：rclone mount（FUSE）= 挂载**目录**到指定位置；
+WebDAV 网关 = 挂载为**卷（磁盘）**。两者在 Finder 中均直接可见。
+
 ## 5. 与 rclone mount 的对照
 
 - **体积来源**：rclone `mount` 的能力主要来自其 VFS 层（目录缓存、

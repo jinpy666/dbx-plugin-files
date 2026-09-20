@@ -143,6 +143,33 @@ describe("mount to local UI", () => {
     );
   });
 
+  it("reveals the volume when the system webdav client mounts automatically", async () => {
+    mountWorkbench();
+    await settle();
+    const spy = stubInvoke((method) =>
+      method === "files/mount"
+        ? {
+            mountId: "m4",
+            strategy: "webdav",
+            mounted: true,
+            mountPoint: "/Volumes/conn1",
+            gatewayUrl: "http://127.0.0.1:54321/tok/conn1/",
+            fallbackReason: "no fuse",
+          }
+        : undefined,
+    );
+    await openEntryMenu(dirEntry);
+    await menuItem(workbenchMessage("en", "mountToLocal"))!.trigger("click");
+    await settle();
+    await confirmMountDialog();
+    expect(spy).toHaveBeenCalledWith(
+      "files/local/reveal",
+      expect.objectContaining({ path: "/Volumes/conn1" }),
+      undefined,
+    );
+    expect(wrapper!.get(".wb-notice").text()).toContain("Mounted as a WebDAV volume");
+  });
+
   it("copies the gateway URL when the webdav fallback answers", async () => {
     mountWorkbench();
     await settle();

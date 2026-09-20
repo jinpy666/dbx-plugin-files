@@ -54,8 +54,10 @@ pub struct MountRecord {
 pub enum MountBackend {
     /// Kernel mount held by the rcd (`mount/mount`).
     Rclone { mount_point: PathBuf },
-    /// Loopback WebDAV listener inside this sidecar.
-    WebDav { gateway: webdav_gateway::GatewayHandle },
+    /// Loopback WebDAV listener inside this sidecar. When the OS WebDAV
+    /// client picked the URL up automatically, the mounted volume lives at
+    /// `mount_point` (macOS: /Volumes/<name>) and can be revealed/unmounted.
+    WebDav { gateway: webdav_gateway::GatewayHandle, mount_point: Option<PathBuf> },
 }
 
 pub type MountTable = Arc<std::sync::Mutex<HashMap<String, MountRecord>>>;
@@ -199,6 +201,54 @@ fn pick_windows_drive() -> Option<PathBuf> {
             return Some(point);
         }
     }
+    None
+}
+
+/// Volume name the OS WebDAV client derives from the gateway URL: the last
+/// non-empty path segment (the connection id). Pure helper, unit-tested.
+fn webdav_volume_name(url: &str) -> Option<&str> {
+    url.trim_end_matches('/')
+        .rsplit('/')
+        .find(|segment| !segment.is_empty())
+}
+
+/// Ask macOS to mount the gateway URL right away: `mount volume` drives the
+/// same WebDAVFS stack as Finder's "Connect to Server", so the read-only
+/// volume appears in /Volumes and the Finder sidebar without user steps.
+/// Returns the mounted volume path, or None when the platform is not macOS,
+/// the client refused/timed out (auth prompt, sandboxed host) — the caller
+/// then falls back to copy-URL guidance.
+#[cfg(target_os = "macos")]
+async fn mount_webdav_volume(url: &str) -> Option<PathBuf> {
+    let wanted = webdav_volume_name(url)?.to_string();
+    let script = format!("mount volume \"{}\"", url);
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        tokio::process::Command::new("osascript").arg("-e").arg(&script).output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    // Finder may dedupe volume names ("<conn> 2"); scan /Volumes for the
+    // first directory containing the expected segment instead of trusting
+    // osascript output.
+    let mut entries = tokio::fs::read_dir("/Volumes").await.ok()?;
+    while let Some(entry) = entries.next_entry().await.ok()? {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.contains(&wanted) {
+            return Some(entry.path());
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn mount_webdav_volume(_url: &str) -> Option<PathBuf> {
+    // Windows (`net use`) / Linux (`gio mount dav://`) auto-mounts land in M2.
     None
 }
 
@@ -456,8 +506,10 @@ pub async fn start_mount(
     })
     .await?;
     let url = format!("http://127.0.0.1:{}/{}/{}/", gateway.port, token, connection_id);
+    // 系统级自动挂载：macOS 上直接让 WebDAVFS 挂成卷（/Volumes + Finder
+    // 侧边栏可见），不成功再退到「复制地址手动连接」。
+    let volume = mount_webdav_volume(&url).await;
     let mount_id = Uuid::new_v4().simple().to_string();
-    let hint = mount_hint("webdav", Path::new(&url));
     lock_table(mounts)?.insert(
         mount_id.clone(),
         MountRecord {
@@ -465,7 +517,7 @@ pub async fn start_mount(
             connection_id: connection_id.to_string(),
             strategy: "webdav".to_string(),
             fs: fs.clone(),
-            backend: MountBackend::WebDav { gateway },
+            backend: MountBackend::WebDav { gateway, mount_point: volume.clone() },
             fallback_reason: fallback_reason.clone(),
             created_at_ms: chrono::Utc::now().timestamp_millis(),
             _work: work,
@@ -476,8 +528,14 @@ pub async fn start_mount(
         "strategy": "webdav",
         "gatewayUrl": url,
         "readOnly": true,
-        "hint": hint,
+        "mounted": volume.is_some(),
     });
+    if let Some(point) = &volume {
+        response["mountPoint"] = Value::String(point.display().to_string());
+        response["hint"] = Value::String(format!("已通过 WebDAV 挂载为卷 {}", point.display()));
+    } else {
+        response["hint"] = Value::String(mount_hint("webdav", Path::new(&url)));
+    }
     if let Some(reason) = fallback_reason {
         response["fallbackReason"] = Value::String(reason);
     }
@@ -524,7 +582,8 @@ fn backend_snapshot(backend: &MountBackend) -> MountBackend {
         MountBackend::Rclone { mount_point } => MountBackend::Rclone {
             mount_point: mount_point.clone(),
         },
-        MountBackend::WebDav { gateway } => MountBackend::WebDav {
+        MountBackend::WebDav { gateway, mount_point } => MountBackend::WebDav {
+            mount_point: mount_point.clone(),
             gateway: webdav_gateway::GatewayHandle {
                 port: gateway.port,
                 token: gateway.token.clone(),
@@ -575,8 +634,17 @@ pub async fn unmount_connection(
                     }
                 }
             }
-            MountBackend::WebDav { gateway } => {
+            MountBackend::WebDav { gateway, mount_point } => {
+                // 先停网关（卷内容随即失效），再尽力卸载系统卷，避免 Finder
+                // 里留下一个指向已死端口的"幽灵卷"。
                 gateway.shutdown.notify_one();
+                if let (Some(point), true) = (mount_point, cfg!(target_os = "macos")) {
+                    let _ = tokio::process::Command::new("diskutil")
+                        .args(["unmount", "force"])
+                        .arg(point)
+                        .output()
+                        .await;
+                }
             }
         }
         if lock_table(mounts).map(|mut table| table.remove(&id)).is_err() {
@@ -614,8 +682,12 @@ pub async fn mount_status(
                     MountBackend::Rclone { mount_point } => {
                         row["mountPoint"] = Value::String(mount_point.display().to_string());
                     }
-                    MountBackend::WebDav { gateway } => {
+                    MountBackend::WebDav { gateway, mount_point } => {
                         row["gatewayPort"] = json!(gateway.port);
+                        if let Some(point) = mount_point {
+                            row["mountPoint"] = Value::String(point.display().to_string());
+                            row["mounted"] = json!(true);
+                        }
                     }
                 }
                 if let Some(reason) = &record.fallback_reason {
@@ -666,6 +738,7 @@ mod tests {
         ));
         // WebDAV gateway serves loopback — there is no local directory.
         let gateway = MountBackend::WebDav {
+            mount_point: None,
             gateway: webdav_gateway::GatewayHandle {
                 port: 1,
                 token: "t".to_string(),
@@ -673,6 +746,16 @@ mod tests {
             },
         };
         assert!(!backend_mounts_path(&gateway, Path::new("/Volumes/dbx")));
+    }
+
+    #[test]
+    fn webdav_volume_name_takes_last_segment() {
+        assert_eq!(webdav_volume_name("http://127.0.0.1:54321/tok/conn1/"), Some("conn1"));
+        assert_eq!(webdav_volume_name("http://127.0.0.1:54321/tok/conn1"), Some("conn1"));
+        // No path segments: the host:port becomes the volume name (the real
+        // gateway URL always carries /token/<connId>/, this is just the edge).
+        assert_eq!(webdav_volume_name("http://127.0.0.1:54321/"), Some("127.0.0.1:54321"));
+        assert_eq!(webdav_volume_name(""), None);
     }
 
     #[test]

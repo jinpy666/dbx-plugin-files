@@ -2359,6 +2359,8 @@ interface MountResult {
   mountId: string;
   strategy: "rclone" | "webdav";
   mountPoint?: string;
+  /** webdav 策略：系统 WebDAV 客户端是否已把网关挂成卷（macOS mount volume）。 */
+  mounted?: boolean;
   gatewayUrl?: string;
   fallbackReason?: string;
 }
@@ -2402,6 +2404,13 @@ async function onMountDialogConfirm(mountPoint: string) {
 }
 
 async function handleMountResult(result: MountResult) {
+  // webdav 自动挂载成功（macOS mount volume）：挂的是卷，直接打开它。
+  if (result.strategy === "webdav" && result.mounted && result.mountPoint) {
+    showNotice(t("mountWebdavOk", { point: result.mountPoint }));
+    await call("files/local/reveal", { path: result.mountPoint }).catch(() => undefined);
+    if (settingsOpen.value && settingsCategory.value === "mounts") void loadMounts();
+    return;
+  }
   if (result.strategy === "webdav" && result.gatewayUrl) {
     await window.dbxPlugin.clipboard?.writeText(result.gatewayUrl);
     showNotice(t("mountGatewayFallback", { reason: result.fallbackReason ?? "" }));
