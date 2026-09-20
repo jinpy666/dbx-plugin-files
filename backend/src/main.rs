@@ -59,6 +59,9 @@ struct Plugin {
     /// Local mounts (`files/mount`): mountId → live record. Same std-Mutex
     /// discipline as `sync_jobs` — short sync sections, no awaits held.
     mounts: mount::MountTable,
+    /// `files/about` usage cache keyed by connectionId (60s TTL) — the
+    /// sidebar renders it on every pane load and rc about is not free.
+    about_cache: std::sync::Mutex<HashMap<String, (std::time::Instant, Value)>>,
 }
 
 impl Plugin {
@@ -90,6 +93,8 @@ impl Plugin {
         let sync_jobs: Arc<std::sync::Mutex<HashMap<String, RcloneSyncRecord>>> =
             Arc::new(std::sync::Mutex::new(HashMap::new()));
         let mounts: mount::MountTable = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let about_cache: std::sync::Mutex<HashMap<String, (std::time::Instant, Value)>> =
+            std::sync::Mutex::new(HashMap::new());
         let mut mcp = mcp::Mcp::new(data_dir);
         // The rclone engine is the only engine: the MCP storage tools route
         // through it too (same registry, same gates). The sync starter
@@ -111,6 +116,7 @@ impl Plugin {
             mcp,
             sync_jobs,
             mounts,
+            about_cache,
         })
     }
 
@@ -926,6 +932,151 @@ impl Plugin {
                     }
                     None => Ok(json!({ "rate": self.rclone.bwlimit_pref() })),
                 }
+            }
+            // ------------------------------------------------------------------
+            // Space & integrity tools: about (usage quota), check (async
+            // comparison job), hashsum (SUM file next to the directory),
+            // cleanup (remote trash), rmdirs (empty dirs under a path).
+            // ------------------------------------------------------------------
+            "files/about" => {
+                let request: model::AboutRequest = parse(params)?;
+                {
+                    let cache = self
+                        .about_cache
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if let Some((at, value)) = cache.get(&request.connection_id) {
+                        if at.elapsed() < ABOUT_CACHE_TTL {
+                            return Ok(value.clone());
+                        }
+                    }
+                }
+                let binding = self.rclone.binding(&request.connection_id)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                let value = client
+                    .operations_about(&rclone::call_fs(&binding))
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if let Ok(mut cache) = self.about_cache.lock() {
+                    cache.insert(request.connection_id.clone(), (std::time::Instant::now(), value.clone()));
+                }
+                Ok(value)
+            }
+            "files/check" => {
+                let request: model::CheckRequest = parse(params)?;
+                let job_id = rclone_start_check_job(
+                    Arc::clone(&self.rclone),
+                    Arc::clone(&self.sync_jobs),
+                    &request,
+                    Some(emitter),
+                )
+                .await?;
+                Ok(json!({ "jobId": job_id }))
+            }
+            "files/hashsum" => {
+                let request: model::HashsumRequest = parse(params)?;
+                let binding = self.rclone.binding(&request.connection_id)?;
+                ensure_binding_writable(&binding)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                let fs = rclone::call_fs(&binding);
+                let remote = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    &request.path,
+                    crate::policy::PathPolicy::check_read,
+                )?;
+                if remote.trim_matches('/').is_empty() {
+                    return Err("hashsum needs a subdirectory (the SUM file is written next to it)".to_string());
+                }
+                // Size precheck: refuse absurd trees before hashing.
+                let size = client
+                    .operations_size(&fs, &remote)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let count = size.get("count").and_then(Value::as_u64).unwrap_or(0);
+                if count > HASHSUM_MAX_FILES {
+                    return Err(format!(
+                        "directory holds {count} files; hashsum is capped at {HASHSUM_MAX_FILES} — pick a smaller folder"
+                    ));
+                }
+                let hash_type = request
+                    .hash_type
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("md5")
+                    .to_lowercase();
+                let result = client
+                    .operations_hashsum(&fs, &remote, &hash_type, false)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let lines: Vec<String> = result
+                    .get("hashsum")
+                    .and_then(Value::as_array)
+                    .map(|array| {
+                        array
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if lines.is_empty() {
+                    return Err(format!("no hashable files under {}", request.path));
+                }
+                // SUM file lives NEXT TO the directory (`/photos` →
+                // `/photos.md5`), so a rerun never hashes its own report.
+                let trimmed = request.path.trim_matches('/');
+                let (parent, base) = match trimmed.rsplit_once('/') {
+                    Some((parent, base)) => (parent.to_string(), base.to_string()),
+                    None => (String::new(), trimmed.to_string()),
+                };
+                let sum_path = if parent.is_empty() {
+                    format!("/{base}.{hash_type}")
+                } else {
+                    format!("/{parent}/{base}.{hash_type}")
+                };
+                let sum_remote = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    &sum_path,
+                    crate::policy::PathPolicy::check_write,
+                )?;
+                let mut content = lines.join("\n");
+                content.push('\n');
+                rclone::ops::write_bytes(&client, &fs, &sum_remote, content.as_bytes()).await?;
+                self.audit_id(&request.connection_id, "files/hashsum", &sum_path, "ok")?;
+                Ok(json!({ "path": sum_path, "hashType": hash_type, "files": lines.len() }))
+            }
+            "files/cleanup" => {
+                let request: model::CleanupRequest = parse(params)?;
+                let binding = self.rclone.binding(&request.connection_id)?;
+                ensure_binding_deletable(&binding)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                client
+                    .operations_cleanup(&rclone::call_fs(&binding))
+                    .await
+                    .map_err(|error| error.to_string())?;
+                self.audit_id(&request.connection_id, "files/cleanup", "/", "ok")?;
+                Ok(json!({ "success": true }))
+            }
+            "files/rmdirs" => {
+                let request: model::PathRequest = parse(params)?;
+                let binding = self.rclone.binding(&request.connection_id)?;
+                ensure_binding_deletable(&binding)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                let remote = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    &request.path,
+                    crate::policy::PathPolicy::check_write,
+                )?;
+                client
+                    .operations_rmdirs(&rclone::call_fs(&binding), &remote)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                self.audit_id(&request.connection_id, "files/rmdirs", &request.path, "ok")?;
+                Ok(json!({ "success": true }))
             }
             // ------------------------------------------------------------------
             // Local mounts (docs/MOUNT.zh-CN.md, M1): rclone mount first,
@@ -1830,6 +1981,9 @@ struct RcloneSyncRecord {
     max_delete: Option<u64>,
     files_done: u64,
     files_total: Option<u64>,
+    /// Check jobs: one-line difference summary from the terminal report
+    /// (`None` while running and for sync/copy/move jobs).
+    check_summary: Option<String>,
     /// In-flight marker for the source connection's proxy group: dropped
     /// with the record on terminal removal, releasing the idle-group
     /// teardown hold. Clones share the guard's done flag.
@@ -1920,6 +2074,7 @@ async fn rclone_start_dir_job(
         max_delete: request.max_delete,
         files_done: 0,
         files_total: None,
+        check_summary: None,
         // Source and target share one proxy group (enforced above), so the
         // source group's key tracks the rcd the job runs on.
         work: rclone.start_work(&rclone::registry::group_key_of(
@@ -2071,6 +2226,8 @@ async fn rclone_start_dir_job(
                     None,
                 );
             }
+            // Dir jobs never emit the check report; exhaustive match only.
+            rclone::sync::SyncEvent::CheckFinished { .. } => {}
         });
     // Plan finding #11: the transfer client drops the wall-clock
     // timeout — long mirror runs would die inside the 30s default.
@@ -2096,6 +2253,8 @@ async fn rclone_start_dir_job(
             transfers: request.transfers,
             checkers: request.checkers,
             retries: request.retries,
+            check_one_way: false,
+            check_download: false,
         },
         on_event,
     )
@@ -2109,6 +2268,165 @@ async fn rclone_start_dir_job(
         Err(error) => {
             // The job never started: unwind the mirrors so the
             // panel never sees a ghost entry.
+            rclone_lock(&rclone.jobs).remove(&job_id);
+            rclone_lock(&sync_jobs).remove(&job_id);
+            return Err(error);
+        }
+    }
+    Ok(job_id)
+}
+
+/// Starts one `operations/check` comparison job (`files/check`): the same
+/// job mirror + transfer-tracker surface as dir jobs. The terminal report
+/// lands on the record as `checkSummary`; differences are data, so the job
+/// completes unless rclone itself errors.
+async fn rclone_start_check_job(
+    rclone: Arc<rclone::RcloneEngine>,
+    sync_jobs: Arc<std::sync::Mutex<HashMap<String, RcloneSyncRecord>>>,
+    request: &model::CheckRequest,
+    emitter: Option<&PluginEmitter>,
+) -> Result<String, String> {
+    let source_binding = rclone.binding(&request.source_connection_id)?;
+    let target_binding = rclone.binding(&request.target_connection_id)?;
+    // One rc call drives both fs strings inside a single rcd.
+    rclone::ensure_same_proxy_group(&source_binding, &target_binding)?;
+    // Check reads both sides and writes nothing — read gates on both paths.
+    let src_rel = rclone_gate(
+        &source_binding.root,
+        source_binding.lock_to_root,
+        &request.source_path,
+        crate::policy::PathPolicy::check_read,
+    )?;
+    let dst_rel = rclone_gate(
+        &target_binding.root,
+        target_binding.lock_to_root,
+        &request.target_path,
+        crate::policy::PathPolicy::check_read,
+    )?;
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let job = transfers::TransferJob {
+        task_id: job_id.clone(),
+        connection_id: request.source_connection_id.clone(),
+        // Projected through `rclone_sync_dir_job_value` (kind: check) like
+        // every dir job; the placeholder kind never reaches the wire.
+        kind: transfers::TransferKind::Upload,
+        remote_path: request.source_path.clone(),
+        total_bytes: None,
+        transferred_bytes: 0,
+        status: transfers::JobStatus::Queued,
+        error: None,
+        started_at: Some(store::unix_millis_now()),
+        finished_at: None,
+        local_path: None,
+    };
+    rclone_lock(&rclone.jobs).insert(job_id.clone(), job);
+    let record = RcloneSyncRecord {
+        handle: None,
+        kind: rclone::sync::SyncKind::Check,
+        src_conn: request.source_connection_id.clone(),
+        src_rel: src_rel.clone(),
+        dst_conn: request.target_connection_id.clone(),
+        dst_rel: dst_rel.clone(),
+        dry_run: false,
+        max_delete: None,
+        files_done: 0,
+        files_total: None,
+        check_summary: None,
+        work: rclone.start_work(&rclone::registry::group_key_of(
+            source_binding.proxy.as_ref(),
+        )),
+    };
+    rclone_lock(&sync_jobs).insert(job_id.clone(), record);
+
+    let engine = Arc::clone(&rclone);
+    let shared_jobs = Arc::clone(&sync_jobs);
+    let event_emitter = emitter.cloned();
+    let event_job_id = job_id.clone();
+    let on_event: Box<dyn FnMut(rclone::sync::SyncEvent) + Send> =
+        Box::new(move |event| match event {
+            rclone::sync::SyncEvent::CheckFinished { report } => {
+                let summary = check_summary_from(&report);
+                if let Some(record) = rclone_lock(&shared_jobs).get_mut(&event_job_id) {
+                    record.check_summary = Some(summary);
+                }
+                rclone_sync_terminal(
+                    &engine.jobs,
+                    &shared_jobs,
+                    event_emitter.as_ref(),
+                    &event_job_id,
+                    transfers::JobStatus::Completed,
+                    None,
+                    None,
+                );
+            }
+            // Unreachable for check jobs (the report beats the counters),
+            // kept for mirror consistency.
+            rclone::sync::SyncEvent::Completed { .. } => {
+                rclone_sync_terminal(
+                    &engine.jobs,
+                    &shared_jobs,
+                    event_emitter.as_ref(),
+                    &event_job_id,
+                    transfers::JobStatus::Completed,
+                    None,
+                    None,
+                );
+            }
+            rclone::sync::SyncEvent::Progress { .. } => {}
+            rclone::sync::SyncEvent::Failed { message } => {
+                rclone_sync_terminal(
+                    &engine.jobs,
+                    &shared_jobs,
+                    event_emitter.as_ref(),
+                    &event_job_id,
+                    transfers::JobStatus::Failed,
+                    Some(message),
+                    None,
+                );
+            }
+            rclone::sync::SyncEvent::Canceled => {
+                rclone_sync_terminal(
+                    &engine.jobs,
+                    &shared_jobs,
+                    event_emitter.as_ref(),
+                    &event_job_id,
+                    transfers::JobStatus::Canceled,
+                    None,
+                    None,
+                );
+            }
+        });
+    let started = rclone::sync::start_job(
+        rclone.client_for_binding(&source_binding).await?.transfer_client(),
+        rclone::sync::SyncJobParams {
+            task_id: job_id.clone(),
+            kind: rclone::sync::SyncKind::Check,
+            src_fs: rclone::call_fs(&source_binding),
+            dst_fs: rclone::call_fs(&target_binding),
+            src_rel,
+            dst_rel,
+            dry_run: false,
+            max_delete: None,
+            include: None,
+            exclude: None,
+            backup_dir_rel: None,
+            suffix: None,
+            transfers: None,
+            checkers: None,
+            retries: None,
+            check_one_way: request.one_way.unwrap_or(false),
+            check_download: request.download.unwrap_or(false),
+        },
+        on_event,
+    )
+    .await;
+    match started {
+        Ok(handle) => {
+            if let Some(record) = rclone_lock(&sync_jobs).get_mut(&job_id) {
+                record.handle = Some(handle);
+            }
+        }
+        Err(error) => {
             rclone_lock(&rclone.jobs).remove(&job_id);
             rclone_lock(&sync_jobs).remove(&job_id);
             return Err(error);
@@ -2224,6 +2542,7 @@ fn rclone_sync_event_from(job: &transfers::TransferJob, record: &RcloneSyncRecor
             rclone::sync::SyncKind::Sync => "syncDir",
             rclone::sync::SyncKind::Copy => "copyDir",
             rclone::sync::SyncKind::Move => "moveDir",
+            rclone::sync::SyncKind::Check => "check",
         },
         "remotePath": job.remote_path,
     });
@@ -2253,6 +2572,7 @@ fn rclone_sync_dir_job_value(job: &transfers::TransferJob, record: &RcloneSyncRe
             rclone::sync::SyncKind::Sync => "syncDir",
             rclone::sync::SyncKind::Copy => "copyDir",
             rclone::sync::SyncKind::Move => "moveDir",
+            rclone::sync::SyncKind::Check => "check",
         },
         "filesDone": record.files_done,
         "filesTotal": record.files_total,
@@ -2269,7 +2589,32 @@ fn rclone_sync_dir_job_value(job: &transfers::TransferJob, record: &RcloneSyncRe
     if let Some(max_delete) = record.max_delete {
         value["maxDelete"] = json!(max_delete);
     }
+    if let Some(summary) = &record.check_summary {
+        value["checkSummary"] = json!(summary);
+    }
     value
+}
+
+/// One-line human summary of an `operations/check` report (live-verified
+/// shape: missingOnSrc/missingOnDst/differ/error arrays + a `status` line).
+fn check_summary_from(report: &Value) -> String {
+    let count = |key: &str| {
+        report
+            .get(key)
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0)
+    };
+    let (src, dst, differ, errors) =
+        (count("missingOnSrc"), count("missingOnDst"), count("differ"), count("error"));
+    let total = src + dst + differ + errors;
+    if total == 0 {
+        "identical".to_string()
+    } else {
+        format!(
+            "{total} differences (missing on source: {src}, missing on target: {dst}, differ: {differ}, errors: {errors})"
+        )
+    }
 }
 
 /// Terminal transition for an rclone sync job — `complete_dir_job` twin:
@@ -2318,6 +2663,13 @@ fn rclone_sync_terminal(
 
 /// Poison-tolerant lock for the rclone Phase B tables (std Mutex; a panic in
 /// some other worker must not wedge every later request).
+/// `files/hashsum` guard: `operations/hashsum` walks every object inside one
+/// rc call — refuse absurd trees instead of hashing for minutes.
+const HASHSUM_MAX_FILES: u64 = 20_000;
+
+/// `files/about` per-connection cache TTL (sidebar renders it on every load).
+const ABOUT_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
 fn rclone_lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -3124,6 +3476,20 @@ mod tests {
         assert_eq!(hydrated.status, transfers::JobStatus::Completed);
         assert_eq!(hydrated.kind, transfers::TransferKind::Download);
         assert_eq!(hydrated.total_bytes, Some(11));
+    }
+
+    #[test]
+    fn check_summary_counts_every_difference_class() {
+        let report = json!({
+            "missingOnSrc": ["c.txt"],
+            "missingOnDst": ["b.txt"],
+            "differ": ["d.txt"],
+            "error": []
+        });
+        let summary = check_summary_from(&report);
+        assert!(summary.contains("3 differences"), "{summary}");
+        assert!(summary.contains("missing on source: 1"), "{summary}");
+        assert_eq!(check_summary_from(&json!({ "missingOnSrc": [], "missingOnDst": [], "differ": [], "error": [] })), "identical");
     }
 
     #[test]

@@ -6,6 +6,8 @@ import {
   ArrowRight,
   ArrowRightLeft,
   Calculator,
+  FileCheck,
+  FolderMinus,
   Copy,
   ArrowUp,
   Download,
@@ -27,6 +29,7 @@ import {
   Pencil,
   RefreshCw,
   Search,
+  Scale,
   Trash2,
   X,
 } from "@lucide/vue";
@@ -78,13 +81,15 @@ import { resolveToolbarTarget } from "./lib/toolbarTarget";
 import { validateFileName } from "./lib/fileName";
 import { runBatchTasks } from "./lib/batchRunner";
 
-type ConfirmKind = "delete" | "purge" | "newFolder" | "newFile" | "rename" | "copy" | "move" | "extract" | "compress" | "overwrite";
+type ConfirmKind = "delete" | "purge" | "newFolder" | "newFile" | "rename" | "copy" | "move" | "extract" | "compress" | "overwrite" | "check" | "cleanup";
 type PaneSide = "left" | "right";
 type MenuAction =
   | "open" | "preview" | "download" | "rename" | "delete" | "copyPath" | "copyName"
   | "syncDir" | "copyDir" | "copy" | "move" | "extract" | "archiveContents" | "compress"
   // 对标 rclone-dashboard：目录体积统计（files/size）与公开链接（files/publicLink）
   | "computeSize" | "copyPublicLink"
+  // rclone 深度能力：SUM 校验文件 / 清理空目录 / 目录内容比对（files/check）
+  | "hashsum" | "rmdirs" | "checkDir"
   // 本地挂载（docs/MOUNT.zh-CN.md M1）：rclone mount 优先，WebDAV 网关兜底
   | "mountLocal"
   // 批量（多选右键，P-FILES 压缩轮）
@@ -379,7 +384,7 @@ function transferRequest(id: string, method: string, params: Record<string, unkn
       ...params,
       connectionId: id,
       // DirJobRequest 不接受 connectionId 作为源/目标连接的默认值。
-      ...(method === "files/copyDir" || method === "files/syncDir" ? { sourceConnectionId: id, targetConnectionId: id } : {}),
+      ...(method === "files/copyDir" || method === "files/syncDir" || method === "files/check" ? { sourceConnectionId: id, targetConnectionId: id } : {}),
     },
   };
 }
@@ -465,7 +470,7 @@ const confirmForce = ref(false);
 const confirmForcePath = ref("");
 // R3-P2-5：跨栏 copy/move 冲突预检命中时挂起整批传输，弹「覆盖确认」后原样执行。
 const pendingPaneTransfer = ref<{ from: PaneSide; move: boolean; list: FileEntry[]; destPath: string }>();
-const confirmInput = computed(() => confirmKind.value === "newFolder" || confirmKind.value === "newFile" || confirmKind.value === "rename" || confirmKind.value === "copy" || confirmKind.value === "move" || confirmKind.value === "extract" || confirmKind.value === "compress");
+const confirmInput = computed(() => confirmKind.value === "newFolder" || confirmKind.value === "newFile" || confirmKind.value === "rename" || confirmKind.value === "copy" || confirmKind.value === "move" || confirmKind.value === "extract" || confirmKind.value === "compress" || confirmKind.value === "check");
 // P2-2：危险确认列表走 i18n 七语（lib 侧 label 为英文兜底，路径类条目原样展示）。
 const confirmDangerList = computed(() =>
   confirmHits.value.map((hit) => {
@@ -1548,6 +1553,28 @@ async function onConfirm() {
         showNotice(t("deleted"));
         break;
       }
+      case "check": {
+        const entry = confirmTarget.value.entry;
+        const targetPath = confirmDraft.value.trim();
+        if (!entry || !targetPath) return;
+        const retry = transferRequest(id, "files/check", {
+          sourcePath: entry.path,
+          targetPath,
+          oneWay: false,
+        });
+        const result = await call<{ jobId: string }>(retry.method, retry.params);
+        if (result.jobId) {
+          trackSidecarJob(result.jobId, "check", `${entry.path} ⨯ ${targetPath}`, retry);
+        }
+        jobStarted = true;
+        showNotice(t("checkStarted"));
+        break;
+      }
+      case "cleanup": {
+        await invokeConfirmed("files/cleanup", {});
+        showNotice(t("cleanupDone"));
+        break;
+      }
       case "extract": {
         const entry = confirmTarget.value.entry;
         const targetPath = confirmDraft.value.trim();
@@ -2131,6 +2158,27 @@ async function probeAppPresets() {
 const saveDirDraft = ref(loadDownloadDir());
 const saveDirError = ref("");
 let saveDirValidationSerial = 0;
+// ---- 远端空间占用（files/about，sidecar 60s 缓存；仅右栏远程连接显示）----
+const remoteUsage = ref<{ used: number; total: number } | null>(null);
+
+async function loadRemoteUsage() {
+  const id = sideConnectionId("right") ?? connectionId.value;
+  if (!id || id === "__local__") {
+    remoteUsage.value = null;
+    return;
+  }
+  try {
+    const result = await call<{ used?: number; total?: number }>("files/about", { connectionId: id });
+    remoteUsage.value = result.total ? { used: result.used ?? 0, total: result.total } : null;
+  } catch {
+    // 后端不支持（旧 sidecar/特殊协议）时静默隐藏，不打扰用户。
+    remoteUsage.value = null;
+  }
+}
+
+// 连接或右栏目录变化时刷新占用（about 有 60s 缓存，频率无虞）；挂载即拉一次。
+watch([connectionId, rightPath], () => { void loadRemoteUsage(); }, { immediate: true });
+
 // ---- 传输带宽（files/bwlimit：sidecar prefs 持久化，每个 rcd 启动时重放）----
 const bwlimitDraft = ref("");
 const bwlimitError = ref("");
@@ -2294,6 +2342,22 @@ function menuAction(action: MenuAction) {
     case "copyName":
       void window.dbxPlugin.clipboard?.writeText(baseName(entry.path)).then(() => showNotice(t("copiedName")));
       break;
+    case "hashsum":
+      void runHashsum(entry, side);
+      break;
+    case "rmdirs":
+      void runRmdirs(entry, side);
+      break;
+    case "checkDir":
+      openConfirm("check", {
+        title: { key: "checkTitle", values: { path: baseName(entry.path) || entry.path } },
+        body: { key: "checkBody" },
+        target: { entry },
+        // 缺省与源同级的父目录（整个目录树都可作为比对目标）。
+        draft: parentPath(entry.path) || "/",
+        side,
+      });
+      break;
     case "computeSize":
       void computeEntrySize(entry, side);
       break;
@@ -2357,6 +2421,34 @@ async function computeEntrySize(entry: FileEntry, side: PaneSide) {
   }
 }
 
+/** 生成 SUM 校验文件（files/hashsum）：写入目录旁 `<名称>.<hash>`，同级可见。 */
+async function runHashsum(entry: FileEntry, side: PaneSide) {
+  const id = sideConnectionId(side) ?? connectionId.value;
+  try {
+    const result = await call<{ path: string; files: number }>("files/hashsum", {
+      connectionId: id,
+      path: entry.path,
+      hashType: "md5",
+    });
+    showNotice(t("hashsumDone", { path: result.path, files: result.files }));
+  } catch (cause) {
+    showNotice(t("operationFailed", { error: errorMessage(cause) }));
+  }
+}
+
+/** 清理空目录（files/rmdirs）：递归删除 path 下的空目录。 */
+async function runRmdirs(entry: FileEntry, side: PaneSide) {
+  const id = sideConnectionId(side) ?? connectionId.value;
+  try {
+    await call("files/rmdirs", { connectionId: id, path: entry.path });
+    showNotice(t("rmdirsDone"));
+    await loadDirectory().catch(() => undefined);
+    if (side === "right" && dualPane.value) await loadRightDirectory().catch(() => undefined);
+  } catch (cause) {
+    showNotice(t("operationFailed", { error: errorMessage(cause) }));
+  }
+}
+
 /** 公开链接：presign 能力门控（菜单项仅在 capabilities.presign 时出现）。 */
 async function copyPublicLink(entry: FileEntry, side: PaneSide) {
   try {
@@ -2379,13 +2471,23 @@ function openBlankMenu(side: PaneSide, payload: { x: number; y: number }) {
   blankMenu.value = { ...payload, side };
 }
 
-function blankMenuAction(action: "newFolder" | "newFile" | "refresh") {
+function blankMenuAction(action: "newFolder" | "newFile" | "refresh" | "cleanup") {
   const menu = blankMenu.value;
   blankMenu.value = undefined;
   if (!menu) return;
   if (action === "refresh") {
     if (menu.side === "left") void refreshDirectory();
     else void refreshRightDirectory();
+    return;
+  }
+  if (action === "cleanup") {
+    openConfirm("cleanup", {
+      title: { key: "cleanupTitle" },
+      body: { key: "cleanupBody" },
+      danger: true,
+      target: {},
+      side: menu.side,
+    });
     return;
   }
   if (action === "newFolder") startNewFolder(menu.side);
@@ -2916,6 +3018,7 @@ onBeforeUnmount(() => {
             :tree-root="rightTree"
             :quick-paths="rightQuickPaths"
             :current-path="rightPath"
+            :usage="remoteUsage"
             :t="t"
             @update:tab="rightSideTab = $event"
             @update:collapsed="rightSideCollapsed = $event"
@@ -3191,6 +3294,9 @@ onBeforeUnmount(() => {
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('syncDir')"><ArrowRightLeft /> {{ t("transferKind.syncDir") }}…</button>
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('copyDir')"><FolderSymlink /> {{ t("transferKind.copyDir") }}…</button>
         <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('computeSize')"><Calculator /> {{ t("computeSize") }}</button>
+        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('hashsum')"><FileCheck /> {{ t("hashsumMenu") }}</button>
+        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('rmdirs')"><FolderMinus /> {{ t("rmdirsMenu") }}</button>
+        <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('checkDir')"><Scale /> {{ t("checkDirMenu") }}</button>
         <button v-if="canUseMount && contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('mountLocal')"><HardDrive /> {{ t("mountToLocal") }}</button>
         <button v-if="canWrite" role="menuitem" @click="menuAction('compress')"><FileArchive /> {{ t("compress") }}</button>
         <hr />
@@ -3211,6 +3317,8 @@ onBeforeUnmount(() => {
       <button :disabled="!canWrite" role="menuitem" @click="blankMenuAction('newFile')"><FilePlus /> {{ t("newFileTitle") }}</button>
       <hr />
       <button role="menuitem" @click="blankMenuAction('refresh')"><RefreshCw /> {{ t("refresh") }}</button>
+      <hr />
+      <button role="menuitem" @click="blankMenuAction('cleanup')"><Trash2 /> {{ t("cleanupMenu") }}</button>
     </div>
 
     <!-- 侧栏右键菜单（P-FILES）：目录树/快捷目录行 → 打开 / 在另一栏打开 / 复制 -->

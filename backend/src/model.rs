@@ -664,6 +664,50 @@ pub struct DirJobRequest {
     pub retries: Option<u32>,
 }
 
+/// `files/check`：比较两个目录（可跨连接，但需同一代理组）内容是否一致。
+/// 异步作业：返回 jobId，经 files/transfer/status 轮询，终态携带差异报告。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckRequest {
+    pub source_connection_id: String,
+    pub source_path: String,
+    pub target_connection_id: String,
+    pub target_path: String,
+    /// 单向比较（仅报目标缺失/差异，不扫源缺失）；缺省双向。
+    #[serde(default)]
+    pub one_way: Option<bool>,
+    /// 下载后逐字节比对（不信任远端存储哈希）；缺省用存储哈希。
+    #[serde(default)]
+    pub download: Option<bool>,
+}
+
+/// `files/hashsum`：为目录生成 SUM 校验文件（`<目录名>.<hash>`，写入父目录，
+/// 避免自我引用）。文件数超过 [`HASHSUM_MAX_FILES`] 时拒绝并提示缩小范围。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HashsumRequest {
+    pub connection_id: String,
+    pub path: String,
+    /// rclone 哈希类型：md5（缺省）/ sha1 / sha256 / crc32 / dropbox 等，
+    /// 后端不支持时由 rclone 报错。
+    #[serde(default)]
+    pub hash_type: Option<String>,
+}
+
+/// `files/cleanup`：清空远端回收站（fs 级动作，本地 fs 会拒绝）。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupRequest {
+    pub connection_id: String,
+}
+
+/// `files/about`：远端容量（operations/about 透传，60s 连接级缓存）。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AboutRequest {
+    pub connection_id: String,
+}
+
 /// `files/bwlimit`：带宽限速。`rate` 缺省 = 查询当前持久化值；`"off"` = 取消
 /// 限速；其余值（如 `"10M"`、`"1M:100k"`）= 设置并持久化（rcd 重启自动重放）。
 /// 数值由 rclone 解析（`bytes/s`，支持 K/M/G/T 后缀与上下行分段），非法值

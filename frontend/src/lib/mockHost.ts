@@ -554,6 +554,45 @@ export function installMockHost() {
         recordAudit(method, source, sourceId);
         return { success: true, transport: "native", jobId: null };
       }
+      case "files/about": {
+        // 本地内存树的假容量：按条目数粗略估算，让侧栏占用条有东西可渲染。
+        const aboutId = connectionIdOf(p.connectionId);
+        const aboutTree = treeFor(p.connectionId);
+        const count = [...aboutTree.values()].filter((entry) => entry.kind === "file").length;
+        return { used: count * 1024, total: 1024 * 1024, free: 1024 * 1024 - count * 1024, _conn: aboutId };
+      }
+      case "files/check": {
+        const checkSrc = str("sourcePath");
+        const checkDst = str("targetPath");
+        assertOk(checkSrc);
+        const jobId = `mock-job-${++jobSeq}`;
+        const cancel = { flag: false };
+        jobs.set(`__cancel_${jobId}`, cancel as unknown as Record<string, unknown>);
+        runJob(jobId, "check", checkSrc, checkDst, () => {}, cancel, connectionIdOf(p.sourceConnectionId ?? p.connectionId), connectionIdOf(p.targetConnectionId ?? p.connectionId));
+        return { jobId };
+      }
+      case "files/hashsum": {
+        const hashPath = str("path");
+        assertOk(hashPath);
+        const hashTree = treeFor(p.connectionId);
+        const hashEntry = hashTree.get(hashPath.replace(/\/+$/, ""));
+        if (!hashEntry || hashEntry.kind !== "dir") throw new Error(`NotFound: ${hashPath}`);
+        const base = hashPath.split("/").filter(Boolean).pop() ?? "dir";
+        const parent = hashPath.split("/").filter(Boolean).slice(0, -1).join("/");
+        const sumPath = parent ? `/${parent}/${base}.md5` : `/${base}.md5`;
+        recordAudit(method, hashPath, p.connectionId);
+        return { path: sumPath, hashType: typeof p.hashType === "string" ? p.hashType : "md5", files: 1 };
+      }
+      case "files/cleanup": {
+        recordAudit(method, "/", p.connectionId);
+        return { success: true };
+      }
+      case "files/rmdirs": {
+        const rmdirsPath = str("path");
+        assertOk(rmdirsPath);
+        recordAudit(method, rmdirsPath, p.connectionId);
+        return { success: true };
+      }
       case "files/bwlimit": {
         // sidecar prefs 语义的假实现：空参读取，"off"/空串清除，其余原样保存。
         const rate = p.rate;

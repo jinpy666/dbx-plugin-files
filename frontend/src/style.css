@@ -335,6 +335,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-side-tabs button:hover { background: var(--accent); color: var(--foreground); }
 .wb-side-tabs button.is-active { background: var(--accent); color: var(--primary); }
 .wb-side-spacer { flex: 1 1 auto; }
+.wb-side-usage { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-top: 1px solid var(--wb-border, rgba(128,128,128,.25)); }
+.wb-side-usage-bar { height: 4px; border-radius: 2px; background: rgba(128,128,128,.25); overflow: hidden; }
+.wb-side-usage-fill { height: 100%; border-radius: 2px; background: var(--wb-accent, #4a89dc); }
+.wb-side-usage .wb-muted { font-size: 11px; }
 .wb-side-body { flex: 1 1 auto; overflow: auto; overflow-x: hidden; padding: 4px 3px; }
 .wb-side-empty { padding: 6px; color: var(--muted-foreground); font-size: 11px; }
 .wb-side-quick button { display: flex; align-items: center; gap: 7px; min-width: 0; border: 0; background: transparent; cursor: pointer; border-radius: 4px; padding: 5px 6px; text-align: left; color: var(--foreground); font-size: 12px; white-space: nowrap; }

@@ -120,6 +120,7 @@ function timeLabel(job: TransferJob): string {
       </div>
       <div class="wb-transfer-meta">
         <span>{{ t(`transferKind.${job.kind}`) }}</span>
+        <span v-if="job.checkSummary" class="wb-muted">{{ job.checkSummary }}</span>
         <span>{{ progressMeta(job) }} · {{ percentOf(job) }}%</span>
       </div>
       <div v-if="speedMeta(job)" class="wb-transfer-meta"><span class="wb-transfer-speed">{{ speedMeta(job) }}</span></div>

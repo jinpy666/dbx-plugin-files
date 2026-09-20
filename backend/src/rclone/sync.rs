@@ -58,6 +58,11 @@ pub enum SyncKind {
     /// `sync/move`: copy src into dst, then delete the source tree —
     /// the server-side move (files/rename on a directory).
     Move,
+    /// `operations/check`: compare src against dst without writing anything.
+    /// The terminal event is [`SyncEvent::CheckFinished`] with rclone's
+    /// report (missingOnSrc/missingOnDst/differ/error lists); differences
+    /// are data, not a job failure.
+    Check,
 }
 
 #[derive(Debug, Clone)]
@@ -94,12 +99,21 @@ pub struct SyncJobParams {
     pub transfers: Option<u32>,
     pub checkers: Option<u32>,
     pub retries: Option<u32>,
+    /// Check-only: one-way comparison (src → dst), skipping the reverse
+    /// missing-on-src scan. rc command param keeps the documented camelCase.
+    pub check_one_way: bool,
+    /// Check-only: compare by downloading instead of trusting stored hashes
+    /// (for backends whose hashes are unreliable or absent).
+    pub check_download: bool,
 }
 
 #[derive(Debug, Clone)]
 pub enum SyncEvent {
     Progress { transferred: u64, total: u64, rate: Option<f64> },
     Completed { bytes: u64, files: u64 },
+    /// Check jobs only: rclone's comparison report (`output` of the finished
+    /// job). Fired instead of `Completed`; differences are not failures.
+    CheckFinished { report: Value },
     Failed { message: String },
     Canceled,
 }
@@ -188,6 +202,7 @@ pub async fn start_job(
         SyncKind::Copy => "sync/copy",
         SyncKind::Sync => "sync/sync",
         SyncKind::Move => "sync/move",
+        SyncKind::Check => "operations/check",
     };
     let mut body = serde_json::json!({
         "srcFs": compose_fs(&params.src_fs, &params.src_rel),
@@ -246,6 +261,14 @@ pub async fn start_job(
     }
     if let Some(retries) = params.retries {
         body["retries"] = Value::from(retries);
+    }
+    if params.kind == SyncKind::Check {
+        if params.check_one_way {
+            body["oneWay"] = Value::Bool(true);
+        }
+        if params.check_download {
+            body["download"] = Value::Bool(true);
+        }
     }
     let response = client
         .call(method, &body)
@@ -360,6 +383,21 @@ async fn poll_job(
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .trim();
+                // Check jobs carry their report in `output` (live-verified
+                // v1.75.1: missingOnSrc/missingOnDst/differ/error arrays +
+                // a human `status` line). Presence of the report beats the
+                // zeroed counters fallback.
+                if message.is_empty() {
+                    if let Some(report) = status
+                        .get("output")
+                        .filter(|output| output.get("missingOnSrc").is_some())
+                    {
+                        emit(SyncEvent::CheckFinished {
+                            report: report.clone(),
+                        });
+                        return;
+                    }
+                }
                 if !message.is_empty() {
                     emit(SyncEvent::Failed {
                         message: message.to_string(),
@@ -487,6 +525,7 @@ mod tests {
             assert!(!remaining.is_zero(), "timed out waiting for a terminal sync event");
             match tokio::time::timeout(remaining, rx.recv()).await {
                 Ok(Some(event @ (SyncEvent::Completed { .. }
+                | SyncEvent::CheckFinished { .. }
                 | SyncEvent::Failed { .. }
                 | SyncEvent::Canceled))) => return (progress, event),
                 Ok(Some(event @ SyncEvent::Progress { .. })) => progress.push(event),
@@ -535,6 +574,8 @@ mod tests {
             transfers: None,
             checkers: None,
             retries: None,
+            check_one_way: false,
+            check_download: false,
         }
     }
 
@@ -788,6 +829,87 @@ mod tests {
             backup_names.iter().any(|name| name.starts_with("a.txt")),
             "overwritten file must be backed up: {backup_names:?}"
         );
+    }
+
+    /// Two-way check reports every difference class without touching disk:
+    /// a.txt identical, b.txt missing on dst, c.txt missing on src, d.txt
+    /// differs. The terminal event is CheckFinished (never Completed).
+    #[tokio::test]
+    async fn check_reports_differences_without_writing() {
+        let Some(binary) = resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
+        let src = tempfile::tempdir().expect("src tempdir");
+        let dst = tempfile::tempdir().expect("dst tempdir");
+        write_file(&src.path().join("a.txt"), "same");
+        write_file(&src.path().join("b.txt"), "only on src");
+        write_file(&src.path().join("d.txt"), "src version");
+        write_file(&dst.path().join("a.txt"), "same");
+        write_file(&dst.path().join("c.txt"), "only on dst");
+        write_file(&dst.path().join("d.txt"), "dst version");
+        let mut job = params(SyncKind::Check, src.path(), dst.path());
+        job.src_rel = String::new();
+        let (on_event, mut rx) = event_channel();
+        let _handle = start_job(rcd.client(), job, on_event).await.expect("start check");
+        let (_progress, event) = wait_terminal(&mut rx).await;
+        let SyncEvent::CheckFinished { report } = event else {
+            panic!("expected CheckFinished, got {event:?}");
+        };
+        let listed = |key: &str| -> Vec<String> {
+            report
+                .get(key)
+                .and_then(Value::as_array)
+                .map(|array| {
+                    array
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        assert!(listed("missingOnSrc").iter().any(|path| path.contains("c.txt")));
+        assert!(listed("missingOnDst").iter().any(|path| path.contains("b.txt")));
+        assert!(listed("differ").iter().any(|path| path.contains("d.txt")));
+        // Nothing moved: both trees unchanged.
+        assert!(src.path().join("b.txt").is_file() && dst.path().join("c.txt").is_file());
+        assert_eq!(std::fs::read_to_string(dst.path().join("d.txt")).unwrap(), "dst version");
+    }
+
+    /// Identical trees report empty difference lists; one-way skips the
+    /// missing-on-src scan (live-verified shape: `oneWay` rc param).
+    #[tokio::test]
+    async fn check_one_way_skips_missing_on_src() {
+        let Some(binary) = resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
+        let src = tempfile::tempdir().expect("src tempdir");
+        let dst = tempfile::tempdir().expect("dst tempdir");
+        write_file(&src.path().join("a.txt"), "same");
+        write_file(&dst.path().join("a.txt"), "same");
+        write_file(&dst.path().join("extra.txt"), "dst-only, invisible one-way");
+        let mut job = params(SyncKind::Check, src.path(), dst.path());
+        job.src_rel = String::new();
+        job.check_one_way = true;
+        let (on_event, mut rx) = event_channel();
+        let _handle = start_job(rcd.client(), job, on_event).await.expect("start one-way check");
+        let (_progress, event) = wait_terminal(&mut rx).await;
+        let SyncEvent::CheckFinished { report } = event else {
+            panic!("expected CheckFinished, got {event:?}");
+        };
+        let empty = |key: &str| {
+            report
+                .get(key)
+                .and_then(Value::as_array)
+                .map(Vec::is_empty)
+                .unwrap_or(false)
+        };
+        assert!(empty("missingOnSrc"), "one-way must not scan the source side");
+        assert!(empty("missingOnDst") && empty("differ"), "identical overlap: {report}");
     }
 
     /// `core/bwlimit` set + read roundtrip on the shared rcd (live-verified

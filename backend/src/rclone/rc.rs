@@ -208,6 +208,75 @@ impl RcClient {
         .await
     }
 
+    /// Remote space usage (`free`/`total`/`used`, cloud backends add
+    /// `trash`). Local fs reports the underlying volume.
+    pub async fn operations_about(&self, fs: &str) -> Result<Value, RcError> {
+        self.call("operations/about", &serde_json::json!({ "fs": fs })).await
+    }
+
+    /// Starts an async src↔dst comparison (`operations/check`). Poll via
+    /// `job/status`; the finished record carries `output` with
+    /// missingOnSrc/missingOnDst/differ/error lists (live-verified v1.75.1).
+    pub async fn operations_check_async(
+        &self,
+        src_fs: &str,
+        dst_fs: &str,
+        one_way: bool,
+        download: bool,
+        group: &str,
+    ) -> Result<Value, RcError> {
+        let mut body = serde_json::json!({
+            "srcFs": src_fs,
+            "dstFs": dst_fs,
+            "_async": true,
+            "_group": group,
+        });
+        if one_way {
+            body["oneWay"] = Value::Bool(true);
+        }
+        if download {
+            body["download"] = Value::Bool(true);
+        }
+        self.call("operations/check", &body).await
+    }
+
+    /// SUM lines for every object under `fs`/`remote`
+    /// (`{hashType, hashsum: ["<hash>  <rel path>", ...]}`).
+    pub async fn operations_hashsum(
+        &self,
+        fs: &str,
+        remote: &str,
+        hash_type: &str,
+        download: bool,
+    ) -> Result<Value, RcError> {
+        self.call(
+            "operations/hashsum",
+            &serde_json::json!({
+                "fs": fs,
+                "remote": remote,
+                "hashType": hash_type,
+                "download": download,
+            }),
+        )
+        .await
+    }
+
+    /// Empties the remote's trash (fs-level; local fs rejects with
+    /// "doesn't support cleanup", which surfaces to the caller).
+    pub async fn operations_cleanup(&self, fs: &str) -> Result<Value, RcError> {
+        self.call("operations/cleanup", &serde_json::json!({ "fs": fs })).await
+    }
+
+    /// Removes every empty directory under `fs`/`remote` (empty `remote` =
+    /// connection root). Answer is `{}` regardless of how many went away.
+    pub async fn operations_rmdirs(&self, fs: &str, remote: &str) -> Result<Value, RcError> {
+        self.call(
+            "operations/rmdirs",
+            &serde_json::json!({ "fs": fs, "remote": remote }),
+        )
+        .await
+    }
+
     /// Queries (rate `None`) or sets the rcd process's bandwidth limit.
     /// `rate` takes rclone bwlimit spellings — `"10M"`, `"1M:100k"`, `"off"`;
     /// an unparsable value answers an RcError (HTTP 500 `bad bwlimit: ...`,
