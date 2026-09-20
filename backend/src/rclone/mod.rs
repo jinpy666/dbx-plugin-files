@@ -304,23 +304,37 @@ impl RcloneEngine {
         let engine = std::sync::Arc::clone(self);
         // Own single-thread runtime: Plugin::new runs before the sidecar's
         // main tokio runtime exists, so a bare tokio::spawn here panics.
-        std::thread::Builder::new()
+        // Both spawns degrade to a log line instead of a panic (issue #16):
+        // the watchdog is an optimization — crashed rcds are still recovered
+        // lazily on the next request, and a denied thread or runtime (docker
+        // pids limits) must not take the whole sidecar down.
+        let spawned = std::thread::Builder::new()
             .name("rclone-keepalive".to_string())
             .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread()
+                let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .expect("keepalive runtime");
+                else {
+                    eprintln!(
+                        "[io.dbx.files] rclone keepalive disabled: cannot build its runtime"
+                    );
+                    return;
+                };
                 runtime.block_on(async move {
-                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(secs));
+                    let mut ticker =
+                        tokio::time::interval(std::time::Duration::from_secs(secs));
                     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                     loop {
                         ticker.tick().await;
                         engine.keepalive_sweep().await;
                     }
                 });
-            })
-            .expect("keepalive thread");
+            });
+        if let Err(error) = spawned {
+            eprintln!(
+                "[io.dbx.files] rclone keepalive disabled: cannot spawn its thread: {error}"
+            );
+        }
     }
 
     /// One keepalive sweep (see [`Self::start_keepalive`]).
