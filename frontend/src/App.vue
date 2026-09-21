@@ -10,6 +10,7 @@ import {
   ArrowUp,
   Download,
   Eject,
+  ExternalLink,
   Eye,
   FileArchive,
   FileOutput,
@@ -35,6 +36,7 @@ import FileToolbar from "./components/FileToolbar.vue";
 import TransferPanel from "./components/TransferPanel.vue";
 import SettingsPanel from "./components/SettingsPanel.vue";
 import MountDialog from "./components/MountDialog.vue";
+import OpenWithDialog from "./components/OpenWithDialog.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
 import AuditPanel from "./components/AuditPanel.vue";
 import PreviewPane from "./components/PreviewPane.vue";
@@ -86,6 +88,9 @@ type MenuAction =
   | "computeSize" | "copyPublicLink"
   // 本地挂载（docs/MOUNT.zh-CN.md M1）：rclone mount 优先，WebDAV 网关兜底
   | "mountLocal"
+  // 打开方式（远程编辑本地副本，FinalShell 式）：选应用 → 拉临时副本 →
+  // 本地保存自动回传远端
+  | "openWith"
   // 批量（多选右键，P-FILES 压缩轮）
   | "downloadSelected" | "copySelected" | "moveSelected" | "deleteSelected" | "compressSelected";
 
@@ -696,6 +701,15 @@ function handleEvent(event: DbxPluginEvent) {
   // 当前 SDK 先更新 api.locale，再经 onEvent 投递 env；这里只更新 Files 的状态。
   if (event.type === "env") {
     locale.value = window.dbxPlugin.locale || "zh-CN";
+    return;
+  }
+  if (event.method === "files/remote-edit/state") {
+    // 打开方式（远程编辑）会话状态：opened/synced 顶部提示，error 错误条。
+    const state = event.params as { remotePath?: string; state?: string; error?: string };
+    const name = state.remotePath ? baseName(state.remotePath) : "";
+    if (state.state === "opened") showNotice(t("remoteEditOpened", { name }));
+    else if (state.state === "synced") showNotice(t("remoteEditSynced", { name }));
+    else if (state.state === "error") showError(new Error(t("remoteEditFailed", { error: state.error ?? "" })));
     return;
   }
   if (event.method === "files/transfer/progress") {
@@ -2177,6 +2191,39 @@ async function onOpenAppPrefsChange(prefs: OpenAppPrefs) {
 // 用用户配置的外部应用打开已完成的下载：按扩展名映射或全局默认解析出 app；
 // sidecar 仍按完成历史白名单二次校验。未配置时提示去设置页，不静默降级成
 // 系统默认应用（那会让这个入口失去意义）。
+// ---- 打开方式（远程编辑本地副本，FinalShell 式）-----------------------------
+// 右键「打开方式…」：选系统默认 / 预设 / 手输应用后，sidecar 把文件拉到本机
+// 临时副本并启动应用；本地保存由 sidecar 监视循环自动回传远端原路径。
+// 目标连接在打开时固化——双栏下用右键所在栏的连接，而不是活动连接。
+
+const openWithState = ref<{ entry: FileEntry; connectionId: string }>();
+
+function openOpenWithDialog(entry: FileEntry, side: PaneSide) {
+  openWithState.value = { entry, connectionId: sideConnectionId(side) ?? connectionId.value };
+}
+
+function closeOpenWithDialog() {
+  openWithState.value = undefined;
+}
+
+/** 对话框确认：app 空串 = 系统默认应用。open RPC 立即返回会话，拉取/启动/
+ * 回传进度经 files/remote-edit/state 事件回报（见 handleEvent）。 */
+async function onOpenWithConfirm(app: string) {
+  const state = openWithState.value;
+  if (!state) return;
+  closeOpenWithDialog();
+  showNotice(t("openWithOpening"));
+  try {
+    await call("files/remote-edit/open", {
+      connectionId: state.connectionId,
+      remotePath: state.entry.path,
+      ...(app ? { app } : {}),
+    });
+  } catch (cause) {
+    showError(cause);
+  }
+}
+
 async function openTransferWithApp(path: string) {
   const app = resolveOpenApp(openAppPrefs.value, path);
   if (!app) {
@@ -2211,6 +2258,9 @@ function menuAction(action: MenuAction) {
       break;
     case "download":
       if (entry.kind === "file") void downloadEntry(entry, side);
+      break;
+    case "openWith":
+      openOpenWithDialog(entry, side);
       break;
     case "rename":
       startRename(entry, side);
@@ -2989,6 +3039,16 @@ onBeforeUnmount(() => {
       @confirm="onMountDialogConfirm"
     />
 
+    <!-- 打开方式：远程编辑本地副本（FinalShell 式），选默认/预设/手输应用 -->
+    <OpenWithDialog
+      v-if="openWithState"
+      :t="t"
+      :presets="appPresets"
+      :initial-app="resolveOpenApp(openAppPrefs, openWithState.entry.name)"
+      @close="closeOpenWithDialog"
+      @confirm="onOpenWithConfirm"
+    />
+
     <!-- 独立设置弹窗（对标 ssh 插件 settings-modal）：左侧分类导航 + 右侧内容
          面板，Esc/遮罩/关闭钮均可关闭；Tab 焦点陷阱同预览弹窗。dock 只保留
          transfers/audit/connection，设置不再挤在 dock 页签里。 -->
@@ -3090,6 +3150,8 @@ onBeforeUnmount(() => {
       <template v-else>
         <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('open')"><FolderOpen /> {{ t("openDirectory") }}</button>
         <button v-if="contextMenu.entry.kind === 'file' && !isArchivePath(contextMenu.entry.path)" role="menuitem" @click="menuAction('preview')"><Eye /> {{ t("preview") }}</button>
+        <!-- 打开方式（桌面端）：远程编辑本地副本，选默认/预设/手输应用 -->
+        <button v-if="contextMenu.entry.kind === 'file' && canSaveLocal && !isArchivePath(contextMenu.entry.path)" role="menuitem" @click="menuAction('openWith')"><ExternalLink /> {{ t("openWithMenu") }}</button>
         <button v-if="contextMenu.entry.kind === 'file' && isArchivePath(contextMenu.entry.path)" role="menuitem" @click="menuAction('archiveContents')"><Archive /> {{ t("archiveContents") }}</button>
         <button v-if="contextMenu.entry.kind === 'file'" role="menuitem" @click="menuAction('download')"><Download /> {{ t("download") }}</button>
         <button v-if="contextMenu.entry.kind === 'file' && isArchivePath(contextMenu.entry.path) && canWrite" role="menuitem" @click="menuAction('extract')"><FileOutput /> {{ t("extractTo") }}</button>

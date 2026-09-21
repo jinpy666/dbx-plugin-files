@@ -335,6 +335,7 @@ export function installMockHost() {
   // 按连接过滤，供设置弹窗「本地挂载」面板走查。
   const mockMounts = new Map<string, { strategy: string; gatewayPort: number; connectionId: unknown }>();
   let mockMountSeq = 0;
+  let mockEditSeq = 0;
 
   // ---- 监听器 ---------------------------------------------------------------
   const eventListeners: Array<(event: DbxPluginEvent) => void> = [];
@@ -641,6 +642,21 @@ export function installMockHost() {
       case "files/local/reveal": {
         const target = str("path");
         if (!target) throw new Error("Missing path");
+        return { success: true };
+      }
+      case "files/remote-edit/open": {
+        // 打开方式（远程编辑本地副本）：mock 立即回会话（真实链路由 sidecar
+        // 拉临时副本/启动应用/监视回传并经 files/remote-edit/state 事件回报）。
+        const remote = str("remotePath");
+        if (!remote) throw new Error("Missing remotePath");
+        const name = remote.split("/").pop() || "file";
+        return { key: `mock-edit-${++mockEditSeq}`, localPath: `/tmp/dbx-mock-edit/${name}` };
+      }
+      case "files/remote-edit/status": {
+        return { sessions: [] };
+      }
+      case "files/remote-edit/close": {
+        if (!str("key")) throw new Error("Missing key");
         return { success: true };
       }
       case "files/unmount": {

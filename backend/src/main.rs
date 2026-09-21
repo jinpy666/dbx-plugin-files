@@ -20,6 +20,7 @@ mod mount;
 mod mcp;
 mod model;
 mod policy;
+mod remote_edit;
 mod rclone;
 mod store;
 mod transfers;
@@ -59,6 +60,10 @@ struct Plugin {
     /// Local mounts (`files/mount`): mountId → live record. Same std-Mutex
     /// discipline as `sync_jobs` — short sync sections, no awaits held.
     mounts: mount::MountTable,
+    /// Remote-edit sessions (`files/remote-edit/*`, 打开方式): session key →
+    /// live edit session. Same std-Mutex discipline — the watcher loops and
+    /// the RPC arms only flip short bookkeeping fields under the lock.
+    remote_edits: remote_edit::EditEngine,
 }
 
 impl Plugin {
@@ -111,6 +116,7 @@ impl Plugin {
             mcp,
             sync_jobs,
             mounts,
+            remote_edits: remote_edit::EditEngine::new(),
         })
     }
 
@@ -1305,6 +1311,155 @@ impl Plugin {
                 local_downloads::open_validated(&history, std::path::Path::new(path), app)?;
                 Ok(json!({ "success": true }))
             }
+            // ------------------------------------------------------------------
+            // Remote-edit sessions (打开方式, FinalShell-style local editing):
+            // `open` pulls one remote file into the per-connection temp
+            // workspace (`remote_edit::workspace_base`), launches the OS
+            // default or a user-pinned app and keeps a watcher loop that
+            // streams settled editor saves back to the exact remote path.
+            // `status` lists live sessions, `close` stops one and removes
+            // its local copy. Every rclone touch is gated like the sibling
+            // storage methods (read on open, write so the sync-back cannot
+            // be doomed from the start on a read-only connection).
+            // ------------------------------------------------------------------
+            "files/remote-edit/open" => {
+                let request: model::RemoteEditOpenRequest = parse(params)?;
+                if !local_downloads::can_save_local(|key| std::env::var_os(key)) {
+                    return Err(
+                        "Remote edit needs a desktop sidecar with local filesystem access"
+                            .to_string(),
+                    );
+                }
+                let app = request
+                    .app
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|app| !app.is_empty())
+                    .map(local_downloads::validate_open_app)
+                    .transpose()?;
+                let binding = self.rclone.binding(&request.connection_id)?;
+                // A watcher that can never sync back is a trap: gate the
+                // write up front, same message as the storage arms.
+                ensure_binding_writable(&binding)?;
+                let fs = rclone::call_fs(&binding);
+                let remote = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    &request.remote_path,
+                    crate::policy::PathPolicy::check_read,
+                )?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                // stat-first: missing object / directory rejection mirrors
+                // files/download/start.
+                let entry = rclone::ops::stat(
+                    &client,
+                    &fs,
+                    &request.remote_path,
+                    &binding.root,
+                    binding.lock_to_root,
+                )
+                .await?;
+                if entry.kind == "dir" {
+                    return Err(format!(
+                        "Cannot open '{}' for remote edit: it is a directory",
+                        remote.trim_matches('/')
+                    ));
+                }
+                let base = remote_edit::workspace_base(|key| std::env::var_os(key));
+                let local = remote_edit::local_copy_path(&base, &request.connection_id, &remote)?;
+                if let Some(parent) = local.parent() {
+                    std::fs::create_dir_all(parent).map_err(|error| {
+                        format!("Failed to create remote-edit workspace: {error}")
+                    })?;
+                }
+                // Re-open of a live session: refresh the pinned app and let
+                // the refresh task decide whether the local copy needs a
+                // re-pull (remote moved ahead, local copy clean) before the
+                // app is launched again. A second watch loop is never
+                // spawned — the first open owns the session's watcher.
+                if let Some(session) =
+                    self.remote_edits
+                        .find_for_path(&request.connection_id, &remote)
+                {
+                    let key = session.key.clone();
+                    self.remote_edits.update(&key, |session| session.app = app.clone());
+                    if session.status == remote_edit::STATUS_DOWNLOADING
+                        || session.status == remote_edit::STATUS_SYNCING
+                    {
+                        return Ok(json!({
+                            "key": key,
+                            "localPath": session.local_path,
+                            "busy": true,
+                        }));
+                    }
+                    let emitter = emitter.clone();
+                    tokio::spawn(remote_edit_refresh_task(
+                        Arc::clone(&self.rclone),
+                        self.remote_edits.clone(),
+                        key.clone(),
+                        request.connection_id.clone(),
+                        fs,
+                        remote,
+                        PathBuf::from(&session.local_path),
+                        app,
+                        session.baseline,
+                        emitter,
+                    ));
+                    return Ok(json!({
+                        "key": key,
+                        "localPath": session.local_path,
+                        "reused": true,
+                    }));
+                }
+                let key = uuid::Uuid::new_v4().to_string();
+                self.remote_edits.insert(remote_edit::EditSession {
+                    key: key.clone(),
+                    connection_id: request.connection_id.clone(),
+                    remote_path: remote.clone(),
+                    local_path: local.display().to_string(),
+                    app: app.clone(),
+                    status: remote_edit::STATUS_DOWNLOADING,
+                    last_error: None,
+                    last_sync_at: None,
+                    created_at: store::unix_millis_now(),
+                    baseline: None,
+                    pending_stable: 0,
+                    error_ticks: 0,
+                    sync_seq: 0,
+                    closing: false,
+                });
+                let emitter = emitter.clone();
+                tokio::spawn(remote_edit_open_task(
+                    Arc::clone(&self.rclone),
+                    self.remote_edits.clone(),
+                    key.clone(),
+                    request.connection_id.clone(),
+                    fs,
+                    remote,
+                    local.clone(),
+                    app,
+                    emitter,
+                ));
+                Ok(json!({ "key": key, "localPath": local.display().to_string() }))
+            }
+            "files/remote-edit/status" => {
+                let filter = params
+                    .get("connectionId")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty());
+                Ok(json!({ "sessions": self.remote_edits.snapshot(filter) }))
+            }
+            "files/remote-edit/close" => {
+                let key = params
+                    .get("key")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .ok_or("Missing key")?;
+                if !self.remote_edits.request_close(key) {
+                    return Err(format!("Remote-edit session '{key}' was not found"));
+                }
+                Ok(json!({ "success": true }))
+            }
             "files/audit/list" => audit_list_response(&self.store, &params),
 
             // ------------------------------------------------------------------
@@ -2446,6 +2601,398 @@ fn rclone_complete_job(
     persist_rclone_history(rclone, &job);
     let _ = emitter.event("files/transfer/progress", rclone_job_progress_event(&job));
     true
+}
+
+// ---------------------------------------------------------------------------
+// Remote-edit tasks (打开方式): the async half of `files/remote-edit/*` —
+// pull → launch → watch → sync-back. Session bookkeeping lives in
+// remote_edit.rs; every rclone touch here is the same byte path as the
+// transfer arms (`download_to_file` pull, `upload_staged_exact` sync-back),
+// and every pull/sync registers a regular TransferJob so the transfers
+// panel, the persisted history and the reveal/open whitelist see it like
+// any other transfer.
+// ---------------------------------------------------------------------------
+
+/// Broadcasts one `files/remote-edit/state` event for a session. The
+/// workbench turns `opened`/`synced` into notices and `error` into the
+/// error banner; `downloading`/`syncing`/`closed` are informational.
+fn remote_edit_emit_state(
+    edits: &remote_edit::EditEngine,
+    emitter: &PluginEmitter,
+    key: &str,
+    state: &str,
+    error: Option<&str>,
+) {
+    let Some(session) = edits.get(key) else {
+        return;
+    };
+    let mut event = json!({
+        "key": session.key,
+        "connectionId": session.connection_id,
+        "remotePath": session.remote_path,
+        "localPath": session.local_path,
+        "state": state,
+    });
+    if let Some(error) = error {
+        event["error"] = json!(error);
+    }
+    let _ = emitter.event("files/remote-edit/state", event);
+}
+
+/// Drops a session and removes its temp copy (best-effort; the emptied
+/// per-connection directories go too — `remove_dir` only removes empty
+/// dirs, so concurrent sessions in the same tree are never harmed).
+fn remote_edit_close_session(
+    edits: &remote_edit::EditEngine,
+    emitter: &PluginEmitter,
+    key: &str,
+    local: &std::path::Path,
+) {
+    let Some(session) = edits.remove(key) else {
+        return;
+    };
+    let _ = std::fs::remove_file(local);
+    if let Some(dir) = local.parent() {
+        let _ = std::fs::remove_dir(dir);
+        if let Some(base) = dir.parent() {
+            let _ = std::fs::remove_dir(base);
+        }
+    }
+    let _ = emitter.event(
+        "files/remote-edit/state",
+        json!({
+            "key": session.key,
+            "connectionId": session.connection_id,
+            "remotePath": session.remote_path,
+            "localPath": session.local_path,
+            "state": "closed",
+        }),
+    );
+}
+
+/// First open of a remote file: pull it into the workspace copy, launch the
+/// chosen app and hand the session to the watch loop.
+#[allow(clippy::too_many_arguments)]
+async fn remote_edit_open_task(
+    rclone: Arc<rclone::RcloneEngine>,
+    edits: remote_edit::EditEngine,
+    key: String,
+    connection_id: String,
+    fs: String,
+    remote: String,
+    local: PathBuf,
+    app: Option<PathBuf>,
+    emitter: PluginEmitter,
+) {
+    // The initial pull is a regular download job (panel + history parity).
+    let task_id = format!("edit-{key}");
+    {
+        let job = transfers::TransferJob {
+            task_id: task_id.clone(),
+            connection_id: connection_id.clone(),
+            kind: transfers::TransferKind::Download,
+            remote_path: remote.clone(),
+            total_bytes: None,
+            transferred_bytes: 0,
+            status: transfers::JobStatus::Running,
+            error: None,
+            started_at: Some(store::unix_millis_now()),
+            finished_at: None,
+            local_path: Some(local.display().to_string()),
+        };
+        rclone_lock(&rclone.jobs).insert(task_id.clone(), job);
+    }
+    let _ = emitter.event(
+        "files/transfer/progress",
+        rclone_running_at_event(&task_id, 0, None),
+    );
+    // Transfer-path client (no wall-clock timeout), pump parity.
+    let client = match rclone
+        .client_for_id(&connection_id)
+        .await
+        .map(|client| client.transfer_client())
+    {
+        Ok(client) => client,
+        Err(error) => {
+            edits.update(&key, |session| {
+                session.status = remote_edit::STATUS_ERROR;
+                session.last_error = Some(error.clone());
+            });
+            rclone_complete_job(
+                &rclone,
+                &task_id,
+                transfers::JobStatus::Failed,
+                Some(error.clone()),
+                &emitter,
+            );
+            remote_edit_emit_state(&edits, &emitter, &key, "error", Some(&error));
+            return;
+        }
+    };
+    match rclone::bytes_channel::download_to_file(&client, &fs, &remote, &local).await {
+        Ok(size) => {
+            if let Some(job) = rclone_lock(&rclone.jobs).get_mut(&task_id) {
+                job.transferred_bytes = size;
+                job.total_bytes = Some(size);
+            }
+            rclone_complete_job(
+                &rclone,
+                &task_id,
+                transfers::JobStatus::Completed,
+                None,
+                &emitter,
+            );
+            // Baseline before launch: the watcher only treats deviations
+            // from this stamp as editor saves.
+            let stamp = remote_edit::snapshot_stat(&local);
+            if !edits.update(&key, |session| {
+                session.status = remote_edit::STATUS_WATCHING;
+                session.baseline = stamp;
+                session.last_error = None;
+            }) {
+                return; // closed while downloading; close swept the copy
+            }
+            if edits.get(&key).map(|session| session.closing).unwrap_or(false) {
+                remote_edit_close_session(&edits, &emitter, &key, &local);
+                return;
+            }
+            if let Err(error) = local_downloads::open_in_app(&local, app.as_deref()) {
+                edits.update(&key, |session| {
+                    session.status = remote_edit::STATUS_ERROR;
+                    session.last_error = Some(error.clone());
+                });
+                remote_edit_emit_state(&edits, &emitter, &key, "error", Some(&error));
+            } else {
+                remote_edit_emit_state(&edits, &emitter, &key, "opened", None);
+            }
+            remote_edit_watch_loop(rclone, edits, client, fs, remote, local, key, emitter).await;
+        }
+        Err(error) => {
+            edits.update(&key, |session| {
+                session.status = remote_edit::STATUS_ERROR;
+                session.last_error = Some(error.clone());
+            });
+            rclone_complete_job(
+                &rclone,
+                &task_id,
+                transfers::JobStatus::Failed,
+                Some(error.clone()),
+                &emitter,
+            );
+            remote_edit_emit_state(&edits, &emitter, &key, "error", Some(&error));
+        }
+    }
+}
+
+/// Re-open of a live session: re-launch the chosen app, optionally
+/// re-pulling the remote copy first — only when the remote moved ahead of
+/// the synced baseline AND the local copy is still exactly that baseline.
+/// An unsynced editor save is never clobbered; the watcher syncs it.
+#[allow(clippy::too_many_arguments)]
+async fn remote_edit_refresh_task(
+    rclone: Arc<rclone::RcloneEngine>,
+    edits: remote_edit::EditEngine,
+    key: String,
+    connection_id: String,
+    fs: String,
+    remote: String,
+    local: PathBuf,
+    app: Option<PathBuf>,
+    baseline: Option<remote_edit::FileStamp>,
+    emitter: PluginEmitter,
+) {
+    let Ok(client) = rclone
+        .client_for_id(&connection_id)
+        .await
+        .map(|client| client.transfer_client())
+    else {
+        return;
+    };
+    let remote_size = rclone::bytes_channel::remote_size(&client, &fs, &remote)
+        .await
+        .ok()
+        .flatten();
+    let needs_refresh = match (baseline, remote_edit::snapshot_stat(&local)) {
+        // Never pulled (previous open failed) or copy gone: pull fresh.
+        (None, None) => true,
+        (Some(base), Some(stamp)) => {
+            stamp == base && remote_size.is_some_and(|size| size != base.0)
+        }
+        // Local edits pending (or unknown local state): never clobber.
+        _ => false,
+    };
+    if needs_refresh {
+        edits.update(&key, |session| {
+            session.status = remote_edit::STATUS_DOWNLOADING;
+        });
+        remote_edit_emit_state(&edits, &emitter, &key, "downloading", None);
+        match rclone::bytes_channel::download_to_file(&client, &fs, &remote, &local).await {
+            Ok(_) => {
+                let stamp = remote_edit::snapshot_stat(&local);
+                if !edits.update(&key, |session| {
+                    session.status = remote_edit::STATUS_WATCHING;
+                    session.baseline = stamp;
+                    session.last_error = None;
+                }) {
+                    return;
+                }
+            }
+            Err(error) => {
+                edits.update(&key, |session| {
+                    session.status = remote_edit::STATUS_ERROR;
+                    session.last_error = Some(error.clone());
+                });
+                remote_edit_emit_state(&edits, &emitter, &key, "error", Some(&error));
+                return;
+            }
+        }
+    }
+    if edits.get(&key).map(|session| session.closing).unwrap_or(true) {
+        remote_edit_close_session(&edits, &emitter, &key, &local);
+        return;
+    }
+    match local_downloads::open_in_app(&local, app.as_deref()) {
+        Ok(()) => remote_edit_emit_state(&edits, &emitter, &key, "opened", None),
+        Err(error) => {
+            edits.update(&key, |session| {
+                session.status = remote_edit::STATUS_ERROR;
+                session.last_error = Some(error.clone());
+            });
+            remote_edit_emit_state(&edits, &emitter, &key, "error", Some(&error));
+        }
+    }
+}
+
+/// The per-session watcher: polls the local copy every [`WATCH_POLL`] and
+/// hands each tick to [`remote_edit::tick_watch`]. Sync decisions run
+/// through [`remote_edit_sync_back`]; a close decision removes the session
+/// and its temp copy. The loop ends when the session is gone.
+#[allow(clippy::too_many_arguments)]
+async fn remote_edit_watch_loop(
+    rclone: Arc<rclone::RcloneEngine>,
+    edits: remote_edit::EditEngine,
+    client: rclone::rc::RcClient,
+    fs: String,
+    remote: String,
+    local: PathBuf,
+    key: String,
+    emitter: PluginEmitter,
+) {
+    loop {
+        tokio::time::sleep(remote_edit::WATCH_POLL).await;
+        let current = remote_edit::snapshot_stat(&local);
+        let Some(decision) =
+            edits.map_mut(&key, |session| remote_edit::tick_watch(session, current))
+        else {
+            return;
+        };
+        match decision {
+            remote_edit::WatchDecision::Continue => {}
+            remote_edit::WatchDecision::Close => {
+                remote_edit_close_session(&edits, &emitter, &key, &local);
+                return;
+            }
+            remote_edit::WatchDecision::Sync => {
+                remote_edit_sync_back(
+                    &rclone,
+                    &edits,
+                    &client,
+                    &fs,
+                    &remote,
+                    &local,
+                    &key,
+                    &emitter,
+                )
+                .await;
+            }
+        }
+    }
+}
+
+/// Streams a settled editor save back to the exact remote path. The
+/// sync-back is a regular upload job (panel + history parity). On success
+/// the baseline resets to the pre-upload stamp, so a save that landed while
+/// the upload streamed re-syncs on the next ticks instead of being silently
+/// considered synced; on failure the session drops to `error` and
+/// `tick_watch` retries after [`remote_edit::ERROR_RETRY_TICKS`].
+#[allow(clippy::too_many_arguments)]
+async fn remote_edit_sync_back(
+    rclone: &rclone::RcloneEngine,
+    edits: &remote_edit::EditEngine,
+    client: &rclone::rc::RcClient,
+    fs: &str,
+    remote: &str,
+    local: &std::path::Path,
+    key: &str,
+    emitter: &PluginEmitter,
+) {
+    let Some(session) = edits.get(key) else {
+        return;
+    };
+    if session.closing {
+        return;
+    }
+    let seq = session.sync_seq + 1;
+    let pre_stamp = remote_edit::snapshot_stat(local);
+    edits.update(key, |session| {
+        session.sync_seq = seq;
+        session.status = remote_edit::STATUS_SYNCING;
+        session.pending_stable = 0;
+    });
+    let task_id = format!("{key}-sync-{seq}");
+    let size = std::fs::metadata(local).map(|meta| meta.len()).unwrap_or(0);
+    {
+        let job = transfers::TransferJob {
+            task_id: task_id.clone(),
+            connection_id: session.connection_id.clone(),
+            kind: transfers::TransferKind::Upload,
+            remote_path: remote.to_string(),
+            total_bytes: Some(size),
+            transferred_bytes: 0,
+            status: transfers::JobStatus::Running,
+            error: None,
+            started_at: Some(store::unix_millis_now()),
+            finished_at: None,
+            local_path: Some(local.display().to_string()),
+        };
+        rclone_lock(&rclone.jobs).insert(task_id.clone(), job);
+    }
+    let _ = emitter.event(
+        "files/transfer/progress",
+        rclone_running_at_event(&task_id, 0, Some(size)),
+    );
+    remote_edit_emit_state(edits, emitter, key, "syncing", None);
+    match rclone::bytes_channel::upload_staged_exact(client, fs, local, remote, None).await {
+        Ok(()) => {
+            if !edits.update(key, |session| {
+                session.status = remote_edit::STATUS_WATCHING;
+                session.baseline = pre_stamp;
+                session.last_error = None;
+                session.last_sync_at = Some(store::unix_millis_now());
+            }) {
+                return;
+            }
+            if let Some(job) = rclone_lock(&rclone.jobs).get_mut(&task_id) {
+                job.transferred_bytes = size;
+            }
+            rclone_complete_job(rclone, &task_id, transfers::JobStatus::Completed, None, emitter);
+            remote_edit_emit_state(edits, emitter, key, "synced", None);
+        }
+        Err(error) => {
+            edits.update(key, |session| {
+                session.status = remote_edit::STATUS_ERROR;
+                session.last_error = Some(error.clone());
+            });
+            rclone_complete_job(
+                rclone,
+                &task_id,
+                transfers::JobStatus::Failed,
+                Some(error.clone()),
+                emitter,
+            );
+            remote_edit_emit_state(edits, emitter, key, "error", Some(&error));
+        }
+    }
 }
 
 /// Terminal-replay twin of `download_finish_result`: Completed finishes
