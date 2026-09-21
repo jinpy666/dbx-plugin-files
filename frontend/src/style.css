@@ -77,6 +77,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-icon-violet { color: var(--icon-violet); }
 .wb-icon-blue { color: var(--icon-blue); }
 .wb-icon-danger { color: var(--destructive); }
+/* 收藏星标（rclone-ui parity）：已收藏态高亮为 --primary，与侧栏 tab is-active 同色系。 */
+.wb-fav-toggle.is-active { color: var(--primary); }
 :root[data-theme="dark"], :root[data-dbx-theme="dark"] { --icon-cyan: #67e8f9; --icon-violet: #c4b5fd; --icon-blue: #93c5fd; }
 
 /* ---- v-tip 全局悬浮提示（宿主 webview 不渲染原生 title） -------------------- */
@@ -311,6 +313,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-dialog .wb-dialog-danger { background: var(--destructive); color: #fff; border: 0; }
 .wb-dialog .wb-dialog-cancel { border: 1px solid var(--border); }
 .wb-dialog select { margin-top: 6px; width: 100%; border: 1px solid var(--border); border-radius: var(--radius); background: color-mix(in srgb, var(--background) 60%, var(--muted)); color: var(--foreground); padding: 5px 8px; }
+/* ---- drop action chooser（跨栏拖放 复制/移动 选择，rclone-ui parity）-------- */
+.wb-dropaction-meta { margin: 0 0 4px; overflow-wrap: anywhere; }
+.wb-dropaction-options { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.wb-dropaction-option { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: var(--radius); padding: 7px 10px; text-align: left; color: var(--foreground); cursor: pointer; background: transparent; }
+.wb-dropaction-option svg { width: 14px; height: 14px; flex: 0 0 14px; color: var(--muted-foreground); }
+.wb-dropaction-option:hover { background: var(--accent); }
+.wb-dropaction-option.is-active { border-color: var(--primary); background: var(--accent); }
+.wb-dropaction-option.is-active svg { color: var(--primary); }
 
 /* ---- misc ------------------------------------------------------------------------ */
 .wb-spin { animation: wb-rotate 1s linear infinite; }

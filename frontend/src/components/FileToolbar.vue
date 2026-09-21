@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { Columns2, Download, FolderPlus, Gauge, HardDrive, ScrollText, Settings, Trash2, Upload, Plug } from "@lucide/vue";
+import { Columns2, Download, FolderPlus, Gauge, HardDrive, ScrollText, Settings, Star, Trash2, Upload, Plug } from "@lucide/vue";
 
 // 全局动作栏：路径/面包屑/过滤等栏内控件已下沉到各栏 wb-pane-header
 // （双栏对称性修复），这里只承载跨栏的全局操作。
@@ -22,6 +22,8 @@ const props = defineProps<{
   canMount: boolean;
   /** 当前生效的传输限速（files/bwlimit；null/空 = 不限速）：非空时顶栏显示徽标。 */
   bwlimit?: string | null;
+  /** 活动栏当前目录是否已收藏（rclone-ui parity 星标）：点亮时图标高亮。 */
+  starred: boolean;
   t: (key: string, values?: Record<string, string | number>) => string;
 }>();
 
@@ -40,6 +42,8 @@ const emit = defineEmits<{
   /** 独立设置弹窗（对标 ssh 设置 icon）：设置不再挤在 dock 页签里。 */
   (event: "open-settings"): void;
   (event: "bwlimit-click"): void;
+  /** 收藏切换（rclone-ui parity）：作用于活动栏当前目录，App 负责落 prefs。 */
+  (event: "toggle-favorite"): void;
 }>();
 
 function t(key: string, values?: Record<string, string | number>) {
@@ -101,6 +105,14 @@ function onPicked(event: Event) {
       <button class="wb-toolbar-button" v-tip="t('deleteSelected')" :disabled="!hasSelection || !canWrite || busy" @click="emit('delete')"><Trash2 /> {{ t("deleteSelected") }}</button>
       <span class="wb-toolbar-separator" aria-hidden="true" />
       <button class="wb-icon-button wb-icon-neutral" v-tip="t('dualPane')" :class="{ 'is-active': dualPane }" @click="emit('toggle-dual-pane')"><Columns2 /></button>
+      <!-- 收藏星标（rclone-ui parity）：收藏/取消收藏活动栏当前目录；is-active=已收藏。 -->
+      <button
+        class="wb-icon-button wb-icon-neutral wb-fav-toggle"
+        v-tip="t(starred ? 'favRemove' : 'favAdd')"
+        :class="{ 'is-active': starred }"
+        :aria-pressed="starred"
+        @click="emit('toggle-favorite')"
+      ><Star /></button>
       <!-- 审计#17：单一 dock 开关（高亮=已打开；图标/提示=当前页签）。 -->
       <button class="wb-icon-button wb-icon-neutral" v-tip="t(dockTipKey)" :class="{ 'is-active': dockOpen }" :aria-pressed="dockOpen" @click="emit('toggle-dock')"><component :is="dockIcon" /></button>
       <!-- 功能 icon（对标 ssh 工具栏）：挂载活动栏目录 + 打开独立设置弹窗。 -->
