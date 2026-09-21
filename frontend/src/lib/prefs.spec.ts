@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadDownloadDir, loadOpenAppPrefs, loadUiPrefs, persistDownloadDir, persistOpenAppPrefs, saveUiPrefs, resolveOpenApp, DOWNLOAD_DIR_KEY, OPEN_APP_KEY, UI_PREFS_KEY, type OpenAppPrefs, type UiPrefs } from "./prefs";
+import { loadDownloadDir, loadFavorites, loadOpenAppPrefs, loadUiPrefs, persistDownloadDir, persistFavorites, persistOpenAppPrefs, saveUiPrefs, resolveOpenApp, DOWNLOAD_DIR_KEY, FAVORITES_KEY, OPEN_APP_KEY, UI_PREFS_KEY, type OpenAppPrefs, type UiPrefs } from "./prefs";
 
 function brokenStorage(): Storage {
   const unavailable = () => {
@@ -97,6 +97,42 @@ describe("download dir preference (对标 ssh downloadDir)", () => {
     expect(loadDownloadDir(memoryStorage())).toBe("");
     expect(loadDownloadDir(brokenStorage())).toBe("");
     expect(() => persistDownloadDir("/x", brokenStorage())).not.toThrow();
+  });
+});
+
+describe("favorites preference (rclone-ui parity 收藏夹)", () => {
+  it("round-trips per-connection favorites through storage", () => {
+    const storage = memoryStorage();
+    const favorites = { "mock-conn": ["/docs", "/"], __local__: ["/Users/demo"] };
+    persistFavorites(favorites, storage);
+    expect(storage.getItem(FAVORITES_KEY)).toContain("/docs");
+    expect(loadFavorites(storage)).toEqual(favorites);
+  });
+
+  it("falls back to an empty map for missing or corrupt data", () => {
+    expect(loadFavorites(memoryStorage())).toEqual({});
+    expect(loadFavorites(memoryStorage({ [FAVORITES_KEY]: "{broken" }))).toEqual({});
+    expect(loadFavorites(brokenStorage())).toEqual({});
+  });
+
+  it("sanitizes non-string paths, trims, dedupes and drops empty rows/keys", () => {
+    const storage = memoryStorage({
+      [FAVORITES_KEY]: JSON.stringify({ "mock-conn": ["/docs", " /docs ", "", 42, "/a"], "": ["/x"], lone: [] }),
+    });
+    expect(loadFavorites(storage)).toEqual({ "mock-conn": ["/docs", "/a"] });
+  });
+
+  it("survives unavailable storage on save", () => {
+    expect(() => persistFavorites({ "mock-conn": ["/docs"] }, brokenStorage())).not.toThrow();
+  });
+
+  it("accepts the fav side tab as a persisted value", () => {
+    const storage = memoryStorage({
+      [UI_PREFS_KEY]: JSON.stringify({ leftSideTab: "fav", rightSideTab: "fav" }),
+    });
+    const loaded = loadUiPrefs(storage);
+    expect(loaded.leftSideTab).toBe("fav");
+    expect(loaded.rightSideTab).toBe("fav");
   });
 });
 

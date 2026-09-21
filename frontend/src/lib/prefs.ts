@@ -6,8 +6,8 @@
 import type { SortState } from "./sorting";
 import { DEFAULT_SORT } from "./sorting";
 
-/** 侧栏 tab（tree=目录树，quick=快捷目录）；默认 tree。 */
-export type SideTab = "tree" | "quick";
+/** 侧栏 tab（tree=目录树，quick=快捷目录，fav=收藏夹）；默认 tree。 */
+export type SideTab = "tree" | "quick" | "fav";
 
 export interface UiPrefs {
   sort: SortState;
@@ -53,8 +53,8 @@ function sanitize(raw: unknown): Partial<UiPrefs> {
   if (!raw || typeof raw !== "object") return {};
   const value = raw as Record<string, unknown>;
   const prefs: Partial<UiPrefs> = {};
-  if (value.leftSideTab === "tree" || value.leftSideTab === "quick") prefs.leftSideTab = value.leftSideTab;
-  if (value.rightSideTab === "tree" || value.rightSideTab === "quick") prefs.rightSideTab = value.rightSideTab;
+  if (value.leftSideTab === "tree" || value.leftSideTab === "quick" || value.leftSideTab === "fav") prefs.leftSideTab = value.leftSideTab;
+  if (value.rightSideTab === "tree" || value.rightSideTab === "quick" || value.rightSideTab === "fav") prefs.rightSideTab = value.rightSideTab;
   if (typeof value.leftSideCollapsed === "boolean") prefs.leftSideCollapsed = value.leftSideCollapsed;
   if (typeof value.rightSideCollapsed === "boolean") prefs.rightSideCollapsed = value.rightSideCollapsed;
   // 兼容旧版本的单侧栏偏好：作为两栏初始值，默认左栏仍优先收藏。
@@ -231,6 +231,57 @@ export function resolveOpenApp(prefs: OpenAppPrefs, fileName: string): string {
     if (mapped) return mapped.app;
   }
   return prefs.defaultApp;
+}
+
+// —— 收藏夹（rclone-ui parity）：按连接记忆用户星标的目录路径 ————————————
+// favorites 以 connectionId 为键：切换连接（含双栏本地 __local__ 面）即切换
+// 列表，重启后由 localStorage 恢复。只存路径字符串（非敏感 UI 状态）。
+
+export const FAVORITES_KEY = "dbx-files.favorites";
+
+/** connectionId → 该连接下已收藏的目录路径（保持加入顺序）。 */
+export type FavoriteMap = Record<string, string[]>;
+
+function sanitizeFavorites(raw: unknown): FavoriteMap {
+  if (!raw || typeof raw !== "object") return {};
+  const value = raw as Record<string, unknown>;
+  const map: FavoriteMap = {};
+  for (const [key, paths] of Object.entries(value)) {
+    if (!key || !Array.isArray(paths)) continue;
+    const seen = new Set<string>();
+    const cleaned: string[] = [];
+    for (const path of paths) {
+      if (typeof path !== "string") continue;
+      const trimmed = path.trim();
+      if (!trimmed || seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      cleaned.push(trimmed);
+    }
+    if (cleaned.length) map[key] = cleaned;
+  }
+  return map;
+}
+
+/** 读取收藏夹；损坏/缺失字段回退空表。storage 可注入（测试用）。 */
+export function loadFavorites(storage?: Storage): FavoriteMap {
+  let raw: string | null = null;
+  try {
+    raw = (storage ?? window.localStorage).getItem(FAVORITES_KEY);
+  } catch {
+    raw = null;
+  }
+  if (!raw) return {};
+  return sanitizeFavorites(safeParse(raw));
+}
+
+/** 保存收藏夹；写入前按同一规则清洗（空数组与坏键丢弃）。 */
+export function persistFavorites(favorites: FavoriteMap, storage?: Storage): void {
+  const normalized = sanitizeFavorites(favorites);
+  try {
+    (storage ?? window.localStorage).setItem(FAVORITES_KEY, JSON.stringify(normalized));
+  } catch {
+    /* 沙箱/隐私模式：收藏仅对当前会话生效 */
+  }
 }
 
 function safeParse(raw: string): unknown {

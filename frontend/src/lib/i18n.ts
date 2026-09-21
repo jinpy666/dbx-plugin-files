@@ -394,6 +394,17 @@ export const messages = {
     quickDocuments: "Documents",
     quickPictures: "Pictures",
     quickPathsTitle: "Quick paths",
+    // 收藏夹（rclone-ui parity）+ 跨栏拖放 copy/move 选择（本批次新增 key，
+    // 七语成组追加在各 locale 末尾，便于与并行分支合并）
+    favTitle: "Favorites",
+    favEmpty: "No favorites yet. Star a directory with the toolbar star.",
+    favAdd: "Add to favorites",
+    favRemove: "Remove from favorites",
+    dropActionTitle: "Transfer dropped items",
+    dropActionTarget: "Target: {path}",
+    dropActionItems: "{count} item(s) selected",
+    dropActionCopy: "Copy (keep originals)",
+    dropActionMove: "Move (delete originals after transfer)",
   },
   "es": {
     intent: {
@@ -766,6 +777,17 @@ export const messages = {
     quickDocuments: "Documentos",
     quickPictures: "Imágenes",
     quickPathsTitle: "Carpetas frecuentes",
+    // 收藏夹（rclone-ui parity）+ 跨栏拖放 copy/move 选择（本批次新增 key，
+    // 七语成组追加在各 locale 末尾，便于与并行分支合并）
+    favTitle: "Favoritos",
+    favEmpty: "Aún no hay favoritos. Marca un directorio con la estrella de la barra.",
+    favAdd: "Añadir a favoritos",
+    favRemove: "Quitar de favoritos",
+    dropActionTitle: "Transferir los elementos soltados",
+    dropActionTarget: "Destino: {path}",
+    dropActionItems: "{count} elemento(s) seleccionado(s)",
+    dropActionCopy: "Copiar (conservar los originales)",
+    dropActionMove: "Mover (eliminar los originales tras la transferencia)",
   },
   "it": {
     intent: {
@@ -1138,6 +1160,17 @@ export const messages = {
     quickDocuments: "Documenti",
     quickPictures: "Immagini",
     quickPathsTitle: "Cartelle rapide",
+    // 收藏夹（rclone-ui parity）+ 跨栏拖放 copy/move 选择（本批次新增 key，
+    // 七语成组追加在各 locale 末尾，便于与并行分支合并）
+    favTitle: "Preferiti",
+    favEmpty: "Nessun preferito. Aggiungi una directory con la stella della barra.",
+    favAdd: "Aggiungi ai preferiti",
+    favRemove: "Rimuovi dai preferiti",
+    dropActionTitle: "Trasferisci gli elementi rilasciati",
+    dropActionTarget: "Destinazione: {path}",
+    dropActionItems: "{count} elemento/i selezionato/i",
+    dropActionCopy: "Copia (conserva gli originali)",
+    dropActionMove: "Sposta (elimina gli originali dopo il trasferimento)",
   },
   "ja": {
     intent: {
@@ -1510,6 +1543,17 @@ export const messages = {
     quickDocuments: "ドキュメント",
     quickPictures: "ピクチャ",
     quickPathsTitle: "クイックフォルダ",
+    // 收藏夹（rclone-ui parity）+ 跨栏拖放 copy/move 选择（本批次新增 key，
+    // 七语成组追加在各 locale 末尾，便于与并行分支合并）
+    favTitle: "お気に入り",
+    favEmpty: "お気に入りはまだありません。ツールバーの星でディレクトリを登録できます。",
+    favAdd: "お気に入りに追加",
+    favRemove: "お気に入りから削除",
+    dropActionTitle: "ドロップ項目を転送",
+    dropActionTarget: "転送先: {path}",
+    dropActionItems: "{count} 件を選択中",
+    dropActionCopy: "コピー（元を残す）",
+    dropActionMove: "移動（転送後に元を削除）",
   },
   "pt-BR": {
     intent: {
@@ -1882,6 +1926,17 @@ export const messages = {
     quickDocuments: "Documentos",
     quickPictures: "Imagens",
     quickPathsTitle: "Pastas rápidas",
+    // 收藏夹（rclone-ui parity）+ 跨栏拖放 copy/move 选择（本批次新增 key，
+    // 七语成组追加在各 locale 末尾，便于与并行分支合并）
+    favTitle: "Favoritos",
+    favEmpty: "Nenhum favorito ainda. Marque um diretório com a estrela da barra.",
+    favAdd: "Adicionar aos favoritos",
+    favRemove: "Remover dos favoritos",
+    dropActionTitle: "Transferir itens soltos",
+    dropActionTarget: "Destino: {path}",
+    dropActionItems: "{count} item(ns) selecionado(s)",
+    dropActionCopy: "Copiar (manter os originais)",
+    dropActionMove: "Mover (excluir os originais após a transferência)",
   },
   "zh-CN": {
     intent: {
@@ -2255,6 +2310,17 @@ export const messages = {
     quickDocuments: "文档",
     quickPictures: "图片",
     quickPathsTitle: "快速目录",
+    // 收藏夹（rclone-ui parity）+ 跨栏拖放 copy/move 选择（本批次新增 key，
+    // 七语成组追加在各 locale 末尾，便于与并行分支合并）
+    favTitle: "收藏夹",
+    favEmpty: "暂无收藏。用工具栏星标收藏当前目录。",
+    favAdd: "收藏",
+    favRemove: "从收藏移除",
+    dropActionTitle: "传输拖放条目",
+    dropActionTarget: "目标：{path}",
+    dropActionItems: "已选 {count} 项",
+    dropActionCopy: "复制（保留原件）",
+    dropActionMove: "移动（传输后删除原件）",
   },
   "zh-TW": {
     intent: {
@@ -2627,6 +2693,17 @@ export const messages = {
     quickDocuments: "文件",
     quickPictures: "圖片",
     quickPathsTitle: "快速目錄",
+    // 收藏夹（rclone-ui parity）+ 跨欄拖放 copy/move 選擇（本批次新增 key，
+    // 七語成組追加在各 locale 末尾，便於與並行分支合併）
+    favTitle: "收藏夾",
+    favEmpty: "尚無收藏。用工具列星號收藏目前目錄。",
+    favAdd: "加入收藏",
+    favRemove: "從收藏移除",
+    dropActionTitle: "傳輸拖放項目",
+    dropActionTarget: "目標：{path}",
+    dropActionItems: "已選 {count} 項",
+    dropActionCopy: "複製（保留原件）",
+    dropActionMove: "移動（傳輸後刪除原件）",
   },
 } satisfies Record<WorkbenchLocale, unknown>;
 

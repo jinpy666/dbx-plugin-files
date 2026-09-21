@@ -35,6 +35,8 @@ import {
   Scale,
   Share2,
   ShieldCheck,
+  Star,
+  StarOff,
   Trash2,
   X,
 } from "@lucide/vue";
@@ -47,6 +49,7 @@ import type { SettingsSection } from "./components/SettingsPanel.vue";
 import SyncDialog, { type SyncDialogOptions } from "./components/SyncDialog.vue";
 import DesktopOnlyCard from "./components/DesktopOnlyCard.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
+import DropActionDialog from "./components/DropActionDialog.vue";
 import AuditPanel from "./components/AuditPanel.vue";
 import PreviewPane from "./components/PreviewPane.vue";
 import CustomConfigEditor from "./components/CustomConfigEditor.vue";
@@ -73,7 +76,7 @@ import { createTransferTracker, isActive, isRetryableKind, type TransferJob, typ
 import { inspect, type DangerousHit } from "./lib/dangerousPaths";
 import { errorBannerOf, i18nTextOf, workbenchMessage, type ErrorBannerState, type I18nInput, type I18nText } from "./lib/i18n";
 import { isArchivePath } from "./lib/archive";
-import { PREVIEW_MIN, loadDownloadDir, loadOpenAppPrefs, loadUiPrefs, persistDownloadDir, persistOpenAppPrefs, saveUiPrefs, resolveOpenApp, type OpenAppPrefs, type PreviewWin } from "./lib/prefs";
+import { PREVIEW_MIN, loadDownloadDir, loadFavorites, loadOpenAppPrefs, loadUiPrefs, persistDownloadDir, persistFavorites, persistOpenAppPrefs, saveUiPrefs, resolveOpenApp, type FavoriteMap, type OpenAppPrefs, type PreviewWin } from "./lib/prefs";
 import { sortEntries, toggleSortState, type SortColumn, type SortState } from "./lib/sorting";
 import { filterEntries } from "./lib/searchFilter";
 import { isLargeDirectory } from "./lib/largeDir";
@@ -174,8 +177,9 @@ const initialized = ref(false);
 // 双栏为会话内开关（工具栏可切），不再持久化：每次打开默认只开远程单栏。
 const dualPane = ref(false);
 // 左右侧栏状态完全独立；本地左栏默认收藏（quick），右栏默认目录树。
-const leftSideTab = ref<"tree" | "quick">(prefs.leftSideTab);
-const rightSideTab = ref<"tree" | "quick">(prefs.rightSideTab);
+// tab 三态（tree/quick/fav）随偏好持久化（SideTab 含 fav）。
+const leftSideTab = ref<"tree" | "quick" | "fav">(prefs.leftSideTab);
+const rightSideTab = ref<"tree" | "quick" | "fav">(prefs.rightSideTab);
 const leftSideCollapsed = ref(prefs.leftSideCollapsed);
 const rightSideCollapsed = ref(prefs.rightSideCollapsed);
 const rightPath = ref("/");
@@ -644,6 +648,47 @@ function toolbarSelectionEntries(side: PaneSide): FileEntry[] {
   const sel = side === "right" ? rightSelection.value : selection.value;
   return pool.filter((entry) => sel.includes(entry.path));
 }
+
+// ---- 收藏夹（rclone-ui parity）------------------------------------------------
+// 按连接键入的星标目录（prefs 落 localStorage，重启恢复）：切换连接/本地栏
+// 即切换列表。星标入口 = 工具栏星标（活动栏当前目录）+ 侧栏行右键「收藏」；
+// SideNavPanel fav tab 只读列表，增删全部回流 App 单一数据源。
+const favoriteMap = ref<FavoriteMap>(loadFavorites());
+
+/** 收藏键 = 该栏当前生效的连接 id（undefined 即宿主当前连接；本地栏为 __local__）。 */
+function sideFavoriteKey(side: PaneSide): string {
+  return sideConnectionId(side) ?? connectionId.value;
+}
+
+function favoritesOf(side: PaneSide): string[] {
+  return favoriteMap.value[sideFavoriteKey(side)] ?? [];
+}
+
+const leftFavorites = computed(() => favoritesOf("left"));
+const rightFavorites = computed(() => favoritesOf("right"));
+
+/** 工具栏星标态：活动栏当前目录是否已收藏（点亮即再次点击取消）。 */
+const toolbarStarred = computed(() => favoritesOf(toolbarTarget.value.side).includes(paneDirPath(toolbarTarget.value.side)));
+
+/** 收藏切换：target 缺省取该栏当前目录；空连接 id（宿主未就绪）不动。 */
+function toggleFavorite(side: PaneSide, target?: string) {
+  const key = sideFavoriteKey(side);
+  const targetPath = target ?? paneDirPath(side);
+  if (!key || !targetPath) return;
+  const current = favoriteMap.value[key] ?? [];
+  const next = current.includes(targetPath) ? current.filter((item) => item !== targetPath) : [...current, targetPath];
+  const map = { ...favoriteMap.value };
+  if (next.length) map[key] = next;
+  else delete map[key];
+  favoriteMap.value = map;
+  persistFavorites(map);
+}
+
+/** 侧栏右键菜单的收藏态：决定「收藏 / 从收藏移除」文案与图标。 */
+const sideMenuFavorited = computed(() => {
+  const menu = sideMenu.value;
+  return Boolean(menu && favoritesOf(menu.side).includes(menu.path));
+});
 
 /** 工具栏挂载入口：挂活动栏当前目录；本地 __local__ 栏没有远端可挂（禁用）。 */
 // 挂载是桌面能力：web/docker 下 sidecar 不在用户本机，挂载无从谈起
@@ -1865,6 +1910,25 @@ async function executePaneTransfer(from: PaneSide, move: boolean, list: FileEntr
 
 // ---- drag & drop（A-FILES ①）---------------------------------------------------
 
+// 拖放动作选择（rclone-ui parity）：跨栏内部拖放不再立即复制，先弹
+// 「复制（保留原件）/ 移动（传输后删除原件）」选择；确认后才走
+// transferBetween（既有冲突预检/覆盖确认原样复用）。OS 文件拖入不受影响。
+const dropActionOpen = ref(false);
+const dropActionPending = ref<{ from: PaneSide; list: FileEntry[]; destPath: string }>();
+
+function onDropActionChoose(action: "copy" | "move") {
+  const pending = dropActionPending.value;
+  dropActionOpen.value = false;
+  dropActionPending.value = undefined;
+  if (!pending) return;
+  void transferBetween(pending.from, action === "move", pending.list);
+}
+
+function onDropActionCancel() {
+  dropActionOpen.value = false;
+  dropActionPending.value = undefined;
+}
+
 /**
  * 审计#16：OS 拖入的文件列表（DataTransfer.files）。优先走 items 映射——
  * 目录条目 getAsFile() 返回 null，天然剔除（目录暂不支持递归上传）；items
@@ -1903,7 +1967,12 @@ function onDropTo(side: PaneSide, event: DragEvent) {
     }
     const from = payload.paneId === "left" ? "left" : payload.paneId === "right" ? "right" : null;
     if (!from || from === side || !payload.paths?.length) return;
-    void transferBetween(from, false, pickSideEntries(from, payload.paths));
+    // 拖放动作选择（rclone-ui parity）：先弹「复制/移动」选择再执行。只读态
+    // 与旧行为一致静默忽略（transferBetween 的 canWrite 门禁前置到这里）。
+    const list = pickSideEntries(from, payload.paths);
+    if (!list.length || !canWrite.value) return;
+    dropActionPending.value = { from, list, destPath: side === "left" ? path.value : rightPath.value };
+    dropActionOpen.value = true;
     return;
   }
   // 审计#16：OS 文件拖入此前被静默忽略。上传恒落目标侧（双栏右栏；单栏为
@@ -2796,7 +2865,7 @@ function openSideMenu(side: PaneSide, payload: { path: string; name: string; x: 
   sideMenu.value = { ...payload, side };
 }
 
-function sideMenuAction(action: "open" | "openOther" | "copyPath" | "copyName" | "mountLocal") {
+function sideMenuAction(action: "open" | "openOther" | "toggleFav" | "copyPath" | "copyName" | "mountLocal") {
   const menu = sideMenu.value;
   sideMenu.value = undefined;
   if (!menu) return;
@@ -2807,6 +2876,11 @@ function sideMenuAction(action: "open" | "openOther" | "copyPath" | "copyName" |
   }
   if (action === "openOther") {
     navigateQuickPath(side === "left" ? "right" : "left", target);
+    return;
+  }
+  if (action === "toggleFav") {
+    // 收藏/取消收藏该行目录（fav tab 行右键即「从收藏移除」）。
+    toggleFavorite(side, target);
     return;
   }
   if (action === "mountLocal") {
@@ -3190,6 +3264,11 @@ function onDocumentKeydown(event: KeyboardEvent) {
     previewDiscardOpen.value = false;
     return;
   }
+  // 拖放动作选择（焦点在弹层内时组件自身 Esc 已取消；这里兜底焦点在外的情况）。
+  if (dropActionOpen.value) {
+    onDropActionCancel();
+    return;
+  }
   if (previewPath.value) {
     closePreview();
     return;
@@ -3295,6 +3374,7 @@ onBeforeUnmount(() => {
       :show-mount="canUseMount"
       :can-mount="canMountToolbar"
       :bwlimit="bwlimitActive"
+      :starred="toolbarStarred"
       :t="t"
       @new-folder="startNewFolder(toolbarTarget.side)"
       @upload="onUpload"
@@ -3304,6 +3384,7 @@ onBeforeUnmount(() => {
       @mount="mountToolbarTarget"
       @open-settings="openSettings()"
       @bwlimit-click="openSettings('transfer')"
+      @toggle-favorite="toggleFavorite(toolbarTarget.side)"
       @toggle-dock="(tab) => { const target = tab ?? dockTab; if (dockOpen && dockTab === target) dockOpen = false; else { dockOpen = true; dockTab = target; if (target === 'audit') auditRef?.refresh(); } }"
     />
 
@@ -3324,6 +3405,7 @@ onBeforeUnmount(() => {
             :collapsed="leftSideCollapsed"
             :tree-root="leftTree"
             :quick-paths="leftQuickPaths"
+            :favorites="leftFavorites"
             :current-path="path"
             :t="t"
             @update:tab="leftSideTab = $event"
@@ -3416,6 +3498,7 @@ onBeforeUnmount(() => {
             :collapsed="rightSideCollapsed"
             :tree-root="rightTree"
             :quick-paths="rightQuickPaths"
+            :favorites="rightFavorites"
             :current-path="rightPath"
             :usage="remoteUsage"
             :t="t"
@@ -3746,6 +3829,12 @@ onBeforeUnmount(() => {
         <PanelLeft v-else />
         {{ sideMenu.side === "left" ? t("openInRight") : t("openInLeft") }}
       </button>
+      <!-- 收藏切换（rclone-ui parity）：树行/快捷目录行按当前收藏态切文案；fav 行恒为移除。 -->
+      <button role="menuitem" @click="sideMenuAction('toggleFav')">
+        <StarOff v-if="sideMenuFavorited" />
+        <Star v-else />
+        {{ sideMenuFavorited ? t("favRemove") : t("favAdd") }}
+      </button>
       <hr />
       <button role="menuitem" @click="sideMenuAction('copyPath')"><Link2 /> {{ t("copyPath") }}</button>
       <button role="menuitem" @click="sideMenuAction('copyName')"><FileText /> {{ t("copyName") }}</button>
@@ -3796,6 +3885,17 @@ onBeforeUnmount(() => {
         <input v-model="confirmDraft" spellcheck="false" @keydown.enter.prevent="!confirmDanger && onConfirm()" />
       </label>
     </ConfirmDialog>
+
+    <!-- 跨栏拖放动作选择（rclone-ui parity）：复制/移动二选一，确认后才执行
+         传输（冲突预检/覆盖确认在既有 transferBetween 链路内）。 -->
+    <DropActionDialog
+      :open="dropActionOpen"
+      :target-path="dropActionPending?.destPath ?? ''"
+      :count="dropActionPending?.list.length ?? 0"
+      :t="t"
+      @choose="onDropActionChoose"
+      @cancel="onDropActionCancel"
+    />
 
     <!-- 审计中#15：清空传输历史二次确认（危险度低于删文件，无需 danger 态）。 -->
     <ConfirmDialog

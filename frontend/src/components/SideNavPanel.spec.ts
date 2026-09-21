@@ -34,6 +34,7 @@ function mountPanel() {
       collapsed: false,
       treeRoot,
       quickPaths: [] as QuickPath[],
+      favorites: [] as string[],
       currentPath: "/docs",
       t,
     },
@@ -57,6 +58,73 @@ beforeEach(() => {
 
 afterEach(() => {
   document.body.innerHTML = "";
+});
+
+describe("SideNavPanel favorites tab (rclone-ui parity 收藏夹)", () => {
+  function mountFavPanel() {
+    return mount(SideNavPanel, {
+      attachTo: document.body,
+      props: {
+        side: "left",
+        tab: "fav",
+        collapsed: false,
+        treeRoot,
+        quickPaths: [] as QuickPath[],
+        favorites: ["/docs", "/"],
+        currentPath: "/docs",
+        t,
+      },
+    });
+  }
+
+  function favRows(wrapper: ReturnType<typeof mountFavPanel>) {
+    return wrapper.findAll(".wb-fav-row");
+  }
+
+  it("exposes a focusable list with roving focus over favorite rows", () => {
+    const wrapper = mountFavPanel();
+    const body = wrapper.find(".wb-side-body");
+    expect(body.attributes("tabindex")).toBe("0");
+    for (const row of favRows(wrapper)) {
+      expect(row.attributes("tabindex")).toBe("-1");
+    }
+    body.element.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(favRows(wrapper)[0].element);
+    body.element.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(favRows(wrapper)[1].element);
+  });
+
+  it("navigates on click (Enter shares the row click semantics)", async () => {
+    const wrapper = mountFavPanel();
+    await favRows(wrapper)[1].trigger("click");
+    expect(wrapper.emitted("navigate")?.length).toBe(1);
+    expect(wrapper.emitted("navigate")![0][0]).toBe("/");
+  });
+
+  it("raises node-context with the favorite path and basename", async () => {
+    const wrapper = mountFavPanel();
+    await favRows(wrapper)[0].trigger("contextmenu", { clientX: 12, clientY: 12 });
+    const contexts = wrapper.emitted("node-context");
+    expect(contexts?.length).toBe(1);
+    expect(contexts![0][0]).toMatchObject({ path: "/docs", name: "docs", x: 12, y: 12 });
+  });
+
+  it("shows the empty hint when the current connection has no favorites", () => {
+    const wrapper = mount(SideNavPanel, {
+      attachTo: document.body,
+      props: {
+        side: "left",
+        tab: "fav",
+        collapsed: false,
+        treeRoot,
+        quickPaths: [] as QuickPath[],
+        favorites: [] as string[],
+        currentPath: "/",
+        t,
+      },
+    });
+    expect(wrapper.find(".wb-side-empty").text()).toBe("favEmpty");
+  });
 });
 
 describe("SideNavPanel tree keyboard access (P2-9)", () => {
