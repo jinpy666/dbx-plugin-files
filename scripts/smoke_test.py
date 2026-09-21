@@ -640,6 +640,12 @@ def scenario_archive(runner: Runner, base: str) -> None:
         assert result.get("transport") != "job", f"small package must stay synchronous: {result}"
         listed = runner.call("files/archiveList", {"connectionId": cid, "path": f"{base}/csrc.tar.gz"})
         paths = {entry["path"] for entry in listed.get("entries", [])}
+        # Backends without empty-dir support (fsinfo CanHaveEmptyDirectories=
+        # false, e.g. :memory:) materialize files/mkdir as a visible empty
+        # .keep placeholder — a real file inside the source dir, so it rides
+        # along into the archive. The assertion pins the business files and
+        # ignores that optional entry.
+        paths.discard("csrc/.keep")
         assert paths == {"csrc/c1.txt", "csrc/c2.txt"}, f"compressed entries: {sorted(paths)}"
     runner.step("compress-sync", _compress_sync)
 
@@ -655,7 +661,10 @@ def scenario_archive(runner: Runner, base: str) -> None:
             state = wait_job(runner, job_id)
             assert state == "completed", f"compress job ended as {state}"
         listed = runner.call("files/archiveList", {"connectionId": cid, "path": f"{base}/csrc-bulk.tar"})
-        assert listed.get("total") == 11, f"job archive total mismatch: {listed}"
+        total = listed.get("total")
+        # The mkdir .keep placeholder (when the backend materializes one) is a
+        # legitimate archive entry: 11 business files + 0..1 placeholder.
+        assert total in (11, 12), f"job archive total mismatch: {listed}"
     runner.step("compress-job", _compress_job)
 
     def _compress_refusals():
