@@ -640,6 +640,12 @@ def scenario_archive(runner: Runner, base: str) -> None:
         assert result.get("transport") != "job", f"small package must stay synchronous: {result}"
         listed = runner.call("files/archiveList", {"connectionId": cid, "path": f"{base}/csrc.tar.gz"})
         paths = {entry["path"] for entry in listed.get("entries", [])}
+        # Backends without empty-dir support (fsinfo CanHaveEmptyDirectories=
+        # false, e.g. :memory:) materialize files/mkdir as a visible empty
+        # .keep placeholder — a real file inside the source dir, so it rides
+        # along into the archive. The assertion pins the business files and
+        # ignores that optional entry.
+        paths.discard("csrc/.keep")
         assert paths == {"csrc/c1.txt", "csrc/c2.txt"}, f"compressed entries: {sorted(paths)}"
     runner.step("compress-sync", _compress_sync)
 
@@ -655,7 +661,10 @@ def scenario_archive(runner: Runner, base: str) -> None:
             state = wait_job(runner, job_id)
             assert state == "completed", f"compress job ended as {state}"
         listed = runner.call("files/archiveList", {"connectionId": cid, "path": f"{base}/csrc-bulk.tar"})
-        assert listed.get("total") == 11, f"job archive total mismatch: {listed}"
+        total = listed.get("total")
+        # The mkdir .keep placeholder (when the backend materializes one) is a
+        # legitimate archive entry: 11 business files + 0..1 placeholder.
+        assert total in (11, 12), f"job archive total mismatch: {listed}"
     runner.step("compress-job", _compress_job)
 
     def _compress_refusals():
@@ -669,6 +678,56 @@ def scenario_archive(runner: Runner, base: str) -> None:
         if not refused:
             raise SidecarError(METHOD_MISSING)
     runner.step("compress-refusals", _compress_refusals)
+
+
+def scenario_integrity(runner: Runner, base: str) -> None:
+    """files/hashsum + SUM verification (files/check, batch 7) on the fs
+    engine. Pins the fs-scoped hashsum contract: operations/hashsum
+    enumerates the fs root (live-pinned v1.75.1 — `remote` never scopes the
+    walk), so the SUM is generated against the composed directory fs and its
+    lines stay directory-relative without sibling leakage; a clean SUM
+    verifies `identical`, a tampered file lands in `differ`, and a missing
+    SUM is refused up front instead of reporting a silent `identical`
+    (rclone answers a missing checkFile with an empty report)."""
+    cid = runner.connection_id
+    data = f"{base}/integ-data"
+
+    def _seed():
+        runner.call("files/mkdir", {"connectionId": cid, "path": data})
+        for name, text in (("i1.txt", "one"), ("i2.txt", "two")):
+            runner.call("files/write", {"connectionId": cid, "path": f"{data}/{name}", "dataBase64": base64.b64encode(text.encode()).decode()})
+    runner.step("integrity-seed", _seed)
+
+    def _hashsum():
+        result = runner.call("files/hashsum", {"connectionId": cid, "path": data, "hashType": "md5"})
+        assert result.get("path") == f"{data}.md5", f"SUM path: {result}"
+        assert result.get("files") == 2, f"SUM file count: {result}"
+        read = runner.call("files/read", {"connectionId": cid, "path": f"{data}.md5"})
+        lines = [line for line in base64.b64decode(read["dataBase64"]).decode().splitlines() if line.strip()]
+        names = sorted(line.split("  ", 1)[1] for line in lines)
+        # Directory-relative names: no `integ-data/` prefix, no sibling files.
+        assert names == ["i1.txt", "i2.txt"], f"SUM lines: {lines}"
+    runner.step("integrity-hashsum-scoped", _hashsum)
+
+    def _sum_check():
+        result = runner.call("files/checksum/verify", {"connectionId": cid, "sumPath": f"{data}.md5"})
+        assert wait_job(runner, result["jobId"]) == "completed", "clean SUM check failed"
+        job = runner.call("files/transfer/status", {"jobId": result["jobId"]}).get("job", {})
+        assert job.get("checkSummary") == "identical", f"clean SUM check: {job.get('checkSummary')!r}"
+        # Tamper one file: the rerun must flag exactly it in `differ`.
+        runner.call("files/write", {"connectionId": cid, "path": f"{data}/i2.txt", "dataBase64": base64.b64encode(b"tampered").decode()})
+        result = runner.call("files/checksum/verify", {"connectionId": cid, "sumPath": f"{data}.md5"})
+        assert wait_job(runner, result["jobId"]) == "completed", "tampered SUM check failed"
+        job = runner.call("files/transfer/status", {"jobId": result["jobId"]}).get("job", {})
+        summary = job.get("checkSummary") or ""
+        assert summary != "identical" and "differ: 1" in summary, f"tampered SUM check: {summary!r}"
+    runner.step("integrity-sum-check", _sum_check)
+
+    def _missing_sum_refused():
+        refused = runner.expect_error("files/checksum/verify", {"connectionId": cid, "sumPath": f"{base}/no-such.md5"})
+        if not refused:
+            raise SidecarError("check on a missing SUM must be refused, not silently identical")
+    runner.step("integrity-missing-sum-refused", _missing_sum_refused)
 
 
 def run_core_sections(client: SidecarClient, fs_root: str) -> None:
@@ -703,6 +762,8 @@ def run_core_sections(client: SidecarClient, fs_root: str) -> None:
         scenario_audit(runner)
         scenario_transfer_roundtrip(runner, base)
         scenario_archive(runner, base)
+        if section == "fs":
+            scenario_integrity(runner, base)
 
         # read_only uses its own connection against the same root. The
         # readonly connection id must match the one scenario_read_only dials

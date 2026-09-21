@@ -745,7 +745,8 @@ pub struct CheckRequest {
     pub download: Option<bool>,
     /// SUM 校验模式（批次7）：SUM 校验文件路径（如 `/data.md5`）。存在时不
     /// 比较两棵目录树，改为用 rclone `operations/check` 的 checkFile* 模式
-    /// 核验 SUM 文件所在目录的内容是否与校验文件一致。
+    /// 核验 SUM 文件同名兄弟目录（`data.md5` → `data`）的内容是否与校验
+    /// 文件一致——SUM 行相对该目录（files/hashsum 同款生成语义）。
     #[serde(default)]
     pub sum_path: Option<String>,
     /// SUM 校验模式的哈希类型（md5/sha1/sha256/sha512/crc32）；缺省按 SUM
@@ -755,7 +756,8 @@ pub struct CheckRequest {
 }
 
 /// `files/checksum/verify`：右键 SUM 校验文件（`.md5`/`.sha1` 等）→ 异步
-/// 核验其所在目录内容是否与校验文件一致（批次7）。返回 jobId，终态经
+/// 核验其同名兄弟目录（`data.md5` → `data`）内容是否与校验文件一致
+/// （批次7）。返回 jobId，终态经
 /// files/transfer/status 轮询并携带与 files/check 相同形态的差异报告。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -784,6 +786,11 @@ pub struct HashsumRequest {
 /// `files/search`：远端递归搜索（文件名子串、大小写不敏感）。先做文件总数
 /// 预检（超过 [`未导出的 SEARCH_MAX_SCAN`] 由 main.rs 常量定）拒绝，防止在
 /// 巨型目录树上做全量列举。
+///
+/// 真实契约（黑盒验证轮对齐）：pattern 剔除 glob 元字符后以 `**term**` 交给
+/// rclone 的 include 过滤，匹配的是**相对搜索根的整条路径**——文件名或任一
+/// 级目录名含关键词即命中（目录条目被 filesOnly 过滤，但其下文件会带上）；
+/// 始终递归，没有 recurse 字段；未知参数由 serde 静默忽略（不报错）。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchRequest {
