@@ -44,6 +44,7 @@ import TransferPanel from "./components/TransferPanel.vue";
 import SettingsPanel from "./components/SettingsPanel.vue";
 import MountDialog from "./components/MountDialog.vue";
 import SyncDialog, { type SyncDialogOptions } from "./components/SyncDialog.vue";
+import DesktopOnlyCard from "./components/DesktopOnlyCard.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
 import AuditPanel from "./components/AuditPanel.vue";
 import PreviewPane from "./components/PreviewPane.vue";
@@ -299,15 +300,26 @@ const settingsCategories = computed<ReadonlyArray<{ id: SettingsCategory; labelK
     { id: "downloads", labelKey: "settingsNav.downloads", icon: SETTINGS_CATEGORY_ICONS.downloads },
     { id: "openWith", labelKey: "settingsNav.openWith", icon: SETTINGS_CATEGORY_ICONS.openWith },
     { id: "transfer", labelKey: "settingsNav.transfer", icon: SETTINGS_CATEGORY_ICONS.transfer },
-    ...(canSaveLocal.value ? [{ id: "mounts" as const, labelKey: "settingsNav.mounts", icon: SETTINGS_CATEGORY_ICONS.mounts }] : []),
+    // Web 下也可见：点进去给出「仅桌面客户端支持」的友好卡片，而不是隐藏入口。
+    { id: "mounts", labelKey: "settingsNav.mounts", icon: SETTINGS_CATEGORY_ICONS.mounts },
   ],
 );
 const settingsOpen = ref(false);
-const settingsCategory = ref<SettingsCategory>("downloads");
+// 统一「保存更改」：任一区块草稿变化即点亮；保存走当前区块面板暴露的 save()。
+const settingsDirty = ref(false);
+const settingsSaving = ref(false);
+const settingsPanelRef = ref<{ save: () => Promise<void> } | null>(null);
+const settingsCategory = ref<SettingsCategory>(
+  ["downloads", "openWith", "transfer", "mounts"].includes(prefs.settingsCategory as string)
+    ? (prefs.settingsCategory as SettingsCategory)
+    : "downloads",
+);
 const settingsOverlayEl = ref<HTMLElement>();
 
-function openSettings(category: SettingsCategory = "downloads") {
-  settingsCategory.value = category;
+function openSettings(category?: SettingsCategory) {
+  // 不带参（工具栏齿轮）= 回到上次停留的分类；显式传参（挂载/下载入口）按意图直达。
+  settingsDirty.value = false;
+  settingsCategory.value = category ?? (prefs.settingsCategory ?? "downloads");
   settingsOpen.value = true;
   if (category === "mounts") {
     void loadMounts();
@@ -321,6 +333,9 @@ function closeSettings() {
 }
 
 watch(settingsCategory, (category) => {
+  // 记忆上次停留的分类（重开设置回到原地）；同步回快照避免下次打开读旧值。
+  prefs.settingsCategory = category;
+  saveUiPrefs({ ...prefs, settingsCategory: category });
   if (category === "transfer") void loadBwlimit();
   if (category === "mounts") {
     void loadMounts();
@@ -1163,7 +1178,10 @@ async function probeConnections() {
     if (Array.isArray(list)) {
       targetConnections.value = list
         .map((item) => ({ id: String(item.id ?? item.connectionId ?? ""), name: String(item.name ?? item.id ?? item.connectionId ?? "") }))
-        .filter((item) => item.id && item.id !== connectionId.value);
+        .filter(
+          (item) =>
+            item.id && item.id !== connectionId.value && item.id !== LOCAL_CONNECTION_ID,
+        );
     }
   } catch {
     if (version === hostContextVersion) targetConnections.value = [];
@@ -2305,12 +2323,27 @@ watch([connectionId, rightPath], () => { void loadRemoteUsage(); }, { immediate:
 // ---- 传输带宽（files/bwlimit：sidecar prefs 持久化，每个 rcd 启动时重放）----
 const bwlimitDraft = ref("");
 const bwlimitError = ref("");
+/** 当前生效限速（非空=顶栏徽标可见）；设置保存后即时更新。 */
+const bwlimitActive = ref<string | null>(null);
+
+/** 统一保存：把当前区块草稿交给面板暴露的 save()（内部走既有校验/持久化链路，
+ * 行内错误就地展示；成功通知由各链路自己发）。 */
+async function onSettingsSave() {
+  if (!settingsDirty.value || settingsSaving.value) return;
+  settingsSaving.value = true;
+  try {
+    await settingsPanelRef.value?.save();
+  } finally {
+    settingsSaving.value = false;
+  }
+}
 
 /** 设置面板打开传输页签时拉取当前持久化限速（空 = 不限）。 */
 async function loadBwlimit() {
   try {
     const result = await call<{ rate: string | null }>("files/bwlimit", {});
     bwlimitDraft.value = result.rate ?? "";
+    bwlimitActive.value = result.rate ?? null;
     bwlimitError.value = "";
   } catch {
     bwlimitError.value = t("bwlimitLoadFailed");
@@ -2323,9 +2356,10 @@ async function onBwlimitSave(rate: string) {
   try {
     const result = await call<{ rate: string | null }>(
       "files/bwlimit",
-      normalized ? { rate: normalized } : {},
+      normalized ? { rate: normalized } : { rate: "off" },
     );
     bwlimitDraft.value = result.rate ?? "";
+    bwlimitActive.value = result.rate ?? null;
     bwlimitError.value = "";
     showNotice(t("settingsSaved"));
   } catch {
@@ -3128,6 +3162,8 @@ watch(settingsOpen, (open) => {
 
 onMounted(() => {
   document.addEventListener("click", onContextClick);
+  // 顶栏限速徽标：启动即拉取当前持久化限速（空 = 不限，徽标隐藏）。
+  void loadBwlimit();
   document.addEventListener("keydown", onDocumentKeydown);
   window.addEventListener("resize", syncViewportLayout);
   syncViewportLayout();
@@ -3183,6 +3219,7 @@ onBeforeUnmount(() => {
       :conn-state="connState"
       :show-mount="canUseMount"
       :can-mount="canMountToolbar"
+      :bwlimit="bwlimitActive"
       :t="t"
       @new-folder="startNewFolder(toolbarTarget.side)"
       @upload="onUpload"
@@ -3190,7 +3227,8 @@ onBeforeUnmount(() => {
       @delete="startDelete(toolbarSelectionEntries(toolbarTarget.side), toolbarTarget.side)"
       @toggle-dual-pane="dualPane = !dualPane"
       @mount="mountToolbarTarget"
-      @open-settings="openSettings('downloads')"
+      @open-settings="openSettings()"
+      @bwlimit-click="openSettings('transfer')"
       @toggle-dock="(tab) => { const target = tab ?? dockTab; if (dockOpen && dockTab === target) dockOpen = false; else { dockOpen = true; dockTab = target; if (target === 'audit') auditRef?.refresh(); } }"
     />
 
@@ -3490,6 +3528,8 @@ onBeforeUnmount(() => {
           <div class="wb-settings-content">
             <SettingsPanel
               v-if="settingsCategory === 'downloads'"
+              ref="settingsPanelRef"
+              @dirty="settingsDirty = $event"
               section="downloads"
               :t="t"
               :can-save-local="canSaveLocal"
@@ -3504,6 +3544,8 @@ onBeforeUnmount(() => {
             />
             <SettingsPanel
               v-else-if="settingsCategory === 'transfer'"
+              ref="settingsPanelRef"
+              @dirty="settingsDirty = $event"
               section="transfer"
               :t="t"
               :can-save-local="canSaveLocal"
@@ -3519,6 +3561,8 @@ onBeforeUnmount(() => {
             />
             <SettingsPanel
               v-else-if="settingsCategory === 'openWith'"
+              ref="settingsPanelRef"
+              @dirty="settingsDirty = $event"
               section="openWith"
               :t="t"
               :can-save-local="canSaveLocal"
@@ -3532,6 +3576,8 @@ onBeforeUnmount(() => {
               @save-open-app="onOpenAppPrefsChange"
             />
             <div v-else class="wb-settings-pane" :aria-busy="mountsLoading">
+              <DesktopOnlyCard v-if="!canSaveLocal" :t="t" />
+              <template v-else>
               <p class="wb-settings-help">{{ t("mounts.help") }}</p>
               <div class="wb-mounts-actions">
                 <button class="wb-toolbar-button" :disabled="mountsLoading" @click="openMountDialog()"><HardDrive /> {{ t("mounts.mountNow") }}</button>
@@ -3552,6 +3598,7 @@ onBeforeUnmount(() => {
                   <button class="wb-icon-button wb-icon-neutral" :disabled="unmountBusyId === row.mountId" v-tip="t('mounts.unmount')" @click="unmountMount(row)"><Eject /></button>
                 </li>
               </ul>
+              </template>
               <!-- 本机共享（files/serve/*）：挂载列表下方常驻区块 -->
               <p class="wb-settings-help wb-shares-title">{{ t("shareSectionTitle") }}</p>
               <div class="wb-mounts-actions">
@@ -3570,6 +3617,11 @@ onBeforeUnmount(() => {
               </ul>
             </div>
           </div>
+          <!-- 统一保存：任一区块有未保存修改时点亮；成功通知由各链路自发。 -->
+          <footer class="wb-settings-footer">
+            <span class="wb-muted">{{ settingsDirty ? t("settingsUnsavedHint") : "" }}</span>
+            <button class="wb-toolbar-button wb-settings-save" type="button" :disabled="!settingsDirty || settingsSaving" @click="onSettingsSave">{{ t("settingsSave") }}</button>
+          </footer>
         </div>
       </div>
     </div>

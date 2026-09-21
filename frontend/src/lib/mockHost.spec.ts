@@ -17,12 +17,14 @@ function names(payload: unknown): string[] {
 }
 
 describe("mockHost host.* contract", () => {
-  it("host.listConnections exposes both built-in connections with names", async () => {
+  it("host.listConnections lists user connections only (no reserved __local__)", async () => {
     const api = await setup();
     const list = await api.request<Array<{ id: string; name: string }>>("host.listConnections");
     const ids = list.map((item) => item.id);
     expect(ids).toContain("mock-conn");
-    expect(ids).toContain("__local__");
+    // __local__ 是 sidecar 内置保留连接：宿主列表若再枚举，左栏下拉会出现
+    // 两个「本地文件」（工作台自身已注入），因此 mock 与真实宿主一样不列它。
+    expect(ids).not.toContain("__local__");
     for (const item of list) expect(item.name).toBeTruthy();
   });
 
@@ -229,7 +231,7 @@ describe("mockHost query and lifecycle contracts", () => {
     host.setEnvironment({ locale: "es" });
     expect(environment).toHaveBeenCalledTimes(1);
     const connections = await api.request<Array<{ id: string }>>("host.listConnections");
-    expect(connections.map((item) => item.id)).toEqual(["mock-conn", "__local__"]);
+    expect(connections.map((item) => item.id)).toEqual(["mock-conn"]);
     await expect(api.request("host.unknown")).rejects.toThrow("Unsupported plugin host method 'host.unknown'");
     expect(api).not.toHaveProperty("onLocaleChange");
     expect(api).not.toHaveProperty("onContextChange");

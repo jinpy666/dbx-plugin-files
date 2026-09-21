@@ -17,6 +17,8 @@ export interface UiPrefs {
   rightSideCollapsed: boolean;
   /** 预览浮窗尺寸（对齐 rclone-dashboard 的 per-layout 记忆）；缺省走居中默认。 */
   previewWin?: PreviewWin;
+  /** 设置弹窗上次停留的分类：重开时回到原地，减少重复点击。 */
+  settingsCategory?: "downloads" | "openWith" | "transfer" | "mounts";
 }
 
 export interface PreviewWin {
@@ -89,6 +91,11 @@ export function loadUiPrefs(storage?: Storage): UiPrefs {
     leftSideCollapsed: prefs.leftSideCollapsed ?? false,
     rightSideCollapsed: prefs.rightSideCollapsed ?? false,
     previewWin: prefs.previewWin,
+    settingsCategory: ["downloads", "openWith", "transfer", "mounts"].includes(
+      prefs.settingsCategory as string,
+    )
+      ? (prefs.settingsCategory as "downloads" | "openWith" | "transfer" | "mounts")
+      : undefined,
   };
 }
 

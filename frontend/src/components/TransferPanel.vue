@@ -120,7 +120,11 @@ function timeLabel(job: TransferJob): string {
       </div>
       <div class="wb-transfer-meta">
         <span>{{ t(`transferKind.${job.kind}`) }}</span>
-        <span v-if="job.checkSummary" class="wb-muted">{{ job.checkSummary }}</span>
+        <span
+          v-if="job.checkSummary"
+          class="wb-check-summary"
+          :class="job.checkSummary.startsWith('identical') ? 'is-ok' : 'is-diff'"
+        >{{ job.checkSummary }}</span>
         <span>{{ progressMeta(job) }} · {{ percentOf(job) }}%</span>
       </div>
       <div v-if="speedMeta(job)" class="wb-transfer-meta"><span class="wb-transfer-speed">{{ speedMeta(job) }}</span></div>
@@ -162,6 +166,12 @@ function timeLabel(job: TransferJob): string {
       <div class="wb-transfer-meta">
         <span>{{ t(`transferKind.${job.kind}`) }} · {{ timeLabel(job) }}</span>
         <span>{{ progressMeta(job) }}</span>
+      </div>
+      <div v-if="job.checkSummary" class="wb-transfer-meta">
+        <span
+          class="wb-check-summary"
+          :class="job.checkSummary.startsWith('identical') ? 'is-ok' : 'is-diff'"
+        >{{ job.checkSummary }}</span>
       </div>
       <p v-if="job.localPath" class="wb-transfer-localpath wb-mono" :title="job.localPath">
         <span v-if="pathParts(job.localPath!).parent" class="wb-transfer-path-parent">{{ pathParts(job.localPath!).parent }}</span>

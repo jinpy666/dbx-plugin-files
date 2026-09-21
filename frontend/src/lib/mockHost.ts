@@ -622,6 +622,12 @@ export function installMockHost() {
         const cancel = { flag: false };
         jobs.set(`__cancel_${jobId}`, cancel as unknown as Record<string, unknown>);
         runJob(jobId, "check", checkSrc, checkDst, () => {}, cancel, connectionIdOf(p.sourceConnectionId ?? p.connectionId), connectionIdOf(p.targetConnectionId ?? p.connectionId));
+        // 真实 sidecar 在终态事件/轮询行携带差异摘要；mock 给一个确定性示例，
+        // 让传输面板的着色分级（identical 绿 / 差异橙）可见。
+        const checkRecord = jobs.get(jobId);
+        if (checkRecord) {
+          checkRecord.checkSummary = "1 differences (missing on source: 0, missing on target: 1, differ: 0, errors: 0)";
+        }
         return { jobId };
       }
       case "files/checksum/verify": {
@@ -739,6 +745,15 @@ export function installMockHost() {
           ],
         };
         return { platform: demoPlatform, apps: presets[demoPlatform] ?? [] };
+      }
+      case "files/local/validate-directory": {
+        // mock 不探测真实文件系统：绝对路径形态即通过，保持设置保存链路可走查。
+        const dir = str("path");
+        if (!dir) throw new Error("Missing path");
+        if (!dir.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(dir)) {
+          throw new Error("not an absolute path");
+        }
+        return { valid: true, path: dir };
       }
       case "files/local/validate-open-app": {
         // mock 不探测真实文件系统：非空即通过，保持设置链路可走查。
@@ -1069,10 +1084,9 @@ export function installMockHost() {
       if (method === "host.getContext") return structuredClone(context) as T;
       // 连接枚举：让双栏目标选择与调试壳的连接列表能看到两个内置连接。
       if (method === "host.listConnections") {
-        return [
-          { id: "mock-conn", name: "Mock Storage" },
-          { id: "__local__", name: "本地文件" },
-        ] as T;
+        // 与真实宿主对齐：只列用户连接；__local__ 是 sidecar 内置保留连接，
+        // 由工作台自己注入左栏（这里再列一次会让左栏下拉出现两个「本地文件」）。
+        return [{ id: "mock-conn", name: "Mock Storage" }] as T;
       }
       throw new Error(`Unsupported plugin host method '${method}'`);
     },

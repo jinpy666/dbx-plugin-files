@@ -20,6 +20,8 @@ const props = defineProps<{
   showMount: boolean;
   /** 挂载入口只对远端连接面可用（本地 __local__ 栏没有可挂载的远端）。 */
   canMount: boolean;
+  /** 当前生效的传输限速（files/bwlimit；null/空 = 不限速）：非空时顶栏显示徽标。 */
+  bwlimit?: string | null;
   t: (key: string, values?: Record<string, string | number>) => string;
 }>();
 
@@ -37,6 +39,7 @@ const emit = defineEmits<{
   (event: "mount"): void;
   /** 独立设置弹窗（对标 ssh 设置 icon）：设置不再挤在 dock 页签里。 */
   (event: "open-settings"): void;
+  (event: "bwlimit-click"): void;
 }>();
 
 function t(key: string, values?: Record<string, string | number>) {
@@ -86,6 +89,8 @@ function onPicked(event: Event) {
       <strong :title="connectionName">{{ connectionName }}</strong>
       <span v-if="readOnly" class="wb-readonly-badge">{{ t("readOnly") }}</span>
       <span class="wb-session-pill" :class="`session-${connState}`"><span class="wb-session-dot" aria-hidden="true" />{{ t(`sessionStatus.${connState}`) }}</span>
+    <!-- 限速生效徽标：点击直达设置传输页签；Gauge 图标语义=速率。 -->
+    <button v-if="bwlimit" type="button" class="wb-session-pill wb-bwlimit-pill" v-tip="t('bwlimitBadgeTip', { rate: bwlimit })" @click="emit('bwlimit-click')"><Gauge /> {{ t("bwlimitBadge") }} {{ bwlimit }}</button>
     </div>
     <div class="wb-toolbar-actions">
       <!-- 审计中#13：文字按钮统一 v-tip（宿主 webview 不渲染原生 title）。 -->

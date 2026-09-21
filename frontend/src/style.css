@@ -469,8 +469,19 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   justify-content: center;
   padding: 8px 0;
 }
-.wb-bwlimit-presets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.wb-bwlimit-chip { border: 1px solid var(--border); background: var(--background); color: var(--muted-foreground); border-radius: 999px; padding: 2px 10px; font-size: 11px; cursor: pointer; }
-.wb-bwlimit-chip:hover { color: var(--foreground); border-color: var(--muted-foreground); }
-.wb-bwlimit-chip.is-active { color: var(--foreground); border-color: var(--foreground); }
+.wb-bwlimit-combo { display: flex; gap: 6px; }
+.wb-bwlimit-combo input { flex: 1 1 auto; min-width: 0; height: 28px; padding: 0 8px; font-size: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--background); color: var(--foreground); }
+.wb-bwlimit-unit { height: 28px; flex: 0 0 96px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--background); color: var(--foreground); font-size: 12px; }
+.wb-bwlimit-pill { cursor: pointer; color: var(--warning); border-color: color-mix(in srgb, var(--warning) 45%, var(--border)); }
+.wb-bwlimit-pill:hover { color: var(--foreground); }
+.wb-bwlimit-pill svg { width: 10px; height: 10px; }
 .wb-settings-hint { margin: 6px 0 0; color: var(--muted-foreground); font-size: 11px; }
+.wb-check-summary.is-ok { color: var(--success); }
+.wb-check-summary.is-diff { color: var(--warning); }
+.wb-settings-footer { display: flex; align-items: center; justify-content: flex-end; gap: 10px; border-top: 1px solid var(--border); padding: 10px 14px; }
+.wb-settings-footer .wb-toolbar-button { min-width: 96px; }
+.wb-settings-footer .wb-toolbar-button:disabled { opacity: 0.45; cursor: default; }
+.wb-desktop-only-card { display: flex; gap: 10px; align-items: flex-start; border: 1px solid color-mix(in srgb, var(--warning) 35%, var(--border)); background: color-mix(in srgb, var(--warning) 8%, var(--popover)); border-radius: 8px; padding: 10px 12px; }
+.wb-desktop-only-card .wb-doc-card-icon { width: 16px; height: 16px; flex: none; color: var(--warning); margin-top: 2px; }
+.wb-desktop-only-card strong { display: block; font-size: 12px; color: var(--foreground); }
+.wb-desktop-only-card p { margin: 4px 0 0; font-size: 11px; color: var(--muted-foreground); }

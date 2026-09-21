@@ -71,10 +71,17 @@ describe("open-with platform presets", () => {
     const names = presets.map((chip) => chip.text());
     expect(names).toContain("WPS Office");
     expect(names).toContain("Microsoft Excel");
-    // 点击预设：validate-open-app 校验该路径 → 持久化 + settingsSaved 反馈。
+    // 点击预设：只填草稿（统一保存模型），此时尚不发起 validate。
     const invoke = vi.spyOn(window.dbxPlugin, "invoke");
     const wps = presets.find((chip) => chip.text() === "WPS Office")!;
     await wps.trigger("click");
+    await settle();
+    expect(invoke).not.toHaveBeenCalledWith(
+      "files/local/validate-open-app",
+      { path: "/Applications/wpsoffice.app" },
+    );
+    // 弹窗底部「保存更改」→ validate-open-app 校验 → 持久化 + settingsSaved 反馈。
+    await wrapper!.get(".wb-settings-save").trigger("click");
     await settle();
     expect(invoke).toHaveBeenCalledWith(
       "files/local/validate-open-app",
