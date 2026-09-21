@@ -1218,6 +1218,76 @@ mod tests {
         );
     }
 
+    /// `files/hashsum` 数量预检口径（follow-up to the batch-7 scope fix）：
+    /// operations/size 只解析 fs、静默忽略 `remote`（live-pinned v1.75.1，
+    /// 与 operations/hashsum 同一族）——目录并进 fs（compose_fs + 空
+    /// remote）后 count 精确等于目录内容；旧口径（fs=连接根 + remote=
+    /// 目录）数的是整棵根，大根下的小目录会被 HASHSUM_MAX_FILES 误拒
+    /// （方向保守、不漏放，但确实是错的）。大根 + 小目录沙箱钉死两端：
+    /// 目录级口径 count=2（预检放行、hashsum 只见 2 行），旧口径
+    /// `remote` 被无视、count=整根（>cap，即被移除的误拒路径）。
+    #[tokio::test]
+    async fn operations_size_scopes_to_the_fs_remote_is_ignored() {
+        let Some(binary) = resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
+        let client = rcd.client();
+        let root = tempfile::tempdir().expect("root tempdir");
+        // 大根 + 小目录：根下 HASHSUM_MAX_FILES+10 个文件，目标目录 small
+        // 只放 2 个 —— 旧预检会误拒的形状。
+        for index in 0..(crate::HASHSUM_MAX_FILES + 10) {
+            write_file(
+                &root.path().join(format!("fill-{index:05}.txt")),
+                "filler",
+            );
+        }
+        write_file(&root.path().join("small").join("a.txt"), "alpha");
+        write_file(&root.path().join("small").join("sub").join("b.txt"), "beta");
+        let root_fs = root.path().to_string_lossy().into_owned();
+        let count = |fs: String, remote: String| {
+            let client = client.clone();
+            async move {
+                client
+                    .operations_size(&fs, &remote)
+                    .await
+                    .expect("operations/size")
+                    .get("count")
+                    .and_then(Value::as_u64)
+                    .expect("count field")
+            }
+        };
+
+        // 修复后的预检口径（compose_fs(目录) + remote=""，与 hashsum 生成
+        // 调用同形）：count 只数目标目录 —— 预检放行，hashsum 也只见 2 行。
+        let dir_fs = compose_fs(&root_fs, "small");
+        assert_eq!(
+            count(dir_fs.clone(), String::new()).await,
+            2,
+            "directory-level scope must count only the target directory"
+        );
+        let sum = client
+            .operations_hashsum(&dir_fs, "", "md5", false)
+            .await
+            .expect("hashsum");
+        let lines = sum
+            .get("hashsum")
+            .and_then(Value::as_array)
+            .expect("hashsum array");
+        assert_eq!(lines.len(), 2, "hashsum sees exactly the directory: {lines:?}");
+
+        // 旧口径钉死 live 行为：`remote` 被静默无视，数的是整棵连接根
+        // —— HASHSUM_MAX_FILES+12 > cap，即本次修复移除的误拒路径。
+        let whole_root = count(root_fs, "small".to_string()).await;
+        assert_eq!(
+            whole_root,
+            crate::HASHSUM_MAX_FILES + 12,
+            "root scope counts every file including the directory (remote ignored)"
+        );
+        assert!(whole_root > crate::HASHSUM_MAX_FILES);
+    }
+
     /// Full bisync lifecycle against real rclone (live-verified v1.75.1):
     /// resync initializes the pair, edits on BOTH sides converge on the next
     /// run, and the state survives an rcd restart (workdir outlives the

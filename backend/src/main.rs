@@ -1183,9 +1183,17 @@ impl Plugin {
                 if remote.trim_matches('/').is_empty() {
                     return Err("hashsum needs a subdirectory (the SUM file is written next to it)".to_string());
                 }
-                // Size precheck: refuse absurd trees before hashing.
+                // Size precheck: refuse absurd trees before hashing — with
+                // the SAME scope the generation call uses. operations/size
+                // only parses the fs (live-pinned v1.75.1: `remote` is
+                // silently ignored, the operations/hashsum twin below), so
+                // the verified directory rides inside the fs string. The old
+                // spelling (`fs`=connection root + `remote`=directory) counted
+                // the whole root: a small folder under a big root was
+                // mis-rejected by the cap — conservative, but wrong.
+                let dir_fs = rclone::sync::compose_fs(&fs, &remote);
                 let size = client
-                    .operations_size(&fs, &remote)
+                    .operations_size(&dir_fs, "")
                     .await
                     .map_err(|error| error.to_string())?;
                 let count = size.get("count").and_then(Value::as_u64).unwrap_or(0);
@@ -1201,12 +1209,10 @@ impl Plugin {
                     .filter(|value| !value.is_empty())
                     .unwrap_or("md5")
                     .to_lowercase();
-                // operations/hashsum enumerates the fs root (live-pinned
-                // v1.75.1: `remote` never scopes the walk), so the verified
-                // directory must ride inside the fs string — the same shape
-                // the batch-7 check unit test pins — and the SUM lines come
-                // out relative to that directory ("a.txt", "sub/b.txt").
-                let dir_fs = rclone::sync::compose_fs(&fs, &remote);
+                // operations/hashsum walks `dir_fs` (already directory-scoped
+                // for the precheck above — v1.75.1 never narrows by `remote`),
+                // and the SUM lines come out relative to that directory
+                // ("a.txt", "sub/b.txt") — the batch-7 shape.
                 let result = client
                     .operations_hashsum(&dir_fs, "", &hash_type, false)
                     .await
