@@ -964,7 +964,7 @@ impl Plugin {
                     binding.lock_to_root,
                 )
                 .await?;
-                rclone::archive::validate_archive_source(&entry.kind, &relative)?;
+                rclone::archive::validate_archive_source(entry.kind, &relative)?;
                 let name = rclone::archive::archive_download_artifact_name(&relative)?;
                 let data = rclone::archive::build_dir_zip_bytes(
                     &client,
