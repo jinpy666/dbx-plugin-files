@@ -203,3 +203,44 @@ it("routes strategies: text to CodeMirror, PDF to viewer, unknown binary to hex"
   await flush();
   expect(wrapper.find("pre.wb-hex").exists()).toBe(true);
 });
+
+// 平台外部打开引导（open-with per OS）：viewer 渲染不了的文档格式（office/pdf/
+// media）在错误面板给出「配置外部应用」入口，跳设置弹窗 openWith 分类。
+describe("PreviewPane external-open guidance", () => {
+  it("offers the open-with settings shortcut when an office file fails to preview", async () => {
+    bindApi(async <T,>() => Promise.reject(new Error("viewer renderer missing")) as unknown as T, null);
+    window.dbxPlugin = {
+      decodeBase64: b64decode,
+      encodeBase64: (value) => btoa(String.fromCharCode(...(value instanceof Uint8Array ? value : new Uint8Array(value)))),
+    } as DbxPluginApi;
+    wrapper = mount(PreviewPane, {
+      props: { path: "/docs/deck.pptx", canWrite: true, appearance, t: (key: string) => key },
+      attachTo: document.body,
+    });
+    await flush();
+    const notice = wrapper.find(".wb-preview-notice");
+    expect(notice.exists()).toBe(true);
+    expect(notice.text()).toContain("previewExternalHint");
+    const settingsButton = notice.findAll("button").find((button) => button.text() === "openInSettings");
+    expect(settingsButton).toBeTruthy();
+    await settingsButton!.trigger("click");
+    expect(wrapper.emitted("open-settings")).toHaveLength(1);
+  });
+
+  it("does not offer the shortcut for plain text failures", async () => {
+    bindApi(async <T,>() => Promise.reject(new Error("no such file")) as unknown as T, null);
+    window.dbxPlugin = {
+      decodeBase64: b64decode,
+      encodeBase64: (value) => btoa(String.fromCharCode(...(value instanceof Uint8Array ? value : new Uint8Array(value)))),
+    } as DbxPluginApi;
+    wrapper = mount(PreviewPane, {
+      props: { path: "/docs/readme.md", canWrite: true, appearance, t: (key: string) => key },
+      attachTo: document.body,
+    });
+    await flush();
+    const notice = wrapper.find(".wb-preview-notice");
+    expect(notice.exists()).toBe(true);
+    expect(notice.text()).not.toContain("previewExternalHint");
+    expect(wrapper.emitted("open-settings")).toBeUndefined();
+  });
+});

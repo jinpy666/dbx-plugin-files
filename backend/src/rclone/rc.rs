@@ -208,6 +208,177 @@ impl RcClient {
         .await
     }
 
+    /// Remote space usage (`free`/`total`/`used`, cloud backends add
+    /// `trash`). Local fs reports the underlying volume.
+    pub async fn operations_about(&self, fs: &str) -> Result<Value, RcError> {
+        self.call("operations/about", &serde_json::json!({ "fs": fs })).await
+    }
+
+    /// Starts an async src↔dst comparison (`operations/check`). Poll via
+    /// `job/status`; the finished record carries `output` with
+    /// missingOnSrc/missingOnDst/differ/error lists (live-verified v1.75.1).
+    pub async fn operations_check_async(
+        &self,
+        src_fs: &str,
+        dst_fs: &str,
+        one_way: bool,
+        download: bool,
+        group: &str,
+    ) -> Result<Value, RcError> {
+        let mut body = serde_json::json!({
+            "srcFs": src_fs,
+            "dstFs": dst_fs,
+            "_async": true,
+            "_group": group,
+        });
+        if one_way {
+            body["oneWay"] = Value::Bool(true);
+        }
+        if download {
+            body["download"] = Value::Bool(true);
+        }
+        self.call("operations/check", &body).await
+    }
+
+    /// SUM lines for every object under `fs`/`remote`
+    /// (`{hashType, hashsum: ["<hash>  <rel path>", ...]}`).
+    pub async fn operations_hashsum(
+        &self,
+        fs: &str,
+        remote: &str,
+        hash_type: &str,
+        download: bool,
+    ) -> Result<Value, RcError> {
+        self.call(
+            "operations/hashsum",
+            &serde_json::json!({
+                "fs": fs,
+                "remote": remote,
+                "hashType": hash_type,
+                "download": download,
+            }),
+        )
+        .await
+    }
+
+    /// Recursive filename search (`operations/list` + rc-level filter
+    /// params, live-verified v1.75.1): `include` glob and `ignore_case` ride
+    /// at the TOP level of the body (not inside `opt`), `opt` carries
+    /// `recurse`/`filesOnly`. Non-matching directories are pruned by rclone.
+    pub async fn operations_list_filtered(
+        &self,
+        fs: &str,
+        remote: &str,
+        include_glob: &str,
+        files_only: bool,
+    ) -> Result<Value, RcError> {
+        let mut opt = serde_json::json!({ "recurse": true });
+        if files_only {
+            opt["filesOnly"] = Value::Bool(true);
+        }
+        self.call(
+            "operations/list",
+            &serde_json::json!({
+                "fs": fs,
+                "remote": remote,
+                "include": [include_glob],
+                "ignore_case": true,
+                "opt": opt,
+            }),
+        )
+        .await
+    }
+
+    /// Downloads `url` and uploads it to `fs`/`remote` server-side (the rcd
+    /// host fetches it). With `auto_filename` the name comes from the URL;
+    /// the answer is `{}` — callers derive the final path themselves.
+    pub async fn operations_copyurl(
+        &self,
+        fs: &str,
+        remote: &str,
+        url: &str,
+        auto_filename: bool,
+    ) -> Result<Value, RcError> {
+        self.call(
+            "operations/copyurl",
+            &serde_json::json!({
+                "fs": fs,
+                "remote": remote,
+                "url": url,
+                "autoFilename": auto_filename,
+                "no_check": false,
+            }),
+        )
+        .await
+    }
+
+    /// Starts an rclone serve instance over `fs` (serve/start, live-verified
+    /// v1.75.1): `addr: "127.0.0.1:0"` makes rcd pick a free loopback port
+    /// and report it back — the answer is `{"addr": "127.0.0.1:<port>",
+    /// "id": "http-<suffix>"}`. `serve_type` is a bare serve family name
+    /// ("http" / "webdav"); the full fs path (named remote included) goes
+    /// into `fs` verbatim.
+    pub async fn serve_start(
+        &self,
+        fs: &str,
+        serve_type: &str,
+        addr: &str,
+    ) -> Result<Value, RcError> {
+        self.call(
+            "serve/start",
+            &serde_json::json!({
+                "type": serve_type,
+                "fs": fs,
+                "addr": addr,
+            }),
+        )
+        .await
+    }
+
+    /// Stops one serve instance by id (serve/stop). rclone answers `{}`;
+    /// an unknown id answers an rclone error — the caller decides whether
+    /// that means idempotent success.
+    pub async fn serve_stop(&self, id: &str) -> Result<Value, RcError> {
+        self.call("serve/stop", &serde_json::json!({ "id": id })).await
+    }
+
+    /// Lists the rcd process's active serve instances (serve/list):
+    /// `{"list": [{"id", "addr", "params": {"addr", "fs", "type"}}]}`.
+    /// Bookkeeping only — serves die with the rcd process (respawn clears
+    /// the list), so callers must tolerate stale ids.
+    pub async fn serve_list(&self) -> Result<Value, RcError> {
+        self.call("serve/list", &serde_json::json!({})).await
+    }
+
+    /// Empties the remote's trash (fs-level; local fs rejects with
+    /// "doesn't support cleanup", which surfaces to the caller).
+    pub async fn operations_cleanup(&self, fs: &str) -> Result<Value, RcError> {
+        self.call("operations/cleanup", &serde_json::json!({ "fs": fs })).await
+    }
+
+    /// Removes every empty directory under `fs`/`remote` (empty `remote` =
+    /// connection root). Answer is `{}` regardless of how many went away.
+    pub async fn operations_rmdirs(&self, fs: &str, remote: &str) -> Result<Value, RcError> {
+        self.call(
+            "operations/rmdirs",
+            &serde_json::json!({ "fs": fs, "remote": remote }),
+        )
+        .await
+    }
+
+    /// Queries (rate `None`) or sets the rcd process's bandwidth limit.
+    /// `rate` takes rclone bwlimit spellings — `"10M"`, `"1M:100k"`, `"off"`;
+    /// an unparsable value answers an RcError (HTTP 500 `bad bwlimit: ...`,
+    /// live-verified v1.75.1). The setting is per-rcd-process: every proxy
+    /// group's rcd needs its own call, and a respawned rcd needs a replay.
+    pub async fn core_bwlimit(&self, rate: Option<&str>) -> Result<Value, RcError> {
+        let mut payload = serde_json::Map::new();
+        if let Some(rate) = rate {
+            payload.insert("rate".into(), Value::String(rate.to_string()));
+        }
+        self.call("core/bwlimit", &Value::Object(payload)).await
+    }
+
     /// Backend feature/capability report — input to the `files/capabilities`
     /// projection (phase A wires a conservative per-protocol matrix on top).
     pub async fn backend_features(&self, fs: &str, remote: &str) -> Result<Value, RcError> {
@@ -216,6 +387,44 @@ impl RcClient {
             &serde_json::json!({ "fs": fs, "remote": remote }),
         )
         .await
+    }
+
+    /// Refreshes the directory cache of an ACTIVE VFS (`vfs/refresh`).
+    /// `fs` selects the mount (the same fs string `mount/mount` was given —
+    /// rclone canonicalizes both sides, so `None` picks the only VFS when
+    /// exactly one is active). `dir` is the mount-root-relative directory
+    /// to re-read (`None` = the mount root); `recursive` walks the whole
+    /// subtree. Live-verified v1.75.1 against rcd + source-pinned
+    /// (`vfs/rc.go`): `recursive` is parsed with `strconv.ParseBool` from a
+    /// STRING — a JSON boolean answers `value must be string
+    /// "recursive"=true`; and there is no `remote` param on this endpoint —
+    /// leftover request keys must carry a `dir` prefix or rclone answers
+    /// `unknown key`.
+    pub async fn vfs_refresh(
+        &self,
+        fs: &str,
+        dir: Option<&str>,
+        recursive: bool,
+    ) -> Result<Value, RcError> {
+        let mut payload = serde_json::json!({
+            "fs": fs,
+            "recursive": if recursive { "true" } else { "false" },
+        });
+        if let Some(dir) = dir
+            .map(|dir| dir.trim_matches('/'))
+            .filter(|dir| !dir.is_empty())
+        {
+            payload["dir"] = Value::String(dir.to_string());
+        }
+        self.call("vfs/refresh", &payload).await
+    }
+
+    /// Stats of an ACTIVE VFS (`vfs/stats`): `{fs, inUse, metadataCache,
+    /// opt}` plus `diskCache` when the mount runs a VFS cache mode > off
+    /// (byte usage lives in `diskCache.bytesUsed`). Only `fs` is consumed;
+    /// this endpoint ignores rather than validates extra keys.
+    pub async fn vfs_stats(&self, fs: &str) -> Result<Value, RcError> {
+        self.call("vfs/stats", &serde_json::json!({ "fs": fs })).await
     }
 
     /// rc-serve URL for byte reads. rcserver routes GET paths with the

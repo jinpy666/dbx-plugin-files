@@ -16,6 +16,7 @@
 
 mod archive;
 mod local_downloads;
+mod mount;
 mod mcp;
 mod model;
 mod policy;
@@ -55,6 +56,17 @@ struct Plugin {
     /// hold is a short sync section, nothing awaits under the lock), and the
     /// handle is backfilled once `start_job` answers.
     sync_jobs: Arc<std::sync::Mutex<HashMap<String, RcloneSyncRecord>>>,
+    /// Local mounts (`files/mount`): mountId → live record. Same std-Mutex
+    /// discipline as `sync_jobs` — short sync sections, no awaits held.
+    mounts: mount::MountTable,
+    /// `files/about` usage cache keyed by connectionId (60s TTL) — the
+    /// sidebar renders it on every pane load and rc about is not free.
+    about_cache: std::sync::Mutex<HashMap<String, (std::time::Instant, Value)>>,
+    /// 本机共享（files/serve/*）：serveId → (connectionId, serveType) 登记表。
+    /// serve 实例本身活在 rcd 进程里（rcd 死掉即随之消失），此表只做归属
+    /// 记账；serve/list 以 rc 的活跃 id 集合清理陈旧条目。同一 std-Mutex
+    /// 短临界区纪律（不持锁 await）。
+    serves: std::sync::Mutex<HashMap<String, (String, String)>>,
 }
 
 impl Plugin {
@@ -85,6 +97,11 @@ impl Plugin {
         }
         let sync_jobs: Arc<std::sync::Mutex<HashMap<String, RcloneSyncRecord>>> =
             Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let mounts: mount::MountTable = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let about_cache: std::sync::Mutex<HashMap<String, (std::time::Instant, Value)>> =
+            std::sync::Mutex::new(HashMap::new());
+        let serves: std::sync::Mutex<HashMap<String, (String, String)>> =
+            std::sync::Mutex::new(HashMap::new());
         let mut mcp = mcp::Mcp::new(data_dir);
         // The rclone engine is the only engine: the MCP storage tools route
         // through it too (same registry, same gates). The sync starter
@@ -105,6 +122,9 @@ impl Plugin {
             store,
             mcp,
             sync_jobs,
+            mounts,
+            about_cache,
+            serves,
         })
     }
 
@@ -193,6 +213,11 @@ impl Plugin {
                     .await?;
                 // Tear down the tunnel forwarder(s) alongside the remote.
                 self.rclone.release_tunnel(&connection_id).await;
+                // Local mounts follow the connection: unmount what is still
+                // reachable, drop the table entries (best-effort).
+                let _unmounted =
+                    mount::unmount_connection(&self.rclone, &self.mounts, &connection_id, None)
+                        .await;
                 // Idle-group teardown: when this was the group's last
                 // connection and no async work is in flight, stop its rcd.
                 // Groups still draining work are reaped by the keepalive
@@ -412,6 +437,15 @@ impl Plugin {
                         )
                         .await?;
                         self.audit_id(&request.connection_id, method, &request.path, "ok")?;
+                        // Best-effort mount-view refresh: the parent listing
+                        // changed, active rclone mounts re-read it (batch 5).
+                        mount::best_effort_refresh_mount_caches(
+                            &self.rclone,
+                            &self.mounts,
+                            &request.connection_id,
+                            Some(&parent_dir_of(&request.path)),
+                        )
+                        .await;
                     }
                     _ => {
                         ensure_binding_deletable(&binding)?;
@@ -425,6 +459,15 @@ impl Plugin {
                         )
                         .await?;
                         self.audit_id(&request.connection_id, method, &request.path, "ok")?;
+                        // Purge emptied the directory itself — the listing
+                        // that changed is its parent's (batch 5 hook).
+                        mount::best_effort_refresh_mount_caches(
+                            &self.rclone,
+                            &self.mounts,
+                            &request.connection_id,
+                            Some(&parent_dir_of(&request.path)),
+                        )
+                        .await;
                     }
                 }
                 Ok(json!({ "success": true }))
@@ -513,6 +556,20 @@ impl Plugin {
                         target_path: request.new_path.clone(),
                         dry_run: Some(false),
                         max_delete: None,
+                        include: None,
+                        exclude: None,
+                        backup_dir: None,
+                        suffix: None,
+                        // Directory rename carries no filters (rename
+                        // cannot be a filtered operation anyway).
+                        metadata: Some(false),
+                        min_size: None,
+                        max_size: None,
+                        min_age: None,
+                        max_age: None,
+                        transfers: None,
+                        checkers: None,
+                        retries: None,
                     };
                     let job_id = rclone_start_dir_job(
                         Arc::clone(&self.rclone),
@@ -884,6 +941,538 @@ impl Plugin {
                 // namespace with the single-file taskIds).
                 Ok(json!({ "jobId": job_id }))
             }
+            // ------------------------------------------------------------------
+            // Bandwidth limit (`files/bwlimit`): absent `rate` reads the
+            // persisted pref, `"off"` clears it, anything else is applied to
+            // every live group rcd and persisted for respawn replay.
+            // ------------------------------------------------------------------
+            "files/bwlimit" => {
+                let request: model::BwlimitRequest = parse(params)?;
+                let rate = request
+                    .rate
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string);
+                match rate.as_deref() {
+                    Some("off") => {
+                        self.rclone.set_bwlimit(None).await?;
+                        Ok(json!({ "rate": Value::Null }))
+                    }
+                    Some(rate) => {
+                        self.rclone.set_bwlimit(Some(rate)).await?;
+                        Ok(json!({ "rate": rate }))
+                    }
+                    None => Ok(json!({ "rate": self.rclone.bwlimit_pref() })),
+                }
+            }
+            // ------------------------------------------------------------------
+            // Space & integrity tools: about (usage quota), check (async
+            // comparison job), hashsum (SUM file next to the directory),
+            // cleanup (remote trash), rmdirs (empty dirs under a path).
+            // ------------------------------------------------------------------
+            "files/about" => {
+                let request: model::AboutRequest = parse(params)?;
+                {
+                    let cache = self
+                        .about_cache
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if let Some((at, value)) = cache.get(&request.connection_id) {
+                        if at.elapsed() < ABOUT_CACHE_TTL {
+                            return Ok(value.clone());
+                        }
+                    }
+                }
+                let binding = self.rclone.binding(&request.connection_id)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                let value = client
+                    .operations_about(&rclone::call_fs(&binding))
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if let Ok(mut cache) = self.about_cache.lock() {
+                    cache.insert(request.connection_id.clone(), (std::time::Instant::now(), value.clone()));
+                }
+                Ok(value)
+            }
+            "files/check" => {
+                let request: model::CheckRequest = parse(params)?;
+                let job_id = rclone_start_check_job(
+                    Arc::clone(&self.rclone),
+                    Arc::clone(&self.sync_jobs),
+                    &request,
+                    Some(emitter),
+                )
+                .await?;
+                Ok(json!({ "jobId": job_id }))
+            }
+            // 右键 SUM 校验文件（`.md5`/`.sha1`/…）→ 核验其所在目录（批次7）。
+            // 单连接：同一 CheckRequest 走 SUM 分支，终态报告与 files/check
+            // 同形态，复用 check 作业面板与 checkSummary 展示。
+            "files/checksum/verify" => {
+                let request: model::SumVerifyRequest = parse(params)?;
+                let job_id = rclone_start_check_job(
+                    Arc::clone(&self.rclone),
+                    Arc::clone(&self.sync_jobs),
+                    &model::CheckRequest {
+                        source_connection_id: request.connection_id.clone(),
+                        source_path: request.sum_path.clone(),
+                        target_connection_id: request.connection_id.clone(),
+                        target_path: request.sum_path.clone(),
+                        one_way: None,
+                        download: None,
+                        sum_path: Some(request.sum_path),
+                        hash_type: request.hash_type,
+                    },
+                    Some(emitter),
+                )
+                .await?;
+                Ok(json!({ "jobId": job_id }))
+            }
+            "files/hashsum" => {
+                let request: model::HashsumRequest = parse(params)?;
+                let binding = self.rclone.binding(&request.connection_id)?;
+                ensure_binding_writable(&binding)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                let fs = rclone::call_fs(&binding);
+                let remote = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    &request.path,
+                    crate::policy::PathPolicy::check_read,
+                )?;
+                if remote.trim_matches('/').is_empty() {
+                    return Err("hashsum needs a subdirectory (the SUM file is written next to it)".to_string());
+                }
+                // Size precheck: refuse absurd trees before hashing.
+                let size = client
+                    .operations_size(&fs, &remote)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let count = size.get("count").and_then(Value::as_u64).unwrap_or(0);
+                if count > HASHSUM_MAX_FILES {
+                    return Err(format!(
+                        "directory holds {count} files; hashsum is capped at {HASHSUM_MAX_FILES} — pick a smaller folder"
+                    ));
+                }
+                let hash_type = request
+                    .hash_type
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("md5")
+                    .to_lowercase();
+                let result = client
+                    .operations_hashsum(&fs, &remote, &hash_type, false)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let lines: Vec<String> = result
+                    .get("hashsum")
+                    .and_then(Value::as_array)
+                    .map(|array| {
+                        array
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if lines.is_empty() {
+                    return Err(format!("no hashable files under {}", request.path));
+                }
+                // SUM file lives NEXT TO the directory (`/photos` →
+                // `/photos.md5`), so a rerun never hashes its own report.
+                let trimmed = request.path.trim_matches('/');
+                let (parent, base) = match trimmed.rsplit_once('/') {
+                    Some((parent, base)) => (parent.to_string(), base.to_string()),
+                    None => (String::new(), trimmed.to_string()),
+                };
+                let sum_path = if parent.is_empty() {
+                    format!("/{base}.{hash_type}")
+                } else {
+                    format!("/{parent}/{base}.{hash_type}")
+                };
+                let sum_remote = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    &sum_path,
+                    crate::policy::PathPolicy::check_write,
+                )?;
+                let mut content = lines.join("\n");
+                content.push('\n');
+                rclone::ops::write_bytes(&client, &fs, &sum_remote, content.as_bytes()).await?;
+                self.audit_id(&request.connection_id, "files/hashsum", &sum_path, "ok")?;
+                Ok(json!({ "path": sum_path, "hashType": hash_type, "files": lines.len() }))
+            }
+            "files/cleanup" => {
+                let request: model::CleanupRequest = parse(params)?;
+                let binding = self.rclone.binding(&request.connection_id)?;
+                ensure_binding_deletable(&binding)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                client
+                    .operations_cleanup(&rclone::call_fs(&binding))
+                    .await
+                    .map_err(|error| error.to_string())?;
+                self.audit_id(&request.connection_id, "files/cleanup", "/", "ok")?;
+                Ok(json!({ "success": true }))
+            }
+            "files/rmdirs" => {
+                let request: model::PathRequest = parse(params)?;
+                let binding = self.rclone.binding(&request.connection_id)?;
+                ensure_binding_deletable(&binding)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                let remote = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    &request.path,
+                    crate::policy::PathPolicy::check_write,
+                )?;
+                client
+                    .operations_rmdirs(&rclone::call_fs(&binding), &remote)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                self.audit_id(&request.connection_id, "files/rmdirs", &request.path, "ok")?;
+                Ok(json!({ "success": true }))
+            }
+            "files/bisync/start" => {
+                let request: model::BisyncStartRequest = parse(params)?;
+                let job_id = rclone_start_bisync_job(
+                    Arc::clone(&self.rclone),
+                    Arc::clone(&self.sync_jobs),
+                    Arc::clone(&self.store),
+                    &request,
+                    Some(emitter),
+                )
+                .await?;
+                Ok(json!({ "jobId": job_id }))
+            }
+            "files/bisync/state" => {
+                let request: model::BisyncStateRequest = parse(params)?;
+                let source_binding = self.rclone.binding(&request.source_connection_id)?;
+                let target_binding = self.rclone.binding(&request.target_connection_id)?;
+                let src_rel = rclone_gate(
+                    &source_binding.root,
+                    source_binding.lock_to_root,
+                    &request.source_path,
+                    crate::policy::PathPolicy::check_read,
+                )?;
+                let dst_rel = rclone_gate(
+                    &target_binding.root,
+                    target_binding.lock_to_root,
+                    &request.target_path,
+                    crate::policy::PathPolicy::check_read,
+                )?;
+                let session = bisync_session_name(
+                    &rclone::sync::compose_fs(&rclone::call_fs(&source_binding), &src_rel),
+                    &rclone::sync::compose_fs(&rclone::call_fs(&target_binding), &dst_rel),
+                );
+                let marker = self
+                    .store
+                    .data_dir()
+                    .join("bisync-workdir")
+                    .join(format!("{session}.path1.lst"));
+                Ok(json!({
+                    "session": session,
+                    "state": if marker.exists() { "synced" } else { "new" },
+                }))
+            }
+            "files/search" => {
+                let request: model::SearchRequest = parse(params)?;
+                let binding = self.rclone.binding(&request.connection_id)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                let fs = rclone::call_fs(&binding);
+                let remote = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    request.root.as_deref().unwrap_or(""),
+                    crate::policy::PathPolicy::check_read,
+                )?;
+                // Substring term → rclone include glob (`**term**` matches
+                // the substring anywhere in the relative path). Glob
+                // metacharacters are stripped so the term stays literal.
+                let term: String = request
+                    .pattern
+                    .trim()
+                    .chars()
+                    .filter(|c| !matches!(c, '*' | '?' | '[' | ']' | '{' | '}'))
+                    .collect();
+                if term.is_empty() {
+                    return Err("search pattern is empty".to_string());
+                }
+                // Scan budget: a full-tree listing is not free — refuse
+                // absurd trees instead of crawling for minutes.
+                let size = client
+                    .operations_size(&fs, &remote)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let scanned = size.get("count").and_then(Value::as_u64).unwrap_or(0);
+                if scanned > SEARCH_MAX_SCAN {
+                    return Err(format!(
+                        "this tree holds {scanned} files; search is capped at {SEARCH_MAX_SCAN} — pick a smaller folder"
+                    ));
+                }
+                let result = client
+                    .operations_list_filtered(&fs, &remote, &format!("**{term}**"), true)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let limit = request.limit.unwrap_or(200).clamp(1, SEARCH_RESULT_LIMIT) as usize;
+                let empty = Vec::new();
+                let list = result.get("list").and_then(Value::as_array).unwrap_or(&empty);
+                let truncated = list.len() > limit;
+                let entries: Vec<Value> = list
+                    .iter()
+                    .take(limit)
+                    .map(|entry| {
+                        json!({
+                            "path": entry.get("Path").and_then(Value::as_str).unwrap_or_default(),
+                            "size": entry.get("Size").and_then(Value::as_u64).unwrap_or(0),
+                            "modifiedAt": entry.get("ModTime").and_then(Value::as_str).unwrap_or_default(),
+                        })
+                    })
+                    .collect();
+                Ok(json!({
+                    "entries": entries,
+                    "truncated": truncated,
+                    "scanned": scanned,
+                }))
+            }
+            "files/copyurl" => {
+                let request: model::CopyUrlRequest = parse(params)?;
+                // Web URLs only: rclone supports more schemes, but the
+                // workbench entry targets downloadable resources.
+                let lower = request.url.to_lowercase();
+                if !lower.starts_with("http://") && !lower.starts_with("https://") {
+                    return Err("only http(s) URLs are supported".to_string());
+                }
+                let binding = self.rclone.binding(&request.connection_id)?;
+                ensure_binding_writable(&binding)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                let fs = rclone::call_fs(&binding);
+                let dir_remote = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    &request.dir_path,
+                    crate::policy::PathPolicy::check_write,
+                )?;
+                let filename = match request.filename.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+                    Some(name) => name.to_string(),
+                    None => {
+                        // URL last path segment (query/fragment stripped),
+                        // mirroring rclone's autoFilename pick.
+                        let without_query = request.url.split(['?', '#']).next().unwrap_or("");
+                        let segment = without_query.rsplit('/').find(|part| !part.is_empty()).unwrap_or("download");
+                        segment.to_string()
+                    }
+                };
+                let target_wire = format!("{}/{}", request.dir_path.trim_end_matches('/'), filename);
+                let target_remote = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    &target_wire,
+                    crate::policy::PathPolicy::check_write,
+                )?;
+                client
+                    .operations_copyurl(&fs, &target_remote, &request.url, false)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                self.audit_id(&request.connection_id, "files/copyurl", &target_wire, "ok")?;
+                Ok(json!({ "path": target_wire, "filename": filename }))
+            }
+            // ------------------------------------------------------------------
+            // 本机共享（对标 rclone serve 家族）：把远端目录经 rcd 的 serve/start
+            // 以 HTTP/WebDAV 暴露给本机应用。serve 端点无鉴权，因此两条硬边界：
+            // 只绑 127.0.0.1 回环、只开放 http/webdav 两类（ftp/sftp/nfs 等
+            // 暴露面更大，一律拒绝）。
+            // ------------------------------------------------------------------
+            "files/serve/start" => {
+                let request: model::ServeStartRequest = parse(params)?;
+                // serve_type 白名单在进入 rc 调用前收口；空值/缺省 = http。
+                let serve_type = match request.serve_type.as_deref().map(str::trim) {
+                    None | Some("") | Some("http") => "http",
+                    Some("webdav") => "webdav",
+                    Some(other) => {
+                        return Err(format!(
+                            "unsupported serve type '{other}'; only http and webdav are allowed"
+                        ))
+                    }
+                };
+                let binding = self.rclone.binding(&request.connection_id)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                let remote = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    &request.path,
+                    crate::policy::PathPolicy::check_read,
+                )?;
+                let fs = rclone::sync::compose_fs(&rclone::call_fs(&binding), &remote);
+                // 安全：serve 无鉴权，绝不绑 0.0.0.0——回环绑定 + 端口 0 让
+                // rcd 自动挑选空闲端口并回传实际地址（实测 v1.75.1）。
+                const SERVE_ADDR: &str = "127.0.0.1:0";
+                let answer = client
+                    .serve_start(&fs, serve_type, SERVE_ADDR)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let serve_id = answer
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| "rc serve/start returned no id".to_string())?
+                    .to_string();
+                let addr = answer
+                    .get("addr")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| "rc serve/start returned no addr".to_string())?
+                    .to_string();
+                {
+                    let mut serves = rclone_lock(&self.serves);
+                    serves.insert(
+                        serve_id.clone(),
+                        (request.connection_id.clone(), serve_type.to_string()),
+                    );
+                }
+                self.audit_id(&request.connection_id, "files/serve/start", &request.path, "ok")?;
+                Ok(json!({
+                    "serveId": serve_id,
+                    "url": format!("http://{addr}"),
+                    "serveType": serve_type,
+                }))
+            }
+            "files/serve/stop" => {
+                let request: model::ServeStopRequest = parse(params)?;
+                // 归属校验：只能停本连接名下的实例（登记表无此 id = 实例已随
+                // rcd 消失，走幂等成功，不再泄露归属信息）。
+                if let Some((owner, _)) = rclone_lock(&self.serves).get(&request.serve_id) {
+                    if *owner != request.connection_id {
+                        return Err(format!(
+                            "serve '{}' does not belong to this connection",
+                            request.serve_id
+                        ));
+                    }
+                }
+                let binding = self.rclone.binding(&request.connection_id)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                // 幂等：未知 id 在 rc 侧报错，但目标状态就是“不存在”，按成功处理。
+                if let Err(error) = client.serve_stop(&request.serve_id).await {
+                    eprintln!("[io.dbx.files] files/serve/stop idempotent ignore: {error}");
+                }
+                rclone_lock(&self.serves).remove(&request.serve_id);
+                self.audit_id(&request.connection_id, "files/serve/stop", &request.serve_id, "ok")?;
+                Ok(json!({ "success": true }))
+            }
+            "files/serve/list" => {
+                let request: model::ServeListRequest = parse(params)?;
+                let binding = self.rclone.binding(&request.connection_id)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                let answer = client
+                    .serve_list()
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let list = answer
+                    .get("list")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                // rc 返回的活跃 id 集合是事实源：登记表里不在集合内的条目是
+                // rcd 重启/serve 已停留下的陈旧记录，先行清理。
+                let active: std::collections::HashSet<&str> = list
+                    .iter()
+                    .filter_map(|entry| entry.get("id").and_then(Value::as_str))
+                    .collect();
+                let addr_of = |serve_id: &str| -> Option<String> {
+                    list.iter()
+                        .find(|entry| entry.get("id").and_then(Value::as_str) == Some(serve_id))
+                        .and_then(|entry| {
+                            entry
+                                .get("addr")
+                                .and_then(Value::as_str)
+                                .or_else(|| {
+                                    entry
+                                        .get("params")
+                                        .and_then(|params| params.get("addr"))
+                                        .and_then(Value::as_str)
+                                })
+                                .map(str::to_string)
+                        })
+                };
+                let entries = {
+                    let mut serves = rclone_lock(&self.serves);
+                    serves.retain(|serve_id, _| active.contains(serve_id.as_str()));
+                    serves
+                        .iter()
+                        .filter(|(_, (owner, _))| owner == &request.connection_id)
+                        .filter_map(|(serve_id, (_, serve_type))| {
+                            addr_of(serve_id).map(|addr| {
+                                json!({
+                                    "serveId": serve_id,
+                                    "url": format!("http://{addr}"),
+                                    "serveType": serve_type,
+                                })
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                };
+                Ok(json!({ "serves": entries }))
+            }
+            // ------------------------------------------------------------------
+            // Local mounts (docs/MOUNT.zh-CN.md, M1): rclone mount first,
+            // read-only WebDAV gateway fallback. `mount/mod.rs` owns the
+            // strategy; these arms only parse and route.
+            // ------------------------------------------------------------------
+            "files/mount" => {
+                let connection_id = connection_id_param(&params)?.to_string();
+                let request: model::MountRequest = parse(params)?;
+                mount::start_mount(&self.rclone, &self.mounts, &connection_id, &request).await
+            }
+            "files/unmount" => {
+                let connection_id = connection_id_param(&params)?.to_string();
+                let request: model::MountUnmountRequest = parse(params)?;
+                Ok(mount::unmount_connection(
+                    &self.rclone,
+                    &self.mounts,
+                    &connection_id,
+                    request.mount_id.as_deref(),
+                )
+                .await)
+            }
+            "files/mountStatus" => {
+                let connection_id = connection_id_param(&params)?.to_string();
+                let request: model::MountStatusRequest = parse(params)?;
+                mount::mount_status(
+                    &self.rclone,
+                    &self.mounts,
+                    &connection_id,
+                    request.mount_id.as_deref(),
+                )
+                .await
+            }
+            // VFS cache management (batch 5): rclone-strategy mounts refresh
+            // their directory cache / report stats through the rcd's vfs/*
+            // endpoints; WebDAV gateway mounts answer `skipped` (no VFS).
+            "files/mount/refresh" => {
+                let connection_id = connection_id_param(&params)?.to_string();
+                let request: model::MountRefreshRequest = parse(params)?;
+                mount::refresh_mount_caches(
+                    &self.rclone,
+                    &self.mounts,
+                    &connection_id,
+                    request.mount_id.as_deref(),
+                    request.path.as_deref(),
+                    request.recursive.unwrap_or(false),
+                )
+                .await
+            }
+            "files/mount/stats" => {
+                let connection_id = connection_id_param(&params)?.to_string();
+                let request: model::MountStatsRequest = parse(params)?;
+                mount::mount_vfs_stats(
+                    &self.rclone,
+                    &self.mounts,
+                    &connection_id,
+                    request.mount_id.as_deref(),
+                )
+                .await
+            }
             "files/transfer/status" => {
                 let request: model::JobRequest = parse(params)?;
                 // rclone mirrors first (single-file + sync jobs). Lock order
@@ -917,6 +1506,7 @@ impl Plugin {
                         .map(|handle| rclone::sync::SyncJobHandle {
                             jobid: handle.jobid,
                             group: handle.group.clone(),
+                            kind: handle.kind,
                         })
                 };
                 if let (Some(handle), Some(record)) = (handle, {
@@ -1134,6 +1724,7 @@ impl Plugin {
                                             rclone::sync::SyncJobHandle {
                                                 jobid: handle.jobid,
                                                 group: handle.group.clone(),
+                                                kind: handle.kind,
                                             },
                                             record.src_conn.clone(),
                                         )))
@@ -1208,6 +1799,12 @@ impl Plugin {
                     .and_then(Value::as_str)
                     .filter(|value| !value.is_empty())
                     .ok_or("Missing path")?;
+                // 挂载成功后的「在文件管理器中打开」：只放行当前活跃挂载点
+                //（mount 表内存比对），其余路径仍走下载历史白名单。
+                if mount::is_active_mount_point(&self.mounts, std::path::Path::new(path))? {
+                    local_downloads::reveal_in_file_manager(std::path::Path::new(path))?;
+                    return Ok(json!({ "success": true }));
+                }
                 let history = self.store.load_transfers();
                 local_downloads::reveal_validated(&history, std::path::Path::new(path))?;
                 Ok(json!({ "success": true }))
@@ -1223,6 +1820,23 @@ impl Plugin {
                     .ok_or("Missing path")?;
                 let path = local_downloads::validate_open_app(path)?;
                 Ok(json!({ "valid": true, "path": path.to_string_lossy() }))
+            }
+            // 平台感知的「打开方式」预设（WPS/Excel/LibreOffice/...，按平台默认
+            // 安装路径探测）：只回报告本机真实存在的候选，前端据此渲染一键预设。
+            // 纯探测，不做任何启动，也不读文件内容。
+            "files/local/detect-apps" => {
+                let platform = local_downloads::platform_name();
+                let apps = local_downloads::detect_apps(platform)
+                    .into_iter()
+                    .map(|preset| {
+                        json!({
+                            "id": preset.id,
+                            "name": preset.name,
+                            "path": preset.path,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                Ok(json!({ "platform": platform, "apps": apps }))
             }
             // 在默认应用或用户配置的外部应用中打开已完成的本机下载；同样只允许
             // 打开传输历史中记录过的路径，避免把这个按钮变成任意本机路径执行
@@ -1346,6 +1960,20 @@ impl Plugin {
                     None,
                     emitter,
                 );
+                // Best-effort mount-view refresh (batch 5): the upload changed
+                // the target file's parent listing, so active rclone-strategy
+                // mounts of the connection re-read it. Terminal job records
+                // survive completion, so the wire path is still readable here.
+                let changed_dir = rclone_lock(&self.rclone.jobs)
+                    .get(task_id)
+                    .map(|job| parent_dir_of(&job.remote_path));
+                mount::best_effort_refresh_mount_caches(
+                    &self.rclone,
+                    &self.mounts,
+                    &connection_id,
+                    changed_dir.as_deref(),
+                )
+                .await;
                 Ok(())
             }
             Err(error) => {
@@ -1686,6 +2314,18 @@ fn refuse_root_purge(connection: &StoredConnection, path: &str) -> Result<(), St
     refuse_purge_of_root(&connection.root, path)
 }
 
+/// Parent directory (plugin-space absolute) of a mutated path — the
+/// directory whose listing a file/dir mutation actually changed and which
+/// the mount VFS auto-refresh re-reads: `/a/b.txt` → `/a`, `/a` → `/`,
+/// `/a/b/` → `/a`. Never returns `""`.
+fn parent_dir_of(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/');
+    match trimmed.rsplit_once('/') {
+        Some((parent, _)) if !parent.is_empty() => parent.to_string(),
+        _ => "/".to_string(),
+    }
+}
+
 /// Root-string twin of [`refuse_root_purge`] for the rclone arms (bindings
 /// carry the root, not a StoredConnection); the message text is identical.
 fn refuse_purge_of_root(root: &str, path: &str) -> Result<(), String> {
@@ -1732,6 +2372,12 @@ struct RcloneSyncRecord {
     max_delete: Option<u64>,
     files_done: u64,
     files_total: Option<u64>,
+    /// Check jobs: one-line difference summary from the terminal report
+    /// (`None` while running and for sync/copy/move jobs).
+    check_summary: Option<String>,
+    /// Bisync jobs: rclone session name from the terminal report (`p1..p2`),
+    /// used to stamp the last-synced pref on success.
+    bisync_session: Option<String>,
     /// In-flight marker for the source connection's proxy group: dropped
     /// with the record on terminal removal, releasing the idle-group
     /// teardown hold. Clones share the guard's done flag.
@@ -1822,6 +2468,8 @@ async fn rclone_start_dir_job(
         max_delete: request.max_delete,
         files_done: 0,
         files_total: None,
+        check_summary: None,
+        bisync_session: None,
         // Source and target share one proxy group (enforced above), so the
         // source group's key tracks the rcd the job runs on.
         work: rclone.start_work(&rclone::registry::group_key_of(
@@ -1973,6 +2621,9 @@ async fn rclone_start_dir_job(
                     None,
                 );
             }
+            // Dir jobs never emit the check report; exhaustive match only.
+            rclone::sync::SyncEvent::CheckFinished { .. } => {}
+            rclone::sync::SyncEvent::BisyncFinished { .. } => {}
         });
     // Plan finding #11: the transfer client drops the wall-clock
     // timeout — long mirror runs would die inside the 30s default.
@@ -1991,6 +2642,26 @@ async fn rclone_start_dir_job(
             dst_rel,
             dry_run: request.dry_run.unwrap_or(false),
             max_delete: request.max_delete,
+            include: request.include.clone(),
+            exclude: request.exclude.clone(),
+            backup_dir_rel: request.backup_dir.clone(),
+            suffix: request.suffix.clone(),
+            metadata: request.metadata.unwrap_or(false),
+            min_size: request.min_size.clone(),
+            max_size: request.max_size.clone(),
+            min_age: request.min_age.clone(),
+            max_age: request.max_age.clone(),
+            transfers: request.transfers,
+            checkers: request.checkers,
+            retries: request.retries,
+            check_one_way: false,
+            check_download: false,
+            // 目录作业不携带 SUM 校验参数（仅 check 作业的 SUM 分支使用）。
+            sum_remote: None,
+            sum_hash: None,
+            bisync_workdir: None,
+            bisync_resync: false,
+            bisync_resync_mode: None,
         },
         on_event,
     )
@@ -2004,6 +2675,504 @@ async fn rclone_start_dir_job(
         Err(error) => {
             // The job never started: unwind the mirrors so the
             // panel never sees a ghost entry.
+            rclone_lock(&rclone.jobs).remove(&job_id);
+            rclone_lock(&sync_jobs).remove(&job_id);
+            return Err(error);
+        }
+    }
+    Ok(job_id)
+}
+
+/// SUM 文件扩展名 → rclone 哈希类型（批次7）。猜错哈希类型会让 rclone 把
+/// 整个目录报成差异，因此无法识别的扩展名直接拒绝作业，让用户显式指定。
+fn sum_hash_from_extension(sum_path: &str) -> Result<String, String> {
+    let extension = std::path::Path::new(sum_path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match extension.as_str() {
+        "md5" => Ok("md5".to_string()),
+        "sha1" => Ok("sha1".to_string()),
+        "sha256" => Ok("sha256".to_string()),
+        "sha512" => Ok("sha512".to_string()),
+        "crc32" => Ok("crc32".to_string()),
+        other => Err(format!(
+            "cannot infer the hash type from '.{other}' — pass hashType (md5/sha1/sha256/sha512/crc32)"
+        )),
+    }
+}
+
+/// Starts one `operations/check` comparison job (`files/check`): the same
+/// job mirror + transfer-tracker surface as dir jobs. The terminal report
+/// lands on the record as `checkSummary`; differences are data, so the job
+/// completes unless rclone itself errors.
+///
+/// SUM 校验模式（批次7）：`sum_path` 存在时改为单连接核验——被核验目录 =
+/// SUM 文件父目录（files/hashsum 把校验文件写在目录旁 `<目录>.<hash>`，
+/// 行相对连接根，因此核验对象就是父目录），SUM 文件与目录各过一次 read
+/// 门；哈希类型缺省按扩展名推断；src 侧不参与比较（`src_rel` 置空）。
+async fn rclone_start_check_job(
+    rclone: Arc<rclone::RcloneEngine>,
+    sync_jobs: Arc<std::sync::Mutex<HashMap<String, RcloneSyncRecord>>>,
+    request: &model::CheckRequest,
+    emitter: Option<&PluginEmitter>,
+) -> Result<String, String> {
+    let source_binding = rclone.binding(&request.source_connection_id)?;
+    let target_binding = rclone.binding(&request.target_connection_id)?;
+    // One rc call drives both fs strings inside a single rcd.
+    rclone::ensure_same_proxy_group(&source_binding, &target_binding)?;
+    // SUM 分支预取：SUM 文件 read 门 + 父目录 read 门 + 哈希类型解析。
+    // wire 路径的 parent/base 拆分与 files/hashsum 臂保持一致。
+    let sum_target = match request
+        .sum_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(sum_path) => {
+            let sum_remote = rclone_gate(
+                &target_binding.root,
+                target_binding.lock_to_root,
+                sum_path,
+                crate::policy::PathPolicy::check_read,
+            )?;
+            let trimmed = sum_path.trim_matches('/');
+            let dir_path = match trimmed.rsplit_once('/') {
+                Some((parent, _base)) => format!("/{parent}"),
+                None => "/".to_string(),
+            };
+            let dir_rel = rclone_gate(
+                &target_binding.root,
+                target_binding.lock_to_root,
+                &dir_path,
+                crate::policy::PathPolicy::check_read,
+            )?;
+            let hash_type = match request
+                .hash_type
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                Some(explicit) => explicit.to_lowercase(),
+                None => sum_hash_from_extension(sum_path)?,
+            };
+            Some((dir_rel, sum_remote, hash_type))
+        }
+        None => None,
+    };
+    // Check reads both sides and writes nothing — read gates on both paths.
+    let src_rel = rclone_gate(
+        &source_binding.root,
+        source_binding.lock_to_root,
+        &request.source_path,
+        crate::policy::PathPolicy::check_read,
+    )?;
+    let mut dst_rel = rclone_gate(
+        &target_binding.root,
+        target_binding.lock_to_root,
+        &request.target_path,
+        crate::policy::PathPolicy::check_read,
+    )?;
+    if let Some((dir_rel, _, _)) = &sum_target {
+        dst_rel = dir_rel.clone();
+    }
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let job = transfers::TransferJob {
+        task_id: job_id.clone(),
+        connection_id: request.source_connection_id.clone(),
+        // Projected through `rclone_sync_dir_job_value` (kind: check) like
+        // every dir job; the placeholder kind never reaches the wire.
+        kind: transfers::TransferKind::Upload,
+        remote_path: request.source_path.clone(),
+        total_bytes: None,
+        transferred_bytes: 0,
+        status: transfers::JobStatus::Queued,
+        error: None,
+        started_at: Some(store::unix_millis_now()),
+        finished_at: None,
+        local_path: None,
+    };
+    rclone_lock(&rclone.jobs).insert(job_id.clone(), job);
+    let record = RcloneSyncRecord {
+        handle: None,
+        kind: rclone::sync::SyncKind::Check,
+        src_conn: request.source_connection_id.clone(),
+        // SUM 模式无源侧：占位空串，面板只看 dst_rel（被核验目录）。
+        src_rel: if sum_target.is_some() { String::new() } else { src_rel.clone() },
+        dst_conn: request.target_connection_id.clone(),
+        dst_rel: dst_rel.clone(),
+        dry_run: false,
+        max_delete: None,
+        files_done: 0,
+        files_total: None,
+        check_summary: None,
+        bisync_session: None,
+        work: rclone.start_work(&rclone::registry::group_key_of(
+            source_binding.proxy.as_ref(),
+        )),
+    };
+    rclone_lock(&sync_jobs).insert(job_id.clone(), record);
+
+    let engine = Arc::clone(&rclone);
+    let shared_jobs = Arc::clone(&sync_jobs);
+    let event_emitter = emitter.cloned();
+    let event_job_id = job_id.clone();
+    let on_event: Box<dyn FnMut(rclone::sync::SyncEvent) + Send> =
+        Box::new(move |event| match event {
+            rclone::sync::SyncEvent::CheckFinished { report } => {
+                let summary = check_summary_from(&report);
+                if let Some(record) = rclone_lock(&shared_jobs).get_mut(&event_job_id) {
+                    record.check_summary = Some(summary);
+                }
+                rclone_sync_terminal(
+                    &engine.jobs,
+                    &shared_jobs,
+                    event_emitter.as_ref(),
+                    &event_job_id,
+                    transfers::JobStatus::Completed,
+                    None,
+                    None,
+                );
+            }
+            // Unreachable for check jobs (the report beats the counters),
+            // kept for mirror consistency.
+            rclone::sync::SyncEvent::Completed { .. } => {
+                rclone_sync_terminal(
+                    &engine.jobs,
+                    &shared_jobs,
+                    event_emitter.as_ref(),
+                    &event_job_id,
+                    transfers::JobStatus::Completed,
+                    None,
+                    None,
+                );
+            }
+            rclone::sync::SyncEvent::Progress { .. } => {}
+            rclone::sync::SyncEvent::Failed { message } => {
+                rclone_sync_terminal(
+                    &engine.jobs,
+                    &shared_jobs,
+                    event_emitter.as_ref(),
+                    &event_job_id,
+                    transfers::JobStatus::Failed,
+                    Some(message),
+                    None,
+                );
+            }
+            rclone::sync::SyncEvent::Canceled => {
+                rclone_sync_terminal(
+                    &engine.jobs,
+                    &shared_jobs,
+                    event_emitter.as_ref(),
+                    &event_job_id,
+                    transfers::JobStatus::Canceled,
+                    None,
+                    None,
+                );
+            }
+            // Check jobs never emit bisync reports; exhaustive match only.
+            rclone::sync::SyncEvent::BisyncFinished { .. } => {}
+        });
+    let started = rclone::sync::start_job(
+        rclone.client_for_binding(&source_binding).await?.transfer_client(),
+        rclone::sync::SyncJobParams {
+            task_id: job_id.clone(),
+            kind: rclone::sync::SyncKind::Check,
+            src_fs: rclone::call_fs(&source_binding),
+            dst_fs: rclone::call_fs(&target_binding),
+            // SUM 模式无源侧：src_rel 置空（rc 体不含 srcFs，见 sync.rs）。
+            src_rel: if sum_target.is_some() { String::new() } else { src_rel },
+            dst_rel,
+            dry_run: false,
+            max_delete: None,
+            include: None,
+            exclude: None,
+            backup_dir_rel: None,
+            suffix: None,
+            // Check/bisync never carry the size/age/metadata filters: rc
+            // would accept them (live-verified v1.75.1) but a filtered
+            // comparison quietly narrows the difference report.
+            metadata: false,
+            min_size: None,
+            max_size: None,
+            min_age: None,
+            max_age: None,
+            transfers: None,
+            checkers: None,
+            retries: None,
+            check_one_way: sum_target.is_none() && request.one_way.unwrap_or(false),
+            check_download: sum_target.is_none() && request.download.unwrap_or(false),
+            sum_remote: sum_target
+                .as_ref()
+                .map(|(_, sum_remote, _)| sum_remote.clone()),
+            sum_hash: sum_target.as_ref().map(|(_, _, hash_type)| hash_type.clone()),
+            bisync_workdir: None,
+            bisync_resync: false,
+            bisync_resync_mode: None,
+        },
+        on_event,
+    )
+    .await;
+    match started {
+        Ok(handle) => {
+            if let Some(record) = rclone_lock(&sync_jobs).get_mut(&job_id) {
+                record.handle = Some(handle);
+            }
+        }
+        Err(error) => {
+            rclone_lock(&rclone.jobs).remove(&job_id);
+            rclone_lock(&sync_jobs).remove(&job_id);
+            return Err(error);
+        }
+    }
+    Ok(job_id)
+}
+
+/// rclone bisync session name for a path pair (sanitize rule pinned against
+/// v1.75.1 probes: leading `/` dropped, everything outside
+/// `[A-Za-z0-9._-]` → `_`, joined with `..`).
+fn bisync_session_name(path1: &str, path2: &str) -> String {
+    fn sanitize(path: &str) -> String {
+        path.trim_start_matches('/')
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' })
+            .collect()
+    }
+    format!("{}..{}", sanitize(path1), sanitize(path2))
+}
+
+/// Extracts a readable failure hint from a bisync abort log (the last
+/// `ERROR :` line, ANSI stripped). Falls back to the raw error text.
+fn bisync_failure_message(report: &Value, fallback: &str) -> String {
+    let log = report
+        .get("output")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let last_error = log
+        .lines()
+        .filter(|line| line.contains("ERROR :"))
+        .next_back()
+        .map(|line| {
+            let cleaned: String = line
+                .chars()
+                .filter(|c| !c.is_control())
+                .collect::<String>()
+                .replace("[31m", "")
+                .replace("[32m", "")
+                .replace("[0m", "");
+            cleaned.trim().to_string()
+        });
+    match last_error {
+        Some(line) if !line.is_empty() => {
+            if line.contains("Must run --resync") {
+                format!("{line} (run the comparison/sync again in resync mode to recover)")
+            } else {
+                line
+            }
+        }
+        _ => fallback.to_string(),
+    }
+}
+
+/// Starts one `sync/bisync` job (`files/bisync/start`): bidirectional sync
+/// over the shared job mirror. State files live under
+/// `<data dir>/bisync-workdir/` so sessions survive rcd respawns and sidecar
+/// restarts; a successful run stamps `bisyncLast.<session>` in prefs.
+async fn rclone_start_bisync_job(
+    rclone: Arc<rclone::RcloneEngine>,
+    sync_jobs: Arc<std::sync::Mutex<HashMap<String, RcloneSyncRecord>>>,
+    store: Arc<Store>,
+    request: &model::BisyncStartRequest,
+    emitter: Option<&PluginEmitter>,
+) -> Result<String, String> {
+    let source_binding = rclone.binding(&request.source_connection_id)?;
+    let target_binding = rclone.binding(&request.target_connection_id)?;
+    rclone::ensure_same_proxy_group(&source_binding, &target_binding)?;
+    // Bisync writes AND deletes on both sides.
+    ensure_binding_writable(&source_binding)?;
+    ensure_binding_deletable(&source_binding)?;
+    ensure_binding_writable(&target_binding)?;
+    ensure_binding_deletable(&target_binding)?;
+    let src_rel = rclone_gate(
+        &source_binding.root,
+        source_binding.lock_to_root,
+        &request.source_path,
+        crate::policy::PathPolicy::check_write,
+    )?;
+    let dst_rel = rclone_gate(
+        &target_binding.root,
+        target_binding.lock_to_root,
+        &request.target_path,
+        crate::policy::PathPolicy::check_write,
+    )?;
+    // Persistent state dir (best-effort create; rclone recreates as needed).
+    let workdir = store.data_dir().join("bisync-workdir");
+    if let Err(error) = std::fs::create_dir_all(&workdir) {
+        eprintln!("[io.dbx.files] bisync workdir create failed: {error}");
+    }
+    let resync = request.mode.as_deref().map(str::trim) == Some("resync");
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let job = transfers::TransferJob {
+        task_id: job_id.clone(),
+        connection_id: request.source_connection_id.clone(),
+        kind: transfers::TransferKind::Upload, // placeholder; projected via dir_job_value
+        remote_path: request.source_path.clone(),
+        total_bytes: None,
+        transferred_bytes: 0,
+        status: transfers::JobStatus::Queued,
+        error: None,
+        started_at: Some(store::unix_millis_now()),
+        finished_at: None,
+        local_path: None,
+    };
+    rclone_lock(&rclone.jobs).insert(job_id.clone(), job);
+    let record = RcloneSyncRecord {
+        handle: None,
+        kind: rclone::sync::SyncKind::Bisync,
+        src_conn: request.source_connection_id.clone(),
+        src_rel: src_rel.clone(),
+        dst_conn: request.target_connection_id.clone(),
+        dst_rel: dst_rel.clone(),
+        dry_run: request.dry_run.unwrap_or(false),
+        max_delete: None,
+        files_done: 0,
+        files_total: None,
+        check_summary: None,
+        bisync_session: None,
+        work: rclone.start_work(&rclone::registry::group_key_of(
+            source_binding.proxy.as_ref(),
+        )),
+    };
+    rclone_lock(&sync_jobs).insert(job_id.clone(), record);
+
+    let engine = Arc::clone(&rclone);
+    let shared_jobs = Arc::clone(&sync_jobs);
+    let event_emitter = emitter.cloned();
+    let event_job_id = job_id.clone();
+    let prefs_store = Arc::clone(&store);
+    let on_event: Box<dyn FnMut(rclone::sync::SyncEvent) + Send> =
+        Box::new(move |event| match event {
+            rclone::sync::SyncEvent::BisyncFinished { report, success } => {
+                let session = report
+                    .get("session")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                if let Some(session) = &session {
+                    if let Some(record) = rclone_lock(&shared_jobs).get_mut(&event_job_id) {
+                        record.bisync_session = Some(session.clone());
+                    }
+                    // Stamp last-synced time per session (success only).
+                    if success {
+                        let mut prefs = prefs_store.load_prefs();
+                        if let Some(object) = prefs.as_object_mut() {
+                            object.insert(
+                                format!("bisyncLast.{session}"),
+                                json!(store::unix_millis_now()),
+                            );
+                        }
+                        let _ = prefs_store.save_prefs(&prefs);
+                    }
+                }
+                let terminal = if success {
+                    (transfers::JobStatus::Completed, None)
+                } else {
+                    (
+                        transfers::JobStatus::Failed,
+                        Some(bisync_failure_message(&report, "bisync aborted")),
+                    )
+                };
+                rclone_sync_terminal(
+                    &engine.jobs,
+                    &shared_jobs,
+                    event_emitter.as_ref(),
+                    &event_job_id,
+                    terminal.0,
+                    terminal.1,
+                    None,
+                );
+            }
+            rclone::sync::SyncEvent::Completed { .. } => {
+                rclone_sync_terminal(
+                    &engine.jobs,
+                    &shared_jobs,
+                    event_emitter.as_ref(),
+                    &event_job_id,
+                    transfers::JobStatus::Completed,
+                    None,
+                    None,
+                );
+            }
+            rclone::sync::SyncEvent::Progress { .. } => {}
+            // Check jobs never emit bisync reports; exhaustive match only.
+            rclone::sync::SyncEvent::CheckFinished { .. } => {}
+            rclone::sync::SyncEvent::BisyncFinished { .. } => {}
+            rclone::sync::SyncEvent::Failed { message } => {
+                rclone_sync_terminal(
+                    &engine.jobs,
+                    &shared_jobs,
+                    event_emitter.as_ref(),
+                    &event_job_id,
+                    transfers::JobStatus::Failed,
+                    Some(message),
+                    None,
+                );
+            }
+            rclone::sync::SyncEvent::Canceled => {
+                rclone_sync_terminal(
+                    &engine.jobs,
+                    &shared_jobs,
+                    event_emitter.as_ref(),
+                    &event_job_id,
+                    transfers::JobStatus::Canceled,
+                    None,
+                    None,
+                );
+            }
+        });
+    let started = rclone::sync::start_job(
+        rclone.client_for_binding(&source_binding).await?.transfer_client(),
+        rclone::sync::SyncJobParams {
+            task_id: job_id.clone(),
+            kind: rclone::sync::SyncKind::Bisync,
+            src_fs: rclone::call_fs(&source_binding),
+            dst_fs: rclone::call_fs(&target_binding),
+            src_rel,
+            dst_rel,
+            dry_run: request.dry_run.unwrap_or(false),
+            max_delete: None,
+            include: None,
+            exclude: None,
+            backup_dir_rel: None,
+            suffix: None,
+            // Bisync never carries the size/age/metadata filters (see the
+            // check construction above); resync included.
+            metadata: false,
+            min_size: None,
+            max_size: None,
+            min_age: None,
+            max_age: None,
+            transfers: None,
+            checkers: None,
+            retries: None,
+            check_one_way: false,
+            check_download: false,
+            sum_remote: None,
+            sum_hash: None,
+            bisync_workdir: Some(workdir.to_string_lossy().into_owned()),
+            bisync_resync: resync,
+            bisync_resync_mode: request.resync_mode.clone(),
+        },
+        on_event,
+    )
+    .await;
+    match started {
+        Ok(handle) => {
+            if let Some(record) = rclone_lock(&sync_jobs).get_mut(&job_id) {
+                record.handle = Some(handle);
+            }
+        }
+        Err(error) => {
             rclone_lock(&rclone.jobs).remove(&job_id);
             rclone_lock(&sync_jobs).remove(&job_id);
             return Err(error);
@@ -2119,6 +3288,8 @@ fn rclone_sync_event_from(job: &transfers::TransferJob, record: &RcloneSyncRecor
             rclone::sync::SyncKind::Sync => "syncDir",
             rclone::sync::SyncKind::Copy => "copyDir",
             rclone::sync::SyncKind::Move => "moveDir",
+            rclone::sync::SyncKind::Check => "check",
+            rclone::sync::SyncKind::Bisync => "bisync",
         },
         "remotePath": job.remote_path,
     });
@@ -2148,6 +3319,8 @@ fn rclone_sync_dir_job_value(job: &transfers::TransferJob, record: &RcloneSyncRe
             rclone::sync::SyncKind::Sync => "syncDir",
             rclone::sync::SyncKind::Copy => "copyDir",
             rclone::sync::SyncKind::Move => "moveDir",
+            rclone::sync::SyncKind::Check => "check",
+            rclone::sync::SyncKind::Bisync => "bisync",
         },
         "filesDone": record.files_done,
         "filesTotal": record.files_total,
@@ -2164,7 +3337,32 @@ fn rclone_sync_dir_job_value(job: &transfers::TransferJob, record: &RcloneSyncRe
     if let Some(max_delete) = record.max_delete {
         value["maxDelete"] = json!(max_delete);
     }
+    if let Some(summary) = &record.check_summary {
+        value["checkSummary"] = json!(summary);
+    }
     value
+}
+
+/// One-line human summary of an `operations/check` report (live-verified
+/// shape: missingOnSrc/missingOnDst/differ/error arrays + a `status` line).
+fn check_summary_from(report: &Value) -> String {
+    let count = |key: &str| {
+        report
+            .get(key)
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0)
+    };
+    let (src, dst, differ, errors) =
+        (count("missingOnSrc"), count("missingOnDst"), count("differ"), count("error"));
+    let total = src + dst + differ + errors;
+    if total == 0 {
+        "identical".to_string()
+    } else {
+        format!(
+            "{total} differences (missing on source: {src}, missing on target: {dst}, differ: {differ}, errors: {errors})"
+        )
+    }
 }
 
 /// Terminal transition for an rclone sync job — `complete_dir_job` twin:
@@ -2213,6 +3411,19 @@ fn rclone_sync_terminal(
 
 /// Poison-tolerant lock for the rclone Phase B tables (std Mutex; a panic in
 /// some other worker must not wedge every later request).
+/// `files/hashsum` guard: `operations/hashsum` walks every object inside one
+/// rc call — refuse absurd trees instead of hashing for minutes.
+const HASHSUM_MAX_FILES: u64 = 20_000;
+
+/// `files/about` per-connection cache TTL (sidebar renders it on every load).
+const ABOUT_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// `files/search` guard: refuse full-tree listings above this many files —
+/// narrow the root instead.
+const SEARCH_MAX_SCAN: u64 = 20_000;
+/// `files/search` hard cap on returned rows (the wire limit, not the scan).
+const SEARCH_RESULT_LIMIT: u32 = 500;
+
 fn rclone_lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -3019,6 +4230,30 @@ mod tests {
         assert_eq!(hydrated.status, transfers::JobStatus::Completed);
         assert_eq!(hydrated.kind, transfers::TransferKind::Download);
         assert_eq!(hydrated.total_bytes, Some(11));
+    }
+
+    #[test]
+    fn bisync_session_name_matches_rclone_sanitization() {
+        // Live-verified v1.75.1 session names for these shapes.
+        assert_eq!(
+            bisync_session_name("/tmp/rc-bisync/p1", "/tmp/rc-bisync/p2"),
+            "tmp_rc-bisync_p1..tmp_rc-bisync_p2"
+        );
+        assert_eq!(bisync_session_name("bx:p1", "bx:p2"), "bx_p1..bx_p2");
+    }
+
+    #[test]
+    fn check_summary_counts_every_difference_class() {
+        let report = json!({
+            "missingOnSrc": ["c.txt"],
+            "missingOnDst": ["b.txt"],
+            "differ": ["d.txt"],
+            "error": []
+        });
+        let summary = check_summary_from(&report);
+        assert!(summary.contains("3 differences"), "{summary}");
+        assert!(summary.contains("missing on source: 1"), "{summary}");
+        assert_eq!(check_summary_from(&json!({ "missingOnSrc": [], "missingOnDst": [], "differ": [], "error": [] })), "identical");
     }
 
     #[test]

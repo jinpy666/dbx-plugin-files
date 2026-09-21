@@ -146,6 +146,20 @@ pub(crate) fn parse_rclone_sync_request(arguments: &Value) -> Result<RcloneSyncR
             target_path,
             dry_run: Some(dry_run),
             max_delete,
+            include: None,
+            exclude: None,
+            backup_dir: None,
+            suffix: None,
+            // Batch-6 filters stay MCP-unexposed for now (same as
+            // include/exclude/backup_dir): the workbench dialog owns them.
+            metadata: Some(false),
+            min_size: None,
+            max_size: None,
+            min_age: None,
+            max_age: None,
+            transfers: None,
+            checkers: None,
+            retries: None,
         },
     })
 }

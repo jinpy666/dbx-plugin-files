@@ -635,6 +635,285 @@ pub struct DirJobRequest {
     /// 该值时任务失败（不删任何文件）；缺省不限制。
     #[serde(default)]
     pub max_delete: Option<u64>,
+    /// rclone `--include` 对齐：glob 模式数组（如 `["*.jpg", "reports/*"]`），
+    /// 仅传输匹配项；空数组/缺省 = 不过滤。
+    #[serde(default)]
+    pub include: Option<Vec<String>>,
+    /// rclone `--exclude` 对齐：glob 模式数组（如 `["*.tmp", ".DS_Store"]`），
+    /// 跳过匹配项；空数组/缺省 = 不过滤。
+    #[serde(default)]
+    pub exclude: Option<Vec<String>>,
+    /// rclone `--backup-dir` 对齐：目标连接根下的相对目录（如 `"_backups"`）。
+    /// copy/sync 覆盖、sync 删除的文件会按原有层级移入该目录。必须位于同步
+    /// 目标子树之外（rclone 拒绝重叠，且镜像同步会把树内备份一并清掉）；
+    /// 缺省不备份。
+    #[serde(default)]
+    pub backup_dir: Option<String>,
+    /// rclone `--suffix` 对齐：备份文件名追加的后缀（如 `".bak"`）；
+    /// 缺省不加后缀。
+    #[serde(default)]
+    pub suffix: Option<String>,
+    /// rclone `--metadata` 对齐：true 时保留/同步对象元数据（mode、owner、
+    /// 时间戳、扩展属性等，后端支持程度各异）；缺省 false 不带元数据。
+    #[serde(default)]
+    pub metadata: Option<bool>,
+    /// rclone `--min-size` 对齐：小于该大小的文件被过滤（如 `"100k"`）；
+    /// 缺省不过滤。非法值由 rclone rc 直接拒绝（HTTP 500，作业不启动）。
+    #[serde(default)]
+    pub min_size: Option<String>,
+    /// rclone `--max-size` 对齐：大于该大小的文件被过滤（如 `"1M"`）；
+    /// 缺省不过滤。非法值由 rclone rc 直接拒绝（HTTP 500，作业不启动）。
+    #[serde(default)]
+    pub max_size: Option<String>,
+    /// rclone `--min-age` 对齐：仅传输修改时间早于该值/该日期的文件
+    /// （如 `"1d"`、`"2024-01-01"`）；缺省不过滤。非法值由 rclone rc
+    /// 直接拒绝（HTTP 500，作业不启动）。
+    #[serde(default)]
+    pub min_age: Option<String>,
+    /// rclone `--max-age` 对齐：仅传输修改时间晚于该值/该日期的文件
+    /// （如 `"1h"`、`"2024-01-01"`）；缺省不过滤。非法值由 rclone rc
+    /// 直接拒绝（HTTP 500，作业不启动）。
+    #[serde(default)]
+    pub max_age: Option<String>,
+    /// rclone `--transfers` 对齐：本作业并行传输文件数覆盖（1–32）。
+    #[serde(default)]
+    pub transfers: Option<u32>,
+    /// rclone `--checkers` 对齐：本作业并行比对协程数覆盖（1–64）。
+    #[serde(default)]
+    pub checkers: Option<u32>,
+    /// rclone `--retries` 对齐：本作业整体重试次数覆盖（1–10）。
+    #[serde(default)]
+    pub retries: Option<u32>,
+}
+
+/// `files/check`：比较两个目录（可跨连接，但需同一代理组）内容是否一致。
+/// 异步作业：返回 jobId，经 files/transfer/status 轮询，终态携带差异报告。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckRequest {
+    pub source_connection_id: String,
+    pub source_path: String,
+    pub target_connection_id: String,
+    pub target_path: String,
+    /// 单向比较（仅报目标缺失/差异，不扫源缺失）；缺省双向。
+    #[serde(default)]
+    pub one_way: Option<bool>,
+    /// 下载后逐字节比对（不信任远端存储哈希）；缺省用存储哈希。
+    #[serde(default)]
+    pub download: Option<bool>,
+    /// SUM 校验模式（批次7）：SUM 校验文件路径（如 `/data.md5`）。存在时不
+    /// 比较两棵目录树，改为用 rclone `operations/check` 的 checkFile* 模式
+    /// 核验 SUM 文件所在目录的内容是否与校验文件一致。
+    #[serde(default)]
+    pub sum_path: Option<String>,
+    /// SUM 校验模式的哈希类型（md5/sha1/sha256/sha512/crc32）；缺省按 SUM
+    /// 文件扩展名推断，无法识别时拒绝作业。
+    #[serde(default)]
+    pub hash_type: Option<String>,
+}
+
+/// `files/checksum/verify`：右键 SUM 校验文件（`.md5`/`.sha1` 等）→ 异步
+/// 核验其所在目录内容是否与校验文件一致（批次7）。返回 jobId，终态经
+/// files/transfer/status 轮询并携带与 files/check 相同形态的差异报告。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SumVerifyRequest {
+    pub connection_id: String,
+    /// SUM 校验文件路径（如 `/data.md5`）；被核验目录取其父目录。
+    pub sum_path: String,
+    /// 哈希类型；缺省按扩展名推断（.md5→md5 等）。
+    #[serde(default)]
+    pub hash_type: Option<String>,
+}
+
+/// `files/hashsum`：为目录生成 SUM 校验文件（`<目录名>.<hash>`，写入父目录，
+/// 避免自我引用）。文件数超过 [`HASHSUM_MAX_FILES`] 时拒绝并提示缩小范围。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HashsumRequest {
+    pub connection_id: String,
+    pub path: String,
+    /// rclone 哈希类型：md5（缺省）/ sha1 / sha256 / crc32 / dropbox 等，
+    /// 后端不支持时由 rclone 报错。
+    #[serde(default)]
+    pub hash_type: Option<String>,
+}
+
+/// `files/search`：远端递归搜索（文件名子串、大小写不敏感）。先做文件总数
+/// 预检（超过 [`未导出的 SEARCH_MAX_SCAN`] 由 main.rs 常量定）拒绝，防止在
+/// 巨型目录树上做全量列举。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchRequest {
+    pub connection_id: String,
+    /// 搜索根（连接根下相对路径）；缺省 = 连接根。
+    #[serde(default)]
+    pub root: Option<String>,
+    /// 文件名子串。glob 元字符会被剔除，按字面子串匹配。
+    pub pattern: String,
+    /// 返回条数上限（缺省 200，服务端封顶 500）。
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+/// `files/copyurl`：把 URL 指向的资源下载并上传到远端目录（rcd 所在机器
+/// 负责下载）。仅允许 http/https。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyUrlRequest {
+    pub connection_id: String,
+    pub dir_path: String,
+    pub url: String,
+    /// 缺省 = 用 URL 最后一段自动命名。
+    #[serde(default)]
+    pub filename: Option<String>,
+}
+
+/// `files/serve/start`：把远端目录经 rclone serve 分享给本机应用。`serve_type`
+/// 仅允许 `http`（缺省）/`webdav`——serve 无鉴权，ftp/sftp 等暴露面更大的
+/// 类型不开放。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServeStartRequest {
+    pub connection_id: String,
+    pub path: String,
+    #[serde(default)]
+    pub serve_type: Option<String>,
+}
+
+/// `files/serve/stop`：按 serveId 停一个分享实例（幂等——id 已随 rcd 消失
+/// 或 rc 报未知 id 时按成功处理）。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServeStopRequest {
+    pub connection_id: String,
+    pub serve_id: String,
+}
+
+/// `files/serve/list`：当前连接的活跃分享实例（陈旧 id 先行清理）。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServeListRequest {
+    pub connection_id: String,
+}
+
+/// `files/bisync/start`：双向同步作业。`mode` 缺省 `run`（增量双向）；
+/// `resync` 为首次/修复初始化（按 `resyncMode` 决定冲突侧，默认 newer，
+/// 破坏性——两侧都收敛到所选基准）。状态文件持久化在插件数据目录的
+/// `bisync-workdir/` 下，跨 rcd 重启存活。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BisyncStartRequest {
+    pub source_connection_id: String,
+    pub source_path: String,
+    pub target_connection_id: String,
+    pub target_path: String,
+    /// `run`（缺省）| `resync`。
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// resync 冲突策略：`newer`（缺省）/`older`/`larger`/`smaller`/`path1`/`path2`。
+    #[serde(default)]
+    pub resync_mode: Option<String>,
+    #[serde(default)]
+    pub dry_run: Option<bool>,
+}
+
+/// `files/bisync/state`：查询路径对是否已有双向同步状态（决定 UI 提示首次
+/// 需要 resync）。按 rclone 的 session 命名规则在 workdir 下检查。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BisyncStateRequest {
+    pub source_connection_id: String,
+    pub source_path: String,
+    pub target_connection_id: String,
+    pub target_path: String,
+}
+
+/// `files/cleanup`：清空远端回收站（fs 级动作，本地 fs 会拒绝）。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupRequest {
+    pub connection_id: String,
+}
+
+/// `files/about`：远端容量（operations/about 透传，60s 连接级缓存）。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AboutRequest {
+    pub connection_id: String,
+}
+
+/// `files/bwlimit`：带宽限速。`rate` 缺省 = 查询当前持久化值；`"off"` = 取消
+/// 限速；其余值（如 `"10M"`、`"1M:100k"`）= 设置并持久化（rcd 重启自动重放）。
+/// 数值由 rclone 解析（`bytes/s`，支持 K/M/G/T 后缀与上下行分段），非法值
+/// 由 rclone 报错（HTTP 500 `bad bwlimit`）。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BwlimitRequest {
+    #[serde(default)]
+    pub rate: Option<String>,
+}
+
+/// `files/mount`: mount a connection (or a sub-path of it) onto the local
+/// filesystem. M1 is read-only on every path (docs/MOUNT.zh-CN.md §4).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MountRequest {
+    /// `auto` (default) tries rclone mount first and falls back to the
+    /// WebDAV gateway when the rclone path is unavailable on this host;
+    /// `rclone` and `webdav` pin one strategy and never fall back.
+    #[serde(default)]
+    pub strategy: Option<String>,
+    /// Optional sub-path relative to the connection root (policy-checked;
+    /// `lock_to_root` still rejects escapes).
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Explicit local mountpoint for the rclone strategy; auto-picked when
+    /// absent (`~/dbx-files-mounts/<remote>`, free drive letter on Windows).
+    #[serde(default)]
+    pub mount_point: Option<String>,
+}
+
+/// `files/unmount`: omit `mountId` to unmount every mount of the connection.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MountUnmountRequest {
+    #[serde(default)]
+    pub mount_id: Option<String>,
+}
+
+/// `files/mountStatus`: omit `mountId` to list every mount of the connection.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MountStatusRequest {
+    #[serde(default)]
+    pub mount_id: Option<String>,
+}
+
+/// `files/mount/refresh`: refresh the VFS dir cache of the connection's
+/// rclone-strategy mounts (WebDAV gateway mounts keep no VFS and count as
+/// skipped). `path` is the plugin-space absolute directory whose listing
+/// changed — it maps onto each mount's own root; absent = refresh at the
+/// mount root. `recursive` walks the subtree (large remotes can take a
+/// while; the rc client caps the call at 30s).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MountRefreshRequest {
+    #[serde(default)]
+    pub mount_id: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub recursive: Option<bool>,
+}
+
+/// `files/mount/stats`: per rclone-strategy mount `vfs/stats` (webdav
+/// mounts answer under `skipped`); omit `mountId` for every mount.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MountStatsRequest {
+    #[serde(default)]
+    pub mount_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

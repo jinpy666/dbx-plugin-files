@@ -7,6 +7,7 @@ import { ref } from "vue";
 import DirTree from "./DirTree.vue";
 import type { DirTreeNode } from "../lib/dirTree";
 import { quickPathIcon, quickPathLabelKey, type QuickPath } from "../lib/quickPaths";
+import { formatBytes } from "../lib/api";
 
 const props = defineProps<{
   side: "left" | "right";
@@ -16,6 +17,8 @@ const props = defineProps<{
   quickPaths: QuickPath[];
   currentPath: string;
   t: (key: string, values?: Record<string, string | number>) => string;
+  /** 远端空间占用（files/about，60s sidecar 缓存；仅右栏传入）。 */
+  usage?: { used: number; total: number } | null;
 }>();
 
 const emit = defineEmits<{
@@ -74,6 +77,10 @@ function onTreeKeydown(event: KeyboardEvent) {
 
 <template>
   <div v-if="!collapsed" class="wb-side-panel">
+    <div v-if="usage && usage.total > 0" class="wb-side-usage" :title="t('sideUsage')">
+      <div class="wb-side-usage-bar"><div class="wb-side-usage-fill" :style="{ width: `${Math.min(100, Math.round((usage.used / usage.total) * 100))}%` }" /></div>
+      <span class="wb-muted">{{ t("sideUsage") }}: {{ formatBytes(usage.used) }} / {{ formatBytes(usage.total) }}</span>
+    </div>
     <div class="wb-side-tabs">
       <button type="button" :class="{ 'is-active': tab === 'tree' }" v-tip="t('sideTree')" @click="emit('update:tab', 'tree')">
         <FolderTree />

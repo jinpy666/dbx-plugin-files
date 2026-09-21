@@ -15,6 +15,7 @@
 
 pub mod archive;
 pub mod bytes_channel;
+pub mod mount;
 pub mod ops;
 pub mod proc;
 pub mod rc;
@@ -133,6 +134,21 @@ pub(crate) struct WorkGuard {
     inner: std::sync::Arc<WorkGuardInner>,
 }
 
+impl WorkGuard {
+    /// Test-only construction so sibling modules (mount records) can build a
+    /// guard without a live engine.
+    #[cfg(test)]
+    pub(crate) fn for_tests() -> WorkGuard {
+        WorkGuard {
+            inner: std::sync::Arc::new(WorkGuardInner {
+                work: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
+                key: "test".to_string(),
+                done: std::sync::atomic::AtomicBool::new(false),
+            }),
+        }
+    }
+}
+
 struct WorkGuardInner {
     work: std::sync::Arc<std::sync::Mutex<HashMap<String, u64>>>,
     key: String,
@@ -172,6 +188,12 @@ impl Drop for WorkGuardInner {
     fn drop(&mut self) {
         self.settle();
     }
+}
+
+/// Short-hold std-Mutex lock with a poisoned-lock fallback (same discipline
+/// as main.rs's `rclone_lock`).
+fn engine_lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 impl RcloneEngine {
@@ -283,7 +305,65 @@ impl RcloneEngine {
                     )
                 })?;
         }
+        // A fresh rcd also starts from rclone's default (unlimited) transfer
+        // rate, so the persisted bwlimit pref replays here the same way the
+        // remotes do. Best-effort: a failed replay logs and moves on.
+        if let Some(rate) = self.bwlimit_pref() {
+            if let Err(error) = client.core_bwlimit(Some(&rate)).await {
+                eprintln!("[io.dbx.files] bwlimit replay after respawn failed: {error}");
+            }
+        }
         Ok(())
+    }
+
+    // -- bandwidth limit (files/bwlimit) ------------------------------------
+
+    /// Persisted bwlimit pref (`prefs.json` → `bwlimit`); `None` = unlimited.
+    /// Read through the shared store when the engine carries one (tests may
+    /// leave `history` unset).
+    pub fn bwlimit_pref(&self) -> Option<String> {
+        let store = engine_lock(&self.history).clone()?;
+        let prefs = store.load_prefs();
+        prefs
+            .get("bwlimit")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|rate| !rate.is_empty() && *rate != "off")
+            .map(str::to_string)
+    }
+
+    /// Sets (or clears, `None`) the transfer bandwidth limit: applies to
+    /// every LIVE group rcd via `core/bwlimit`, then persists the pref so
+    /// respawns replay it. Fails without persisting when at least one live
+    /// rcd rejects the rate (rcd owns the value grammar — `bad bwlimit`).
+    pub async fn set_bwlimit(&self, rate: Option<&str>) -> Result<(), String> {
+        let live = self.supervisor.lock().await.live_clients().await;
+        let mut first_error: Option<String> = None;
+        let mut applied = 0usize;
+        for (_, client) in &live {
+            match client.core_bwlimit(rate.or(Some("off"))).await {
+                Ok(_) => applied += 1,
+                Err(error) if first_error.is_none() => {
+                    first_error = Some(error.to_string());
+                }
+                Err(_) => {}
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(format!("rclone rejected bwlimit '{}': {error}", rate.unwrap_or("off")));
+        }
+        let _ = applied; // zero live groups = persist only; respawns replay it
+        let Some(store) = engine_lock(&self.history).clone() else {
+            return Ok(());
+        };
+        let mut prefs = store.load_prefs();
+        match rate.map(str::trim).filter(|value| !value.is_empty() && *value != "off") {
+            Some(rate) => prefs["bwlimit"] = serde_json::Value::String(rate.to_string()),
+            None => {
+                prefs.as_object_mut().map(|object| object.remove("bwlimit"));
+            }
+        }
+        store.save_prefs(&prefs)
     }
 
     /// Starts the keepalive watchdog: periodic sweeps that (a) respawn and
@@ -689,6 +769,25 @@ pub fn call_fs(binding: &registry::RemoteBinding) -> String {
 #[cfg(test)]
 mod wiring_tests {
     use super::*;
+
+    /// `files/bwlimit` persistence semantics without a live rcd: set → pref
+    /// readable (canonical form NOT re-written — rcd owns grammar), off →
+    /// cleared; a live-group rejection path is covered by the sync-module
+    /// `bwlimit_set_and_read_roundtrip` sandbox test against real rclone.
+    #[tokio::test]
+    async fn bwlimit_pref_persists_and_clears() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = RcloneEngine::new();
+        *engine_lock(&engine.history) = Some(std::sync::Arc::new(crate::store::Store::new(
+            dir.path().to_path_buf(),
+        )));
+        assert_eq!(engine.bwlimit_pref(), None, "unset by default");
+        // Live application is a no-op with zero live groups; the pref still lands.
+        engine.set_bwlimit(Some("10M")).await.expect("set");
+        assert_eq!(engine.bwlimit_pref(), Some("10M".to_string()));
+        engine.set_bwlimit(None).await.expect("clear");
+        assert_eq!(engine.bwlimit_pref(), None, "off clears the pref");
+    }
 
     #[test]
     fn work_guard_counts_are_exact() {

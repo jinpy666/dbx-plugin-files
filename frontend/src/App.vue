@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, type Component } from "vue";
 import {
   Archive,
   ArrowLeft,
   ArrowRight,
   ArrowRightLeft,
   Calculator,
+  FileCheck,
+  FolderMinus,
   Copy,
   ArrowUp,
   Download,
+  Eject,
   Eye,
   FileArchive,
   FileOutput,
@@ -18,6 +21,8 @@ import {
   FolderOpen,
   FolderPlus,
   FolderSymlink,
+  Globe,
+  HardDrive,
   Link,
   Link2,
   PanelLeft,
@@ -25,6 +30,11 @@ import {
   Pencil,
   RefreshCw,
   Search,
+  AppWindow,
+  Gauge,
+  Scale,
+  Share2,
+  ShieldCheck,
   Trash2,
   X,
 } from "@lucide/vue";
@@ -32,6 +42,10 @@ import FileTable from "./components/FileTable.vue";
 import FileToolbar from "./components/FileToolbar.vue";
 import TransferPanel from "./components/TransferPanel.vue";
 import SettingsPanel from "./components/SettingsPanel.vue";
+import MountDialog from "./components/MountDialog.vue";
+import type { SettingsSection } from "./components/SettingsPanel.vue";
+import SyncDialog, { type SyncDialogOptions } from "./components/SyncDialog.vue";
+import DesktopOnlyCard from "./components/DesktopOnlyCard.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
 import AuditPanel from "./components/AuditPanel.vue";
 import PreviewPane from "./components/PreviewPane.vue";
@@ -74,13 +88,24 @@ import { resolveToolbarTarget } from "./lib/toolbarTarget";
 import { validateFileName } from "./lib/fileName";
 import { runBatchTasks } from "./lib/batchRunner";
 
-type ConfirmKind = "delete" | "purge" | "syncDir" | "copyDir" | "newFolder" | "newFile" | "rename" | "copy" | "move" | "extract" | "compress" | "overwrite";
+type ConfirmKind = "delete" | "purge" | "newFolder" | "newFile" | "rename" | "copy" | "move" | "extract" | "compress" | "overwrite" | "check" | "cleanup" | "copyurl";
 type PaneSide = "left" | "right";
 type MenuAction =
   | "open" | "preview" | "download" | "rename" | "delete" | "copyPath" | "copyName"
   | "syncDir" | "copyDir" | "copy" | "move" | "extract" | "archiveContents" | "compress"
   // 对标 rclone-dashboard：目录体积统计（files/size）与公开链接（files/publicLink）
   | "computeSize" | "copyPublicLink"
+  // rclone 深度能力：SUM 校验文件 / 清理空目录 / 目录内容比对（files/check）
+  // 批次7：右键 SUM 校验文件 → 核验所在目录（files/checksum/verify）
+  | "hashsum" | "rmdirs" | "checkDir" | "verifySum"
+  // rclone 双向同步（sync/bisync，beta）
+  | "bisyncDir"
+  // rclone URL 导入（operations/copyurl）
+  | "copyurl"
+  // 本地挂载（docs/MOUNT.zh-CN.md M1）：rclone mount 优先，WebDAV 网关兜底
+  | "mountLocal"
+  // 本机共享（对标 rclone serve 家族）：远端目录经回环 HTTP/WebDAV 分享
+  | "serveHttp" | "serveWebdav"
   // 批量（多选右键，P-FILES 压缩轮）
   | "downloadSelected" | "copySelected" | "moveSelected" | "deleteSelected" | "compressSelected";
 
@@ -260,10 +285,120 @@ function navigateQuickPath(side: PaneSide, targetPath: string) {
   else void loadRightDirectory(targetPath).catch(() => undefined);
 }
 
-// 右侧 dock（transfers/audit/connection/settings）不持久化，默认收起。
+// 右侧 dock（transfers/audit/connection）不持久化，默认收起；settings 已拆为
+// 独立弹窗（对标 ssh 插件 settings-modal），不再占 dock 页签。
 const dockOpen = ref(false);
-const dockTab = ref<"transfers" | "audit" | "connection" | "settings">("transfers");
+const dockTab = ref<"transfers" | "audit" | "connection">("transfers");
 const auditRef = ref<InstanceType<typeof AuditPanel>>();
+
+// ---- 独立设置弹窗（对标 ssh 插件 settings-modal）：左导航分类 + 内容面板 --------
+type SettingsCategory = "downloads" | "openWith" | "transfer" | "mounts";
+// 每个分类的导航图标（设置弹窗左侧），扫读时先见图再读字。
+const SETTINGS_CATEGORY_ICONS = { downloads: Download, openWith: AppWindow, transfer: Gauge, mounts: HardDrive } as const;
+// 「本地挂载」分类仅桌面端（canSaveLocal）可见：挂载发生在 sidecar 所在机器。
+const settingsCategories = computed<ReadonlyArray<{ id: SettingsCategory; labelKey: string; icon: Component }>>(() =>
+  [
+    { id: "downloads", labelKey: "settingsNav.downloads", icon: SETTINGS_CATEGORY_ICONS.downloads },
+    { id: "openWith", labelKey: "settingsNav.openWith", icon: SETTINGS_CATEGORY_ICONS.openWith },
+    { id: "transfer", labelKey: "settingsNav.transfer", icon: SETTINGS_CATEGORY_ICONS.transfer },
+    // Web 下也可见：点进去给出「仅桌面客户端支持」的友好卡片，而不是隐藏入口。
+    { id: "mounts", labelKey: "settingsNav.mounts", icon: SETTINGS_CATEGORY_ICONS.mounts },
+  ],
+);
+const settingsOpen = ref(false);
+// 统一「保存更改」：任一区块草稿变化即点亮；保存走当前区块面板暴露的 save()。
+const settingsDirty = ref(false);
+/** 设置弹窗记忆尺寸（拖右下角调节；对齐预览浮窗的持久化模式）。 */
+const settingsWin = ref<PreviewWin | undefined>(prefs.settingsWin);
+const settingsWinStyle = computed(() => {
+  if (!settingsWin.value) return undefined;
+  return {
+    width: `${settingsWin.value.width}px`,
+    height: `${settingsWin.value.height}px`,
+  };
+});
+
+const SETTINGS_MIN = { width: 680, height: 480 };
+function clampSettingsSize(width: number, height: number): PreviewWin {
+  const maxWidth = Math.max(SETTINGS_MIN.width, window.innerWidth - 40);
+  const maxHeight = Math.max(SETTINGS_MIN.height, window.innerHeight - 40);
+  return {
+    width: Math.min(maxWidth, Math.max(SETTINGS_MIN.width, Math.round(width))),
+    height: Math.min(maxHeight, Math.max(SETTINGS_MIN.height, Math.round(height))),
+  };
+}
+
+let settingsGripActive = false;
+function onSettingsGripPointerdown(event: PointerEvent) {
+  const start = { x: event.clientX, y: event.clientY, width: settingsWin.value?.width ?? 0, height: settingsWin.value?.height ?? 0 };
+  const modal = document.querySelector<HTMLElement>(".wb-settings-modal");
+  if (!modal) return;
+  if (!settingsWin.value) {
+    const rect = modal.getBoundingClientRect();
+    start.width = rect.width;
+    start.height = rect.height;
+  }
+  settingsGripActive = true;
+  (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  const onMove = (move: PointerEvent) => {
+    if (!settingsGripActive) return;
+    settingsWin.value = clampSettingsSize(start.width + (move.clientX - start.x), start.height + (move.clientY - start.y));
+  };
+  const onUp = () => {
+    settingsGripActive = false;
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    prefs.settingsWin = settingsWin.value;
+    saveUiPrefs({ ...prefs, settingsWin: settingsWin.value });
+  };
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+}
+const settingsSaving = ref(false);
+const settingsPanelRef = ref<{ save: () => Promise<void> } | null>(null);
+/** 当前挂到 SettingsPanel 的 section（mounts 是自定义面板，不在组件内）。 */
+const panelSection = computed<SettingsSection | undefined>(() =>
+  settingsCategory.value === "mounts" ? undefined : settingsCategory.value,
+);
+const settingsCategory = ref<SettingsCategory>(
+  ["downloads", "openWith", "transfer", "mounts"].includes(prefs.settingsCategory as string)
+    ? (prefs.settingsCategory as SettingsCategory)
+    : "downloads",
+);
+const settingsOverlayEl = ref<HTMLElement>();
+
+function openSettings(category?: SettingsCategory) {
+  // 不带参（工具栏齿轮）= 回到上次停留的分类；显式传参（挂载/下载入口）按意图直达。
+  settingsDirty.value = false;
+  settingsCategory.value = category ?? (prefs.settingsCategory ?? "downloads");
+  settingsOpen.value = true;
+  if (category === "mounts") {
+    void loadMounts();
+    void loadShares();
+  }
+  void nextTick(() => document.querySelector<HTMLElement>(".wb-settings-nav .is-active")?.focus());
+}
+
+function closeSettings() {
+  settingsOpen.value = false;
+}
+
+watch(settingsCategory, (category) => {
+  // 记忆上次停留的分类（重开设置回到原地）；同步回快照避免下次打开读旧值。
+  prefs.settingsCategory = category;
+  saveUiPrefs({ ...prefs, settingsCategory: category });
+  if (category === "mounts") settingsDirty.value = false;
+  if (category === "transfer") void loadBwlimit();
+  if (category === "mounts") {
+    void loadMounts();
+    void loadShares();
+  }
+});
+
+/** 焦点陷阱：Tab 在设置弹窗内循环（同预览/确认弹窗实现）。 */
+function onSettingsTabKeydown(event: KeyboardEvent) {
+  trapTabKey(event, settingsOverlayEl.value);
+}
 
 const previewPath = ref<string | null>(null);
 /** 预览条目所属栏连接：openPreview 时固化为快照——单栏预览会顺手开启双栏
@@ -336,7 +471,7 @@ function transferRequest(id: string, method: string, params: Record<string, unkn
       ...params,
       connectionId: id,
       // DirJobRequest 不接受 connectionId 作为源/目标连接的默认值。
-      ...(method === "files/copyDir" || method === "files/syncDir" ? { sourceConnectionId: id, targetConnectionId: id } : {}),
+      ...(method === "files/copyDir" || method === "files/syncDir" || method === "files/check" || method === "files/bisync/start" ? { sourceConnectionId: id, targetConnectionId: id } : {}),
     },
   };
 }
@@ -422,7 +557,7 @@ const confirmForce = ref(false);
 const confirmForcePath = ref("");
 // R3-P2-5：跨栏 copy/move 冲突预检命中时挂起整批传输，弹「覆盖确认」后原样执行。
 const pendingPaneTransfer = ref<{ from: PaneSide; move: boolean; list: FileEntry[]; destPath: string }>();
-const confirmInput = computed(() => confirmKind.value === "newFolder" || confirmKind.value === "newFile" || confirmKind.value === "rename" || confirmKind.value === "syncDir" || confirmKind.value === "copyDir" || confirmKind.value === "copy" || confirmKind.value === "move" || confirmKind.value === "extract" || confirmKind.value === "compress");
+const confirmInput = computed(() => confirmKind.value === "newFolder" || confirmKind.value === "newFile" || confirmKind.value === "rename" || confirmKind.value === "copy" || confirmKind.value === "move" || confirmKind.value === "extract" || confirmKind.value === "compress" || confirmKind.value === "check" || confirmKind.value === "copyurl");
 // P2-2：危险确认列表走 i18n 七语（lib 侧 label 为英文兜底，路径类条目原样展示）。
 const confirmDangerList = computed(() =>
   confirmHits.value.map((hit) => {
@@ -510,15 +645,29 @@ function toolbarSelectionEntries(side: PaneSide): FileEntry[] {
   return pool.filter((entry) => sel.includes(entry.path));
 }
 
+/** 工具栏挂载入口：挂活动栏当前目录；本地 __local__ 栏没有远端可挂（禁用）。 */
+// 挂载是桌面能力：web/docker 下 sidecar 不在用户本机，挂载无从谈起
+// （mountStatus/mount 走的都是 sidecar 所在机器），入口整体隐藏。
+const canUseMount = computed(() => canSaveLocal.value);
+const canMountToolbar = computed(() => canUseMount.value && sideConnectionId(toolbarTarget.value.side) !== LOCAL_CONNECTION_ID);
+
+function mountToolbarTarget() {
+  if (!canMountToolbar.value) return;
+  openMountDialog(paneDirPath(toolbarTarget.value.side), sideConnectionId(toolbarTarget.value.side) ?? connectionId.value);
+}
+
 // 双栏开关不持久化；两侧侧栏状态分别持久化，切换一侧不影响另一侧。
 watch([sort, leftSideTab, rightSideTab, leftSideCollapsed, rightSideCollapsed], () => {
-  saveUiPrefs({
+  // 合并进快照再整体写入：这里曾用"只含本组键的新对象"覆盖，抹掉
+  // previewWin/settingsWin/settingsCategory 等其他键（跨键互踩 bug）。
+  Object.assign(prefs, {
     sort: sort.value,
     leftSideTab: leftSideTab.value,
     rightSideTab: rightSideTab.value,
     leftSideCollapsed: leftSideCollapsed.value,
     rightSideCollapsed: rightSideCollapsed.value,
   });
+  saveUiPrefs({ ...prefs });
 }, { deep: true });
 
 // 任一侧切到 tree tab 时懒加载对应根目录。
@@ -568,6 +717,12 @@ let unsubscribeBinary: (() => void) | undefined;
 let unsubscribeContext: (() => void) | undefined;
 let unsubscribeInit: (() => void) | undefined;
 let unsubscribeTheme: (() => void) | undefined;
+
+/** 立即清掉当前横幅：行内报错出现时不让旧的成功提示同屏误导。 */
+function hideNotice() {
+  window.clearTimeout(noticeTimer);
+  notice.value = "";
+}
 
 function showNotice(message: I18nInput) {
   notice.value = message;
@@ -675,8 +830,9 @@ function handleEvent(event: DbxPluginEvent) {
 
 const INTENT_CELL_WIDTH = 120;
 
-/** 当前工作台面板（快照/摘要用）：主区恒为 browse；dock 打开时为对应页签。 */
+/** 当前工作台面板（快照/摘要用）：设置弹窗 > dock 页签 > 主区 browse。 */
 function currentIntentPanel(): string {
+  if (settingsOpen.value) return "settings";
   return dockOpen.value ? dockTab.value : "browse";
 }
 
@@ -720,10 +876,17 @@ const uiIntentHandlers = {
       uiIntent.reportSnapshot({ panel: "browse", path: path.value, count: entries.value.length });
       return { status: "applied", summary: { panel } };
     }
-    if (panel === "transfers" || panel === "audit" || panel === "settings") {
+    if (panel === "transfers" || panel === "audit") {
       dockOpen.value = true;
       dockTab.value = panel;
       if (panel === "audit") auditRef.value?.refresh();
+      uiIntent.reportSnapshot({ panel });
+      return { status: "applied", summary: { panel } };
+    }
+    if (panel === "settings") {
+      // 设置已是独立弹窗：关掉 dock 让位，弹窗按 intent 面板打开。
+      dockOpen.value = false;
+      openSettings("downloads");
       uiIntent.reportSnapshot({ panel });
       return { status: "applied", summary: { panel } };
     }
@@ -994,7 +1157,10 @@ function onPreviewGripPointerdown(event: PointerEvent) {
     previewGripActive = false;
     window.removeEventListener("pointermove", onMove);
     window.removeEventListener("pointerup", onUp);
-    if (previewWin.value) saveUiPrefs({ ...prefs, previewWin: previewWin.value });
+    if (previewWin.value) {
+      prefs.previewWin = previewWin.value;
+      saveUiPrefs({ ...prefs, previewWin: previewWin.value });
+    }
   };
   window.addEventListener("pointermove", onMove);
   window.addEventListener("pointerup", onUp);
@@ -1070,7 +1236,10 @@ async function probeConnections() {
     if (Array.isArray(list)) {
       targetConnections.value = list
         .map((item) => ({ id: String(item.id ?? item.connectionId ?? ""), name: String(item.name ?? item.id ?? item.connectionId ?? "") }))
-        .filter((item) => item.id && item.id !== connectionId.value);
+        .filter(
+          (item) =>
+            item.id && item.id !== connectionId.value && item.id !== LOCAL_CONNECTION_ID,
+        );
     }
   } catch {
     if (version === hostContextVersion) targetConnections.value = [];
@@ -1194,19 +1363,110 @@ function startDelete(targets: FileEntry[], side: PaneSide = "left") {
   });
 }
 
-function startDirJob(kind: "syncDir" | "copyDir", entry: FileEntry, side: PaneSide) {
+function startDirJob(kind: "syncDir" | "copyDir" | "bisync", entry: FileEntry, side: PaneSide) {
   const defaultTarget = joinPath("/", `${baseName(entry.path) || "copy"}`);
-  openConfirm(kind, {
-    title:
-      kind === "syncDir"
-        ? { key: "syncDirTitle", values: { path: defaultTarget } }
-        : { key: "copyDirTitle", values: { path: defaultTarget } },
-    body: kind === "syncDir" ? { key: "syncDirBody" } : { key: "copyDirBody" },
-    danger: true,
-    target: { entry },
-    draft: defaultTarget,
-    side,
-  });
+  // 同步选项走独立顶层 SyncDialog（dry-run/过滤/备份/并发参数），连接在打开
+  // 时固化——双栏下右键动作挂该栏连接，而不是活动栏。
+  syncDialogKind.value = kind;
+  syncDialogEntry.value = entry;
+  syncDialogSide.value = side;
+  syncDialogDraft.value = defaultTarget;
+  syncDialogSourceConnectionId.value = sideConnectionId(side) ?? connectionId.value;
+  syncDialogOpen.value = true;
+  // 双向同步：先查路径对状态（决定 resync 引导），查完前 state 为 null。
+  if (kind === "bisync") {
+    const source = entry;
+    const target = defaultTarget;
+    const id = syncDialogSourceConnectionId.value;
+    syncDialogBisyncState.value = null;
+    void call<{ state: "synced" | "new" }>("files/bisync/state", {
+      connectionId: id,
+      sourceConnectionId: id,
+      targetConnectionId: id,
+      sourcePath: source.path,
+      targetPath: target,
+    })
+      .then((result) => {
+        if (syncDialogOpen.value && syncDialogEntry.value?.path === source.path) {
+          syncDialogBisyncState.value = result.state;
+        }
+      })
+      .catch(() => {
+        if (syncDialogOpen.value) syncDialogBisyncState.value = "new";
+      });
+  } else {
+    syncDialogBisyncState.value = null;
+  }
+}
+
+// ---- 目录同步/复制（独立顶层弹窗 SyncDialog）--------------------------------
+const syncDialogOpen = ref(false);
+const syncDialogKind = ref<"syncDir" | "copyDir" | "bisync">("syncDir");
+const syncDialogEntry = ref<FileEntry | null>(null);
+const syncDialogSide = ref<PaneSide>("right");
+const syncDialogDraft = ref("");
+const syncDialogSourceConnectionId = ref("");
+const syncDialogBusy = ref(false);
+const syncDialogBisyncState = ref<"synced" | "new" | null>(null);
+
+function closeSyncDialog() {
+  syncDialogOpen.value = false;
+  syncDialogEntry.value = null;
+}
+
+/** SyncDialog 确认：非空字段才下发（保持 rclone 默认）；dry-run 同样入传输
+ * 面板跟踪，完成即终态、不落任何写。 */
+async function onSyncDialogConfirm(options: SyncDialogOptions) {
+  const entry = syncDialogEntry.value;
+  const kind = syncDialogKind.value;
+  if (!entry || syncDialogBusy.value) return;
+  syncDialogBusy.value = true;
+  const side = syncDialogSide.value;
+  const id = syncDialogSourceConnectionId.value;
+  let jobStarted = false;
+  try {
+    const method = kind === "bisync" ? "files/bisync/start" : `files/${kind}`;
+    const retry = transferRequest(id, method, {
+      sourcePath: entry.path,
+      targetPath: options.targetPath,
+      ...(kind === "bisync" && options.bisyncResync ? { mode: "resync", resyncMode: "newer" } : {}),
+      ...(options.dryRun ? { dryRun: true } : {}),
+      ...(options.include.length ? { include: options.include } : {}),
+      ...(options.exclude.length ? { exclude: options.exclude } : {}),
+      ...(options.backupDir ? { backupDir: options.backupDir } : {}),
+      ...(options.suffix ? { suffix: options.suffix } : {}),
+      // 批次6条件过滤：仅 sync/copy 下发（bisync 不带过滤器，后端对
+      // check 也不注入——语义会收窄比对报告）。
+      ...(kind !== "bisync" && options.metadata ? { metadata: true } : {}),
+      ...(kind !== "bisync" && options.minSize ? { minSize: options.minSize } : {}),
+      ...(kind !== "bisync" && options.maxSize ? { maxSize: options.maxSize } : {}),
+      ...(kind !== "bisync" && options.minAge ? { minAge: options.minAge } : {}),
+      ...(kind !== "bisync" && options.maxAge ? { maxAge: options.maxAge } : {}),
+      ...(options.transfers !== null ? { transfers: options.transfers } : {}),
+      ...(options.checkers !== null ? { checkers: options.checkers } : {}),
+      ...(options.retries !== null ? { retries: options.retries } : {}),
+    });
+    const result = await call<{ jobId: string }>(retry.method, retry.params);
+    if (result.jobId) {
+      trackSidecarJob(result.jobId, kind === "bisync" ? "bisync" : kind, `${entry.path} ⇄ ${options.targetPath}`, retry);
+    }
+    jobStarted = true;
+    closeSyncDialog();
+    refreshAuditPanel();
+    showNotice(
+      kind === "bisync"
+        ? t("bisyncStarted")
+        : t(options.dryRun ? "syncDryRunStarted" : "jobStarted", { name: baseName(options.targetPath) }),
+    );
+  } catch (cause) {
+    showError(cause);
+  } finally {
+    syncDialogBusy.value = false;
+  }
+  if (jobStarted) {
+    await loadDirectory().catch(() => undefined);
+    if (side === "right" && dualPane.value) await loadRightDirectory().catch(() => undefined);
+  }
 }
 
 /** P-FILES ①b：copy/move 动作（native 同步返回 / 降级 jobId 由后端决定）。 */
@@ -1433,21 +1693,37 @@ async function onConfirm() {
         showNotice(t("deleted"));
         break;
       }
-      case "syncDir":
-      case "copyDir": {
+      case "check": {
         const entry = confirmTarget.value.entry;
         const targetPath = confirmDraft.value.trim();
         if (!entry || !targetPath) return;
-        const retry = transferRequest(id, `files/${kind}`, {
+        const retry = transferRequest(id, "files/check", {
           sourcePath: entry.path,
           targetPath,
+          oneWay: false,
         });
         const result = await call<{ jobId: string }>(retry.method, retry.params);
         if (result.jobId) {
-          trackSidecarJob(result.jobId, kind, `${entry.path} → ${targetPath}`, retry);
+          trackSidecarJob(result.jobId, "check", `${entry.path} ⨯ ${targetPath}`, retry);
         }
         jobStarted = true;
-        showNotice(t("jobStarted", { name: baseName(targetPath) }));
+        showNotice(t("checkStarted"));
+        break;
+      }
+      case "cleanup": {
+        await invokeConfirmed("files/cleanup", {});
+        showNotice(t("cleanupDone"));
+        break;
+      }
+      case "copyurl": {
+        const entry = confirmTarget.value.entry;
+        const url = confirmDraft.value.trim();
+        if (!entry || !url) return;
+        const result = await invokeConfirmed<{ filename: string }>("files/copyurl", {
+          dirPath: entry.path,
+          url,
+        });
+        showNotice(t("copyurlDone", { name: result.filename }));
         break;
       }
       case "extract": {
@@ -1992,22 +2268,181 @@ async function deleteTransferRecord(jobId: string) {
 let localCapabilities: Promise<{ canSaveLocal: boolean; downloadsDir: string } | undefined> | undefined;
 const localDownloadDir = ref("");
 const canSaveLocal = ref(false);
+// 宿主切到 web（canSaveLocal=false）时挂载分类/入口消失：当前分类回落到下载。
+watch(canSaveLocal, (can) => {
+  if (!can && settingsCategory.value === "mounts") settingsCategory.value = "downloads";
+});
+/** sidecar 平台标签（macos/windows/linux/other），驱动「打开方式」预设与文案。 */
+const localPlatform = ref("");
 function probeLocalCapabilities() {
   localCapabilities ??= window.dbxPlugin
-    .invoke<{ canSaveLocal: boolean; downloadsDir: string }>("files/local/capabilities")
+    .invoke<{ canSaveLocal: boolean; downloadsDir: string; platform?: string }>("files/local/capabilities")
     .then((result) => {
       localDownloadDir.value = result.downloadsDir || "";
       canSaveLocal.value = !!result.canSaveLocal;
+      localPlatform.value = result.platform || "";
       return result;
     })
     .catch(() => undefined);
   return localCapabilities;
 }
 
+// —— 平台「打开方式」预设（issue #11 延伸）——————————————————————
+// files/local/detect-apps 只回报告本机真实存在的候选（WPS/Excel/LibreOffice/...
+// 按平台默认安装路径探测）；方法缺失（旧 sidecar）时整组隐藏，手动输入仍可用。
+interface AppPreset {
+  id: string;
+  name: string;
+  path: string;
+}
+const appPresets = ref<AppPreset[]>([]);
+async function probeAppPresets() {
+  try {
+    const result = await window.dbxPlugin.invoke<{ apps?: AppPreset[] }>("files/local/detect-apps");
+    appPresets.value = Array.isArray(result.apps) ? result.apps : [];
+  } catch {
+    appPresets.value = [];
+  }
+}
+
 /** 「保存到」偏好（localStorage），空串 = 跟随 sidecar 默认下载目录。 */
 const saveDirDraft = ref(loadDownloadDir());
 const saveDirError = ref("");
 let saveDirValidationSerial = 0;
+// ---- 深度搜索（files/search，远端递归；回车触发，当前目录即时过滤不受影响）----
+const deepSearchOpen = ref(false);
+const deepSearchSide = ref<PaneSide>("left");
+const deepSearchBusy = ref(false);
+const deepSearchResults = ref<Array<{ path: string; size: number; modifiedAt: string }>>([]);
+const deepSearchTruncated = ref(false);
+/** 键盘 ↑↓ 选中的结果行（-1 = 未选）；Enter 打开选中项或发起搜索。 */
+const deepSearchIndex = ref(-1);
+
+/** 回车触发：从该栏当前目录递归搜索文件名子串。 */
+async function runDeepSearch(side: PaneSide, query: string) {
+  const term = query.trim();
+  if (!term) return;
+  const id = sideConnectionId(side) ?? connectionId.value;
+  deepSearchOpen.value = true;
+  deepSearchSide.value = side;
+  deepSearchBusy.value = true;
+  deepSearchResults.value = [];
+  deepSearchTruncated.value = false;
+  try {
+    const result = await call<{ entries: Array<{ path: string; size: number; modifiedAt: string }>; truncated: boolean }>(
+      "files/search",
+      { connectionId: id, root: paneDirPath(side), pattern: term },
+    );
+    deepSearchResults.value = result.entries ?? [];
+    deepSearchTruncated.value = Boolean(result.truncated);
+    deepSearchIndex.value = result.entries?.length ? 0 : -1;
+  } catch (cause) {
+    deepSearchOpen.value = false;
+    showError(cause);
+  } finally {
+    deepSearchBusy.value = false;
+  }
+}
+
+/** 搜索框 ↑↓：在结果间移动选中行（循环）；Enter 打开选中项。 */
+function onSearchKeydown(side: PaneSide, key: string, query: string) {
+  const count = deepSearchResults.value.length;
+  if (!deepSearchOpen.value || !count) {
+    if (key === "Enter") runDeepSearch(side, query);
+    return;
+  }
+  if (key === "ArrowDown") deepSearchIndex.value = (deepSearchIndex.value + 1) % count;
+  else if (key === "ArrowUp") deepSearchIndex.value = (deepSearchIndex.value - 1 + count) % count;
+  else if (key === "Enter" && deepSearchIndex.value >= 0) {
+    void openDeepSearchResult(deepSearchResults.value[deepSearchIndex.value]!);
+  }
+}
+
+/** 点击结果：跳到其父目录（保留目标栏语义）。 */
+async function openDeepSearchResult(entry: { path: string }) {
+  const side = deepSearchSide.value;
+  const parent = parentPath(entry.path) || "/";
+  deepSearchOpen.value = false;
+  if (side === "left") {
+    await loadDirectory(parent).catch(() => undefined);
+  } else {
+    await loadRightDirectory(parent).catch(() => undefined);
+  }
+}
+
+function closeDeepSearch() {
+  deepSearchOpen.value = false;
+}
+
+// ---- 远端空间占用（files/about，sidecar 60s 缓存；仅右栏远程连接显示）----
+const remoteUsage = ref<{ used: number; total: number } | null>(null);
+
+async function loadRemoteUsage() {
+  const id = sideConnectionId("right") ?? connectionId.value;
+  if (!id || id === "__local__") {
+    remoteUsage.value = null;
+    return;
+  }
+  try {
+    const result = await call<{ used?: number; total?: number }>("files/about", { connectionId: id });
+    remoteUsage.value = result.total ? { used: result.used ?? 0, total: result.total } : null;
+  } catch {
+    // 后端不支持（旧 sidecar/特殊协议）时静默隐藏，不打扰用户。
+    remoteUsage.value = null;
+  }
+}
+
+// 连接或右栏目录变化时刷新占用（about 有 60s 缓存，频率无虞）；挂载即拉一次。
+watch([connectionId, rightPath], () => { void loadRemoteUsage(); }, { immediate: true });
+
+// ---- 传输带宽（files/bwlimit：sidecar prefs 持久化，每个 rcd 启动时重放）----
+const bwlimitDraft = ref("");
+const bwlimitError = ref("");
+/** 当前生效限速（非空=顶栏徽标可见）；设置保存后即时更新。 */
+const bwlimitActive = ref<string | null>(null);
+
+/** 统一保存：把当前区块草稿交给面板暴露的 save()（内部走既有校验/持久化链路，
+ * 行内错误就地展示；成功通知由各链路自己发）。 */
+async function onSettingsSave() {
+  if (!settingsDirty.value || settingsSaving.value) return;
+  settingsSaving.value = true;
+  try {
+    await settingsPanelRef.value?.save();
+  } finally {
+    settingsSaving.value = false;
+  }
+}
+
+/** 设置面板打开传输页签时拉取当前持久化限速（空 = 不限）。 */
+async function loadBwlimit() {
+  try {
+    const result = await call<{ rate: string | null }>("files/bwlimit", {});
+    bwlimitDraft.value = result.rate ?? "";
+    bwlimitActive.value = result.rate ?? null;
+    bwlimitError.value = "";
+  } catch {
+    bwlimitError.value = t("bwlimitLoadFailed");
+  }
+}
+
+/** 保存限速：空 = 取消（off）。非法值由 rclone 拒绝，行内提示不关闭设置。 */
+async function onBwlimitSave(rate: string) {
+  const normalized = rate.trim();
+  try {
+    const result = await call<{ rate: string | null }>(
+      "files/bwlimit",
+      normalized ? { rate: normalized } : { rate: "off" },
+    );
+    bwlimitDraft.value = result.rate ?? "";
+    bwlimitActive.value = result.rate ?? null;
+    bwlimitError.value = "";
+    showNotice(t("settingsSaved"));
+  } catch {
+    hideNotice();
+    bwlimitError.value = t("bwlimitInvalid");
+  }
+}
+
 async function onSaveDirChange(dir: string) {
   const normalized = dir.trim();
   const serial = ++saveDirValidationSerial;
@@ -2023,6 +2458,7 @@ async function onSaveDirChange(dir: string) {
     saveDirError.value = "";
     persistDownloadDir(normalized);
     saveDirDraft.value = loadDownloadDir();
+    showNotice(t("settingsSaved"));
   } catch {
     if (serial !== saveDirValidationSerial) return;
     saveDirError.value = t("invalidDownloadDirectory");
@@ -2070,6 +2506,7 @@ async function onOpenAppPrefsChange(prefs: OpenAppPrefs) {
     openAppError.value = "";
     openAppPrefs.value = normalized;
     persistOpenAppPrefs(normalized);
+    showNotice(t("settingsSaved"));
     return;
   }
   try {
@@ -2081,6 +2518,7 @@ async function onOpenAppPrefsChange(prefs: OpenAppPrefs) {
     openAppError.value = "";
     openAppPrefs.value = normalized;
     persistOpenAppPrefs(normalized);
+    showNotice(t("settingsSaved"));
   } catch {
     if (serial !== openAppValidationSerial) return;
     openAppError.value = t("invalidExternalApp");
@@ -2137,8 +2575,45 @@ function menuAction(action: MenuAction) {
     case "copyName":
       void window.dbxPlugin.clipboard?.writeText(baseName(entry.path)).then(() => showNotice(t("copiedName")));
       break;
+    case "hashsum":
+      void runHashsum(entry, side);
+      break;
+    case "rmdirs":
+      void runRmdirs(entry, side);
+      break;
+    case "bisyncDir":
+      startDirJob("bisync", entry, side);
+      break;
+    case "copyurl":
+      openConfirm("copyurl", {
+        title: { key: "copyurlTitle", values: { path: baseName(entry.path) || entry.path } },
+        body: { key: "copyurlBody" },
+        target: { entry },
+        side,
+      });
+      break;
+    case "checkDir":
+      openConfirm("check", {
+        title: { key: "checkTitle", values: { path: baseName(entry.path) || entry.path } },
+        body: { key: "checkBody" },
+        target: { entry },
+        // 缺省与源同级的父目录（整个目录树都可作为比对目标）。
+        draft: parentPath(entry.path) || "/",
+        side,
+      });
+      break;
+    case "verifySum":
+      void runVerifySum(entry, side);
+      break;
     case "computeSize":
       void computeEntrySize(entry, side);
+      break;
+    case "mountLocal":
+      openMountDialog(entry.path, sideConnectionId(side) ?? connectionId.value);
+      break;
+    case "serveHttp":
+    case "serveWebdav":
+      void startServe(entry, side, action === "serveHttp" ? "http" : "webdav");
       break;
     case "copyPublicLink":
       void copyPublicLink(entry, side);
@@ -2197,6 +2672,60 @@ async function computeEntrySize(entry: FileEntry, side: PaneSide) {
   }
 }
 
+/** 生成 SUM 校验文件（files/hashsum）：写入目录旁 `<名称>.<hash>`，同级可见。 */
+async function runHashsum(entry: FileEntry, side: PaneSide) {
+  const id = sideConnectionId(side) ?? connectionId.value;
+  try {
+    const result = await call<{ path: string; files: number }>("files/hashsum", {
+      connectionId: id,
+      path: entry.path,
+      hashType: "md5",
+    });
+    showNotice(t("hashsumDone", { path: result.path, files: result.files }));
+  } catch (cause) {
+    showNotice(t("operationFailed", { error: errorMessage(cause) }));
+  }
+}
+
+// SUM 校验文件（批次7）：右键 → 「校验所在目录」。哈希类型缺省由后端按
+// 扩展名推断，前端不做二次猜测。
+const SUM_EXTENSIONS = new Set(["md5", "sha1", "sha256", "sha512", "crc32"]);
+function isSumFile(entry: FileEntry): boolean {
+  if (entry.kind !== "file") return false;
+  const extension = entry.path.split(".").pop()?.toLowerCase() ?? "";
+  return SUM_EXTENSIONS.has(extension);
+}
+
+/** 校验 SUM 文件所在目录（files/checksum/verify）：复用 check 作业与 checkSummary 展示。 */
+async function runVerifySum(entry: FileEntry, side: PaneSide) {
+  const id = sideConnectionId(side) ?? connectionId.value;
+  try {
+    const result = await call<{ jobId: string }>("files/checksum/verify", {
+      connectionId: id,
+      sumPath: entry.path,
+    });
+    if (result.jobId) {
+      trackSidecarJob(result.jobId, "check", `⨯ ${entry.path}`);
+    }
+    showNotice(t("verifySumStarted"));
+  } catch (cause) {
+    showNotice(t("operationFailed", { error: errorMessage(cause) }));
+  }
+}
+
+/** 清理空目录（files/rmdirs）：递归删除 path 下的空目录。 */
+async function runRmdirs(entry: FileEntry, side: PaneSide) {
+  const id = sideConnectionId(side) ?? connectionId.value;
+  try {
+    await call("files/rmdirs", { connectionId: id, path: entry.path });
+    showNotice(t("rmdirsDone"));
+    await loadDirectory().catch(() => undefined);
+    if (side === "right" && dualPane.value) await loadRightDirectory().catch(() => undefined);
+  } catch (cause) {
+    showNotice(t("operationFailed", { error: errorMessage(cause) }));
+  }
+}
+
 /** 公开链接：presign 能力门控（菜单项仅在 capabilities.presign 时出现）。 */
 async function copyPublicLink(entry: FileEntry, side: PaneSide) {
   try {
@@ -2211,6 +2740,23 @@ async function copyPublicLink(entry: FileEntry, side: PaneSide) {
   }
 }
 
+/** 本机共享（对标 rclone serve）：回环 HTTP/WebDAV 暴露远端目录；URL 复制
+ * 到剪贴板（与 copyPublicLink 同法），剪贴板失败不吞成功提示。 */
+async function startServe(entry: FileEntry, side: PaneSide, serveType: "http" | "webdav") {
+  const id = sideConnectionId(side) ?? connectionId.value;
+  try {
+    const result = await call<{ serveId: string; url: string; serveType: string }>("files/serve/start", {
+      connectionId: id,
+      path: entry.path,
+      serveType,
+    });
+    await window.dbxPlugin.clipboard?.writeText(result.url).catch(() => undefined);
+    showNotice(t("shareStarted", { url: result.url }));
+  } catch (cause) {
+    showNotice(t("operationFailed", { error: errorMessage(cause) }));
+  }
+}
+
 /** 空白区右键：弹插件菜单前先关掉其它菜单（三菜单互斥）。 */
 function openBlankMenu(side: PaneSide, payload: { x: number; y: number }) {
   captureMenuOrigin();
@@ -2219,13 +2765,23 @@ function openBlankMenu(side: PaneSide, payload: { x: number; y: number }) {
   blankMenu.value = { ...payload, side };
 }
 
-function blankMenuAction(action: "newFolder" | "newFile" | "refresh") {
+function blankMenuAction(action: "newFolder" | "newFile" | "refresh" | "cleanup") {
   const menu = blankMenu.value;
   blankMenu.value = undefined;
   if (!menu) return;
   if (action === "refresh") {
     if (menu.side === "left") void refreshDirectory();
     else void refreshRightDirectory();
+    return;
+  }
+  if (action === "cleanup") {
+    openConfirm("cleanup", {
+      title: { key: "cleanupTitle" },
+      body: { key: "cleanupBody" },
+      danger: true,
+      target: {},
+      side: menu.side,
+    });
     return;
   }
   if (action === "newFolder") startNewFolder(menu.side);
@@ -2240,7 +2796,7 @@ function openSideMenu(side: PaneSide, payload: { path: string; name: string; x: 
   sideMenu.value = { ...payload, side };
 }
 
-function sideMenuAction(action: "open" | "openOther" | "copyPath" | "copyName") {
+function sideMenuAction(action: "open" | "openOther" | "copyPath" | "copyName" | "mountLocal") {
   const menu = sideMenu.value;
   sideMenu.value = undefined;
   if (!menu) return;
@@ -2253,8 +2809,240 @@ function sideMenuAction(action: "open" | "openOther" | "copyPath" | "copyName") 
     navigateQuickPath(side === "left" ? "right" : "left", target);
     return;
   }
+  if (action === "mountLocal") {
+    openMountDialog(target, sideConnectionId(side) ?? connectionId.value);
+    return;
+  }
   const value = action === "copyPath" ? target : name;
   void window.dbxPlugin.clipboard?.writeText(value).then(() => showNotice(t(action === "copyPath" ? "copiedPath" : "copiedName")));
+}
+
+// ---- 本地挂载（docs/MOUNT.zh-CN.md M1）：策略由 sidecar 决定 ---------------------
+// auto：rclone mount 优先；缺 FUSE 驱动时兜底 WebDAV 网关（URL 直接进剪贴板，
+// 交给系统「连接服务器」完成挂载）。M1 全程只读。
+
+interface MountResult {
+  mountId: string;
+  strategy: "rclone" | "webdav";
+  mountPoint?: string;
+  /** webdav 策略：系统 WebDAV 客户端是否已把网关挂载成功（用户位置或卷）。 */
+  mounted?: boolean;
+  /** 用户选的挂载点不可用时退成了 /Volumes 网络卷（macOS mount volume）。 */
+  volumeFallback?: boolean;
+  gatewayUrl?: string;
+  fallbackReason?: string;
+}
+
+// ---- 挂载到本机（独立顶层弹窗 MountDialog）-------------------------------------
+// 工具栏/右键/侧栏/设置面板共用：先选本机目录再挂载。从设置弹窗发起时先收起
+// 设置弹窗，保证挂载弹窗永远可见（此前复用 ConfirmDialog 被 z-index 遮挡）。
+// 目标连接在打开时固化——双栏下设置面板入口挂主连接，而不是活动栏（可能为本地）。
+
+const mountDialogOpen = ref(false);
+const mountDialogRemotePath = ref("");
+const mountTargetConnectionId = ref("");
+
+function openMountDialog(remotePath = "", connectionIdOverride?: string) {
+  mountDialogRemotePath.value = remotePath;
+  mountTargetConnectionId.value = connectionIdOverride ?? connectionId.value;
+  // 挂载弹窗置顶展示：设置弹窗让位（遮罩叠遮罩既挡视线也挡交互）。
+  settingsOpen.value = false;
+  mountDialogOpen.value = true;
+}
+
+function closeMountDialog() {
+  mountDialogOpen.value = false;
+}
+
+/** MountDialog 确认：位置空 = sidecar 默认；显式位置由后端
+ * ensure_empty_mount_dir 校验（不存在自动建，非空报错）。 */
+async function onMountDialogConfirm(mountPoint: string) {
+  mountDialogOpen.value = false;
+  try {
+    const result = await call<MountResult>("files/mount", {
+      connectionId: mountTargetConnectionId.value || connectionId.value,
+      strategy: "auto",
+      ...(mountDialogRemotePath.value ? { path: mountDialogRemotePath.value } : {}),
+      ...(mountPoint ? { mountPoint } : {}),
+    });
+    await handleMountResult(result);
+  } catch (cause) {
+    showError(cause);
+  }
+}
+
+async function handleMountResult(result: MountResult) {
+  // webdav 自动挂载成功：优先挂到用户选的位置（mount_webdav），选点失败
+  // 退成 /Volumes 网络卷（macOS mount volume）。两种形态都直接 reveal。
+  if (result.strategy === "webdav" && result.mounted && result.mountPoint) {
+    showNotice(
+      result.volumeFallback
+        ? t("mountVolumeFallback", { point: result.mountPoint })
+        : t("mountWebdavOk", { point: result.mountPoint }),
+    );
+    await call("files/local/reveal", { path: result.mountPoint }).catch(() => undefined);
+    if (settingsOpen.value && settingsCategory.value === "mounts") void loadMounts();
+    return;
+  }
+  if (result.strategy === "webdav" && result.gatewayUrl) {
+    await window.dbxPlugin.clipboard?.writeText(result.gatewayUrl);
+    showNotice(t("mountGatewayFallback", { reason: result.fallbackReason ?? "" }));
+    return;
+  }
+  showNotice(t("mountRcloneOk", { point: result.mountPoint ?? "" }));
+  // 「直接挂载上去」：挂完立即在文件管理器里打开挂载点（后端 reveal 只
+  // 放行活跃挂载点，不是任意路径入口）；reveal 失败不影响挂载结果。
+  if (result.mountPoint) await call("files/local/reveal", { path: result.mountPoint }).catch(() => undefined);
+  if (settingsOpen.value && settingsCategory.value === "mounts") void loadMounts();
+}
+
+// ---- 设置弹窗「本地挂载」面板：files/mountStatus 列表 + 逐条卸载 ----------------
+// 工具栏/右键挂载只在完成时给 notice；这里提供常驻视图（策略/挂载点/失效态），
+// status 按当前连接过滤（call 注入 connectionId），换连接时弹窗整体关闭。
+
+interface MountRow {
+  mountId: string;
+  strategy: string;
+  mountPoint?: string;
+  gatewayPort?: number;
+  /** rclone 策略行：rcd 已不再报告该挂载点时为 false（用户侧自行卸载清理）。 */
+  mounted?: boolean;
+  fallbackReason?: string;
+}
+
+const mountsLoading = ref(false);
+const mountsError = ref(false);
+const mountsList = ref<MountRow[]>([]);
+const unmountBusyId = ref("");
+const refreshBusyId = ref("");
+// vfs/stats 摘要（批次5）：mountId → 关键字段。diskCache 只有 VFS 缓存
+// 打开时才有，字段一律容错缺失。
+interface MountVfsStats {
+  diskCache?: { bytesUsed?: number };
+  metadataCache?: { dirs?: number; files?: number };
+}
+const mountStats = ref<Record<string, MountVfsStats>>({});
+
+async function loadMounts() {
+  if (mountsLoading.value) return;
+  mountsLoading.value = true;
+  mountsError.value = false;
+  try {
+    const result = await call<{ mounts: MountRow[] }>("files/mountStatus", {});
+    mountsList.value = Array.isArray(result.mounts) ? result.mounts : [];
+  } catch {
+    mountsError.value = true;
+  } finally {
+    mountsLoading.value = false;
+  }
+  void loadMountStats();
+}
+
+/** vfs/stats 摘要（best-effort）：失败只清空摘要，不影响挂载列表本身。 */
+async function loadMountStats() {
+  try {
+    const result = await call<{ mounts: Array<{ mountId: string; stats?: MountVfsStats }> }>("files/mount/stats", {});
+    const next: Record<string, MountVfsStats> = {};
+    for (const row of result.mounts ?? []) {
+      if (row.stats) next[row.mountId] = row.stats;
+    }
+    mountStats.value = next;
+  } catch {
+    mountStats.value = {};
+  }
+}
+
+/** rclone 行展示缓存占用 + 目录/条目数（字段缺失就跳过该段）。 */
+function mountStatsText(mountId: string) {
+  const stats = mountStats.value[mountId];
+  if (!stats) return "";
+  const parts: string[] = [];
+  const bytes = stats.diskCache?.bytesUsed;
+  if (typeof bytes === "number") parts.push(t("mountStats.cacheBytes", { bytes: formatBytes(bytes) }));
+  const dirs = stats.metadataCache?.dirs;
+  if (typeof dirs === "number") parts.push(t("mountStats.dirs", { count: dirs }));
+  const files = stats.metadataCache?.files;
+  if (typeof files === "number") parts.push(t("mountStats.files", { count: files }));
+  return parts.join(" · ");
+}
+
+async function refreshMountCache(row: MountRow) {
+  if (refreshBusyId.value) return;
+  refreshBusyId.value = row.mountId;
+  try {
+    const result = await call<{ refreshed: number; skipped: number }>("files/mount/refresh", { mountId: row.mountId });
+    if (result.refreshed > 0) {
+      showNotice(t("mountRefresh.done", { refreshed: result.refreshed, skipped: result.skipped ?? 0 }));
+    } else {
+      showNotice(t("mountRefresh.skipped"));
+    }
+    await loadMounts();
+  } catch (cause) {
+    showError(cause);
+  } finally {
+    refreshBusyId.value = "";
+  }
+}
+
+async function unmountMount(row: MountRow) {
+  if (unmountBusyId.value) return;
+  unmountBusyId.value = row.mountId;
+  try {
+    await call("files/unmount", { mountId: row.mountId });
+    showNotice(t("mounts.unmounted"));
+    await loadMounts();
+  } catch (cause) {
+    showError(cause);
+  } finally {
+    unmountBusyId.value = "";
+  }
+}
+
+function mountStrategyLabel(strategy: string) {
+  return strategy === "rclone" ? t("mountStrategy.rclone") : t("mountStrategy.webdav");
+}
+
+// ---- 设置弹窗「本机共享」区块（对标 rclone serve 家族）：files/serve/list
+// 列表 + 逐条停止。与 loadMounts 同触发点（打开设置/切到本地挂载分类时），
+// sidecar 按 connectionId 过滤（call 注入）。
+
+interface ShareRow {
+  serveId: string;
+  url: string;
+  serveType: string;
+}
+
+const sharesLoading = ref(false);
+const sharesError = ref("");
+const sharesList = ref<ShareRow[]>([]);
+const shareBusyId = ref("");
+
+async function loadShares() {
+  if (sharesLoading.value) return;
+  sharesLoading.value = true;
+  sharesError.value = "";
+  try {
+    const result = await call<{ serves: ShareRow[] }>("files/serve/list", {});
+    sharesList.value = Array.isArray(result.serves) ? result.serves : [];
+  } catch (cause) {
+    sharesError.value = errorMessage(cause);
+  } finally {
+    sharesLoading.value = false;
+  }
+}
+
+async function stopShare(row: ShareRow) {
+  if (shareBusyId.value) return;
+  shareBusyId.value = row.serveId;
+  try {
+    await call("files/serve/stop", { serveId: row.serveId });
+    showNotice(t("shareStopDone"));
+    await loadShares();
+  } catch (cause) {
+    showError(cause);
+  } finally {
+    shareBusyId.value = "";
+  }
 }
 
 // ---- lifecycle -----------------------------------------------------------------
@@ -2273,6 +3061,8 @@ function updateHostContext(context: Record<string, unknown>) {
   onContextClick();
   closeConfirm();
   previewPath.value = null;
+  // 挂载状态面板按连接过滤：换连接时关闭设置弹窗，避免展示旧连接的挂载行。
+  settingsOpen.value = false;
   if (!sideConnectionId("left")) {
     leftNav.next();
     path.value = "/";
@@ -2412,6 +3202,14 @@ function onDocumentKeydown(event: KeyboardEvent) {
     transferHistoryConfirmOpen.value = false;
     return;
   }
+  if (mountDialogOpen.value) {
+    closeMountDialog();
+    return;
+  }
+  if (settingsOpen.value) {
+    closeSettings();
+    return;
+  }
   closeMenusRestoreFocus();
 }
 
@@ -2426,21 +3224,28 @@ function onRightNavigate(target: string) {
   void loadRightDirectory(target).catch(() => undefined);
 }
 
-watch([dockOpen, dockTab], ([open, tab]) => {
-  if (!open || tab !== "settings") {
+watch([dockOpen, dockTab], ([, tab]) => {
+  if (tab === "audit") auditRef.value?.refresh();
+});
+// 设置弹窗关闭即清掉偏好编辑期的行内错误（下次打开重新校验）。
+watch(settingsOpen, (open) => {
+  if (!open) {
     saveDirError.value = "";
     openAppError.value = "";
   }
-  if (tab === "audit") auditRef.value?.refresh();
 });
 
 onMounted(() => {
   document.addEventListener("click", onContextClick);
+  // 顶栏限速徽标：启动即拉取当前持久化限速（空 = 不限，徽标隐藏）。
+  void loadBwlimit();
   document.addEventListener("keydown", onDocumentKeydown);
   window.addEventListener("resize", syncViewportLayout);
   syncViewportLayout();
-  // 本机落盘能力探测（决定下载走 sidecar 落盘还是宿主/浏览器兜底）。
+  // 本机落盘能力探测（决定下载走 sidecar 落盘还是宿主/浏览器兜底）+ 平台
+  // 打开方式预设探测（旧 sidecar 方法缺失时隐藏预设区）。
   void probeLocalCapabilities();
+  void probeAppPresets();
   void initialize().catch((cause) => {
     loading.value = false;
     listingFailed.value = true;
@@ -2487,12 +3292,18 @@ onBeforeUnmount(() => {
       :connection-color="connection.color"
       :read-only="!canWrite"
       :conn-state="connState"
+      :show-mount="canUseMount"
+      :can-mount="canMountToolbar"
+      :bwlimit="bwlimitActive"
       :t="t"
       @new-folder="startNewFolder(toolbarTarget.side)"
       @upload="onUpload"
       @download="downloadSelection(toolbarTarget.side)"
       @delete="startDelete(toolbarSelectionEntries(toolbarTarget.side), toolbarTarget.side)"
       @toggle-dual-pane="dualPane = !dualPane"
+      @mount="mountToolbarTarget"
+      @open-settings="openSettings()"
+      @bwlimit-click="openSettings('transfer')"
       @toggle-dock="(tab) => { const target = tab ?? dockTab; if (dockOpen && dockTab === target) dockOpen = false; else { dockOpen = true; dockTab = target; if (target === 'audit') auditRef?.refresh(); } }"
     />
 
@@ -2538,7 +3349,10 @@ onBeforeUnmount(() => {
                     type="search"
                     spellcheck="false"
                     @input="searchQuery = ($event.target as HTMLInputElement).value"
-                    @keydown.esc.prevent="searchQuery = ''"
+                    @keydown.down.prevent="onSearchKeydown('left', 'ArrowDown', ($event.target as HTMLInputElement).value)"
+                    @keydown.up.prevent="onSearchKeydown('left', 'ArrowUp', ($event.target as HTMLInputElement).value)"
+                    @keydown.enter.prevent="onSearchKeydown('left', 'Enter', ($event.target as HTMLInputElement).value)"
+                    @keydown.esc.prevent="searchQuery = ''; closeDeepSearch()"
                   />
                 </span>
               </div>
@@ -2603,6 +3417,7 @@ onBeforeUnmount(() => {
             :tree-root="rightTree"
             :quick-paths="rightQuickPaths"
             :current-path="rightPath"
+            :usage="remoteUsage"
             :t="t"
             @update:tab="rightSideTab = $event"
             @update:collapsed="rightSideCollapsed = $event"
@@ -2627,7 +3442,10 @@ onBeforeUnmount(() => {
                     type="search"
                     spellcheck="false"
                     @input="rightSearchQuery = ($event.target as HTMLInputElement).value"
-                    @keydown.esc.prevent="rightSearchQuery = ''"
+                    @keydown.down.prevent="onSearchKeydown('right', 'ArrowDown', ($event.target as HTMLInputElement).value)"
+                    @keydown.up.prevent="onSearchKeydown('right', 'ArrowUp', ($event.target as HTMLInputElement).value)"
+                    @keydown.enter.prevent="onSearchKeydown('right', 'Enter', ($event.target as HTMLInputElement).value)"
+                    @keydown.esc.prevent="rightSearchQuery = ''; closeDeepSearch()"
                   />
                 </span>
               </div>
@@ -2664,7 +3482,6 @@ onBeforeUnmount(() => {
           <button role="tab" :aria-selected="dockTab === 'transfers'" :tabindex="dockTab === 'transfers' ? 0 : -1" :class="{ 'is-active': dockTab === 'transfers' }" @click="dockTab = 'transfers'">{{ t("transferPanel") }}</button>
           <button role="tab" :aria-selected="dockTab === 'audit'" :tabindex="dockTab === 'audit' ? 0 : -1" :class="{ 'is-active': dockTab === 'audit' }" @click="dockTab = 'audit'">{{ t("auditPanel") }}</button>
           <button role="tab" :aria-selected="dockTab === 'connection'" :tabindex="dockTab === 'connection' ? 0 : -1" :class="{ 'is-active': dockTab === 'connection' }" @click="dockTab = 'connection'">{{ t("connectionPanel") }}</button>
-          <button role="tab" :aria-selected="dockTab === 'settings'" :tabindex="dockTab === 'settings' ? 0 : -1" :class="{ 'is-active': dockTab === 'settings' }" @click="dockTab = 'settings'">{{ t("settingsPanel") }}</button>
         </div>
         <div class="wb-dock-body">
           <TransferPanel
@@ -2681,18 +3498,6 @@ onBeforeUnmount(() => {
             @open-app="openTransferWithApp"
           />
           <AuditPanel v-else-if="dockTab === 'audit'" ref="auditRef" :t="t" />
-          <SettingsPanel
-            v-else-if="dockTab === 'settings'"
-            :t="t"
-            :can-save-local="canSaveLocal"
-            :save-dir="saveDirDraft"
-            :default-save-dir="localDownloadDir"
-            :download-dir-error="saveDirError"
-            :open-app="openAppPrefs"
-            :open-app-error="openAppError"
-            @save-dir="onSaveDirChange"
-            @save-open-app="onOpenAppPrefsChange"
-          />
           <div v-else style="display: flex; flex-direction: column; gap: 10px">
             <div class="wb-transfer-item">
               <div class="wb-transfer-title"><strong>{{ connectionLabel }}</strong></div>
@@ -2736,6 +3541,7 @@ onBeforeUnmount(() => {
         @saved="onPreviewSaved"
         @download="onPreviewDownload"
         @minimize="minimizePreview"
+        @open-settings="openSettings('openWith')"
       />
       <div
         class="wb-preview-grip"
@@ -2749,6 +3555,128 @@ onBeforeUnmount(() => {
       <FileText aria-hidden="true" />
       <span>{{ previewTitle }}</span>
     </button>
+
+    <!-- 挂载到本机：独立顶层弹窗（内嵌本机目录浏览器，直接选目录）。 -->
+    <MountDialog
+      v-if="mountDialogOpen"
+      :t="t"
+      @close="closeMountDialog"
+      @confirm="onMountDialogConfirm"
+    />
+
+    <SyncDialog
+      v-if="syncDialogOpen"
+      :t="t"
+      :kind="syncDialogKind"
+      :source-path="syncDialogEntry?.path ?? ''"
+      :default-target="syncDialogDraft"
+      :bisync-state="syncDialogBisyncState"
+      @close="closeSyncDialog"
+      @confirm="onSyncDialogConfirm"
+    />
+
+    <!-- 独立设置弹窗（对标 ssh 插件 settings-modal）：左侧分类导航 + 右侧内容
+         面板，Esc/遮罩/关闭钮均可关闭；Tab 焦点陷阱同预览弹窗。dock 只保留
+         transfers/audit/connection，设置不再挤在 dock 页签里。 -->
+    <div
+      v-if="settingsOpen"
+      ref="settingsOverlayEl"
+      class="wb-settings-backdrop"
+      role="dialog"
+      aria-modal="true"
+      :aria-label="t('settings')"
+      @click.self="closeSettings"
+      @keydown="onSettingsTabKeydown"
+    >
+      <div class="wb-settings-modal" :style="settingsWinStyle">
+        <header>
+          <strong>{{ t("settings") }}</strong>
+          <button class="wb-icon-button wb-icon-neutral" v-tip="t('close')" @click="closeSettings"><X /></button>
+        </header>
+        <div class="wb-settings-layout">
+          <nav class="wb-settings-nav" aria-label="settings categories">
+            <button
+              v-for="cat in settingsCategories"
+              :key="cat.id"
+              type="button"
+              class="wb-settings-nav-item"
+              :class="{ 'is-active': settingsCategory === cat.id }"
+              @click="settingsCategory = cat.id"
+            ><component :is="cat.icon" class="wb-settings-nav-icon" /> {{ t(cat.labelKey) }}</button>
+          </nav>
+          <div class="wb-settings-content">
+            <!-- 单实例常驻：切换分类不卸载组件，各区块未保存草稿得以保留。 -->
+            <SettingsPanel
+              v-if="settingsCategory !== 'mounts'"
+              ref="settingsPanelRef"
+              @dirty="settingsDirty = $event"
+              :section="panelSection"
+              :t="t"
+              :can-save-local="canSaveLocal"
+              :save-dir="saveDirDraft"
+              :default-save-dir="localDownloadDir"
+              :download-dir-error="saveDirError"
+              :open-app="openAppPrefs"
+              :open-app-error="openAppError"
+              :presets="appPresets"
+              :bwlimit="bwlimitDraft"
+              :bwlimit-error="bwlimitError"
+              @save-dir="onSaveDirChange"
+              @save-open-app="onOpenAppPrefsChange"
+              @save-bwlimit="onBwlimitSave"
+            />
+            <div v-else class="wb-settings-pane" :aria-busy="mountsLoading">
+              <DesktopOnlyCard v-if="!canSaveLocal" :t="t" />
+              <template v-else>
+              <p class="wb-settings-help">{{ t("mounts.help") }}</p>
+              <div class="wb-mounts-actions">
+                <button class="wb-toolbar-button" :disabled="mountsLoading" @click="openMountDialog()"><HardDrive /> {{ t("mounts.mountNow") }}</button>
+                <button class="wb-icon-button wb-icon-neutral" v-tip="t('refresh')" :disabled="mountsLoading" @click="loadMounts"><RefreshCw :class="{ 'wb-spin': mountsLoading }" /></button>
+              </div>
+              <p v-if="mountsError" class="wb-settings-error" role="alert">{{ t("mounts.loadFailed") }}</p>
+              <p v-else-if="!mountsLoading && !mountsList.length" class="wb-settings-help">{{ t("mounts.empty") }}</p>
+              <ul v-else-if="mountsList.length" class="wb-mounts-list">
+                <li v-for="row in mountsList" :key="row.mountId">
+                  <div class="wb-mounts-main">
+                    <strong>{{ mountStrategyLabel(row.strategy) }}</strong>
+                    <span class="wb-mono">{{ row.mountPoint ?? `:${row.gatewayPort ?? ""}` }}</span>
+                    <span v-if="mountStatsText(row.mountId)" class="wb-mounts-stats">{{ mountStatsText(row.mountId) }}</span>
+                    <span v-if="row.mounted === false" class="wb-settings-error">{{ t("mounts.stale") }}</span>
+                  </div>
+                  <span class="wb-mounts-badge">{{ t("mounts.readOnly") }}</span>
+                  <button class="wb-icon-button wb-icon-neutral" :disabled="refreshBusyId === row.mountId" v-tip="t('mountRefresh.button')" @click="refreshMountCache(row)"><RefreshCw /></button>
+                  <button class="wb-icon-button wb-icon-neutral" :disabled="unmountBusyId === row.mountId" v-tip="t('mounts.unmount')" @click="unmountMount(row)"><Eject /></button>
+                </li>
+              </ul>
+              </template>
+              <!-- 本机共享（files/serve/*）：挂载列表下方常驻区块 -->
+              <p class="wb-settings-help wb-shares-title">{{ t("shareSectionTitle") }}</p>
+              <div class="wb-mounts-actions">
+                <button class="wb-icon-button wb-icon-neutral" v-tip="t('refresh')" :disabled="sharesLoading" @click="loadShares"><RefreshCw :class="{ 'wb-spin': sharesLoading }" /></button>
+              </div>
+              <p v-if="sharesError" class="wb-settings-error" role="alert">{{ t("operationFailed", { error: sharesError }) }}</p>
+              <p v-else-if="!sharesLoading && !sharesList.length" class="wb-settings-help">{{ t("shareEmpty") }}</p>
+              <ul v-else-if="sharesList.length" class="wb-shares-list">
+                <li v-for="row in sharesList" :key="row.serveId">
+                  <div class="wb-mounts-main">
+                    <strong>{{ row.serveType.toUpperCase() }}</strong>
+                    <span class="wb-mono">{{ row.url }}</span>
+                  </div>
+                  <button class="wb-icon-button wb-icon-neutral" :disabled="shareBusyId === row.serveId" v-tip="t('shareStop')" @click="stopShare(row)"><X /></button>
+                </li>
+              </ul>
+            </div>
+          </div>
+          <!-- 统一保存：任一区块有未保存修改时点亮；成功通知由各链路自发。 -->
+          <footer class="wb-settings-footer">
+            <span class="wb-muted">{{ settingsDirty ? t("settingsUnsavedHint") : "" }}</span>
+            <button class="wb-toolbar-button wb-settings-save" type="button" :disabled="!settingsDirty || settingsSaving" @click="onSettingsSave">{{ t("settingsSave") }}</button>
+          </footer>
+        <!-- 右下角拉伸柄：拖动调尺寸，松手即记忆（prefs.settingsWin）。 -->
+        <div class="wb-settings-grip" aria-hidden="true" @pointerdown="onSettingsGripPointerdown"></div>
+        </div>
+      </div>
+    </div>
 
     <!-- 统一右键菜单（A-FILES ④b）：源栏/目标栏共用；多选时切批量动作面。
          R3-P2-8：role="menu"/menuitem 语义。 -->
@@ -2766,19 +3694,32 @@ onBeforeUnmount(() => {
         <button role="menuitem" @click="menuAction('copyPath')"><Link2 /> {{ t("copyPath") }}</button>
       </template>
       <template v-else>
+        <!-- 常用置顶：打开/预览/下载 → 编辑变换 → 分析校验 → 同步导入分享 → 维护 → 删除独立危险区 → 剪贴板。 -->
         <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('open')"><FolderOpen /> {{ t("openDirectory") }}</button>
         <button v-if="contextMenu.entry.kind === 'file' && !isArchivePath(contextMenu.entry.path)" role="menuitem" @click="menuAction('preview')"><Eye /> {{ t("preview") }}</button>
         <button v-if="contextMenu.entry.kind === 'file' && isArchivePath(contextMenu.entry.path)" role="menuitem" @click="menuAction('archiveContents')"><Archive /> {{ t("archiveContents") }}</button>
         <button v-if="contextMenu.entry.kind === 'file'" role="menuitem" @click="menuAction('download')"><Download /> {{ t("download") }}</button>
-        <button v-if="contextMenu.entry.kind === 'file' && isArchivePath(contextMenu.entry.path) && canWrite" role="menuitem" @click="menuAction('extract')"><FileOutput /> {{ t("extractTo") }}</button>
-        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('syncDir')"><ArrowRightLeft /> {{ t("transferKind.syncDir") }}…</button>
-        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('copyDir')"><FolderSymlink /> {{ t("transferKind.copyDir") }}…</button>
-        <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('computeSize')"><Calculator /> {{ t("computeSize") }}</button>
-        <button v-if="canWrite" role="menuitem" @click="menuAction('compress')"><FileArchive /> {{ t("compress") }}</button>
         <hr />
+        <button v-if="canWrite" role="menuitem" @click="menuAction('rename')"><Pencil /> {{ t("rename") }}</button>
         <button v-if="canWrite" role="menuitem" @click="menuAction('copy')"><Copy /> {{ t("transferKind.copy") }}…</button>
         <button v-if="canWrite" role="menuitem" @click="menuAction('move')"><FolderInput /> {{ t("transferKind.move") }}…</button>
-        <button v-if="canWrite" role="menuitem" @click="menuAction('rename')"><Pencil /> {{ t("rename") }}</button>
+        <button v-if="contextMenu.entry.kind === 'file' && isArchivePath(contextMenu.entry.path) && canWrite" role="menuitem" @click="menuAction('extract')"><FileOutput /> {{ t("extractTo") }}</button>
+        <button v-if="canWrite" role="menuitem" @click="menuAction('compress')"><FileArchive /> {{ t("compress") }}</button>
+        <hr />
+        <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('computeSize')"><Calculator /> {{ t("computeSize") }}</button>
+        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('hashsum')"><FileCheck /> {{ t("hashsumMenu") }}</button>
+        <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('checkDir')"><Scale /> {{ t("checkDirMenu") }}</button>
+        <button v-if="isSumFile(contextMenu.entry)" role="menuitem" @click="menuAction('verifySum')"><ShieldCheck /> {{ t("verifySumMenu") }}</button>
+        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('syncDir')"><ArrowRightLeft /> {{ t("transferKind.syncDir") }}…</button>
+        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('copyDir')"><FolderSymlink /> {{ t("transferKind.copyDir") }}…</button>
+        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('bisyncDir')"><ArrowRightLeft /> {{ t("bisyncMenu") }}…</button>
+        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('copyurl')"><Link /> {{ t("copyurlMenu") }}</button>
+        <hr />
+        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('rmdirs')"><FolderMinus /> {{ t("rmdirsMenu") }}</button>
+        <button v-if="canUseMount && contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('mountLocal')"><HardDrive /> {{ t("mountToLocal") }}</button>
+        <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('serveHttp')"><Globe /> {{ t("shareHttpMenu") }}</button>
+        <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('serveWebdav')"><Share2 /> {{ t("shareWebdavMenu") }}</button>
+        <hr />
         <button role="menuitem" class="is-danger" :disabled="!canWrite" @click="menuAction('delete')"><Trash2 /> {{ t("delete") }}</button>
         <hr />
         <button role="menuitem" @click="menuAction('copyPath')"><Link2 /> {{ t("copyPath") }}</button>
@@ -2793,6 +3734,8 @@ onBeforeUnmount(() => {
       <button :disabled="!canWrite" role="menuitem" @click="blankMenuAction('newFile')"><FilePlus /> {{ t("newFileTitle") }}</button>
       <hr />
       <button role="menuitem" @click="blankMenuAction('refresh')"><RefreshCw /> {{ t("refresh") }}</button>
+      <hr />
+      <button role="menuitem" @click="blankMenuAction('cleanup')"><Trash2 /> {{ t("cleanupMenu") }}</button>
     </div>
 
     <!-- 侧栏右键菜单（P-FILES）：目录树/快捷目录行 → 打开 / 在另一栏打开 / 复制 -->
@@ -2806,6 +3749,29 @@ onBeforeUnmount(() => {
       <hr />
       <button role="menuitem" @click="sideMenuAction('copyPath')"><Link2 /> {{ t("copyPath") }}</button>
       <button role="menuitem" @click="sideMenuAction('copyName')"><FileText /> {{ t("copyName") }}</button>
+      <hr />
+      <button v-if="canUseMount" role="menuitem" @click="sideMenuAction('mountLocal')"><HardDrive /> {{ t("mountToLocal") }}</button>
+    </div>
+
+    <!-- 深度搜索结果（files/search）：点击行跳到该文件所在目录 -->
+    <div v-if="deepSearchOpen" class="wb-deepsearch" role="dialog" :aria-label="t('deepSearchTitle')">
+      <header>
+        <strong>{{ t("deepSearchTitle") }}</strong>
+        <button class="wb-icon-button wb-icon-neutral" v-tip="t('close')" @click="closeDeepSearch"><X /></button>
+      </header>
+      <p v-if="deepSearchBusy" class="wb-muted">{{ t("loading") }}</p>
+      <p v-else-if="!deepSearchResults.length" class="wb-muted">{{ t("deepSearchNoResults") }}</p>
+      <template v-else>
+        <ul class="wb-deepsearch-list">
+          <li v-for="(entry, index) in deepSearchResults" :key="entry.path">
+            <button type="button" :class="{ 'is-active': deepSearchIndex === index }" @click="openDeepSearchResult(entry)">
+              <span class="wb-mono">{{ entry.path }}</span>
+              <span class="wb-muted">{{ formatBytes(entry.size) }}</span>
+            </button>
+          </li>
+        </ul>
+        <p v-if="deepSearchTruncated" class="wb-muted">{{ t("deepSearchTruncated") }}</p>
+      </template>
     </div>
 
     <ConfirmDialog
@@ -2825,6 +3791,7 @@ onBeforeUnmount(() => {
         <span v-if="confirmKind === 'newFolder'">{{ t("newFolderPlaceholder") }}</span>
         <span v-else-if="confirmKind === 'newFile'">{{ t("newFilePlaceholder") }}</span>
         <span v-else-if="confirmKind === 'rename'">{{ t("renameTitle") }}</span>
+        <span v-else-if="confirmKind === 'copyurl'">{{ t("copyurlUrlLabel") }}</span>
         <span v-else>{{ t("pathPlaceholder") }}</span>
         <input v-model="confirmDraft" spellcheck="false" @keydown.enter.prevent="!confirmDanger && onConfirm()" />
       </label>

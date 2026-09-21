@@ -9,6 +9,8 @@
 //   &job=1           copy/move 一律走降级 job（默认仅目录/`mockDir`）
 //   &ro=1            只读态注入（connection.readOnly + capabilities.readOnly，
 //                    P2-13①：供只读徽章/写按钮禁用/右键菜单禁用的 UI 走查）
+//   &local=1         模拟桌面宿主（canSaveLocal=true + detect-apps 预设桩）
+//   &platform=macos  local=1 下的平台标签（macos|windows|linux，默认 macos）
 //   &connectionTest=fail  connection/test 的不可达夹具（不发真实网络请求）
 // 任何包含 "error" 的路径都会返回业务错误（便于验证错误横幅与重试）。
 // __local__ 连接（双栏左栏本地面）：list/listPaged/stat/quickPaths/read 路由到
@@ -59,6 +61,10 @@ export function installMockHost() {
   // 对标 rclone-dashboard share 链接：?presign=1 让 mock capabilities.presign=true，
   // files/publicLink 返回伪签名 URL（默认 false，模拟不支持公开链接的后端）。
   const presign = params.get("presign") === "1";
+  // ?local=1 模拟桌面宿主：canSaveLocal=true + ?platform= 指定 OS（默认 macos），
+  // 供设置弹窗「下载/打开方式」分类与平台预设 chips 走查（默认仍模拟 web 宿主）。
+  const demoLocal = params.get("local") === "1";
+  const demoPlatform = params.get("platform") ?? "macos";
 
   // ---- 虚拟文件树 ---------------------------------------------------------
   const tree = new Map<string, MockEntry>();
@@ -240,6 +246,8 @@ export function installMockHost() {
   // ---- 异步 job 表（降级 copy/move/rename）--------------------------------
   let jobSeq = 0;
   const jobs = new Map<string, Record<string, unknown>>();
+  /** files/bwlimit 的持久化值（sidecar prefs 假身；空 = 不限）。 */
+  let mockBwlimit: string | null = null;
   const timers = new Map<string, number[]>();
 
   function emit(method: string, payload: Record<string, unknown>) {
@@ -323,6 +331,18 @@ export function installMockHost() {
   // 落对应树/内容（__local__ → 本地树），与真实 sidecar 的按连接落盘一致。
   const uploads = new Map<string, { path: string; size: number; received: number; bytes: Uint8Array; connectionId: unknown }>();
   const downloads = new Map<string, { path: string; size: number; received: number; connectionId: unknown; timer: number; canceled: boolean }>();
+
+  // ---- 本地挂载（mock 演示 webdav 策略；不触达真实网关/挂载点）----------------
+  // files/mount 固定走 webdav 兜底（mock 无 FUSE 概念），mountStatus/unmount
+  // 按连接过滤，供设置弹窗「本地挂载」面板走查。
+  const mockMounts = new Map<string, { strategy: string; gatewayPort: number; connectionId: unknown }>();
+  let mockMountSeq = 0;
+
+  // ---- 本机共享（files/serve/*，对标 rclone serve 家族）-----------------------
+  // 内存 map 假身（serveId → 行）：start 分配伪回环 URL，list 按连接过滤，
+  // stop 幂等删除。不发真实网络请求（runJob 不需要）。
+  const mockServes = new Map<string, { serveType: string; url: string; connectionId: string }>();
+  let mockServeSeq = 0;
 
   // ---- 监听器 ---------------------------------------------------------------
   const eventListeners: Array<(event: DbxPluginEvent) => void> = [];
@@ -540,6 +560,125 @@ export function installMockHost() {
         recordAudit(method, source, sourceId);
         return { success: true, transport: "native", jobId: null };
       }
+      case "files/search": {
+        const term = str("pattern").toLowerCase();
+        const rootPath = (typeof p.root === "string" && p.root ? p.root : "/").replace(/\/+$/, "") || "/";
+        const hits: Array<Record<string, unknown>> = [];
+        const remoteTree = treeFor(p.connectionId);
+        for (const [entryPath, entry] of remoteTree) {
+          if (entry.kind !== "file") continue;
+          if (!entryPath.startsWith(rootPath) && rootPath !== "/") continue;
+          const name = entryPath.split("/").pop() ?? "";
+          if (term && name.toLowerCase().includes(term.toLowerCase())) {
+            hits.push({ path: entryPath, size: entry.size ?? 0, modifiedAt: entry.modifiedAt ?? "" });
+          }
+        }
+        return { entries: hits.slice(0, typeof p.limit === "number" ? p.limit : 200), truncated: false, scanned: hits.length };
+      }
+      case "files/copyurl": {
+        const dirPath = str("dirPath");
+        const url = str("url");
+        assertOk(dirPath);
+        const cleanUrl = url.split(/[?#]/)[0] ?? url;
+        const auto = cleanUrl.split("/").filter(Boolean).pop() ?? "download";
+        const filename = typeof p.filename === "string" && p.filename ? p.filename : auto;
+        const target = `${dirPath.replace(/\/+$/, "")}/${filename}`;
+        const urlTree = treeFor(p.connectionId);
+        const urlContents = contentsFor(p.connectionId);
+        urlTree.set(target, { kind: "file", size: 15, modifiedAt: new Date().toISOString() });
+        urlContents.set(target, new TextEncoder().encode(`imported:${url}`));
+        recordAudit(method, target, p.connectionId);
+        return { path: target, filename };
+      }
+      case "files/bisync/state": {
+        // mock：默认视为已有同步状态；URL 带 bisyncNew=1 时返回首次态。
+        const isNew = new URLSearchParams(window.location.search).has("bisyncNew");
+        return { session: "mock-pair", state: isNew ? "new" : "synced" };
+      }
+      case "files/bisync/start": {
+        const bs = str("sourcePath");
+        const bt = str("targetPath");
+        assertOk(bs);
+        const bJobId = `mock-job-${++jobSeq}`;
+        const bCancel = { flag: false };
+        jobs.set(`__cancel_${bJobId}`, bCancel as unknown as Record<string, unknown>);
+        runJob(bJobId, "bisync", bs, bt, () => {}, bCancel, connectionIdOf(p.sourceConnectionId ?? p.connectionId), connectionIdOf(p.targetConnectionId ?? p.connectionId));
+        return { jobId: bJobId };
+      }
+      case "files/about": {
+        // 本地内存树的假容量：按条目数粗略估算，让侧栏占用条有东西可渲染。
+        const aboutId = connectionIdOf(p.connectionId);
+        const aboutTree = treeFor(p.connectionId);
+        const count = [...aboutTree.values()].filter((entry) => entry.kind === "file").length;
+        const used = count * 8192;
+        const total = 4 * 1024 * 1024 * 1024;
+        return { used, total, free: total - used, _conn: aboutId };
+      }
+      case "files/check": {
+        const checkSrc = str("sourcePath");
+        const checkDst = str("targetPath");
+        assertOk(checkSrc);
+        const jobId = `mock-job-${++jobSeq}`;
+        const cancel = { flag: false };
+        jobs.set(`__cancel_${jobId}`, cancel as unknown as Record<string, unknown>);
+        runJob(jobId, "check", checkSrc, checkDst, () => {}, cancel, connectionIdOf(p.sourceConnectionId ?? p.connectionId), connectionIdOf(p.targetConnectionId ?? p.connectionId));
+        // 真实 sidecar 在终态事件/轮询行携带差异摘要；mock 给一个确定性示例，
+        // 让传输面板的着色分级（identical 绿 / 差异橙）可见。
+        const checkRecord = jobs.get(jobId);
+        if (checkRecord) {
+          checkRecord.checkSummary = "1 differences (missing on source: 0, missing on target: 1, differ: 0, errors: 0)";
+        }
+        return { jobId };
+      }
+      case "files/checksum/verify": {
+        // SUM 校验（批次7）假实现：与 files/check 同形态的 check 作业，
+        // 被核验目录 = SUM 文件父目录（后端真实语义）。
+        const sumPath = str("sumPath");
+        assertOk(sumPath);
+        const parent = sumPath.split("/").filter(Boolean).slice(0, -1).join("/");
+        const dirPath = parent ? `/${parent}` : "/";
+        const jobId = `mock-job-${++jobSeq}`;
+        const cancel = { flag: false };
+        jobs.set(`__cancel_${jobId}`, cancel as unknown as Record<string, unknown>);
+        runJob(jobId, "check", dirPath, dirPath, () => {}, cancel, connectionIdOf(p.connectionId));
+        return { jobId };
+      }
+      case "files/hashsum": {
+        const hashPath = str("path");
+        assertOk(hashPath);
+        const hashTree = treeFor(p.connectionId);
+        const hashEntry = hashTree.get(hashPath.replace(/\/+$/, ""));
+        if (!hashEntry || hashEntry.kind !== "dir") throw new Error(`NotFound: ${hashPath}`);
+        const base = hashPath.split("/").filter(Boolean).pop() ?? "dir";
+        const parent = hashPath.split("/").filter(Boolean).slice(0, -1).join("/");
+        const sumPath = parent ? `/${parent}/${base}.md5` : `/${base}.md5`;
+        recordAudit(method, hashPath, p.connectionId);
+        return { path: sumPath, hashType: typeof p.hashType === "string" ? p.hashType : "md5", files: 1 };
+      }
+      case "files/cleanup": {
+        recordAudit(method, "/", p.connectionId);
+        return { success: true };
+      }
+      case "files/rmdirs": {
+        const rmdirsPath = str("path");
+        assertOk(rmdirsPath);
+        recordAudit(method, rmdirsPath, p.connectionId);
+        return { success: true };
+      }
+      case "files/bwlimit": {
+        // sidecar prefs 语义的假实现：空参读取，"off"/空串清除，其余原样保存。
+        const rate = p.rate;
+        if (rate !== undefined) {
+          if (typeof rate !== "string") throw new Error("Invalid request parameters: rate must be a string");
+          const normalized = rate.trim();
+          if (normalized && normalized !== "off" && !/^\d+(\.\d+)?[kKmMgGtT]?[bB]?(:\d+(\.\d+)?[kKmMgGtT]?[bB]?)?$/.test(normalized)) {
+            // 与真实 sidecar 对齐：rclone 拒绝无法解析的限速值（bad bwlimit）。
+            throw new Error("bad bwlimit: invalid rate");
+          }
+          mockBwlimit = normalized === "off" || !normalized ? null : normalized;
+        }
+        return { rate: mockBwlimit };
+      }
       case "files/transfers/list":
       case "files/transfers/clear": {
         const connection = payload.connectionId;
@@ -580,8 +719,126 @@ export function installMockHost() {
         return { removed: 1 };
       }
       case "files/local/capabilities": {
-        // mock 模拟 web 宿主：无本机落盘，前端走宿主保存/浏览器兜底路径。
+        // mock 模拟 web 宿主：无本机落盘，前端走宿主保存/浏览器兜底路径；
+        // ?local=1 时模拟桌面宿主（下载目录/外部打开可用）。
+        if (demoLocal) {
+          return { canSaveLocal: true, downloadsDir: "/Users/demo/Downloads", platform: demoPlatform };
+        }
         return { canSaveLocal: false, downloadsDir: "", platform: "web" };
+      }
+      case "files/local/detect-apps": {
+        // ?local=1 平台预设演示：返回一组伪路径（校验桩恒通过），不含真实探测。
+        if (!demoLocal) return { platform: "web", apps: [] };
+        const presets: Record<string, Array<{ id: string; name: string; path: string }>> = {
+          macos: [
+            { id: "wps", name: "WPS Office", path: "/Applications/wpsoffice.app" },
+            { id: "excel", name: "Microsoft Excel", path: "/Applications/Microsoft Excel.app" },
+            { id: "libreoffice", name: "LibreOffice", path: "/Applications/LibreOffice.app" },
+          ],
+          windows: [
+            { id: "wps", name: "WPS Office", path: "C:\\Program Files\\Kingsoft\\WPS Office\\ksolaunch.exe" },
+            { id: "excel", name: "Microsoft Excel", path: "C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE" },
+          ],
+          linux: [
+            { id: "libreoffice", name: "LibreOffice", path: "/usr/bin/libreoffice" },
+            { id: "vscode", name: "VS Code", path: "/usr/bin/code" },
+          ],
+        };
+        return { platform: demoPlatform, apps: presets[demoPlatform] ?? [] };
+      }
+      case "files/local/validate-directory": {
+        // mock 不探测真实文件系统：绝对路径形态即通过，保持设置保存链路可走查。
+        const dir = str("path");
+        if (!dir) throw new Error("Missing path");
+        if (!dir.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(dir)) {
+          throw new Error("not an absolute path");
+        }
+        return { valid: true, path: dir };
+      }
+      case "files/local/validate-open-app": {
+        // mock 不探测真实文件系统：非空即通过，保持设置链路可走查。
+        const app = str("path");
+        if (!app) throw new Error("Missing path");
+        return { valid: true, path: app };
+      }
+      case "files/mount": {
+        const mountId = `mock-mount-${++mockMountSeq}`;
+        const gatewayPort = 40000 + (mockMountSeq % 1000);
+        mockMounts.set(mountId, { strategy: "webdav", gatewayPort, connectionId: connectionIdOf(p.connectionId) });
+        return { mountId, strategy: "webdav", gatewayPort, gatewayUrl: `http://127.0.0.1:${gatewayPort}/tok/${mountId}/`, fallbackReason: "mock: no FUSE driver" };
+      }
+      case "files/mountStatus": {
+        const wanted = p.connectionId == null ? null : connectionIdOf(p.connectionId);
+        const mounts = [...mockMounts.entries()]
+          .filter(([, row]) => wanted == null || row.connectionId === wanted)
+          .map(([mountId, row]) => ({ mountId, strategy: row.strategy, readOnly: true, gatewayPort: row.gatewayPort, mounted: true }));
+        return { mounts };
+      }
+      // VFS 缓存管理（批次5）：mock 只有 webdav 兜底行 → refresh 全部计入
+      // skipped；stats 无 rclone 行，只回空挂载列表（形状与真实 sidecar 一致）。
+      case "files/mount/refresh": {
+        const mountId = str("mountId");
+        let refreshed = 0;
+        let skipped = 0;
+        const wantedId = p.connectionId == null ? null : connectionIdOf(p.connectionId);
+        for (const [id, row] of mockMounts.entries()) {
+          if (mountId && id !== mountId) continue;
+          if (wantedId != null && row.connectionId !== wantedId) continue;
+          if (row.strategy === "rclone") refreshed += 1;
+          else skipped += 1;
+        }
+        if (mountId && refreshed + skipped === 0) throw new Error("Mount not found");
+        return { refreshed, skipped, errors: [] };
+      }
+      case "files/mount/stats": {
+        const wanted = p.connectionId == null ? null : connectionIdOf(p.connectionId);
+        const mounts = [...mockMounts.entries()]
+          .filter(([, row]) => wanted == null || row.connectionId === wanted)
+          .filter(([, row]) => row.strategy === "rclone")
+          .map(([mountId]) => ({
+            mountId,
+            strategy: "rclone",
+            stats: { metadataCache: { dirs: 1, files: 0 } },
+          }));
+        return { mounts, skipped: mockMounts.size - mounts.length };
+      }
+      case "files/local/reveal": {
+        const target = str("path");
+        if (!target) throw new Error("Missing path");
+        return { success: true };
+      }
+      case "files/unmount": {
+        const mountId = str("mountId");
+        if (mountId && !mockMounts.delete(mountId)) throw new Error("Mount not found");
+        if (!mountId) mockMounts.clear();
+        return { removed: 1 };
+      }
+      case "files/serve/start": {
+        // serve_type 白名单与真实 sidecar 对齐：缺省 http，仅 http/webdav。
+        const rawType = typeof p.serveType === "string" && p.serveType.trim() ? p.serveType.trim() : "http";
+        if (rawType !== "http" && rawType !== "webdav") throw new Error(`unsupported serve type '${rawType}'; only http and webdav are allowed`);
+        const serveId = `mock-serve-${++mockServeSeq}`;
+        const port = 42000 + (mockServeSeq % 1000);
+        const row = { serveType: rawType, url: `http://127.0.0.1:${port}`, connectionId: connectionIdOf(p.connectionId) };
+        mockServes.set(serveId, row);
+        recordAudit(method, str("path"), p.connectionId);
+        return { serveId, url: row.url, serveType: rawType };
+      }
+      case "files/serve/stop": {
+        const serveId = str("serveId");
+        const owner = mockServes.get(serveId);
+        if (owner && owner.connectionId !== connectionIdOf(p.connectionId)) throw new Error(`serve '${serveId}' does not belong to this connection`);
+        // 幂等：未知 serveId 也按成功处理（真实侧 rcd 可能已重启）。
+        mockServes.delete(serveId);
+        return { success: true };
+      }
+      case "files/serve/list": {
+        const wanted = connectionIdOf(p.connectionId);
+        return {
+          serves: [...mockServes.entries()]
+            .filter(([, row]) => row.connectionId === wanted)
+            .map(([serveId, row]) => ({ serveId, url: row.url, serveType: row.serveType })),
+        };
       }
       case "files/transfer/cancel": {
         if (typeof p.taskId !== "string") throw new Error("Invalid request parameters: taskId must be a string");
@@ -827,10 +1084,9 @@ export function installMockHost() {
       if (method === "host.getContext") return structuredClone(context) as T;
       // 连接枚举：让双栏目标选择与调试壳的连接列表能看到两个内置连接。
       if (method === "host.listConnections") {
-        return [
-          { id: "mock-conn", name: "Mock Storage" },
-          { id: "__local__", name: "本地文件" },
-        ] as T;
+        // 与真实宿主对齐：只列用户连接；__local__ 是 sidecar 内置保留连接，
+        // 由工作台自己注入左栏（这里再列一次会让左栏下拉出现两个「本地文件」）。
+        return [{ id: "mock-conn", name: "Mock Storage" }] as T;
       }
       throw new Error(`Unsupported plugin host method '${method}'`);
     },

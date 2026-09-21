@@ -3,7 +3,7 @@
 // 未知扩展走 text/hex 启发式；只有 Office/PDF/媒体/HTML/CSV 这类 CodeMirror
 // 无法渲染的格式交给 FileViewerPreview。读取仍受 files/read 的 2 MiB 上限约束。
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
-import { Download, Minus, Pencil, X } from "@lucide/vue";
+import { Download, Minus, Pencil, Settings2, X } from "@lucide/vue";
 import { baseName, call, errorMessage, formatBytes, isMethodMissing } from "../lib/api";
 import { canEditBytes, hexDump, READ_MAX_BYTES, WRITE_MAX_BYTES } from "../lib/preview";
 import { resolvePreview, type PreviewResolution } from "../lib/previewResolver";
@@ -27,6 +27,8 @@ const emit = defineEmits<{
   (event: "saved", path: string): void;
   (event: "download", path: string): void;
   (event: "minimize"): void;
+  /** viewer 无法渲染（unsupported/失败）时请求打开「打开方式」设置页。 */
+  (event: "open-settings"): void;
 }>();
 
 type PreviewMode = "text" | "image" | "hex" | "archive" | "viewer";
@@ -254,6 +256,12 @@ watch(
 // 编辑中且草稿已改动先弹丢弃确认，防止静默丢失 CodeMirror 编辑内容。
 const isDirty = computed(() => editing.value && draft.value !== text.value);
 defineExpose({ isDirty });
+
+// viewer 渲染不了的文档类格式（pptx 等未装配 renderer / 损坏文件）：提示改用
+// 平台外部应用（WPS/Excel/...，打开方式设置里按 OS 预设一键配置）。
+const canOpenExternal = computed(() =>
+  resolution.value?.kind === "office" || resolution.value?.kind === "pdf" || resolution.value?.kind === "media",
+);
 </script>
 
 <template>
@@ -283,7 +291,11 @@ defineExpose({ isDirty });
       </template>
       <div v-else-if="error" class="wb-preview-notice">
         <div>{{ t("previewLoadError", { error }) }}</div>
-        <button class="wb-toolbar-button" @click="emit('download', path)"><Download /> {{ t("download") }}</button>
+        <div v-if="canOpenExternal" class="wb-muted">{{ t("previewExternalHint") }}</div>
+        <div class="wb-preview-notice-actions">
+          <button v-if="canOpenExternal" class="wb-toolbar-button" @click="emit('open-settings')"><Settings2 /> {{ t("openInSettings") }}</button>
+          <button class="wb-toolbar-button" @click="emit('download', path)"><Download /> {{ t("download") }}</button>
+        </div>
       </div>
       <img v-else-if="mode === 'image'" :src="dataUri" :alt="title" />
       <!-- 文本预览/编辑：CodeMirror（与 ssh sftp 面板同方案）；key 保证

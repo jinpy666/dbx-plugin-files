@@ -29,6 +29,12 @@ watch(
   },
 );
 
+function onCrumbAreaClick(event: MouseEvent) {
+  // 点到层级按钮 = 导航；点到空白 = 进入编辑。
+  if ((event.target as HTMLElement).closest("button")) return;
+  void startEdit();
+}
+
 async function startEdit() {
   draft.value = props.path;
   editing.value = true;
@@ -60,7 +66,10 @@ function onBlur() {
     <button type="button" class="wb-icon-button wb-path-edit" v-tip="t('editPath')" @click="startEdit">
       <Folder aria-hidden="true" />
     </button>
-    <Breadcrumbs v-if="!editing" :path="path" :max-visible="maxVisible ?? 3" @navigate="emit('navigate', $event)" />
+    <!-- 面包屑占满剩余宽度：点级（button）跳转，点空白任意处直接进入编辑态。 -->
+    <div v-if="!editing" class="wb-path-crumb-area" @click="onCrumbAreaClick">
+      <Breadcrumbs :path="path" :max-visible="maxVisible ?? 3" @navigate="emit('navigate', $event)" />
+    </div>
     <input
       v-else
       ref="inputEl"

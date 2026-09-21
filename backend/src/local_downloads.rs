@@ -96,6 +96,9 @@ pub fn validate_download_dir(raw: &str) -> Result<PathBuf, String> {
 /// the user explicitly pinned in the settings panel. The same check runs when
 /// the preference is saved (`files/local/validate-open-app`) and again at
 /// open time so a stale path cannot linger.
+/// macOS additionally accepts an `.app` bundle directory: launches go through
+/// `open -a <app>` (see `app_launch_command`), which expects the bundle rather
+/// than the buried Mach-O binary.
 pub fn validate_open_app(raw: &str) -> Result<PathBuf, String> {
     let path_text = raw.trim();
     if path_text.is_empty() {
@@ -113,10 +116,80 @@ pub fn validate_open_app(raw: &str) -> Result<PathBuf, String> {
     }
     let metadata = std::fs::metadata(path)
         .map_err(|error| format!("External app is not accessible: {error}"))?;
-    if !metadata.is_file() {
-        return Err("External app path is not a file".to_string());
+    if metadata.is_file() {
+        return Ok(path.to_path_buf());
     }
-    Ok(path.to_path_buf())
+    if metadata.is_dir() && is_macos_app_bundle(path) {
+        return Ok(path.to_path_buf());
+    }
+    Err("External app path is not a file".to_string())
+}
+
+/// Pure bundle check behind `validate_open_app`: only `<name>.app` directories
+/// count as macOS application bundles — arbitrary directories stay rejected so
+/// the setting can never become a "open folder with…" primitive.
+fn is_macos_app_bundle(path: &Path) -> bool {
+    platform_name() == "macos"
+        && path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+}
+
+/// One built-in "open with" suggestion for the current platform. Paths follow
+/// each vendor's default install layout; `detect_apps` filters by existence
+/// so the UI only offers apps that are actually installed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppPreset {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub path: &'static str,
+}
+
+/// Pure per-platform preset table (`macos`/`windows`/`linux`/`other`), unit
+/// tested for shape; existence probing happens in `detect_apps`.
+pub fn app_presets(platform: &str) -> Vec<AppPreset> {
+    match platform {
+        "macos" => vec![
+            AppPreset { id: "wps", name: "WPS Office", path: "/Applications/wpsoffice.app" },
+            AppPreset { id: "excel", name: "Microsoft Excel", path: "/Applications/Microsoft Excel.app" },
+            AppPreset { id: "word", name: "Microsoft Word", path: "/Applications/Microsoft Word.app" },
+            AppPreset { id: "numbers", name: "Numbers", path: "/System/Applications/Numbers.app" },
+            AppPreset { id: "libreoffice", name: "LibreOffice", path: "/Applications/LibreOffice.app" },
+            AppPreset { id: "vscode", name: "VS Code", path: "/Applications/Visual Studio Code.app" },
+        ],
+        "windows" => vec![
+            AppPreset { id: "wps", name: "WPS Office", path: "C:\\Program Files\\Kingsoft\\WPS Office\\ksolaunch.exe" },
+            AppPreset { id: "excel", name: "Microsoft Excel", path: "C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE" },
+            AppPreset { id: "word", name: "Microsoft Word", path: "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE" },
+            AppPreset { id: "libreoffice", name: "LibreOffice", path: "C:\\Program Files\\LibreOffice\\program\\soffice.exe" },
+            AppPreset { id: "vscode", name: "VS Code", path: "C:\\Program Files\\Microsoft VS Code\\Code.exe" },
+        ],
+        "linux" => vec![
+            AppPreset { id: "wps", name: "WPS Office", path: "/usr/bin/wps" },
+            AppPreset { id: "libreoffice", name: "LibreOffice", path: "/usr/bin/libreoffice" },
+            AppPreset { id: "vscode", name: "VS Code", path: "/usr/bin/code" },
+        ],
+        _ => Vec::new(),
+    }
+}
+
+/// Presets whose path exists on this machine (regular file, or an `.app`
+/// bundle directory on macOS). Unknown platforms yield an empty list.
+pub fn detect_apps(platform: &str) -> Vec<AppPreset> {
+    filter_detected_apps(
+        app_presets(platform),
+        |path| {
+            std::fs::metadata(path)
+                .map(|metadata| metadata.is_file() || is_macos_app_bundle(Path::new(path)))
+                .unwrap_or(false)
+        },
+    )
+}
+
+/// Pure existence filter behind `detect_apps`, injectable for tests.
+fn filter_detected_apps(presets: Vec<AppPreset>, exists: impl Fn(&str) -> bool) -> Vec<AppPreset> {
+    presets
+        .into_iter()
+        .filter(|preset| exists(preset.path))
+        .collect()
 }
 
 /// Base directory downloads land in: explicit `download_dir` override (the
@@ -511,6 +584,59 @@ mod tests {
         assert!(validate_open_app("editor").is_err());
         assert!(validate_open_app("/tmp/bad\npath").is_err());
         assert!(validate_open_app("   ").is_err());
+    }
+
+    #[test]
+    fn validate_open_app_accepts_macos_app_bundle_only_on_macos() {
+        let parent = tempfile::tempdir().expect("tempdir");
+        let bundle = parent.path().join("WPS Office.app");
+        std::fs::create_dir(&bundle).expect("mkdir");
+        let bundle_text = bundle.to_string_lossy().to_string();
+        if platform_name() == "macos" {
+            // `open -a` launches bundles, so the directory form must validate
+            // there — a plain directory still does not.
+            assert!(validate_open_app(&bundle_text).is_ok());
+            assert!(validate_open_app(&parent.path().to_string_lossy()).is_err());
+        } else {
+            assert!(validate_open_app(&bundle_text).is_err());
+        }
+    }
+
+    #[test]
+    fn app_presets_cover_desktop_platforms_with_absolute_paths() {
+        for platform in ["macos", "windows", "linux"] {
+            let presets = app_presets(platform);
+            assert!(!presets.is_empty(), "{platform} should ship presets");
+            let mut ids: Vec<_> = presets.iter().map(|preset| preset.id).collect();
+            ids.sort_unstable();
+            ids.dedup();
+            assert_eq!(ids.len(), presets.len(), "{platform} preset ids must be unique");
+            for preset in &presets {
+                assert!(!preset.name.is_empty());
+                if platform == "windows" {
+                    assert!(preset.path.starts_with('\\') || preset.path.as_bytes()[1] == b':');
+                } else {
+                    assert!(preset.path.starts_with('/'), "{} must be absolute", preset.path);
+                }
+            }
+        }
+        // macOS presets stay bundle-shaped: `open -a` expects the bundle.
+        for preset in app_presets("macos") {
+            assert!(preset.path.ends_with(".app"), "{} must be a bundle", preset.path);
+        }
+        assert!(app_presets("other").is_empty());
+    }
+
+    #[test]
+    fn detect_apps_keeps_only_existing_paths() {
+        let presets = vec![
+            AppPreset { id: "wps", name: "WPS Office", path: "/opt/wps" },
+            AppPreset { id: "excel", name: "Microsoft Excel", path: "/opt/office/excel" },
+        ];
+        let detected = filter_detected_apps(presets, |path| path == "/opt/wps");
+        assert_eq!(detected.len(), 1);
+        assert_eq!(detected[0].id, "wps");
+        assert!(filter_detected_apps(Vec::new(), |_| true).is_empty());
     }
 
     #[test]

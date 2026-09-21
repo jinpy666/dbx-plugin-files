@@ -7,7 +7,7 @@ import { formatBytes } from "./api";
 
 export type TransferState = "queued" | "running" | "completed" | "failed" | "canceled";
 
-export type TransferKind = "upload" | "download" | "copyDir" | "syncDir" | "copy" | "move" | "rename" | "extract" | "compress" | "delete";
+export type TransferKind = "upload" | "download" | "copyDir" | "syncDir" | "copy" | "move" | "rename" | "extract" | "compress" | "delete" | "check" | "bisync";
 
 export interface TransferPathParts {
   parent: string;
@@ -54,6 +54,8 @@ export interface TransferJob {
   rateBps?: number;
   /** 本机落盘路径：saveToLocal 完成的下载才有；面板据此提供定位/打开。 */
   localPath?: string;
+  /** check 作业终态差异摘要（checkSummary，sidecar 报告的单行归纳）。 */
+  checkSummary?: string;
 }
 
 export interface TransferProgressEvent {
@@ -74,6 +76,8 @@ export interface TransferProgressEvent {
   error?: string;
   /** saveToLocal 下载完成事件携带的本机落盘路径（files/download/finish 返回）。 */
   localPath?: string;
+  /** check 终态报告摘要（rclone_sync_event_from 携带）。 */
+  checkSummary?: string;
 }
 
 export const ACTIVE_STATES: readonly TransferState[] = ["queued", "running"];
@@ -114,6 +118,7 @@ export function applyProgress(jobs: Record<string, TransferJob>, event: Transfer
         error: event.error ?? existing.error,
         // localPath 只在完成事件/轮询行里出现，事件缺省时不丢已有值。
         localPath: event.localPath ?? existing.localPath,
+        checkSummary: event.checkSummary ?? existing.checkSummary,
         updatedAt: Date.now(),
       }
     : {
@@ -131,6 +136,7 @@ export function applyProgress(jobs: Record<string, TransferJob>, event: Transfer
         bytesTotal: event.bytesTotal,
         error: event.error,
         localPath: event.localPath,
+        checkSummary: event.checkSummary,
         createdAt: Date.now(),
         updatedAt: Date.now(),
       };
@@ -172,6 +178,7 @@ export function applyList(jobs: Record<string, TransferJob>, payload: TransferLi
       error: raw.error ? String(raw.error) : undefined,
       // saveToLocal 完成的下载行携带本机落盘路径（reveal/open 的依据）。
       localPath: raw.localPath ? String(raw.localPath) : undefined,
+      checkSummary: raw.checkSummary ? String(raw.checkSummary) : existing?.checkSummary,
       // 历史任务时间以加入/开始时刻为准；轮询不能用完成时刻覆盖首次登记时间。
       // updatedAt 仍保留事件流的最近更新时间，用于活动任务状态。
       updatedAt: existing?.updatedAt ?? finishedAt ?? startedAt ?? Date.now(),
