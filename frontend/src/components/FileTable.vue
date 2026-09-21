@@ -33,6 +33,8 @@ const emit = defineEmits<{
   (event: "sort", column: "name" | "size" | "modified"): void;
   /** A-FILES ①：行拖拽开始，携带拖拽集（已选中项或单行）。 */
   (event: "drag-entries", payload: { paneId: string; entries: FileEntry[] }): void;
+  /** parity-tools：多选时的批量重命名入口（底部按钮，键盘可达）。 */
+  (event: "batch-rename"): void;
 }>();
 
 // 虚拟滚动：固定行高 + 视口窗口切片，万级条目列表也只渲染可见行。
@@ -257,6 +259,16 @@ function onDragStart(entry: FileEntry, event: DragEvent) {
     <template v-else-if="!failed">
       <span>{{ t("entriesCount", { count: entries.length }) }}</span>
       <span v-if="selection.length">{{ t("selectedCount", { count: selection.length }) }}</span>
+      <!-- 批量重命名（parity-tools）：多选时可键盘到达的常驻入口（只读态禁用，
+           与 delete/rename 门禁一致）。 -->
+      <button
+        v-if="selection.length > 1"
+        type="button"
+        class="wb-toolbar-button"
+        data-test="batch-rename"
+        :disabled="!canWrite"
+        @click="emit('batch-rename')"
+      >{{ t("batchRenameMenu") }}</button>
     </template>
   </div>
 </template>

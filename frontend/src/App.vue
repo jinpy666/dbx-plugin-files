@@ -23,6 +23,7 @@ import {
   FolderSymlink,
   Globe,
   HardDrive,
+  Keyboard,
   Link,
   Link2,
   PanelLeft,
@@ -49,6 +50,8 @@ import DesktopOnlyCard from "./components/DesktopOnlyCard.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
 import AuditPanel from "./components/AuditPanel.vue";
 import PreviewPane from "./components/PreviewPane.vue";
+import BatchRenameDrawer from "./components/BatchRenameDrawer.vue";
+import ShortcutsHelp from "./components/ShortcutsHelp.vue";
 import CustomConfigEditor from "./components/CustomConfigEditor.vue";
 import PathField from "./components/PathField.vue";
 import SideNavPanel from "./components/SideNavPanel.vue";
@@ -106,8 +109,10 @@ type MenuAction =
   | "mountLocal"
   // 本机共享（对标 rclone serve 家族）：远端目录经回环 HTTP/WebDAV 分享
   | "serveHttp" | "serveWebdav"
-  // 批量（多选右键，P-FILES 压缩轮）
-  | "downloadSelected" | "copySelected" | "moveSelected" | "deleteSelected" | "compressSelected";
+  // 目录打包下载（files/archiveDownload，download/start 同形任务）
+  | "archiveDownload"
+  // 批量（多选右键，P-FILES 压缩轮 + parity-tools 批量重命名）
+  | "downloadSelected" | "copySelected" | "moveSelected" | "deleteSelected" | "compressSelected" | "archiveDownloadSelected" | "batchRenameSelected";
 
 interface ConnectionSummary {
   name?: string;
@@ -634,6 +639,13 @@ function openContextMenu(side: PaneSide, payload: { entry: FileEntry; x: number;
   captureMenuOrigin();
   contextMenu.value = { ...payload, side, selection: [...(side === "left" ? selection.value : rightSelection.value)] };
 }
+/** 多选菜单的条目集（批量打包下载「全为目录」门控据此计算）。 */
+const contextMenuEntries = computed(() =>
+  contextMenu.value ? pickSideEntries(contextMenu.value.side, contextMenu.value.selection) : [],
+);
+const contextMenuAllDirs = computed(() =>
+  contextMenuEntries.value.length > 0 && contextMenuEntries.value.every((entry) => entry.kind === "directory"),
+);
 function openBlank(side: PaneSide, payload: { x: number; y: number }) {
   markActiveSide(side);
   openBlankMenu(side, payload);
@@ -2545,6 +2557,75 @@ function invokeAdapter<T>(method: string, params?: unknown) {
   return window.dbxPlugin.invoke<T>(method, params);
 }
 
+// ---- 目录打包下载（files/archiveDownload，parity-tools）----------------------
+// 契约：参数 { connectionId, path }（远端目录）→ 返回 download/start 同形任务；
+// 进度经既有 files/transfer/progress 事件（kind=archiveDownload）汇入传输面板，
+// 终态 completed 的 localPath 让 reveal/open/open-with 按既有记录 affordance 生效。
+async function archiveDownloadDirs(targets: FileEntry[], side: PaneSide) {
+  if (!targets.length) return;
+  const id = sideConnectionId(side) ?? connectionId.value;
+  let started = 0;
+  for (const target of targets) {
+    try {
+      const result = await call<{ taskId: string }>("files/archiveDownload", {
+        connectionId: id,
+        path: target.path,
+      });
+      if (!result.taskId) throw new Error("archiveDownload returned no taskId");
+      registerJob({
+        jobId: result.taskId,
+        taskId: result.taskId,
+        connectionId: id,
+        kind: "archiveDownload",
+        remotePath: target.path,
+        state: "queued",
+        size: 0,
+        transferred: 0,
+        updatedAt: Date.now(),
+      });
+      started += 1;
+    } catch (cause) {
+      // 首个失败即停（旧 sidecar 无此方法时避免整批报错刷屏）。
+      showError(cause);
+      return;
+    }
+  }
+  if (started) showNotice(t("archiveDownloadStarted", { name: baseName(targets[0].path) }));
+}
+
+// ---- 批量重命名抽屉（parity-tools，对标 rclone-ui）----------------------------
+// 入口：多选右键 / FileTable 多选时的底部按钮（键盘可达）。计划计算与逐行
+// files/rename 在抽屉组件内完成；这里承接关闭、汇总通知与目录刷新。
+const batchRenameOpen = ref(false);
+const batchRenameSide = ref<PaneSide>("left");
+const batchRenameEntries = ref<FileEntry[]>([]);
+/** 目录内全体条目名（抽屉的「目录已存在」行级预检集）。 */
+const batchRenameSiblingNames = computed(() =>
+  (batchRenameSide.value === "left" ? sortedEntries.value : rightSorted.value).map((entry) => entry.name),
+);
+
+function openBatchRename(side: PaneSide) {
+  markActiveSide(side);
+  batchRenameSide.value = side;
+  // 计划只覆盖多选集；「目录已存在」预检用当前目录完整列表（siblingNames）。
+  batchRenameEntries.value = pickSideEntries(side, side === "left" ? selection.value : rightSelection.value);
+  batchRenameOpen.value = true;
+}
+
+function closeBatchRename() {
+  batchRenameOpen.value = false;
+}
+
+async function onBatchRenameApplied(result: { ok: number; total: number }) {
+  refreshAuditPanel();
+  showNotice(t("batchRenameApplied", { ok: result.ok, total: result.total }));
+  if (batchRenameSide.value === "left") await loadDirectory().catch(() => undefined);
+  else if (dualPane.value) await loadRightDirectory().catch(() => undefined);
+}
+
+// ---- 快捷键速查弹层（parity-tools）：`?` 触发 / 空白区右键入口 / Esc 关闭 ----
+const shortcutsOpen = ref(false);
+
 // ---- context menu（A-FILES ④b：统一动作面）------------------------------------
 
 function menuAction(action: MenuAction) {
@@ -2632,6 +2713,9 @@ function menuAction(action: MenuAction) {
     case "compress":
       startCompress([entry], side);
       break;
+    case "archiveDownload":
+      void archiveDownloadDirs([entry], side);
+      break;
     // ---- 批量（多选右键）------------------------------------------------
     case "downloadSelected":
       void (async () => {
@@ -2654,6 +2738,12 @@ function menuAction(action: MenuAction) {
       break;
     case "compressSelected":
       startCompress(pickSideEntries(side, menuSelection), side);
+      break;
+    case "archiveDownloadSelected":
+      void archiveDownloadDirs(pickSideEntries(side, menuSelection).filter((item) => item.kind === "directory"), side);
+      break;
+    case "batchRenameSelected":
+      openBatchRename(side);
       break;
   }
 }
@@ -2765,10 +2855,14 @@ function openBlankMenu(side: PaneSide, payload: { x: number; y: number }) {
   blankMenu.value = { ...payload, side };
 }
 
-function blankMenuAction(action: "newFolder" | "newFile" | "refresh" | "cleanup") {
+function blankMenuAction(action: "newFolder" | "newFile" | "refresh" | "cleanup" | "shortcuts") {
   const menu = blankMenu.value;
   blankMenu.value = undefined;
   if (!menu) return;
+  if (action === "shortcuts") {
+    shortcutsOpen.value = true;
+    return;
+  }
   if (action === "refresh") {
     if (menu.side === "left") void refreshDirectory();
     else void refreshRightDirectory();
@@ -3184,10 +3278,28 @@ function onContextClick() {
 }
 
 function onDocumentKeydown(event: KeyboardEvent) {
+  // 快捷键速查：仅无输入焦点时响应 `?`（输入框/文本域/可编辑区不拦截）。
+  if (event.key === "?" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    const target = event.target as HTMLElement | null;
+    const tag = target?.tagName;
+    if (tag !== "INPUT" && tag !== "TEXTAREA" && !target?.isContentEditable) {
+      event.preventDefault();
+      shortcutsOpen.value = true;
+      return;
+    }
+  }
   if (event.key !== "Escape") return;
   // 审计#7：脏草稿确认弹层先收（保留预览与草稿），再按一次才触发关闭确认。
   if (previewDiscardOpen.value) {
     previewDiscardOpen.value = false;
+    return;
+  }
+  if (shortcutsOpen.value) {
+    shortcutsOpen.value = false;
+    return;
+  }
+  if (batchRenameOpen.value) {
+    closeBatchRename();
     return;
   }
   if (previewPath.value) {
@@ -3377,6 +3489,7 @@ onBeforeUnmount(() => {
               @contextmenu="openContextMenu('left', $event)"
               @blank-context="openBlank('left', $event)"
               @sort="(column) => sortRouted('left', column)"
+              @batch-rename="openBatchRename('left')"
             />
           </div>
         </div>
@@ -3470,6 +3583,7 @@ onBeforeUnmount(() => {
               @contextmenu="openContextMenu('right', $event)"
               @blank-context="openBlank('right', $event)"
               @sort="(column) => sortRouted('right', column)"
+              @batch-rename="openBatchRename('right')"
             />
           </div>
         </div>
@@ -3683,11 +3797,15 @@ onBeforeUnmount(() => {
     <div v-if="contextMenu" ref="menuEl" class="wb-context-menu" role="menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @click.stop @keydown="onMenuArrowKeys">
       <template v-if="contextMenu.selection.length > 1">
         <button role="menuitem" @click="menuAction('open')"><FolderOpen /> {{ t("openDirectory") }}</button>
+        <!-- 打包下载：仅当所选全部为目录（parity-tools）。 -->
+        <button v-if="contextMenuAllDirs" role="menuitem" @click="menuAction('archiveDownloadSelected')"><FileArchive /> {{ t("archiveDownloadSelected", { count: contextMenu.selection.length }) }}</button>
         <button role="menuitem" @click="menuAction('downloadSelected')"><Download /> {{ t("downloadSelected") }}</button>
         <!-- R3-P2-1：只读态「复制到目标栏」与 move 同受 canWrite 门禁（写发生在目标栏）。 -->
         <button v-if="dualPane && canWrite" role="menuitem" @click="menuAction('copySelected')"><Copy /> {{ t("copyToTarget") }}</button>
         <button v-if="dualPane && canWrite" role="menuitem" @click="menuAction('moveSelected')"><FolderInput /> {{ t("moveToTarget") }}</button>
         <button v-if="canWrite" role="menuitem" @click="menuAction('compressSelected')"><FileArchive /> {{ t("compressSelected", { count: contextMenu.selection.length }) }}</button>
+        <!-- 批量重命名（parity-tools）：只读态禁用，与删除项同一门禁形态。 -->
+        <button role="menuitem" :disabled="!canWrite" @click="menuAction('batchRenameSelected')"><Pencil /> {{ t("batchRenameMenu") }}</button>
         <hr />
         <button role="menuitem" class="is-danger" :disabled="!canWrite" @click="menuAction('deleteSelected')"><Trash2 /> {{ t("deleteSelected") }}</button>
         <hr />
@@ -3699,6 +3817,8 @@ onBeforeUnmount(() => {
         <button v-if="contextMenu.entry.kind === 'file' && !isArchivePath(contextMenu.entry.path)" role="menuitem" @click="menuAction('preview')"><Eye /> {{ t("preview") }}</button>
         <button v-if="contextMenu.entry.kind === 'file' && isArchivePath(contextMenu.entry.path)" role="menuitem" @click="menuAction('archiveContents')"><Archive /> {{ t("archiveContents") }}</button>
         <button v-if="contextMenu.entry.kind === 'file'" role="menuitem" @click="menuAction('download')"><Download /> {{ t("download") }}</button>
+        <!-- 打包下载（parity-tools）：目录条目的「压缩包下载」动作。 -->
+        <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('archiveDownload')"><FileArchive /> {{ t("archiveDownloadMenu") }}</button>
         <hr />
         <button v-if="canWrite" role="menuitem" @click="menuAction('rename')"><Pencil /> {{ t("rename") }}</button>
         <button v-if="canWrite" role="menuitem" @click="menuAction('copy')"><Copy /> {{ t("transferKind.copy") }}…</button>
@@ -3734,6 +3854,8 @@ onBeforeUnmount(() => {
       <button :disabled="!canWrite" role="menuitem" @click="blankMenuAction('newFile')"><FilePlus /> {{ t("newFileTitle") }}</button>
       <hr />
       <button role="menuitem" @click="blankMenuAction('refresh')"><RefreshCw /> {{ t("refresh") }}</button>
+      <hr />
+      <button role="menuitem" @click="blankMenuAction('shortcuts')"><Keyboard /> {{ t("shortcutsMenu") }}</button>
       <hr />
       <button role="menuitem" @click="blankMenuAction('cleanup')"><Trash2 /> {{ t("cleanupMenu") }}</button>
     </div>
@@ -3820,5 +3942,20 @@ onBeforeUnmount(() => {
       @confirm="previewDiscardOpen = false; previewPath = null"
       @cancel="previewDiscardOpen = false"
     />
+
+    <!-- 批量重命名抽屉（parity-tools）：多选右键 / 列表底部按钮入口；
+         连接在打开时按发起栏固化（双栏下左栏可为本地连接）。 -->
+    <BatchRenameDrawer
+      v-if="batchRenameOpen"
+      :entries="batchRenameEntries"
+      :sibling-names="batchRenameSiblingNames"
+      :connection-id="sideConnectionId(batchRenameSide) ?? connectionId"
+      :t="t"
+      @close="closeBatchRename"
+      @applied="onBatchRenameApplied"
+    />
+
+    <!-- 快捷键速查（parity-tools）：`?` / 空白区右键入口，Esc 关闭。 -->
+    <ShortcutsHelp v-if="shortcutsOpen" :t="t" @close="shortcutsOpen = false" />
   </main>
 </template>
