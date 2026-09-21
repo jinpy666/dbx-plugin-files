@@ -601,9 +601,14 @@ async fn poll_job(
                 }
                 poll_errors += 1;
                 if poll_errors >= MAX_POLL_ERRORS {
-                    emit(SyncEvent::Failed {
-                        message: format!("lost track of job {}: {error}", handle.jobid),
+                    // A failed job surfaces here as a repeated rc error body
+                    // (not a readable status record) — the body IS the
+                    // terminal reason, so surface it directly instead of the
+                    // misleading "lost track of job" prefix.
+                    let message = rc_error_body(&error).unwrap_or_else(|| {
+                        format!("lost track of job {}: {error}", handle.jobid)
                     });
+                    emit(SyncEvent::Failed { message });
                     return;
                 }
             }
