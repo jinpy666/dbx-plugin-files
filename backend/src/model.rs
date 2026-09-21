@@ -650,6 +650,18 @@ pub struct TaskRequest {
     pub task_id: String,
 }
 
+/// `files/remote-edit/open`(打开方式):把一个远端文件拉到本机临时副本,
+/// 用系统默认或用户指定的外部应用打开,并由后台监视循环把编辑器保存回传
+/// 到原远端路径。`app` 是可选的已校验外部应用可执行文件绝对路径。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteEditOpenRequest {
+    pub connection_id: String,
+    pub remote_path: String,
+    #[serde(default)]
+    pub app: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirJobRequest {

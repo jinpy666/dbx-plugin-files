@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // 预览两套方案：文本/代码走 CodeMirror，图片走原生元素，归档走 files/archiveList，
-// 未知扩展走 text/hex 启发式；只有 Office/PDF/媒体/HTML/CSV 这类 CodeMirror
-// 无法渲染的格式交给 FileViewerPreview。二进制预览经 files/stat + files/readRange
-// 分块流式拼装（2MiB/片，≤256MiB）；文本/可编辑链路仍走 files/read（≤2MiB）。
+// 未知扩展走 text/hex 启发式；Office/PDF/媒体/表格/演示文稿/OFD/XMind/notebook 与
+// tiff/heic 等需解码的图片交给 FileViewerPreview。二进制预览经 files/stat +
+// files/readRange 分块流式拼装（2MiB/片，≤256MiB）；文本/可编辑链路仍走 files/read（≤2MiB）。
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { Download, Minus, Pencil, RefreshCw, Settings2, X } from "@lucide/vue";
 import { baseName, call, errorMessage, formatBytes, isMethodMissing } from "../lib/api";
