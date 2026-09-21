@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { FolderOpen, Plus, RotateCcw, X } from "@lucide/vue";
 import type { OpenAppMapping, OpenAppPrefs } from "../lib/prefs";
 import DesktopOnlyCard from "./DesktopOnlyCard.vue";
+import DirectoryBrowser from "./DirectoryBrowser.vue";
 import { persistDownloadDir } from "../lib/prefs";
 
 /** 独立设置弹窗按分类只渲染一个 section；不传 section 时两段都渲染（兼容旧用法）。 */
@@ -267,6 +268,8 @@ defineExpose({ save });
       <p v-if="canSaveLocal" class="wb-settings-default wb-mono">
         {{ draft ? draft : `${t("usingDefaultDirectory")}: ${defaultSaveDir || t("saveToDefault")}` }}
       </p>
+      <!-- 内嵌本机目录浏览器（与挂载对话框共用）：点选目录即回填，统一保存时持久化。 -->
+      <DirectoryBrowser v-if="canSaveLocal" :t="t" @navigate="draft = $event" />
       <DesktopOnlyCard v-else :t="t" />
     </div>
 

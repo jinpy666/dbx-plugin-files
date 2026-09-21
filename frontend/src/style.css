@@ -88,7 +88,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-path-input { flex: 1 1 auto; min-width: 0; border: 0; background: transparent; color: inherit; padding: 2px 0; }
 /* 单一路径控件（tiny-rdm 对标）：文件夹图标进入编辑态，面包屑⇄输入框互斥展示。 */
 .wb-path-field { display: flex; flex: 1 1 auto; min-width: 0; align-items: center; gap: 4px; }
-.wb-path-field .wb-breadcrumbs { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; }
+.wb-path-crumb-area { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; cursor: text; }
+.wb-path-crumb-area .wb-breadcrumbs { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; }
 .wb-path-edit { flex: 0 0 20px; width: 20px; height: 20px; color: var(--muted-foreground); }
 .wb-path-edit:hover { background: var(--accent); color: var(--foreground); }
 .wb-breadcrumbs { display: flex; min-width: 0; flex: 1; align-items: center; gap: 2px; overflow: hidden; white-space: nowrap; }
