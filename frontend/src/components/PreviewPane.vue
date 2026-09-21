@@ -1,11 +1,12 @@
 <script setup lang="ts">
 // 预览两套方案：文本/代码走 CodeMirror，图片走原生元素，归档走 files/archiveList，
 // 未知扩展走 text/hex 启发式；只有 Office/PDF/媒体/HTML/CSV 这类 CodeMirror
-// 无法渲染的格式交给 FileViewerPreview。读取仍受 files/read 的 2 MiB 上限约束。
+// 无法渲染的格式交给 FileViewerPreview。二进制预览经 files/stat + files/readRange
+// 分块流式拼装（2MiB/片，≤256MiB）；文本/可编辑链路仍走 files/read（≤2MiB）。
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
-import { Download, Minus, Pencil, Settings2, X } from "@lucide/vue";
+import { Download, Minus, Pencil, RefreshCw, Settings2, X } from "@lucide/vue";
 import { baseName, call, errorMessage, formatBytes, isMethodMissing } from "../lib/api";
-import { canEditBytes, hexDump, READ_MAX_BYTES, WRITE_MAX_BYTES } from "../lib/preview";
+import { canEditBytes, hexDump, PREVIEW_MAX_BYTES, READ_MAX_BYTES, WRITE_MAX_BYTES } from "../lib/preview";
 import { resolvePreview, type PreviewResolution } from "../lib/previewResolver";
 import FileViewerPreview from "./FileViewerPreview.vue";
 import TextPreview from "./TextPreview.vue";
@@ -38,6 +39,8 @@ const saving = ref(false);
 const error = ref("");
 const editError = ref("");
 const truncated = ref(false);
+// 分块预览超硬上限（>256MiB 不进浏览器内存，保持「下载代替」出口）。
+const overCap = ref(false);
 const size = ref(0);
 const mode = ref<PreviewMode>("text");
 const editing = ref(false);
@@ -109,6 +112,15 @@ async function load() {
   draft.value = "";
   size.value = 0;
   truncated.value = false;
+  overCap.value = false;
+  // 换文件即失效进行中的分块循环（token 检查点见 runChunkLoop）。
+  loadToken += 1;
+  chunkCancelRequested.value = false;
+  chunkActive.value = false;
+  loadedBytes.value = 0;
+  totalBytes.value = 0;
+  parts = [];
+  revokeObjectUrl();
   try {
     if (resolution.value.previewStrategy === "archive") {
       // 压缩包内容列表：files/archiveList 分页渲染（B-ARCHIVE 既有链路）。
@@ -118,6 +130,12 @@ async function load() {
       await loadArchivePage(true);
       return;
     }
+    // 二进制预览（图片/媒体/Office/PDF）：stat 取大小 → readRange 分块流式拼装；
+    // 文本/代码与未知扩展仍走 files/read（可编辑链路不动）。
+    if (resolution.value.previewStrategy === "image" || resolution.value.previewStrategy === "file-viewer") {
+      await loadChunked(resolution.value);
+      return;
+    }
     const result = await call<{ dataBase64: string; truncated?: boolean; size?: number }>("files/read", withConnection({
       path: props.path,
       maxBytes: READ_MAX_BYTES,
@@ -125,19 +143,6 @@ async function load() {
     const bytes = window.dbxPlugin.decodeBase64(result.dataBase64);
     truncated.value = Boolean(result.truncated);
     size.value = result.size ?? bytes.byteLength;
-    if (resolution.value.previewStrategy === "image") {
-      mode.value = "image";
-      dataUri.value = `data:${resolution.value.mime};base64,${result.dataBase64}`;
-      return;
-    }
-    if (resolution.value.previewStrategy === "file-viewer") {
-      mode.value = "viewer";
-      const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-      sourceFile.value = new File([buffer], baseName(props.path), {
-        type: resolution.value.mime ?? "application/octet-stream",
-      });
-      return;
-    }
     // 文本/代码与未知扩展：先按文本解码，不可打印占比高时回退 hex dump。
     const decoded = new TextDecoder().decode(bytes);
     const printable = decoded.replace(/[^\t\n\r\x20-\x7E\u00A0-\uFFFF]/g, "");
@@ -151,6 +156,158 @@ async function load() {
     draft.value = decoded;
   } catch (cause) {
     error.value = errorMessage(cause);
+  } finally {
+    loading.value = false;
+  }
+}
+
+// --- 二进制预览分块流式加载（files/stat + files/readRange）--------------------
+// 有效预览上限 2MiB → 256MiB：按 2MiB/片顺序拉取（并发 1）拼装成单个 Blob，
+// 进度条以「已取字节 / totalSize」渲染；取消在分片间隙打断并干净关闭；
+// 失败保留已取字节，可从失败 offset 续传。eof / 取满 totalSize 即收口。
+
+const chunkActive = ref(false);
+const chunkCancelRequested = ref(false);
+const loadedBytes = ref(0);
+const totalBytes = ref(0);
+const chunkPercent = computed(() => {
+  if (!totalBytes.value) return 0;
+  return Math.min(100, Math.round((loadedBytes.value / totalBytes.value) * 100));
+});
+/** 分块循环的失效令牌：换文件/取消时自增，旧循环在下一个检查点退出。 */
+let loadToken = 0;
+/** 已取分片（非响应式：大数组逐片 push 不应触发渲染）。 */
+let parts: Uint8Array[] = [];
+let objectUrl = "";
+
+function revokeObjectUrl() {
+  if (objectUrl) {
+    URL.revokeObjectURL(objectUrl);
+    objectUrl = "";
+  }
+}
+
+onUnmounted(revokeObjectUrl);
+
+function concatParts(chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
+async function loadChunked(resolution: PreviewResolution) {
+  const stat = await call<{ entry?: { size?: number }; size?: number }>("files/stat", withConnection({
+    path: props.path,
+  }));
+  const total = Number(stat.entry?.size ?? stat.size ?? 0);
+  size.value = total;
+  totalBytes.value = total;
+  if (total > PREVIEW_MAX_BYTES) {
+    overCap.value = true;
+    return;
+  }
+  chunkActive.value = true;
+  parts = [];
+  loadedBytes.value = 0;
+  await runChunkLoop(resolution, 0);
+}
+
+/** 分片循环：顺序（并发 1）拉取；token/取消在每个 await 后检查。 */
+async function runChunkLoop(resolution: PreviewResolution, fromOffset: number) {
+  const token = loadToken;
+  try {
+    let offset = fromOffset;
+    const total = () => totalBytes.value;
+    while (offset < total()) {
+      if (token !== loadToken || chunkCancelRequested.value) return;
+      const length = Math.min(READ_MAX_BYTES, total() - offset);
+      const range = await call<{ dataBase64: string; totalSize: number; offset: number; eof: boolean }>(
+        "files/readRange",
+        withConnection({ path: props.path, offset, length }),
+      );
+      if (token !== loadToken || chunkCancelRequested.value) return;
+      const chunk = window.dbxPlugin.decodeBase64(range.dataBase64);
+      parts.push(chunk);
+      // 0 字节响应按请求长度推进，避免坏实现卡死循环。
+      offset += chunk.byteLength || length;
+      loadedBytes.value = offset;
+      // 契约收口：eof 或已取满 totalSize（totalSize 以响应为准，容错修正）。
+      if (range.eof) break;
+      if (range.totalSize && range.totalSize !== totalBytes.value) {
+        totalBytes.value = range.totalSize;
+        if (offset >= range.totalSize) break;
+      }
+    }
+    finishChunkPreview(resolution);
+  } catch (cause) {
+    if (token !== loadToken || chunkCancelRequested.value) return;
+    // 旧 sidecar 无 readRange：小文件回退原 files/read 整读路径。
+    if (isMethodMissing(cause) && fromOffset === 0 && totalBytes.value <= READ_MAX_BYTES) {
+      await loadViaRead(resolution);
+      return;
+    }
+    // 保留已取字节与 chunkActive：错误面板给出「从失败 offset 重试」。
+    error.value = errorMessage(cause);
+  }
+}
+
+/** 旧 sidecar 回退：readRange 缺失且文件 ≤2MiB 时按原整读路径拼装。 */
+async function loadViaRead(resolution: PreviewResolution) {
+  const result = await call<{ dataBase64: string; truncated?: boolean; size?: number }>("files/read", withConnection({
+    path: props.path,
+    maxBytes: READ_MAX_BYTES,
+  }));
+  const bytes = window.dbxPlugin.decodeBase64(result.dataBase64);
+  truncated.value = Boolean(result.truncated);
+  size.value = result.size ?? bytes.byteLength;
+  parts = [bytes];
+  loadedBytes.value = bytes.byteLength;
+  finishChunkPreview(resolution);
+}
+
+/** 拼装收口：image → object URL（dataUri 直用）；viewer → File 交给既有渲染。 */
+function finishChunkPreview(resolution: PreviewResolution) {
+  chunkActive.value = false;
+  const blob = new Blob(parts as BlobPart[], { type: resolution.mime ?? "application/octet-stream" });
+  if (resolution.previewStrategy === "image") {
+    mode.value = "image";
+    if (typeof URL !== "undefined" && typeof URL.createObjectURL === "function") {
+      revokeObjectUrl();
+      objectUrl = URL.createObjectURL(blob);
+      dataUri.value = objectUrl;
+    } else if (typeof window.dbxPlugin.encodeBase64 === "function") {
+      // 极旧宿主无 createObjectURL：回退 data URI（内存翻倍，仅兜底）。
+      dataUri.value = `data:${resolution.mime};base64,${window.dbxPlugin.encodeBase64(concatParts(parts))}`;
+    }
+    return;
+  }
+  mode.value = "viewer";
+  sourceFile.value = new File([blob], baseName(props.path ?? ""), { type: blob.type });
+}
+
+/** 取消：打断剩余分片并干净关闭（不落错误 UI）。 */
+function cancelChunkLoad() {
+  if (!chunkActive.value) return;
+  chunkCancelRequested.value = true;
+  chunkActive.value = false;
+  parts = [];
+  emit("close");
+}
+
+/** 失败续传：从已取 offset 继续拉剩余分片（沿用原 resolution 渲染链路）。 */
+async function resumeChunkLoad() {
+  if (!props.path || !resolution.value || loading.value) return;
+  error.value = "";
+  chunkCancelRequested.value = false;
+  chunkActive.value = true;
+  loading.value = true;
+  try {
+    await runChunkLoop(resolution.value, Math.min(loadedBytes.value, totalBytes.value));
   } finally {
     loading.value = false;
   }
@@ -282,6 +439,19 @@ const canOpenExternal = computed(() =>
       </template>
       <span v-else class="wb-muted">{{ t("edit") }}</span>
     </div>
+    <!-- 分块加载进度（二进制预览）：字节进度 + 取消；失败后保留以便续传重试。 -->
+    <div v-if="chunkActive" class="wb-preview-chunkbar" data-test="chunkbar">
+      <span class="wb-muted">{{ t("previewChunkProgress", { done: formatBytes(loadedBytes), total: formatBytes(totalBytes) }) }}</span>
+      <div
+        class="wb-progress"
+        role="progressbar"
+        :aria-label="t('previewChunkProgress', { done: formatBytes(loadedBytes), total: formatBytes(totalBytes) })"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        :aria-valuenow="chunkPercent"
+      ><div class="wb-progress-bar" :style="{ width: `${chunkPercent}%` }" /></div>
+      <button class="wb-toolbar-button" data-test="chunk-cancel" @click="cancelChunkLoad">{{ t("cancel") }}</button>
+    </div>
     <div class="wb-preview-body" :aria-busy="loading">
       <template v-if="loading">
         <div class="wb-preview-skeleton">
@@ -293,6 +463,8 @@ const canOpenExternal = computed(() =>
         <div>{{ t("previewLoadError", { error }) }}</div>
         <div v-if="canOpenExternal" class="wb-muted">{{ t("previewExternalHint") }}</div>
         <div class="wb-preview-notice-actions">
+          <!-- 分块失败续传：从失败 offset 继续（>0 才有意义）。 -->
+          <button v-if="chunkActive && loadedBytes" class="wb-toolbar-button" data-test="chunk-retry" @click="resumeChunkLoad"><RefreshCw /> {{ t("previewRetryFromOffset", { offset: loadedBytes }) }}</button>
           <button v-if="canOpenExternal" class="wb-toolbar-button" @click="emit('open-settings')"><Settings2 /> {{ t("openInSettings") }}</button>
           <button class="wb-toolbar-button" @click="emit('download', path)"><Download /> {{ t("download") }}</button>
         </div>
@@ -342,6 +514,11 @@ const canOpenExternal = computed(() =>
     </div>
     <div v-if="truncated" class="wb-notice">
       <span>{{ t("previewTruncated", { size: formatBytes(READ_MAX_BYTES) }) }}</span>
+      <button class="wb-toolbar-button" @click="emit('download', path)"><Download /> {{ t("download") }}</button>
+    </div>
+    <!-- 分块预览超硬上限（>256MiB）：不进浏览器内存，保持「下载代替」出口。 -->
+    <div v-if="overCap" class="wb-notice" data-test="overcap">
+      <span>{{ t("previewOverCap", { size: formatBytes(PREVIEW_MAX_BYTES) }) }}</span>
       <button class="wb-toolbar-button" @click="emit('download', path)"><Download /> {{ t("download") }}</button>
     </div>
   </div>
