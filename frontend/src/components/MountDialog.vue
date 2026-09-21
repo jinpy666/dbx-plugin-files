@@ -134,7 +134,8 @@ function enter(name: string) {
         <button class="wb-icon-button wb-icon-neutral" v-tip="t('up')" :disabled="browsing" @click="browse(parentPath)"><ArrowUp /></button>
         <nav class="wb-mount-crumbs" aria-label="breadcrumb">
           <template v-for="(crumb, index) in crumbs" :key="crumb.path">
-            <span v-if="index" class="wb-mount-crumb-sep">/</span>
+            <!-- crumbs[0] 就是根 "/"，自带斜杠；只为后续层级加分隔，避免 "/ / Users"。 -->
+            <span v-if="index > 1" class="wb-mount-crumb-sep">/</span>
             <button type="button" class="wb-mount-crumb" @click="browse(crumb.path)">{{ crumb.name }}</button>
           </template>
         </nav>
