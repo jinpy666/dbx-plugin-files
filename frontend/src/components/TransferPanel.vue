@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { Inbox, CircleCheck, CircleDashed, CircleX, ExternalLink, FolderOpen, FileText, LoaderCircle, RotateCw, Trash2, X } from "@lucide/vue";
+import { Inbox, CircleCheck, CircleDashed, CircleX, ExternalLink, FileArchive, FolderOpen, FileText, LoaderCircle, RotateCw, Trash2, X } from "@lucide/vue";
 import { formatBytes, formatTime } from "../lib/api";
 import { etaSeconds, formatEta, formatRate, isByteBased, isRetryableKind, percentOf, sortedJobs, splitTransferPath, transferPathLabel, type TransferJob } from "../lib/transfers";
 
@@ -44,6 +44,8 @@ const statusIcons = {
 } as const;
 
 function statusIcon(job: TransferJob) {
+  // 打包下载行用归档图标区别于普通下载（其余沿用状态图标族）。
+  if (job.kind === "archiveDownload") return FileArchive;
   return statusIcons[job.state];
 }
 

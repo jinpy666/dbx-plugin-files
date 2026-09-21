@@ -12,6 +12,7 @@ import {
   ArrowUp,
   Download,
   Eject,
+  ExternalLink,
   Eye,
   FileArchive,
   FileOutput,
@@ -23,6 +24,7 @@ import {
   FolderSymlink,
   Globe,
   HardDrive,
+  Keyboard,
   Link,
   Link2,
   PanelLeft,
@@ -35,6 +37,8 @@ import {
   Scale,
   Share2,
   ShieldCheck,
+  Star,
+  StarOff,
   Trash2,
   X,
 } from "@lucide/vue";
@@ -46,9 +50,13 @@ import MountDialog from "./components/MountDialog.vue";
 import type { SettingsSection } from "./components/SettingsPanel.vue";
 import SyncDialog, { type SyncDialogOptions } from "./components/SyncDialog.vue";
 import DesktopOnlyCard from "./components/DesktopOnlyCard.vue";
+import OpenWithDialog from "./components/OpenWithDialog.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
+import DropActionDialog from "./components/DropActionDialog.vue";
 import AuditPanel from "./components/AuditPanel.vue";
 import PreviewPane from "./components/PreviewPane.vue";
+import BatchRenameDrawer from "./components/BatchRenameDrawer.vue";
+import ShortcutsHelp from "./components/ShortcutsHelp.vue";
 import CustomConfigEditor from "./components/CustomConfigEditor.vue";
 import PathField from "./components/PathField.vue";
 import SideNavPanel from "./components/SideNavPanel.vue";
@@ -73,7 +81,7 @@ import { createTransferTracker, isActive, isRetryableKind, type TransferJob, typ
 import { inspect, type DangerousHit } from "./lib/dangerousPaths";
 import { errorBannerOf, i18nTextOf, workbenchMessage, type ErrorBannerState, type I18nInput, type I18nText } from "./lib/i18n";
 import { isArchivePath } from "./lib/archive";
-import { PREVIEW_MIN, loadDownloadDir, loadOpenAppPrefs, loadUiPrefs, persistDownloadDir, persistOpenAppPrefs, saveUiPrefs, resolveOpenApp, type OpenAppPrefs, type PreviewWin } from "./lib/prefs";
+import { PREVIEW_MIN, loadDownloadDir, loadFavorites, loadOpenAppPrefs, loadUiPrefs, persistDownloadDir, persistFavorites, persistOpenAppPrefs, saveUiPrefs, resolveOpenApp, type FavoriteMap, type OpenAppPrefs, type PreviewWin } from "./lib/prefs";
 import { sortEntries, toggleSortState, type SortColumn, type SortState } from "./lib/sorting";
 import { filterEntries } from "./lib/searchFilter";
 import { isLargeDirectory } from "./lib/largeDir";
@@ -106,8 +114,13 @@ type MenuAction =
   | "mountLocal"
   // 本机共享（对标 rclone serve 家族）：远端目录经回环 HTTP/WebDAV 分享
   | "serveHttp" | "serveWebdav"
-  // 批量（多选右键，P-FILES 压缩轮）
-  | "downloadSelected" | "copySelected" | "moveSelected" | "deleteSelected" | "compressSelected";
+  // 目录打包下载（files/archiveDownload，download/start 同形任务）
+  | "archiveDownload"
+  // 批量（多选右键，P-FILES 压缩轮 + parity-tools 批量重命名）
+  | "downloadSelected" | "copySelected" | "moveSelected" | "deleteSelected" | "compressSelected" | "archiveDownloadSelected" | "batchRenameSelected"
+  // 打开方式（远程编辑本地副本，FinalShell 式）：选应用 → 拉临时副本 →
+  // 本地保存自动回传远端
+  | "openWith";
 
 interface ConnectionSummary {
   name?: string;
@@ -174,8 +187,9 @@ const initialized = ref(false);
 // 双栏为会话内开关（工具栏可切），不再持久化：每次打开默认只开远程单栏。
 const dualPane = ref(false);
 // 左右侧栏状态完全独立；本地左栏默认收藏（quick），右栏默认目录树。
-const leftSideTab = ref<"tree" | "quick">(prefs.leftSideTab);
-const rightSideTab = ref<"tree" | "quick">(prefs.rightSideTab);
+// tab 三态（tree/quick/fav）随偏好持久化（SideTab 含 fav）。
+const leftSideTab = ref<"tree" | "quick" | "fav">(prefs.leftSideTab);
+const rightSideTab = ref<"tree" | "quick" | "fav">(prefs.rightSideTab);
 const leftSideCollapsed = ref(prefs.leftSideCollapsed);
 const rightSideCollapsed = ref(prefs.rightSideCollapsed);
 const rightPath = ref("/");
@@ -634,6 +648,13 @@ function openContextMenu(side: PaneSide, payload: { entry: FileEntry; x: number;
   captureMenuOrigin();
   contextMenu.value = { ...payload, side, selection: [...(side === "left" ? selection.value : rightSelection.value)] };
 }
+/** 多选菜单的条目集（批量打包下载「全为目录」门控据此计算）。 */
+const contextMenuEntries = computed(() =>
+  contextMenu.value ? pickSideEntries(contextMenu.value.side, contextMenu.value.selection) : [],
+);
+const contextMenuAllDirs = computed(() =>
+  contextMenuEntries.value.length > 0 && contextMenuEntries.value.every((entry) => entry.kind === "directory"),
+);
 function openBlank(side: PaneSide, payload: { x: number; y: number }) {
   markActiveSide(side);
   openBlankMenu(side, payload);
@@ -644,6 +665,47 @@ function toolbarSelectionEntries(side: PaneSide): FileEntry[] {
   const sel = side === "right" ? rightSelection.value : selection.value;
   return pool.filter((entry) => sel.includes(entry.path));
 }
+
+// ---- 收藏夹（rclone-ui parity）------------------------------------------------
+// 按连接键入的星标目录（prefs 落 localStorage，重启恢复）：切换连接/本地栏
+// 即切换列表。星标入口 = 工具栏星标（活动栏当前目录）+ 侧栏行右键「收藏」；
+// SideNavPanel fav tab 只读列表，增删全部回流 App 单一数据源。
+const favoriteMap = ref<FavoriteMap>(loadFavorites());
+
+/** 收藏键 = 该栏当前生效的连接 id（undefined 即宿主当前连接；本地栏为 __local__）。 */
+function sideFavoriteKey(side: PaneSide): string {
+  return sideConnectionId(side) ?? connectionId.value;
+}
+
+function favoritesOf(side: PaneSide): string[] {
+  return favoriteMap.value[sideFavoriteKey(side)] ?? [];
+}
+
+const leftFavorites = computed(() => favoritesOf("left"));
+const rightFavorites = computed(() => favoritesOf("right"));
+
+/** 工具栏星标态：活动栏当前目录是否已收藏（点亮即再次点击取消）。 */
+const toolbarStarred = computed(() => favoritesOf(toolbarTarget.value.side).includes(paneDirPath(toolbarTarget.value.side)));
+
+/** 收藏切换：target 缺省取该栏当前目录；空连接 id（宿主未就绪）不动。 */
+function toggleFavorite(side: PaneSide, target?: string) {
+  const key = sideFavoriteKey(side);
+  const targetPath = target ?? paneDirPath(side);
+  if (!key || !targetPath) return;
+  const current = favoriteMap.value[key] ?? [];
+  const next = current.includes(targetPath) ? current.filter((item) => item !== targetPath) : [...current, targetPath];
+  const map = { ...favoriteMap.value };
+  if (next.length) map[key] = next;
+  else delete map[key];
+  favoriteMap.value = map;
+  persistFavorites(map);
+}
+
+/** 侧栏右键菜单的收藏态：决定「收藏 / 从收藏移除」文案与图标。 */
+const sideMenuFavorited = computed(() => {
+  const menu = sideMenu.value;
+  return Boolean(menu && favoritesOf(menu.side).includes(menu.path));
+});
 
 /** 工具栏挂载入口：挂活动栏当前目录；本地 __local__ 栏没有远端可挂（禁用）。 */
 // 挂载是桌面能力：web/docker 下 sidecar 不在用户本机，挂载无从谈起
@@ -800,6 +862,15 @@ function handleEvent(event: DbxPluginEvent) {
   // 当前 SDK 先更新 api.locale，再经 onEvent 投递 env；这里只更新 Files 的状态。
   if (event.type === "env") {
     locale.value = window.dbxPlugin.locale || "zh-CN";
+    return;
+  }
+  if (event.method === "files/remote-edit/state") {
+    // 打开方式（远程编辑）会话状态：opened/synced 顶部提示，error 错误条。
+    const state = event.params as { remotePath?: string; state?: string; error?: string };
+    const name = state.remotePath ? baseName(state.remotePath) : "";
+    if (state.state === "opened") showNotice(t("remoteEditOpened", { name }));
+    else if (state.state === "synced") showNotice(t("remoteEditSynced", { name }));
+    else if (state.state === "error") showError(new Error(t("remoteEditFailed", { error: state.error ?? "" })));
     return;
   }
   if (event.method === "files/transfer/progress") {
@@ -1865,6 +1936,25 @@ async function executePaneTransfer(from: PaneSide, move: boolean, list: FileEntr
 
 // ---- drag & drop（A-FILES ①）---------------------------------------------------
 
+// 拖放动作选择（rclone-ui parity）：跨栏内部拖放不再立即复制，先弹
+// 「复制（保留原件）/ 移动（传输后删除原件）」选择；确认后才走
+// transferBetween（既有冲突预检/覆盖确认原样复用）。OS 文件拖入不受影响。
+const dropActionOpen = ref(false);
+const dropActionPending = ref<{ from: PaneSide; list: FileEntry[]; destPath: string }>();
+
+function onDropActionChoose(action: "copy" | "move") {
+  const pending = dropActionPending.value;
+  dropActionOpen.value = false;
+  dropActionPending.value = undefined;
+  if (!pending) return;
+  void transferBetween(pending.from, action === "move", pending.list);
+}
+
+function onDropActionCancel() {
+  dropActionOpen.value = false;
+  dropActionPending.value = undefined;
+}
+
 /**
  * 审计#16：OS 拖入的文件列表（DataTransfer.files）。优先走 items 映射——
  * 目录条目 getAsFile() 返回 null，天然剔除（目录暂不支持递归上传）；items
@@ -1903,7 +1993,12 @@ function onDropTo(side: PaneSide, event: DragEvent) {
     }
     const from = payload.paneId === "left" ? "left" : payload.paneId === "right" ? "right" : null;
     if (!from || from === side || !payload.paths?.length) return;
-    void transferBetween(from, false, pickSideEntries(from, payload.paths));
+    // 拖放动作选择（rclone-ui parity）：先弹「复制/移动」选择再执行。只读态
+    // 与旧行为一致静默忽略（transferBetween 的 canWrite 门禁前置到这里）。
+    const list = pickSideEntries(from, payload.paths);
+    if (!list.length || !canWrite.value) return;
+    dropActionPending.value = { from, list, destPath: side === "left" ? path.value : rightPath.value };
+    dropActionOpen.value = true;
     return;
   }
   // 审计#16：OS 文件拖入此前被静默忽略。上传恒落目标侧（双栏右栏；单栏为
@@ -2528,6 +2623,39 @@ async function onOpenAppPrefsChange(prefs: OpenAppPrefs) {
 // 用用户配置的外部应用打开已完成的下载：按扩展名映射或全局默认解析出 app；
 // sidecar 仍按完成历史白名单二次校验。未配置时提示去设置页，不静默降级成
 // 系统默认应用（那会让这个入口失去意义）。
+// ---- 打开方式（远程编辑本地副本，FinalShell 式）-----------------------------
+// 右键「打开方式…」：选系统默认 / 预设 / 手输应用后，sidecar 把文件拉到本机
+// 临时副本并启动应用；本地保存由 sidecar 监视循环自动回传远端原路径。
+// 目标连接在打开时固化——双栏下用右键所在栏的连接，而不是活动连接。
+
+const openWithState = ref<{ entry: FileEntry; connectionId: string }>();
+
+function openOpenWithDialog(entry: FileEntry, side: PaneSide) {
+  openWithState.value = { entry, connectionId: sideConnectionId(side) ?? connectionId.value };
+}
+
+function closeOpenWithDialog() {
+  openWithState.value = undefined;
+}
+
+/** 对话框确认：app 空串 = 系统默认应用。open RPC 立即返回会话，拉取/启动/
+ * 回传进度经 files/remote-edit/state 事件回报（见 handleEvent）。 */
+async function onOpenWithConfirm(app: string) {
+  const state = openWithState.value;
+  if (!state) return;
+  closeOpenWithDialog();
+  showNotice(t("openWithOpening"));
+  try {
+    await call("files/remote-edit/open", {
+      connectionId: state.connectionId,
+      remotePath: state.entry.path,
+      ...(app ? { app } : {}),
+    });
+  } catch (cause) {
+    showError(cause);
+  }
+}
+
 async function openTransferWithApp(path: string) {
   const app = resolveOpenApp(openAppPrefs.value, path);
   if (!app) {
@@ -2544,6 +2672,75 @@ async function openTransferWithApp(path: string) {
 function invokeAdapter<T>(method: string, params?: unknown) {
   return window.dbxPlugin.invoke<T>(method, params);
 }
+
+// ---- 目录打包下载（files/archiveDownload，parity-tools）----------------------
+// 契约：参数 { connectionId, path }（远端目录）→ 返回 download/start 同形任务；
+// 进度经既有 files/transfer/progress 事件（kind=archiveDownload）汇入传输面板，
+// 终态 completed 的 localPath 让 reveal/open/open-with 按既有记录 affordance 生效。
+async function archiveDownloadDirs(targets: FileEntry[], side: PaneSide) {
+  if (!targets.length) return;
+  const id = sideConnectionId(side) ?? connectionId.value;
+  let started = 0;
+  for (const target of targets) {
+    try {
+      const result = await call<{ taskId: string }>("files/archiveDownload", {
+        connectionId: id,
+        path: target.path,
+      });
+      if (!result.taskId) throw new Error("archiveDownload returned no taskId");
+      registerJob({
+        jobId: result.taskId,
+        taskId: result.taskId,
+        connectionId: id,
+        kind: "archiveDownload",
+        remotePath: target.path,
+        state: "queued",
+        size: 0,
+        transferred: 0,
+        updatedAt: Date.now(),
+      });
+      started += 1;
+    } catch (cause) {
+      // 首个失败即停（旧 sidecar 无此方法时避免整批报错刷屏）。
+      showError(cause);
+      return;
+    }
+  }
+  if (started) showNotice(t("archiveDownloadStarted", { name: baseName(targets[0].path) }));
+}
+
+// ---- 批量重命名抽屉（parity-tools，对标 rclone-ui）----------------------------
+// 入口：多选右键 / FileTable 多选时的底部按钮（键盘可达）。计划计算与逐行
+// files/rename 在抽屉组件内完成；这里承接关闭、汇总通知与目录刷新。
+const batchRenameOpen = ref(false);
+const batchRenameSide = ref<PaneSide>("left");
+const batchRenameEntries = ref<FileEntry[]>([]);
+/** 目录内全体条目名（抽屉的「目录已存在」行级预检集）。 */
+const batchRenameSiblingNames = computed(() =>
+  (batchRenameSide.value === "left" ? sortedEntries.value : rightSorted.value).map((entry) => entry.name),
+);
+
+function openBatchRename(side: PaneSide) {
+  markActiveSide(side);
+  batchRenameSide.value = side;
+  // 计划只覆盖多选集；「目录已存在」预检用当前目录完整列表（siblingNames）。
+  batchRenameEntries.value = pickSideEntries(side, side === "left" ? selection.value : rightSelection.value);
+  batchRenameOpen.value = true;
+}
+
+function closeBatchRename() {
+  batchRenameOpen.value = false;
+}
+
+async function onBatchRenameApplied(result: { ok: number; total: number }) {
+  refreshAuditPanel();
+  showNotice(t("batchRenameApplied", { ok: result.ok, total: result.total }));
+  if (batchRenameSide.value === "left") await loadDirectory().catch(() => undefined);
+  else if (dualPane.value) await loadRightDirectory().catch(() => undefined);
+}
+
+// ---- 快捷键速查弹层（parity-tools）：`?` 触发 / 空白区右键入口 / Esc 关闭 ----
+const shortcutsOpen = ref(false);
 
 // ---- context menu（A-FILES ④b：统一动作面）------------------------------------
 
@@ -2562,6 +2759,9 @@ function menuAction(action: MenuAction) {
       break;
     case "download":
       if (entry.kind === "file") void downloadEntry(entry, side);
+      break;
+    case "openWith":
+      openOpenWithDialog(entry, side);
       break;
     case "rename":
       startRename(entry, side);
@@ -2632,6 +2832,9 @@ function menuAction(action: MenuAction) {
     case "compress":
       startCompress([entry], side);
       break;
+    case "archiveDownload":
+      void archiveDownloadDirs([entry], side);
+      break;
     // ---- 批量（多选右键）------------------------------------------------
     case "downloadSelected":
       void (async () => {
@@ -2654,6 +2857,12 @@ function menuAction(action: MenuAction) {
       break;
     case "compressSelected":
       startCompress(pickSideEntries(side, menuSelection), side);
+      break;
+    case "archiveDownloadSelected":
+      void archiveDownloadDirs(pickSideEntries(side, menuSelection).filter((item) => item.kind === "directory"), side);
+      break;
+    case "batchRenameSelected":
+      openBatchRename(side);
       break;
   }
 }
@@ -2765,10 +2974,14 @@ function openBlankMenu(side: PaneSide, payload: { x: number; y: number }) {
   blankMenu.value = { ...payload, side };
 }
 
-function blankMenuAction(action: "newFolder" | "newFile" | "refresh" | "cleanup") {
+function blankMenuAction(action: "newFolder" | "newFile" | "refresh" | "cleanup" | "shortcuts") {
   const menu = blankMenu.value;
   blankMenu.value = undefined;
   if (!menu) return;
+  if (action === "shortcuts") {
+    shortcutsOpen.value = true;
+    return;
+  }
   if (action === "refresh") {
     if (menu.side === "left") void refreshDirectory();
     else void refreshRightDirectory();
@@ -2796,7 +3009,7 @@ function openSideMenu(side: PaneSide, payload: { path: string; name: string; x: 
   sideMenu.value = { ...payload, side };
 }
 
-function sideMenuAction(action: "open" | "openOther" | "copyPath" | "copyName" | "mountLocal") {
+function sideMenuAction(action: "open" | "openOther" | "toggleFav" | "copyPath" | "copyName" | "mountLocal") {
   const menu = sideMenu.value;
   sideMenu.value = undefined;
   if (!menu) return;
@@ -2807,6 +3020,11 @@ function sideMenuAction(action: "open" | "openOther" | "copyPath" | "copyName" |
   }
   if (action === "openOther") {
     navigateQuickPath(side === "left" ? "right" : "left", target);
+    return;
+  }
+  if (action === "toggleFav") {
+    // 收藏/取消收藏该行目录（fav tab 行右键即「从收藏移除」）。
+    toggleFavorite(side, target);
     return;
   }
   if (action === "mountLocal") {
@@ -3184,10 +3402,33 @@ function onContextClick() {
 }
 
 function onDocumentKeydown(event: KeyboardEvent) {
+  // 快捷键速查：仅无输入焦点时响应 `?`（输入框/文本域/可编辑区不拦截）。
+  if (event.key === "?" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    const target = event.target as HTMLElement | null;
+    const tag = target?.tagName;
+    if (tag !== "INPUT" && tag !== "TEXTAREA" && !target?.isContentEditable) {
+      event.preventDefault();
+      shortcutsOpen.value = true;
+      return;
+    }
+  }
   if (event.key !== "Escape") return;
   // 审计#7：脏草稿确认弹层先收（保留预览与草稿），再按一次才触发关闭确认。
   if (previewDiscardOpen.value) {
     previewDiscardOpen.value = false;
+    return;
+  }
+  if (shortcutsOpen.value) {
+    shortcutsOpen.value = false;
+    return;
+  }
+  if (batchRenameOpen.value) {
+    closeBatchRename();
+    return;
+  }
+  // 拖放动作选择（焦点在弹层内时组件自身 Esc 已取消；这里兜底焦点在外的情况）。
+  if (dropActionOpen.value) {
+    onDropActionCancel();
     return;
   }
   if (previewPath.value) {
@@ -3295,6 +3536,7 @@ onBeforeUnmount(() => {
       :show-mount="canUseMount"
       :can-mount="canMountToolbar"
       :bwlimit="bwlimitActive"
+      :starred="toolbarStarred"
       :t="t"
       @new-folder="startNewFolder(toolbarTarget.side)"
       @upload="onUpload"
@@ -3304,6 +3546,7 @@ onBeforeUnmount(() => {
       @mount="mountToolbarTarget"
       @open-settings="openSettings()"
       @bwlimit-click="openSettings('transfer')"
+      @toggle-favorite="toggleFavorite(toolbarTarget.side)"
       @toggle-dock="(tab) => { const target = tab ?? dockTab; if (dockOpen && dockTab === target) dockOpen = false; else { dockOpen = true; dockTab = target; if (target === 'audit') auditRef?.refresh(); } }"
     />
 
@@ -3324,6 +3567,7 @@ onBeforeUnmount(() => {
             :collapsed="leftSideCollapsed"
             :tree-root="leftTree"
             :quick-paths="leftQuickPaths"
+            :favorites="leftFavorites"
             :current-path="path"
             :t="t"
             @update:tab="leftSideTab = $event"
@@ -3377,6 +3621,7 @@ onBeforeUnmount(() => {
               @contextmenu="openContextMenu('left', $event)"
               @blank-context="openBlank('left', $event)"
               @sort="(column) => sortRouted('left', column)"
+              @batch-rename="openBatchRename('left')"
             />
           </div>
         </div>
@@ -3416,6 +3661,7 @@ onBeforeUnmount(() => {
             :collapsed="rightSideCollapsed"
             :tree-root="rightTree"
             :quick-paths="rightQuickPaths"
+            :favorites="rightFavorites"
             :current-path="rightPath"
             :usage="remoteUsage"
             :t="t"
@@ -3470,6 +3716,7 @@ onBeforeUnmount(() => {
               @contextmenu="openContextMenu('right', $event)"
               @blank-context="openBlank('right', $event)"
               @sort="(column) => sortRouted('right', column)"
+              @batch-rename="openBatchRename('right')"
             />
           </div>
         </div>
@@ -3573,6 +3820,16 @@ onBeforeUnmount(() => {
       :bisync-state="syncDialogBisyncState"
       @close="closeSyncDialog"
       @confirm="onSyncDialogConfirm"
+    />
+
+    <!-- 打开方式：远程编辑本地副本（FinalShell 式），选默认/预设/手输应用 -->
+    <OpenWithDialog
+      v-if="openWithState"
+      :t="t"
+      :presets="appPresets"
+      :initial-app="resolveOpenApp(openAppPrefs, openWithState.entry.name)"
+      @close="closeOpenWithDialog"
+      @confirm="onOpenWithConfirm"
     />
 
     <!-- 独立设置弹窗（对标 ssh 插件 settings-modal）：左侧分类导航 + 右侧内容
@@ -3683,11 +3940,15 @@ onBeforeUnmount(() => {
     <div v-if="contextMenu" ref="menuEl" class="wb-context-menu" role="menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @click.stop @keydown="onMenuArrowKeys">
       <template v-if="contextMenu.selection.length > 1">
         <button role="menuitem" @click="menuAction('open')"><FolderOpen /> {{ t("openDirectory") }}</button>
+        <!-- 打包下载：仅当所选全部为目录（parity-tools）。 -->
+        <button v-if="contextMenuAllDirs" role="menuitem" @click="menuAction('archiveDownloadSelected')"><FileArchive /> {{ t("archiveDownloadSelected", { count: contextMenu.selection.length }) }}</button>
         <button role="menuitem" @click="menuAction('downloadSelected')"><Download /> {{ t("downloadSelected") }}</button>
         <!-- R3-P2-1：只读态「复制到目标栏」与 move 同受 canWrite 门禁（写发生在目标栏）。 -->
         <button v-if="dualPane && canWrite" role="menuitem" @click="menuAction('copySelected')"><Copy /> {{ t("copyToTarget") }}</button>
         <button v-if="dualPane && canWrite" role="menuitem" @click="menuAction('moveSelected')"><FolderInput /> {{ t("moveToTarget") }}</button>
         <button v-if="canWrite" role="menuitem" @click="menuAction('compressSelected')"><FileArchive /> {{ t("compressSelected", { count: contextMenu.selection.length }) }}</button>
+        <!-- 批量重命名（parity-tools）：只读态禁用，与删除项同一门禁形态。 -->
+        <button role="menuitem" :disabled="!canWrite" @click="menuAction('batchRenameSelected')"><Pencil /> {{ t("batchRenameMenu") }}</button>
         <hr />
         <button role="menuitem" class="is-danger" :disabled="!canWrite" @click="menuAction('deleteSelected')"><Trash2 /> {{ t("deleteSelected") }}</button>
         <hr />
@@ -3697,8 +3958,12 @@ onBeforeUnmount(() => {
         <!-- 常用置顶：打开/预览/下载 → 编辑变换 → 分析校验 → 同步导入分享 → 维护 → 删除独立危险区 → 剪贴板。 -->
         <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('open')"><FolderOpen /> {{ t("openDirectory") }}</button>
         <button v-if="contextMenu.entry.kind === 'file' && !isArchivePath(contextMenu.entry.path)" role="menuitem" @click="menuAction('preview')"><Eye /> {{ t("preview") }}</button>
+        <!-- 打开方式（桌面端）：远程编辑本地副本，选默认/预设/手输应用 -->
+        <button v-if="contextMenu.entry.kind === 'file' && canSaveLocal && !isArchivePath(contextMenu.entry.path)" role="menuitem" @click="menuAction('openWith')"><ExternalLink /> {{ t("openWithMenu") }}</button>
         <button v-if="contextMenu.entry.kind === 'file' && isArchivePath(contextMenu.entry.path)" role="menuitem" @click="menuAction('archiveContents')"><Archive /> {{ t("archiveContents") }}</button>
         <button v-if="contextMenu.entry.kind === 'file'" role="menuitem" @click="menuAction('download')"><Download /> {{ t("download") }}</button>
+        <!-- 打包下载（parity-tools）：目录条目的「压缩包下载」动作。 -->
+        <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('archiveDownload')"><FileArchive /> {{ t("archiveDownloadMenu") }}</button>
         <hr />
         <button v-if="canWrite" role="menuitem" @click="menuAction('rename')"><Pencil /> {{ t("rename") }}</button>
         <button v-if="canWrite" role="menuitem" @click="menuAction('copy')"><Copy /> {{ t("transferKind.copy") }}…</button>
@@ -3735,6 +4000,8 @@ onBeforeUnmount(() => {
       <hr />
       <button role="menuitem" @click="blankMenuAction('refresh')"><RefreshCw /> {{ t("refresh") }}</button>
       <hr />
+      <button role="menuitem" @click="blankMenuAction('shortcuts')"><Keyboard /> {{ t("shortcutsMenu") }}</button>
+      <hr />
       <button role="menuitem" @click="blankMenuAction('cleanup')"><Trash2 /> {{ t("cleanupMenu") }}</button>
     </div>
 
@@ -3745,6 +4012,12 @@ onBeforeUnmount(() => {
         <PanelRight v-if="sideMenu.side === 'left'" />
         <PanelLeft v-else />
         {{ sideMenu.side === "left" ? t("openInRight") : t("openInLeft") }}
+      </button>
+      <!-- 收藏切换（rclone-ui parity）：树行/快捷目录行按当前收藏态切文案；fav 行恒为移除。 -->
+      <button role="menuitem" @click="sideMenuAction('toggleFav')">
+        <StarOff v-if="sideMenuFavorited" />
+        <Star v-else />
+        {{ sideMenuFavorited ? t("favRemove") : t("favAdd") }}
       </button>
       <hr />
       <button role="menuitem" @click="sideMenuAction('copyPath')"><Link2 /> {{ t("copyPath") }}</button>
@@ -3797,6 +4070,17 @@ onBeforeUnmount(() => {
       </label>
     </ConfirmDialog>
 
+    <!-- 跨栏拖放动作选择（rclone-ui parity）：复制/移动二选一，确认后才执行
+         传输（冲突预检/覆盖确认在既有 transferBetween 链路内）。 -->
+    <DropActionDialog
+      :open="dropActionOpen"
+      :target-path="dropActionPending?.destPath ?? ''"
+      :count="dropActionPending?.list.length ?? 0"
+      :t="t"
+      @choose="onDropActionChoose"
+      @cancel="onDropActionCancel"
+    />
+
     <!-- 审计中#15：清空传输历史二次确认（危险度低于删文件，无需 danger 态）。 -->
     <ConfirmDialog
       :open="transferHistoryConfirmOpen"
@@ -3820,5 +4104,20 @@ onBeforeUnmount(() => {
       @confirm="previewDiscardOpen = false; previewPath = null"
       @cancel="previewDiscardOpen = false"
     />
+
+    <!-- 批量重命名抽屉（parity-tools）：多选右键 / 列表底部按钮入口；
+         连接在打开时按发起栏固化（双栏下左栏可为本地连接）。 -->
+    <BatchRenameDrawer
+      v-if="batchRenameOpen"
+      :entries="batchRenameEntries"
+      :sibling-names="batchRenameSiblingNames"
+      :connection-id="sideConnectionId(batchRenameSide) ?? connectionId"
+      :t="t"
+      @close="closeBatchRename"
+      @applied="onBatchRenameApplied"
+    />
+
+    <!-- 快捷键速查（parity-tools）：`?` / 空白区右键入口，Esc 关闭。 -->
+    <ShortcutsHelp v-if="shortcutsOpen" :t="t" @close="shortcutsOpen = false" />
   </main>
 </template>

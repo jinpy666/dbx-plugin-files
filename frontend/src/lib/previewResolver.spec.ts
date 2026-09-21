@@ -204,4 +204,86 @@ describe("resolvePreview", () => {
       expect(result.editorStrategy).toBeNull();
     }
   });
+
+  it("routes browser-unsupported images (tiff/heic/jxl) through the viewer image renderer", () => {
+    for (const [path, extension, mime] of [
+      ["/design/poster.tiff", "tiff", "image/tiff"],
+      ["/design/poster.TIF", "tif", "image/tiff"],
+      ["/camera/photo.heic", "heic", "image/heic"],
+      ["/camera/photo.heif", "heif", "image/heif"],
+      ["/design/art.jxl", "jxl", "image/jxl"],
+    ] as const) {
+      expect(resolvePreview(path), path).toMatchObject({
+        extension,
+        mime,
+        kind: "image",
+        editable: false,
+        previewStrategy: "file-viewer",
+        editorStrategy: null,
+      });
+    }
+  });
+
+  it("covers OOXML presentations, OFD, XMind, DBF and extra Office variants", () => {
+    for (const [path, extension] of [
+      ["/decks/Deck.pptx", "pptx"],
+      ["/decks/Deck.ppsx", "ppsx"],
+      ["/decks/Deck.potm", "potm"],
+      ["/govdoc/公文.ofd", "ofd"],
+      ["/notes/brainstorm.xmind", "xmind"],
+      ["/data/legacy.dbf", "dbf"],
+      ["/data/big.xlsb", "xlsb"],
+      ["/docs/template.dotx", "dotx"],
+    ] as const) {
+      expect(resolvePreview(path), path).toMatchObject({
+        extension,
+        kind: "office",
+        editable: false,
+        previewStrategy: "file-viewer",
+        editorStrategy: null,
+      });
+    }
+  });
+
+  it("routes Jupyter notebooks to the viewer while playlists and subtitles stay editable text", () => {
+    expect(resolvePreview("/analysis/demo.ipynb")).toMatchObject({
+      extension: "ipynb",
+      kind: "text",
+      editable: false,
+      previewStrategy: "file-viewer",
+      editorStrategy: null,
+    });
+    for (const [path, extension] of [
+      ["/subs/ep1.srt", "srt"],
+      ["/subs/ep1.vtt", "vtt"],
+      ["/radio/list.m3u8", "m3u8"],
+      ["/code/app.zig", "zig"],
+      ["/code/app.mdx", "mdx"],
+      ["/i18n/strings.properties", "properties"],
+    ] as const) {
+      expect(resolvePreview(path), path).toMatchObject({
+        extension,
+        kind: "text",
+        editable: true,
+        previewStrategy: "codemirror",
+        editorStrategy: "codemirror",
+      });
+    }
+  });
+
+  it("resolves MIDI and WebAudio media through the viewer", () => {
+    for (const [path, mime] of [
+      ["/audio/score.mid", "audio/midi"],
+      ["/audio/score.midi", "audio/midi"],
+      ["/audio/voice.weba", "audio/webm"],
+    ] as const) {
+      expect(resolvePreview(path), path).toMatchObject({
+        mime,
+        kind: "media",
+        editable: false,
+        previewStrategy: "file-viewer",
+        editorStrategy: null,
+      });
+    }
+  });
 });

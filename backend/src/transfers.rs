@@ -12,6 +12,11 @@ use crate::model::{PROGRESS_INTERVAL_MS, PROGRESS_MIN_DELTA};
 pub enum TransferKind {
     Upload,
     Download,
+    /// 远端目录打包为单个 zip 的下载（`files/archiveDownload`）：实时进度
+    /// 事件与任务列表以该 kind 区分。终态历史仍按 "download" 持久化
+    /// （`TransferRecord.kind` 的 upload|download 契约不变）。
+    #[serde(rename = "archiveDownload")]
+    ArchiveDownload,
 }
 
 /// Job lifecycle state (§7).

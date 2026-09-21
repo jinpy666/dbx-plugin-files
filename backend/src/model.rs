@@ -514,6 +514,12 @@ pub struct Capabilities {
     pub copy: bool,
     pub rename: bool,
     pub presign: bool,
+    /// rc `Features.CanHaveEmptyDirectories` 投影：false 的后端空目录在
+    /// 列表里不可见（`files/mkdir` 因此自动补一个空 `.keep` 占位文件，
+    /// rclone-ui 同款行为）。`None` = fsinfo 不可用（能力未知；前端不要
+    /// 据此隐藏动作）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub can_have_empty_directories: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -561,6 +567,18 @@ pub struct ReadRequest {
     pub path: String,
     #[serde(default)]
     pub max_bytes: Option<u64>,
+}
+
+/// `files/readRange`（大文件预览的分段读取）：读 `[offset, offset+length)`
+/// 字节窗口。`length` 是单次分片长度，服务端按 `MAX_PREVIEW_BYTES`（2 MiB）
+/// 钳制 —— 超限请求收缩而非报错。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadRangeRequest {
+    pub connection_id: String,
+    pub path: String,
+    pub offset: u64,
+    pub length: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -614,10 +632,34 @@ pub struct DownloadStartRequest {
     pub download_dir: Option<String>,
 }
 
+/// `files/archiveDownload`：把一个远端目录打包成单个 `<dirname>.zip`
+/// （与 `files/compress` 的 .zip 同构）后走标准下载管道 —— 同一任务表、
+/// 同一 `files/download/{taskId}` 帧通道、同一 finish。压缩字节只落在
+/// sidecar 临时目录，不写远端，read_only 连接同样可用。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveDownloadRequest {
+    pub connection_id: String,
+    /// 远端目录（只接受目录；文件走普通下载）。
+    pub path: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskRequest {
     pub task_id: String,
+}
+
+/// `files/remote-edit/open`(打开方式):把一个远端文件拉到本机临时副本,
+/// 用系统默认或用户指定的外部应用打开,并由后台监视循环把编辑器保存回传
+/// 到原远端路径。`app` 是可选的已校验外部应用可执行文件绝对路径。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteEditOpenRequest {
+    pub connection_id: String,
+    pub remote_path: String,
+    #[serde(default)]
+    pub app: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

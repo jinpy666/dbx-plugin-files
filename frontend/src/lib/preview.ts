@@ -3,6 +3,8 @@
 
 export const READ_MAX_BYTES = 2 * 1024 * 1024;
 export const WRITE_MAX_BYTES = 4 * 1024 * 1024;
+// 分块预览的硬上限（files/readRange 流式拼装，单文件 ≤256MiB 才进浏览器内存）。
+export const PREVIEW_MAX_BYTES = 256 * 1024 * 1024;
 
 /** 编辑保存前的大小判断：序列化后字节数 ≤ files/write 上限才允许直接写回。 */
 export function canEditBytes(byteLength: number): boolean {

@@ -145,6 +145,11 @@ export function installMockHost() {
   putBase64("/docs/sample.xlsx", "UEsDBBQAAAAAAPqDMV1bma6uCwIAAAsCAAATAAAAW0NvbnRlbnRfVHlwZXNdLnhtbDw/eG1sIHZlcnNpb249IjEuMCI/PjxUeXBlcyB4bWxucz0iaHR0cDovL3NjaGVtYXMub3BlbnhtbGZvcm1hdHMub3JnL3BhY2thZ2UvMjAwNi9jb250ZW50LXR5cGVzIj48RGVmYXVsdCBFeHRlbnNpb249InJlbHMiIENvbnRlbnRUeXBlPSJhcHBsaWNhdGlvbi92bmQub3BlbnhtbGZvcm1hdHMtcGFja2FnZS5yZWxhdGlvbnNoaXBzK3htbCIvPjxEZWZhdWx0IEV4dGVuc2lvbj0ieG1sIiBDb250ZW50VHlwZT0iYXBwbGljYXRpb24veG1sIi8+PE92ZXJyaWRlIFBhcnROYW1lPSIveGwvd29ya2Jvb2sueG1sIiBDb250ZW50VHlwZT0iYXBwbGljYXRpb24vdm5kLm9wZW54bWxmb3JtYXRzLW9mZmljZWRvY3VtZW50LnNwcmVhZHNoZWV0bWwuc2hlZXQubWFpbit4bWwiLz48T3ZlcnJpZGUgUGFydE5hbWU9Ii94bC93b3Jrc2hlZXRzL3NoZWV0MS54bWwiIENvbnRlbnRUeXBlPSJhcHBsaWNhdGlvbi92bmQub3BlbnhtbGZvcm1hdHMtb2ZmaWNlZG9jdW1lbnQuc3ByZWFkc2hlZXRtbC53b3Jrc2hlZXQreG1sIi8+PC9UeXBlcz5QSwMEFAAAAAAA+oMxXUuDozoFAQAABQEAAAsAAABfcmVscy8ucmVsczw/eG1sIHZlcnNpb249IjEuMCI/PjxSZWxhdGlvbnNoaXBzIHhtbG5zPSJodHRwOi8vc2NoZW1hcy5vcGVueG1sZm9ybWF0cy5vcmcvcGFja2FnZS8yMDA2L3JlbGF0aW9uc2hpcHMiPjxSZWxhdGlvbnNoaXAgSWQ9InJJZDEiIFR5cGU9Imh0dHA6Ly9zY2hlbWFzLm9wZW54bWxmb3JtYXRzLm9yZy9vZmZpY2VEb2N1bWVudC8yMDA2L3JlbGF0aW9uc2hpcHMvb2ZmaWNlRG9jdW1lbnQiIFRhcmdldD0ieGwvd29ya2Jvb2sueG1sIi8+PC9SZWxhdGlvbnNoaXBzPlBLAwQUAAAAAAD6gzFdF1scxvkAAAD5AAAADwAAAHhsL3dvcmtib29rLnhtbDw/eG1sIHZlcnNpb249IjEuMCI/Pjx3b3JrYm9vayB4bWxucz0iaHR0cDovL3NjaGVtYXMub3BlbnhtbGZvcm1hdHMub3JnL3NwcmVhZHNoZWV0bWwvMjAwNi9tYWluIiB4bWxuczpyPSJodHRwOi8vc2NoZW1hcy5vcGVueG1sZm9ybWF0cy5vcmcvb2ZmaWNlRG9jdW1lbnQvMjAwNi9yZWxhdGlvbnNoaXBzIj48c2hlZXRzPjxzaGVldCBuYW1lPSJTaGVldDEiIHNoZWV0SWQ9IjEiIHI6aWQ9InJJZDEiLz48L3NoZWV0cz48L3dvcmtib29rPlBLAwQUAAAAAAD6gzFdbTbpdAYBAAAGAQAAGgAAAHhsL19yZWxzL3dvcmtib29rLnhtbC5yZWxzPD94bWwgdmVyc2lvbj0iMS4wIj8+PFJlbGF0aW9uc2hpcHMgeG1sbnM9Imh0dHA6Ly9zY2hlbWFzLm9wZW54bWxmb3JtYXRzLm9yZy9wYWNrYWdlLzIwMDYvcmVsYXRpb25zaGlwcyI+PFJlbGF0aW9uc2hpcCBJZD0icklkMSIgVHlwZT0iaHR0cDovL3NjaGVtYXMub3BlbnhtbGZvcm1hdHMub3JnL29mZmljZURvY3VtZW50LzIwMDYvcmVsYXRpb25zaGlwcy93b3Jrc2hlZXQiIFRhcmdldD0id29ya3NoZWV0cy9zaGVldDEueG1sIi8+PC9SZWxhdGlvbnNoaXBzPlBLAwQUAAAAAAD6gzFdnaCvky4BAAAuAQAAGAAAAHhsL3dvcmtzaGVldHMvc2hlZXQxLnhtbDw/eG1sIHZlcnNpb249IjEuMCI/Pjx3b3Jrc2hlZXQgeG1sbnM9Imh0dHA6Ly9zY2hlbWFzLm9wZW54bWxmb3JtYXRzLm9yZy9zcHJlYWRzaGVldG1sLzIwMDYvbWFpbiI+PHNoZWV0RGF0YT48cm93IHI9IjEiPjxjIHI9IkExIiB0PSJpbmxpbmVTdHIiPjxpcz48dD5EQlggRmlsZXMgWExTWDwvdD48L2lzPjwvYz48YyByPSJCMSI+PHY+NDI8L3Y+PC9jPjwvcm93Pjxyb3cgcj0iMiI+PGMgcj0iQTIiIHQ9ImlubGluZVN0ciI+PGlzPjx0PlN0b3JlZCBaSVA8L3Q+PC9pcz48L2M+PC9yb3c+PC9zaGVldERhdGE+PC93b3Jrc2hlZXQ+UEsBAhQDFAAAAAAA+oMxXVuZrq4LAgAACwIAABMAAAAAAAAAAAAAAIABAAAAAFtDb250ZW50X1R5cGVzXS54bWxQSwECFAMUAAAAAAD6gzFdS4OjOgUBAAAFAQAACwAAAAAAAAAAAAAAgAE8AgAAX3JlbHMvLnJlbHNQSwECFAMUAAAAAAD6gzFdF1scxvkAAAD5AAAADwAAAAAAAAAAAAAAgAFqAwAAeGwvd29ya2Jvb2sueG1sUEsBAhQDFAAAAAAA+oMxXW026XQGAQAABgEAABoAAAAAAAAAAAAAAIABkAQAAHhsL19yZWxzL3dvcmtib29rLnhtbC5yZWxzUEsBAhQDFAAAAAAA+oMxXZ2gr5MuAQAALgEAABgAAAAAAAAAAAAAAIABzgUAAHhsL3dvcmtzaGVldHMvc2hlZXQxLnhtbFBLBQYAAAAABQAFAEUBAAAyBwAAAAA=");
   // RIFF/WAV header with a short silent PCM sample, enough for media renderer detection.
   putBase64("/docs/silence.wav", "UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAESsAAABAAgAZGF0YQAAAAA=");
+  // parity-tools：8 MiB 无内容仓大文件（files/readRange 走确定性伪字节），
+  // 供分块预览链路在 mock 下可见 4 片 × 2MiB 的真实分块行为。
+  // 放独立 /media 目录：/docs 的直接文件数被 dashboardParity 等既有断言锚定。
+  put("/media", "dir");
+  put("/media/big-sample.bin", "file", 8 * 1024 * 1024);
   for (let i = 0; i < 10_000; i += 1) put(`/10k/file-${String(i).padStart(5, "0")}.txt`, "file", 1024 + i);
 
   // ---- 本地树（内置 __local__ 连接，模拟真实 sidecar 的本地文件系统）----------
@@ -337,6 +342,7 @@ export function installMockHost() {
   // 按连接过滤，供设置弹窗「本地挂载」面板走查。
   const mockMounts = new Map<string, { strategy: string; gatewayPort: number; connectionId: unknown }>();
   let mockMountSeq = 0;
+  let mockEditSeq = 0;
 
   // ---- 本机共享（files/serve/*，对标 rclone serve 家族）-----------------------
   // 内存 map 假身（serveId → 行）：start 分配伪回环 URL，list 按连接过滤，
@@ -807,6 +813,21 @@ export function installMockHost() {
         if (!target) throw new Error("Missing path");
         return { success: true };
       }
+      case "files/remote-edit/open": {
+        // 打开方式（远程编辑本地副本）：mock 立即回会话（真实链路由 sidecar
+        // 拉临时副本/启动应用/监视回传并经 files/remote-edit/state 事件回报）。
+        const remote = str("remotePath");
+        if (!remote) throw new Error("Missing remotePath");
+        const name = remote.split("/").pop() || "file";
+        return { key: `mock-edit-${++mockEditSeq}`, localPath: `/tmp/dbx-mock-edit/${name}` };
+      }
+      case "files/remote-edit/status": {
+        return { sessions: [] };
+      }
+      case "files/remote-edit/close": {
+        if (!str("key")) throw new Error("Missing key");
+        return { success: true };
+      }
       case "files/unmount": {
         const mountId = str("mountId");
         if (mountId && !mockMounts.delete(mountId)) throw new Error("Mount not found");
@@ -918,6 +939,59 @@ export function installMockHost() {
         const max = Number(p.maxBytes ?? 2 * 1024 * 1024);
         const data = all.length > max ? all.subarray(0, max) : all;
         return { dataBase64: b64encode(data), truncated: all.length > data.length, size: all.length };
+      }
+      case "files/readRange": {
+        // parity-tools：预览分块读取。参数 { path, offset, length }，length 服务端
+        // clamp 到 2MiB；返回 { dataBase64, totalSize, offset, eof }。有内容仓的
+        // 文件按真实字节切片，无内容仓的大文件给确定性伪字节（(offset+i)%256），
+        // e2e 可校验分块拼接的正确性。
+        const path = str("path");
+        assertOk(path);
+        const source = treeFor(p.connectionId);
+        const entry = source.get(path.replace(/\/+$/, ""));
+        if (!entry || entry.kind !== "file") throw new Error(`NotFound: ${path}`);
+        const totalSize = entry.size;
+        const offset = Math.max(0, Number(p.offset ?? 0));
+        const length = Math.min(2 * 1024 * 1024, Math.max(0, Number(p.length ?? 0)));
+        const end = Math.min(totalSize, offset + length);
+        const stored = contentsFor(p.connectionId).get(path.replace(/\/+$/, ""));
+        const chunk = stored ? stored.subarray(offset, end) : new Uint8Array(Math.max(0, end - offset));
+        if (!stored) {
+          for (let i = 0; i < chunk.length; i += 1) chunk[i] = (offset + i) % 256;
+        }
+        return { dataBase64: b64encode(chunk), totalSize, offset, eof: end >= totalSize };
+      }
+      case "files/archiveDownload": {
+        // parity-tools：目录打包下载。契约与 files/download/start 同形（返回
+        // 任务 id），进度经 files/transfer/progress（kind=archiveDownload）推
+        // queued→running→completed；取消经 files/transfer/cancel（__cancel_ 槽）。
+        const path = str("path");
+        assertOk(path);
+        const entry = treeFor(p.connectionId).get(path.replace(/\/+$/, ""));
+        if (!entry || entry.kind !== "dir") throw new Error(`NotFound: ${path}`);
+        const taskId = `mock-archive-${++jobSeq}`;
+        const connectionId = connectionIdOf(p.connectionId);
+        const cancel = { flag: false };
+        jobs.set(`__cancel_${taskId}`, cancel as unknown as Record<string, unknown>);
+        jobs.set(taskId, { taskId, kind: "archiveDownload", connectionId, remotePath: path, status: "queued", totalBytes: 0, transferredBytes: 0 });
+        emit("files/transfer/progress", { taskId, kind: "archiveDownload", connectionId, remotePath: path, state: "queued", transferred: 0, total: 0 });
+        const schedule = (ms: number, fn: () => void) => {
+          const timer = window.setTimeout(() => {
+            if (cancel.flag) return;
+            fn();
+          }, ms);
+          timers.set(taskId, [...(timers.get(taskId) ?? []), timer]);
+        };
+        schedule(50, () => {
+          jobs.set(taskId, { ...jobs.get(taskId), status: "running", totalBytes: 4096, transferredBytes: 2048 });
+          emit("files/transfer/progress", { taskId, kind: "archiveDownload", connectionId, remotePath: path, state: "running", size: 4096, transferred: 2048, total: 4096 });
+        });
+        schedule(400, () => {
+          if (cancel.flag) return;
+          jobs.set(taskId, { ...jobs.get(taskId), status: "completed", totalBytes: 4096, transferredBytes: 4096 });
+          emit("files/transfer/progress", { taskId, kind: "archiveDownload", connectionId, remotePath: path, state: "completed", size: 4096, transferred: 4096, total: 4096 });
+        });
+        return { taskId, size: 0 };
       }
       case "files/write": {
         // A-FILES ②：小文件写回（≤4MiB）

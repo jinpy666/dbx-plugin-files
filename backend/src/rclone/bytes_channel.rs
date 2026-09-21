@@ -242,7 +242,9 @@ fn sanitize_task_id(task_id: &str) -> String {
 /// remote staging directory is best-effort on every path; on exotic
 /// mid-upload failures a `.dbx-files-upload-*` dot directory could survive
 /// in the target's parent (visible hazard documented in the handoff notes).
-async fn upload_staged_exact(
+/// `pub(crate)`: the remote-edit watcher reuses it to stream a changed local
+/// copy back to the exact remote path (main.rs `remote_edit_sync_back`).
+pub(crate) async fn upload_staged_exact(
     client: &RcClient,
     fs: &str,
     staging_file: &Path,

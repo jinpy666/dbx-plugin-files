@@ -386,6 +386,52 @@ pub async fn compress(
         .map_err(|error| format!("Failed to write archive '{target}': {error}"))
 }
 
+// ---------------------------------------------------------------------------
+// files/archiveDownload（远端目录 → 单个 zip → 本地下载管道）
+// ---------------------------------------------------------------------------
+
+/// `files/archiveDownload` 产物命名（纯函数）：目录最后一段 + `.zip`，
+/// 与 `files/compress` 的 `.zip`（stored 条目）格式语义一致。
+pub(crate) fn archive_download_artifact_name(relative_dir: &str) -> Result<String, String> {
+    let name = relative_dir
+        .trim_matches('/')
+        .rsplit('/')
+        .find(|segment| !segment.is_empty())
+        .ok_or_else(|| "Cannot derive an archive name from the connection root".to_string())?;
+    Ok(format!("{name}.zip"))
+}
+
+/// `files/archiveDownload` 源校验（纯函数）：只接受目录 —— 文件走普通
+/// 下载；连接根目录没有可打包的名字（与 `files/compress` 的根拒绝一致）。
+pub(crate) fn validate_archive_source(kind: &str, relative_dir: &str) -> Result<(), String> {
+    let relative_dir = relative_dir.trim_matches('/');
+    if relative_dir.is_empty() {
+        return Err("Cannot archive the connection root; pick a subdirectory instead".to_string());
+    }
+    if kind != "dir" {
+        return Err(format!(
+            "Cannot archive-download '{relative_dir}': it is not a directory; download files directly instead"
+        ));
+    }
+    Ok(())
+}
+
+/// `files/archiveDownload` 压缩层：单个远端目录 → zip 字节（stored 条目，
+/// 与 `files/compress` 的 `.zip` 完全同构）。字节留在本地由调用方写入
+/// sidecar 临时目录 —— 不写远端，read_only 连接同样可用；条目/字节炸弹
+/// 上限经 [`plan_compress`] 与 compress 共用。
+pub(crate) async fn build_dir_zip_bytes(
+    client: &RcClient,
+    fs: &str,
+    dir: &str,
+    root: &str,
+    lock_to_root: bool,
+) -> Result<Vec<u8>, String> {
+    let sources = [dir.to_string()];
+    let plan = plan_compress(client, fs, &sources, root, lock_to_root).await?;
+    build_zip(client, fs, &plan).await
+}
+
 /// Walks the compress sources into a plan (live-process analogue of
 /// `tar::plan_compress`): directories recurse via `operations/list`, single
 /// files stat directly; the entry/payload budget guards mirror
@@ -1372,5 +1418,69 @@ mod tests {
         .await
         .expect_err("root source");
         assert!(error.contains("Cannot compress the connection root"), "{error}");
+    }
+
+    // -- files/archiveDownload（命名 + 源校验纯函数） -------------------------
+
+    #[test]
+    fn archive_download_naming_uses_last_directory_segment() {
+        assert_eq!(
+            archive_download_artifact_name("photos").unwrap(),
+            "photos.zip"
+        );
+        assert_eq!(
+            archive_download_artifact_name("/photos/").unwrap(),
+            "photos.zip"
+        );
+        assert_eq!(
+            archive_download_artifact_name("media/2024/trip").unwrap(),
+            "trip.zip"
+        );
+        // 根（空 relative / 纯斜杠）没有可打包的名字。
+        assert!(archive_download_artifact_name("").is_err());
+        assert!(archive_download_artifact_name("/").is_err());
+    }
+
+    #[test]
+    fn archive_download_source_validation_is_directory_only() {
+        validate_archive_source("dir", "photos").unwrap();
+        validate_archive_source("dir", "/photos/").unwrap();
+        // 文件路径拒绝：走普通下载。
+        let error = validate_archive_source("file", "notes.txt").unwrap_err();
+        assert!(error.contains("not a directory"), "{error}");
+        // 连接根拒绝（与 compress 的根拒绝语义一致）。
+        for relative in ["", "/"] {
+            let error = validate_archive_source("dir", relative).unwrap_err();
+            assert!(error.contains("connection root"), "{relative}: {error}");
+            let error = validate_archive_source("file", relative).unwrap_err();
+            assert!(error.contains("connection root"), "{relative}: {error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn live_archive_download_builds_dir_zip_bytes() {
+        let Some(live) = Live::start().await else { return };
+        std::fs::create_dir_all(live.abs("pkg/sub")).unwrap();
+        std::fs::write(live.abs("pkg/a.txt"), b"alpha").unwrap();
+        std::fs::write(live.abs("pkg/sub/deep.bin"), vec![7u8; 1000]).unwrap();
+
+        let data = build_dir_zip_bytes(&live.client, &live.fs, "pkg", "", false)
+            .await
+            .expect("dir zip bytes");
+        // 字节留在本地（函数不写远端）。stored 条目的名字以原始字节存在，
+        // EOCD 尾标可被本模块解析器识别 —— build_zip 的完整 round-trip
+        // （archive_list/extract 解析 + CRC）已由 compress 的 live 测试覆盖。
+        assert!(data.starts_with(b"PK\x03\x04"), "zip local header");
+        assert!(find_eocd(&data).is_ok(), "EOCD must parse");
+        assert!(data.windows("pkg/a.txt".len()).any(|w| w == b"pkg/a.txt"));
+        assert!(data
+            .windows("pkg/sub/deep.bin".len())
+            .any(|w| w == b"pkg/sub/deep.bin"));
+        // 空目录：plan_compress 拒绝（无文件可打包），错误直传。
+        std::fs::create_dir_all(live.abs("hollow")).unwrap();
+        let error = build_dir_zip_bytes(&live.client, &live.fs, "hollow", "", false)
+            .await
+            .expect_err("empty dir has no files");
+        assert!(error.contains("Nothing to compress"), "{error}");
     }
 }

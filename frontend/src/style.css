@@ -77,6 +77,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-icon-violet { color: var(--icon-violet); }
 .wb-icon-blue { color: var(--icon-blue); }
 .wb-icon-danger { color: var(--destructive); }
+/* 收藏星标（rclone-ui parity）：已收藏态高亮为 --primary，与侧栏 tab is-active 同色系。 */
+.wb-fav-toggle.is-active { color: var(--primary); }
 :root[data-theme="dark"], :root[data-dbx-theme="dark"] { --icon-cyan: #67e8f9; --icon-violet: #c4b5fd; --icon-blue: #93c5fd; }
 
 /* ---- v-tip 全局悬浮提示（宿主 webview 不渲染原生 title） -------------------- */
@@ -261,6 +263,29 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-preset-chip:hover { border-color: color-mix(in srgb, var(--primary) 55%, var(--border)); background: var(--accent); }
 /* 预览错误面板的动作行（外部打开引导 + 下载兜底）。 */
 .wb-preview-notice-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* 分块预览进度条（readRange 流式加载）：字节文案 + 进度 + 取消。 */
+.wb-preview-chunkbar { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); padding: 4px 8px; }
+.wb-preview-chunkbar .wb-progress { flex: 1 1 auto; margin-top: 0; }
+.wb-preview-chunkbar .wb-muted { flex: 0 0 auto; font-size: 11px; white-space: nowrap; }
+/* 批量重命名抽屉（对标 rclone-ui）：左表单右计划表，窄屏纵向堆叠。 */
+.wb-batch-drawer { width: min(860px, calc(100vw - 40px)); max-height: min(640px, calc(100vh - 40px)); display: flex; flex-direction: column; }
+.wb-batch-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; padding: 8px 14px; }
+.wb-batch-form label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted-foreground); }
+.wb-batch-form input[type="text"], .wb-batch-form input[type="number"] { border: 1px solid var(--border); border-radius: var(--radius); background: color-mix(in srgb, var(--background) 60%, var(--muted)); color: var(--foreground); padding: 5px 8px; }
+.wb-batch-form .wb-batch-check { flex-direction: row; align-items: center; gap: 6px; }
+.wb-batch-plan { flex: 1 1 auto; min-height: 120px; overflow: auto; border-top: 1px solid var(--border); }
+.wb-batch-plan table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.wb-batch-plan th, .wb-batch-plan td { padding: 4px 10px; text-align: left; border-bottom: 1px solid color-mix(in srgb, var(--foreground) 8%, transparent); overflow-wrap: anywhere; }
+.wb-batch-plan .is-error td { color: var(--destructive); }
+.wb-batch-plan .is-ok td:last-child { color: var(--success); }
+.wb-batch-plan .wb-batch-arrow { color: var(--muted-foreground); }
+/* 快捷键速查弹层（ConfirmDialog 同族样式）：两列分组栅格。 */
+.wb-shortcuts { width: min(560px, calc(100vw - 40px)); max-height: min(560px, calc(100vh - 40px)); display: flex; flex-direction: column; }
+.wb-shortcuts-body { overflow-y: auto; padding: 6px 14px 12px; }
+.wb-shortcuts-group { margin: 10px 0 4px; font-size: 11px; font-weight: 600; color: var(--muted-foreground); text-transform: uppercase; letter-spacing: .04em; }
+.wb-shortcuts-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 16px; margin: 0; padding: 0; list-style: none; }
+.wb-shortcuts-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--muted-foreground); }
+.wb-shortcuts-key { flex: 0 0 auto; border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; font-family: var(--mono-font-family); font-size: 11px; color: var(--foreground); white-space: nowrap; }
 
 /* ---- audit panel -------------------------------------------------------------- */
 .wb-audit-list { display: flex; flex-direction: column; gap: 4px; }
@@ -311,6 +336,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-dialog .wb-dialog-danger { background: var(--destructive); color: #fff; border: 0; }
 .wb-dialog .wb-dialog-cancel { border: 1px solid var(--border); }
 .wb-dialog select { margin-top: 6px; width: 100%; border: 1px solid var(--border); border-radius: var(--radius); background: color-mix(in srgb, var(--background) 60%, var(--muted)); color: var(--foreground); padding: 5px 8px; }
+/* ---- drop action chooser（跨栏拖放 复制/移动 选择，rclone-ui parity）-------- */
+.wb-dropaction-meta { margin: 0 0 4px; overflow-wrap: anywhere; }
+.wb-dropaction-options { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.wb-dropaction-option { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: var(--radius); padding: 7px 10px; text-align: left; color: var(--foreground); cursor: pointer; background: transparent; }
+.wb-dropaction-option svg { width: 14px; height: 14px; flex: 0 0 14px; color: var(--muted-foreground); }
+.wb-dropaction-option:hover { background: var(--accent); }
+.wb-dropaction-option.is-active { border-color: var(--primary); background: var(--accent); }
+.wb-dropaction-option.is-active svg { color: var(--primary); }
 
 /* ---- misc ------------------------------------------------------------------------ */
 .wb-spin { animation: wb-rotate 1s linear infinite; }
