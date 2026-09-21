@@ -540,6 +540,20 @@ pub async fn start_mount(
     }
 
     // WebDAV gateway fallback (or pinned webdav strategy).
+    // 重复挂载去重：网关没有内核挂载点的 OS 占用保护（rclone 策略由
+    // MountPointBusy 拒绝语义挡住），同连接同挂载面重复进来会静默开出第二
+    // 个网关、返回新 mountId。对齐 rclone 策略口径：挂载点被占用即报业务
+    // 错误，不并发并存。
+    if let Some(existing) = duplicate_mount_conflict(mounts, connection_id, &mount_path)? {
+        let surface = if mount_path.is_empty() {
+            "/".to_string()
+        } else {
+            mount_path.clone()
+        };
+        return Err(format!(
+            "webdav mount failed: mount point unusable: {surface} is already mounted (mountId {existing}) — unmount it first"
+        ));
+    }
     let token = random_token();
     let gateway = webdav_gateway::start(webdav_gateway::GatewayConfig {
         conn_id: connection_id.to_string(),
@@ -621,6 +635,26 @@ fn snapshot_for_connection(
         })
         .map(|record| (record.mount_id.clone(), backend_snapshot(&record.backend)))
         .collect())
+}
+
+/// 同连接同挂载面（`mount_path` 归一化后相等）的现存 mountId。挂载面即
+/// rclone 策略下内核挂载点的对应物：kernel mount 的 busy 判定由 OS 挂载点
+/// 承担，WebDAV 网关没有这道保护，重复挂载由这里挡（含 rclone 策略的现存
+/// 记录——同一挂载面不再开第二个网关）。纯判定，start_mount 的降级/固定
+/// webdav 路径在开网关前调用，可单测。
+fn duplicate_mount_conflict(
+    mounts: &MountTable,
+    connection_id: &str,
+    mount_path: &str,
+) -> Result<Option<String>, String> {
+    let wanted = mount_path.trim_matches('/');
+    Ok(lock_table(mounts)?
+        .values()
+        .find(|record| {
+            record.connection_id == connection_id
+                && record.mount_path.trim_matches('/') == wanted
+        })
+        .map(|record| record.mount_id.clone()))
 }
 
 /// Whether `path` is the live local mount point of an active mount record.
@@ -1025,6 +1059,91 @@ mod tests {
             );
         assert!(is_active_mount_point(&mounts, Path::new("/tmp/mnt")).unwrap());
         assert!(!is_active_mount_point(&mounts, Path::new("/elsewhere")).unwrap());
+    }
+
+    // -- webdav 重复挂载去重 ---------------------------------------------------
+
+    fn seed_webdav(mounts: &MountTable, id: &str, conn: &str, path: &str) {
+        lock_table(mounts).unwrap().insert(
+            id.to_string(),
+            MountRecord {
+                mount_id: id.to_string(),
+                connection_id: conn.to_string(),
+                strategy: "webdav".to_string(),
+                fs: "dbxc:/data".to_string(),
+                mount_path: path.to_string(),
+                backend: MountBackend::WebDav {
+                    mount_point: None,
+                    gateway: webdav_gateway::GatewayHandle {
+                        port: 1,
+                        token: "t".to_string(),
+                        shutdown: Arc::new(tokio::sync::Notify::new()),
+                    },
+                },
+                fallback_reason: None,
+                created_at_ms: 0,
+                _work: rclone::WorkGuard::for_tests(),
+            },
+        );
+    }
+
+    #[test]
+    fn duplicate_mount_conflict_matches_same_connection_and_surface() {
+        let mounts = table();
+        seed_webdav(&mounts, "m1", "c1", "/data/inside");
+        // 同连接同挂载面（拼写差异归一化）→ 冲突，并回带现存 mountId。
+        assert_eq!(
+            duplicate_mount_conflict(&mounts, "c1", "/data/inside")
+                .unwrap()
+                .as_deref(),
+            Some("m1")
+        );
+        assert_eq!(
+            duplicate_mount_conflict(&mounts, "c1", "/data/inside/")
+                .unwrap()
+                .as_deref(),
+            Some("m1")
+        );
+        assert_eq!(
+            duplicate_mount_conflict(&mounts, "c1", "data/inside")
+                .unwrap()
+                .as_deref(),
+            Some("m1")
+        );
+        // 不同连接、不同子路径、子路径 vs 整根 → 不冲突。
+        assert!(duplicate_mount_conflict(&mounts, "c2", "/data/inside")
+            .unwrap()
+            .is_none());
+        assert!(duplicate_mount_conflict(&mounts, "c1", "/data/other")
+            .unwrap()
+            .is_none());
+        assert!(duplicate_mount_conflict(&mounts, "c1", "").unwrap().is_none());
+    }
+
+    #[test]
+    fn duplicate_mount_conflict_includes_kernel_mounts_of_same_surface() {
+        // rclone 策略的现存记录同样占用挂载面：网关不再叠加第二个入口。
+        let mounts = table();
+        lock_table(&mounts).unwrap().insert(
+            "k1".to_string(),
+            MountRecord {
+                mount_id: "k1".to_string(),
+                connection_id: "c1".to_string(),
+                strategy: "rclone".to_string(),
+                fs: "dbxc:/data/inside".to_string(),
+                mount_path: "/data/inside".to_string(),
+                backend: MountBackend::Rclone { mount_point: PathBuf::from("/tmp/mnt") },
+                fallback_reason: None,
+                created_at_ms: 0,
+                _work: rclone::WorkGuard::for_tests(),
+            },
+        );
+        assert_eq!(
+            duplicate_mount_conflict(&mounts, "c1", "/data/inside")
+                .unwrap()
+                .as_deref(),
+            Some("k1")
+        );
     }
 
     // -- VFS cache mapping ---------------------------------------------------
