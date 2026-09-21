@@ -2173,7 +2173,9 @@ mod tests {
         assert_eq!(total, 1000);
 
         // 目录拒绝与缺失路径沿用 read 前缀的错误文案。
-        let error = read_range(&live.client, &live.fs, "/sub", 0, 10).await.unwrap_err();
+        let error = read_range(&live.client, &live.fs, "/sub", 0, 10)
+            .await
+            .unwrap_err();
         assert!(error.contains("it is a directory"), "{error}");
         let error = read_range(&live.client, &live.fs, "/missing.bin", 0, 10)
             .await
