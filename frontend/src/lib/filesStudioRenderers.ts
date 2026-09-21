@@ -28,7 +28,9 @@ import wordRenderer from "@file-viewer/renderer-word";
 import mediaRenderer from "@file-viewer/renderer-media";
 import ofdRenderer from "@file-viewer/renderer-ofd";
 import mindmapRenderer from "@file-viewer/renderer-mindmap";
-import pptxRenderer from "@file-viewer/renderer-presentation/pptx";
+// renderer-pptx 的 default export 是裸 renderPptx 函数；preset 需要
+// { id, definitions, handlers } 装配对象，必须用具名导出 pptxRenderer。
+import { pptxRenderer } from "@file-viewer/renderer-presentation/pptx";
 import "@file-viewer/capability-pdf-identity-repair";
 import "@file-viewer/capability-rtf";
 import "@file-viewer/capability-text-tools";
