@@ -268,6 +268,76 @@ describe("mockHost download/start connection routing (R5-P2-8)", () => {
   });
 });
 
+// parity-tools：mock 的新契约——files/readRange（分块预览）与
+// files/archiveDownload（目录打包下载，download/start 同形任务）。
+describe("mockHost readRange and archiveDownload (parity-tools)", () => {
+  beforeEach(() => {
+    Reflect.deleteProperty(window, "dbxPlugin");
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    Reflect.deleteProperty(window, "dbxPlugin");
+  });
+
+  it("serves readRange with clamped length, totalSize and eof for the 8 MiB sample", async () => {
+    const api = await setup();
+    const total = 8 * 1024 * 1024;
+    expect(await api.invoke("files/stat", { path: "/media/big-sample.bin" })).toMatchObject({
+      entry: { kind: "file", size: total },
+    });
+    const first = await api.invoke<{ dataBase64: string; totalSize: number; offset: number; eof: boolean }>("files/readRange", {
+      path: "/media/big-sample.bin", offset: 0, length: 2 * 1024 * 1024,
+    });
+    expect(first).toMatchObject({ totalSize: total, offset: 0, eof: false });
+    expect(api.decodeBase64(first.dataBase64).byteLength).toBe(2 * 1024 * 1024);
+    // 确定性伪字节：offset 2MiB+5 处首字节 = 5，e2e 可校验分块拼接。
+    const tail = await api.invoke<{ dataBase64: string; eof: boolean }>("files/readRange", {
+      path: "/media/big-sample.bin", offset: total - 5, length: 2 * 1024 * 1024,
+    });
+    const bytes = api.decodeBase64(tail.dataBase64);
+    expect(bytes.byteLength).toBe(5);
+    expect(tail.eof).toBe(true);
+    expect(bytes[0]).toBe((total - 5) % 256);
+    await expect(api.invoke("files/readRange", { path: "/docs", offset: 0, length: 10 })).rejects.toThrow(/NotFound/);
+  });
+
+  it("emits archiveDownload progress (queued→running→completed) for directories only", async () => {
+    const api = await setup();
+    const events: DbxPluginEvent[] = [];
+    api.onEvent((event) => events.push(event));
+    await expect(api.invoke("files/archiveDownload", { path: "/backup.zip" })).rejects.toThrow(/NotFound/);
+    const result = await api.invoke<{ taskId: string }>("files/archiveDownload", { path: "/docs" });
+    expect(result.taskId).toMatch(/^mock-archive-/);
+    await vi.advanceTimersByTimeAsync(500);
+    const archive = events
+      .map((event) => event as { method: string; params: Record<string, unknown> })
+      .filter((event) => event.method === "files/transfer/progress" && event.params.kind === "archiveDownload" && event.params.taskId === result.taskId)
+      .map((event) => event.params.state);
+    expect(archive).toEqual(["queued", "running", "completed"]);
+    expect(await api.invoke("files/transfer/status", { jobId: result.taskId })).toMatchObject({
+      job: { kind: "archiveDownload", remotePath: "/docs", status: "completed" },
+    });
+  });
+
+  it("cancels a running archiveDownload via the cancel slot", async () => {
+    const api = await setup();
+    const events: DbxPluginEvent[] = [];
+    api.onEvent((event) => events.push(event));
+    const { taskId } = await api.invoke<{ taskId: string }>("files/archiveDownload", { path: "/docs" });
+    await vi.advanceTimersByTimeAsync(60);
+    await api.invoke("files/transfer/cancel", { taskId });
+    await vi.advanceTimersByTimeAsync(500);
+    const states = events
+      .map((event) => event as { method: string; params: Record<string, unknown> })
+      .filter((event) => event.method === "files/transfer/progress" && String(event.params.taskId ?? event.params.jobId) === taskId)
+      .map((event) => event.params.state);
+    expect(states.at(-1)).toBe("canceled");
+    expect(await api.invoke("files/transfer/status", { jobId: taskId })).toMatchObject({ job: { status: "canceled" } });
+  });
+});
+
 describe("mockHost transfer/cancel mirrors sidecar slot cancellation", () => {
   beforeEach(() => {
     Reflect.deleteProperty(window, "dbxPlugin");
