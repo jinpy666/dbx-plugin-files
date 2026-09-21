@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
-import { Columns2, Download, FolderPlus, Gauge, HardDrive, ScrollText, Settings, Star, Trash2, Upload, Plug } from "@lucide/vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { Activity, CircleGauge, Columns2, Download, FolderPlus, Gauge, HardDrive, ScrollText, Settings, Star, Trash2, Upload, Plug } from "@lucide/vue";
 
 // 全局动作栏：路径/面包屑/过滤等栏内控件已下沉到各栏 wb-pane-header
 // （双栏对称性修复），这里只承载跨栏的全局操作。
@@ -9,7 +9,7 @@ const props = defineProps<{
   busy: boolean;
   hasSelection: boolean;
   dockOpen: boolean;
-  dockTab: "transfers" | "audit" | "connection";
+  dockTab: "transfers" | "audit" | "connection" | "stats";
   dualPane: boolean;
   /** 顶栏 identity（对标 ssh 工具栏左侧）：连接名/色条/只读徽章 + 状态 pill。 */
   connectionName: string;
@@ -35,13 +35,15 @@ const emit = defineEmits<{
   (event: "delete"): void;
   /** 审计#17：工具栏只保留一个 dock 开关。tab 省略即切换「当前页签」的
    * 开/关；带 tab 时语义不变（打开指定页签）——App 层兼容两种调用。 */
-  (event: "toggle-dock", tab?: "transfers" | "audit" | "connection"): void;
+  (event: "toggle-dock", tab?: "transfers" | "audit" | "connection" | "stats"): void;
   (event: "toggle-dual-pane"): void;
   /** 本地挂载（对标 ssh 工具栏动作 icon）：挂载活动栏当前目录。 */
   (event: "mount"): void;
   /** 独立设置弹窗（对标 ssh 设置 icon）：设置不再挤在 dock 页签里。 */
   (event: "open-settings"): void;
   (event: "bwlimit-click"): void;
+  /** 限速快捷菜单直接落值（"" = off）：App 复用设置页保存链路（含通知）。 */
+  (event: "bwlimit-set", rate: string): void;
   /** 收藏切换（rclone-ui parity）：作用于活动栏当前目录，App 负责落 prefs。 */
   (event: "toggle-favorite"): void;
 }>();
@@ -57,12 +59,14 @@ const DOCK_ICONS = {
   transfers: Gauge,
   audit: ScrollText,
   connection: Plug,
+  stats: Activity,
 } as const;
 
 const DOCK_TIP_KEYS: Record<keyof typeof DOCK_ICONS, string> = {
   transfers: "transfers",
   audit: "auditPanel",
   connection: "connectionPanel",
+  stats: "statsPanel",
 };
 
 const dockIcon = computed(() => DOCK_ICONS[props.dockTab]);
@@ -84,6 +88,56 @@ function onPicked(event: Event) {
   if (files.length) emit("upload", files);
   input.value = "";
 }
+
+// ---- 限速（rclone 令牌桶）快捷开关：常驻工具栏 icon + 下拉菜单 -------------
+// 旧实现只在限速生效时显示徽标 pill（未设限速时入口不可见，用户找不到切换
+// 的地方）；现在常驻 CircleGauge 按钮，菜单里可一键设预设/关闭/去设置自定义。
+// 预设值为 rclone 可接受的「数字+单位」（M = MiB/s，与设置页单位语义一致）。
+const BWLIMIT_PRESETS: ReadonlyArray<{ label: string; value: string }> = [
+  { label: "1 MB/s", value: "1M" },
+  { label: "5 MB/s", value: "5M" },
+  { label: "10 MB/s", value: "10M" },
+  { label: "50 MB/s", value: "50M" },
+];
+
+const bwlimitOpen = ref(false);
+const bwlimitWrap = ref<HTMLElement>();
+
+const bwlimitTip = computed(() =>
+  props.bwlimit ? props.t("bwlimitBadgeTip", { rate: props.bwlimit }) : props.t("bwlimitLabel"),
+);
+
+function toggleBwlimitMenu() {
+  bwlimitOpen.value = !bwlimitOpen.value;
+}
+
+function closeBwlimitMenu() {
+  bwlimitOpen.value = false;
+}
+
+function applyBwlimit(rate: string) {
+  closeBwlimitMenu();
+  emit("bwlimit-set", rate);
+}
+
+function openBwlimitSettings() {
+  closeBwlimitMenu();
+  emit("bwlimit-click");
+}
+
+// 点击菜单外关闭（捕获阶段，避免菜单项 click 前菜单已被卸载）。
+function onDocumentPointerdown(event: PointerEvent) {
+  if (bwlimitOpen.value && bwlimitWrap.value && !bwlimitWrap.value.contains(event.target as Node)) {
+    closeBwlimitMenu();
+  }
+}
+
+onMounted(() => document.addEventListener("pointerdown", onDocumentPointerdown, true));
+onBeforeUnmount(() => document.removeEventListener("pointerdown", onDocumentPointerdown, true));
+
+/** 统计 icon 与单 dock 开关在 stats 页签打开时同图标：此时隐藏独立入口，
+ * 避免相邻两个 Activity 按钮造成困惑（dock 开关本身已高亮表示当前页签）。 */
+const statsDockOpen = computed(() => props.dockOpen && props.dockTab === "stats");
 </script>
 
 <template>
@@ -93,8 +147,6 @@ function onPicked(event: Event) {
       <strong :title="connectionName">{{ connectionName }}</strong>
       <span v-if="readOnly" class="wb-readonly-badge">{{ t("readOnly") }}</span>
       <span class="wb-session-pill" :class="`session-${connState}`"><span class="wb-session-dot" aria-hidden="true" />{{ t(`sessionStatus.${connState}`) }}</span>
-    <!-- 限速生效徽标：点击直达设置传输页签；Gauge 图标语义=速率。 -->
-    <button v-if="bwlimit" type="button" class="wb-session-pill wb-bwlimit-pill" v-tip="t('bwlimitBadgeTip', { rate: bwlimit })" @click="emit('bwlimit-click')"><Gauge /> {{ t("bwlimitBadge") }} {{ bwlimit }}</button>
     </div>
     <div class="wb-toolbar-actions">
       <!-- 审计中#13：文字按钮统一 v-tip（宿主 webview 不渲染原生 title）。 -->
@@ -113,6 +165,28 @@ function onPicked(event: Event) {
         :aria-pressed="starred"
         @click="emit('toggle-favorite')"
       ><Star /></button>
+      <!-- 限速（rclone 令牌桶）常驻开关：is-active=限速中，按钮随限速值内联显示
+           当前速率；点击弹快捷菜单（预设/关闭/自定义），替代旧「仅生效时可见」的徽标。 -->
+      <span ref="bwlimitWrap" class="wb-bwlimit-wrap">
+        <button
+          class="wb-icon-button wb-bwlimit-toggle"
+          v-tip="bwlimitTip"
+          :class="{ 'is-active': Boolean(bwlimit) }"
+          :aria-expanded="bwlimitOpen"
+          aria-haspopup="menu"
+          @click="toggleBwlimitMenu"
+        ><CircleGauge /><span v-if="bwlimit" class="wb-bwlimit-rate">{{ bwlimit }}</span></button>
+        <div v-if="bwlimitOpen" class="wb-bwlimit-menu" role="menu" @keydown.esc.stop="closeBwlimitMenu">
+          <div class="wb-bwlimit-menu-title">{{ t("bwlimitLabel") }}</div>
+          <div class="wb-bwlimit-menu-current">{{ bwlimit ?? t("bwlimitUnlimited") }}</div>
+          <button v-for="preset in BWLIMIT_PRESETS" :key="preset.value" role="menuitem" type="button" :class="{ 'is-current': bwlimit === preset.value }" @click="applyBwlimit(preset.value)">{{ preset.label }}</button>
+          <button role="menuitem" type="button" :class="{ 'is-current': !bwlimit }" @click="applyBwlimit('')">{{ t("bwlimitUnlimited") }}</button>
+          <button role="menuitem" type="button" @click="openBwlimitSettings">{{ t("bwlimitCustom") }}</button>
+        </div>
+      </span>
+      <!-- 统计页签（对标 rclone-dashboard overview：吞吐曲线 + 任务/空间汇总）：
+           stats 页签已打开时由上方 dock 开关承载，独立入口隐藏。 -->
+      <button v-if="!statsDockOpen" class="wb-icon-button wb-icon-neutral wb-stats-toggle" v-tip="t('statsPanel')" :class="{ 'is-active': statsDockOpen }" :aria-pressed="statsDockOpen" @click="emit('toggle-dock', 'stats')"><Activity /></button>
       <!-- 审计#17：单一 dock 开关（高亮=已打开；图标/提示=当前页签）。 -->
       <button class="wb-icon-button wb-icon-neutral" v-tip="t(dockTipKey)" :class="{ 'is-active': dockOpen }" :aria-pressed="dockOpen" @click="emit('toggle-dock')"><component :is="dockIcon" /></button>
       <!-- 功能 icon（对标 ssh 工具栏）：挂载活动栏目录 + 打开独立设置弹窗。 -->

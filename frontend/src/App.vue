@@ -45,6 +45,7 @@ import {
 import FileTable from "./components/FileTable.vue";
 import FileToolbar from "./components/FileToolbar.vue";
 import TransferPanel from "./components/TransferPanel.vue";
+import StatsPanel from "./components/StatsPanel.vue";
 import SettingsPanel from "./components/SettingsPanel.vue";
 import MountDialog from "./components/MountDialog.vue";
 import type { SettingsSection } from "./components/SettingsPanel.vue";
@@ -302,7 +303,7 @@ function navigateQuickPath(side: PaneSide, targetPath: string) {
 // 右侧 dock（transfers/audit/connection）不持久化，默认收起；settings 已拆为
 // 独立弹窗（对标 ssh 插件 settings-modal），不再占 dock 页签。
 const dockOpen = ref(false);
-const dockTab = ref<"transfers" | "audit" | "connection">("transfers");
+const dockTab = ref<"transfers" | "audit" | "connection" | "stats">("transfers");
 const auditRef = ref<InstanceType<typeof AuditPanel>>();
 
 // ---- 独立设置弹窗（对标 ssh 插件 settings-modal）：左导航分类 + 内容面板 --------
@@ -949,7 +950,7 @@ const uiIntentHandlers = {
       uiIntent.reportSnapshot({ panel: "browse", path: path.value, count: entries.value.length });
       return { status: "applied", summary: { panel } };
     }
-    if (panel === "transfers" || panel === "audit") {
+    if (panel === "transfers" || panel === "audit" || panel === "stats") {
       dockOpen.value = true;
       dockTab.value = panel;
       if (panel === "audit") auditRef.value?.refresh();
@@ -2481,26 +2482,34 @@ function closeDeepSearch() {
   deepSearchOpen.value = false;
 }
 
-// ---- 远端空间占用（files/about，sidecar 60s 缓存；仅右栏远程连接显示）----
-const remoteUsage = ref<{ used: number; total: number } | null>(null);
+// ---- 远端空间占用（files/about，sidecar 60s 缓存；左右栏各自显示）----------
+// 每栏独立取数：单栏时左栏即当前连接（默认可见），双栏时两栏按各自连接显示。
+const leftRemoteUsage = ref<{ used: number; total: number } | null>(null);
+const rightRemoteUsage = ref<{ used: number; total: number } | null>(null);
 
-async function loadRemoteUsage() {
-  const id = sideConnectionId("right") ?? connectionId.value;
+async function loadRemoteUsage(side: PaneSide) {
+  const id = sideConnectionId(side) ?? connectionId.value;
+  const target = side === "left" ? leftRemoteUsage : rightRemoteUsage;
   if (!id || id === "__local__") {
-    remoteUsage.value = null;
+    target.value = null;
     return;
   }
   try {
     const result = await call<{ used?: number; total?: number }>("files/about", { connectionId: id });
-    remoteUsage.value = result.total ? { used: result.used ?? 0, total: result.total } : null;
+    target.value = result.total ? { used: result.used ?? 0, total: result.total } : null;
   } catch {
     // 后端不支持（旧 sidecar/特殊协议）时静默隐藏，不打扰用户。
-    remoteUsage.value = null;
+    target.value = null;
   }
 }
 
-// 连接或右栏目录变化时刷新占用（about 有 60s 缓存，频率无虞）；挂载即拉一次。
-watch([connectionId, rightPath], () => { void loadRemoteUsage(); }, { immediate: true });
+// 连接或栏内目录变化时刷新占用（about 有 60s 缓存，频率无虞）；挂载即拉一次。
+// 右栏仅双栏模式可见，单栏时不必取数（about 按连接缓存，双栏开启首刷即到）。
+watch([connectionId, dualPane, leftConnectionId, path], () => { void loadRemoteUsage("left"); }, { immediate: true });
+watch([connectionId, dualPane, targetConnectionId, rightPath], () => { if (dualPane.value) void loadRemoteUsage("right"); else rightRemoteUsage.value = null; }, { immediate: true });
+
+/** 统计页签展示活动栏连接的空间占用。 */
+const activeRemoteUsage = computed(() => (activeSide.value === "right" ? rightRemoteUsage.value : leftRemoteUsage.value));
 
 // ---- 传输带宽（files/bwlimit：sidecar prefs 持久化，每个 rcd 启动时重放）----
 const bwlimitDraft = ref("");
@@ -3558,6 +3567,7 @@ onBeforeUnmount(() => {
       @mount="mountToolbarTarget"
       @open-settings="openSettings()"
       @bwlimit-click="openSettings('transfer')"
+      @bwlimit-set="onBwlimitSave"
       @toggle-favorite="toggleFavorite(toolbarTarget.side)"
       @toggle-dock="(tab) => { const target = tab ?? dockTab; if (dockOpen && dockTab === target) dockOpen = false; else { dockOpen = true; dockTab = target; if (target === 'audit') auditRef?.refresh(); } }"
     />
@@ -3581,6 +3591,7 @@ onBeforeUnmount(() => {
             :quick-paths="leftQuickPaths"
             :favorites="leftFavorites"
             :current-path="path"
+            :usage="leftRemoteUsage"
             :t="t"
             @update:tab="leftSideTab = $event"
             @update:collapsed="leftSideCollapsed = $event"
@@ -3675,7 +3686,7 @@ onBeforeUnmount(() => {
             :quick-paths="rightQuickPaths"
             :favorites="rightFavorites"
             :current-path="rightPath"
-            :usage="remoteUsage"
+            :usage="rightRemoteUsage"
             :t="t"
             @update:tab="rightSideTab = $event"
             @update:collapsed="rightSideCollapsed = $event"
@@ -3739,6 +3750,7 @@ onBeforeUnmount(() => {
         <!-- 审计#12：页签补 tablist/tab 语义 + roving tabindex + ←→ 循环切换。 -->
         <div class="wb-dock-tabs" role="tablist" @contextmenu.prevent @keydown="onTablistArrowKeys">
           <button role="tab" :aria-selected="dockTab === 'transfers'" :tabindex="dockTab === 'transfers' ? 0 : -1" :class="{ 'is-active': dockTab === 'transfers' }" @click="dockTab = 'transfers'">{{ t("transferPanel") }}</button>
+          <button role="tab" :aria-selected="dockTab === 'stats'" :tabindex="dockTab === 'stats' ? 0 : -1" :class="{ 'is-active': dockTab === 'stats' }" @click="dockTab = 'stats'">{{ t("statsPanel") }}</button>
           <button role="tab" :aria-selected="dockTab === 'audit'" :tabindex="dockTab === 'audit' ? 0 : -1" :class="{ 'is-active': dockTab === 'audit' }" @click="dockTab = 'audit'">{{ t("auditPanel") }}</button>
           <button role="tab" :aria-selected="dockTab === 'connection'" :tabindex="dockTab === 'connection' ? 0 : -1" :class="{ 'is-active': dockTab === 'connection' }" @click="dockTab = 'connection'">{{ t("connectionPanel") }}</button>
         </div>
@@ -3755,6 +3767,13 @@ onBeforeUnmount(() => {
             @reveal="revealTransferTarget"
             @open="openTransferTarget"
             @open-app="openTransferWithApp"
+          />
+          <StatsPanel
+            v-else-if="dockTab === 'stats'"
+            :jobs="transferJobs"
+            :usage="activeRemoteUsage"
+            :bwlimit="bwlimitActive"
+            :t="t"
           />
           <AuditPanel v-else-if="dockTab === 'audit'" ref="auditRef" :t="t" />
           <div v-else style="display: flex; flex-direction: column; gap: 10px">

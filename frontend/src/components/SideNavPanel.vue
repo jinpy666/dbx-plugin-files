@@ -20,7 +20,8 @@ const props = defineProps<{
   favorites: string[];
   currentPath: string;
   t: (key: string, values?: Record<string, string | number>) => string;
-  /** 远端空间占用（files/about，60s sidecar 缓存；仅右栏传入）。 */
+  /** 远端空间占用（files/about，60s sidecar 缓存；App 按栏传入：左栏=当前
+   * 连接，右栏=目标连接；本地 __local__ 或后端不支持时为 null 隐藏）。 */
   usage?: { used: number; total: number } | null;
 }>();
 
