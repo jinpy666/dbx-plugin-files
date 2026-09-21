@@ -1144,7 +1144,8 @@ impl Plugin {
                 .await?;
                 Ok(json!({ "jobId": job_id }))
             }
-            // 右键 SUM 校验文件（`.md5`/`.sha1`/…）→ 核验其所在目录（批次7）。
+            // 右键 SUM 校验文件（`.md5`/`.sha1`/…）→ 核验其同名兄弟目录
+            // （`data.md5` → `data`，批次7）。
             // 单连接：同一 CheckRequest 走 SUM 分支，终态报告与 files/check
             // 同形态，复用 check 作业面板与 checkSummary 展示。
             "files/checksum/verify" => {
@@ -1200,8 +1201,14 @@ impl Plugin {
                     .filter(|value| !value.is_empty())
                     .unwrap_or("md5")
                     .to_lowercase();
+                // operations/hashsum enumerates the fs root (live-pinned
+                // v1.75.1: `remote` never scopes the walk), so the verified
+                // directory must ride inside the fs string — the same shape
+                // the batch-7 check unit test pins — and the SUM lines come
+                // out relative to that directory ("a.txt", "sub/b.txt").
+                let dir_fs = rclone::sync::compose_fs(&fs, &remote);
                 let result = client
-                    .operations_hashsum(&fs, &remote, &hash_type, false)
+                    .operations_hashsum(&dir_fs, "", &hash_type, false)
                     .await
                     .map_err(|error| error.to_string())?;
                 let lines: Vec<String> = result
@@ -2995,10 +3002,12 @@ fn sum_hash_from_extension(sum_path: &str) -> Result<String, String> {
 /// lands on the record as `checkSummary`; differences are data, so the job
 /// completes unless rclone itself errors.
 ///
-/// SUM 校验模式（批次7）：`sum_path` 存在时改为单连接核验——被核验目录 =
-/// SUM 文件父目录（files/hashsum 把校验文件写在目录旁 `<目录>.<hash>`，
-/// 行相对连接根，因此核验对象就是父目录），SUM 文件与目录各过一次 read
-/// 门；哈希类型缺省按扩展名推断；src 侧不参与比较（`src_rel` 置空）。
+/// SUM 校验模式（批次7）：`sum_path` 存在时改为单连接核验——files/hashsum
+/// 把校验文件写在目录旁 `<目录>.<hash>`，行相对该目录（hashsum 走
+/// fs-scoped 生成），因此被核验目录 = SUM 文件名去扩展名后的同名目录；
+/// SUM 文件与目录各过一次 read 门 + 存在性预检（rclone 的 operations/check
+/// 对缺失 checkFile 回空报告，会把坏 SUM 静默判成 identical）；哈希类型
+/// 缺省按扩展名推断；src 侧不参与比较（`src_rel` 置空）。
 async fn rclone_start_check_job(
     rclone: Arc<rclone::RcloneEngine>,
     sync_jobs: Arc<std::sync::Mutex<HashMap<String, RcloneSyncRecord>>>,
@@ -3009,8 +3018,8 @@ async fn rclone_start_check_job(
     let target_binding = rclone.binding(&request.target_connection_id)?;
     // One rc call drives both fs strings inside a single rcd.
     rclone::ensure_same_proxy_group(&source_binding, &target_binding)?;
-    // SUM 分支预取：SUM 文件 read 门 + 父目录 read 门 + 哈希类型解析。
-    // wire 路径的 parent/base 拆分与 files/hashsum 臂保持一致。
+    // SUM 分支预取：SUM 文件 read 门 + 被核验目录 read 门 + 存在性预检 +
+    // 哈希类型解析。wire 路径的 base/扩展名拆分与 files/hashsum 臂保持一致。
     let sum_target = match request
         .sum_path
         .as_deref()
@@ -3025,10 +3034,20 @@ async fn rclone_start_check_job(
                 crate::policy::PathPolicy::check_read,
             )?;
             let trimmed = sum_path.trim_matches('/');
-            let dir_path = match trimmed.rsplit_once('/') {
-                Some((parent, _base)) => format!("/{parent}"),
-                None => "/".to_string(),
+            let (parent, base) = match trimmed.rsplit_once('/') {
+                Some((parent, base)) => (format!("/{parent}"), base),
+                None => (String::new(), trimmed),
             };
+            let stem = base
+                .rsplit_once('.')
+                .map(|(stem, _extension)| stem)
+                .filter(|stem| !stem.is_empty());
+            let Some(stem) = stem else {
+                return Err(format!(
+                    "cannot infer the verified directory from SUM '{sum_path}' — expected '<dir>.<hash>' (e.g. /data.md5)"
+                ));
+            };
+            let dir_path = format!("{parent}/{stem}");
             let dir_rel = rclone_gate(
                 &target_binding.root,
                 target_binding.lock_to_root,
@@ -3044,6 +3063,25 @@ async fn rclone_start_check_job(
                 Some(explicit) => explicit.to_lowercase(),
                 None => sum_hash_from_extension(sum_path)?,
             };
+            // 存在性预检：SUM 与被核验目录缺一即拒——否则 rclone 对缺失
+            // checkFile 回空差异报告，作业以 identical 假阴性收场。
+            let target_client = rclone.client_for_binding(&target_binding).await?;
+            let target_fs = rclone::call_fs(&target_binding);
+            for probe in [sum_remote.as_str(), dir_rel.as_str()] {
+                let exists = target_client
+                    .operations_stat(&target_fs, probe)
+                    .await
+                    .ok()
+                    .is_some_and(|value| {
+                        value.get("item").is_some_and(|item| !item.is_null())
+                    });
+                if !exists {
+                    return Err(format!(
+                        "Failed to stat '{}': path does not exist",
+                        probe.trim_matches('/')
+                    ));
+                }
+            }
             Some((dir_rel, sum_remote, hash_type))
         }
         None => None,
