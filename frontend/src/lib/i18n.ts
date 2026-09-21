@@ -80,6 +80,7 @@ export const messages = {
     settingsNav: {
       downloads: "Downloads",
       openWith: "Open with",
+      transfer: "Transfer",
       mounts: "Local mounts",
     },
     mounts: {
@@ -279,6 +280,9 @@ export const messages = {
     shareStopDone: "Share stopped",
     verifySumMenu: "Verify with checksum file",
     verifySumStarted: "Verification started — watch the transfers panel",
+    syncTransfersLabel: "Parallel transfers",
+    syncCheckersLabel: "Parallel checkers",
+    syncRetriesLabel: "Retries",
     transferKind: {
       upload: "Upload",
       download: "Download",
@@ -441,6 +445,7 @@ export const messages = {
     settingsNav: {
       downloads: "Descargas",
       openWith: "Abrir con",
+      transfer: "Transferencia",
       mounts: "Montajes locales",
     },
     mounts: {
@@ -636,6 +641,9 @@ export const messages = {
     shareStopDone: "Compartido detenido",
     verifySumMenu: "Verificar con archivo de suma",
     verifySumStarted: "Verificación iniciada: mira el panel de transferencias",
+    syncTransfersLabel: "Transferencias paralelas",
+    syncCheckersLabel: "Verificadores paralelos",
+    syncRetriesLabel: "Reintentos",
     transferKind: {
       upload: "Subida",
       download: "Descarga",
@@ -792,6 +800,7 @@ export const messages = {
     settingsNav: {
       downloads: "Download",
       openWith: "Apri con",
+      transfer: "Trasferimento",
       mounts: "Mount locali",
     },
     mounts: {
@@ -987,6 +996,9 @@ export const messages = {
     shareStopDone: "Condivisione interrotta",
     verifySumMenu: "Verifica con file di checksum",
     verifySumStarted: "Verifica avviata: guarda il pannello trasferimenti",
+    syncTransfersLabel: "Trasferimenti paralleli",
+    syncCheckersLabel: "Checker paralleli",
+    syncRetriesLabel: "Tentativi",
     transferKind: {
       upload: "Caricamento",
       download: "Scaricamento",
@@ -1143,6 +1155,7 @@ export const messages = {
     settingsNav: {
       downloads: "ダウンロード",
       openWith: "開くアプリ",
+      transfer: "転送",
       mounts: "ローカルマウント",
     },
     mounts: {
@@ -1338,6 +1351,9 @@ export const messages = {
     shareStopDone: "共有を停止しました",
     verifySumMenu: "チェックサムファイルで検証",
     verifySumStarted: "検証を開始しました — 転送パネルで確認できます",
+    syncTransfersLabel: "並行転送数",
+    syncCheckersLabel: "並行チェッカー数",
+    syncRetriesLabel: "リトライ回数",
     transferKind: {
       upload: "アップロード",
       download: "ダウンロード",
@@ -1494,6 +1510,7 @@ export const messages = {
     settingsNav: {
       downloads: "Downloads",
       openWith: "Abrir com",
+      transfer: "Transferência",
       mounts: "Montagens locais",
     },
     mounts: {
@@ -1689,6 +1706,9 @@ export const messages = {
     shareStopDone: "Compartilhamento interrompido",
     verifySumMenu: "Verificar com arquivo de checksum",
     verifySumStarted: "Verificação iniciada — acompanhe no painel de transferências",
+    syncTransfersLabel: "Transferências paralelas",
+    syncCheckersLabel: "Verificadores paralelos",
+    syncRetriesLabel: "Tentativas",
     transferKind: {
       upload: "Envio",
       download: "Download",
@@ -1846,6 +1866,7 @@ export const messages = {
     settingsNav: {
       downloads: "下载",
       openWith: "打开方式",
+      transfer: "传输",
       mounts: "本地挂载",
     },
     mounts: {
@@ -2041,6 +2062,9 @@ export const messages = {
     shareStopDone: "共享已停止",
     verifySumMenu: "校验所在目录",
     verifySumStarted: "校验已开始——请在传输面板查看结果",
+    syncTransfersLabel: "并行传输数",
+    syncCheckersLabel: "并行比对数",
+    syncRetriesLabel: "重试次数",
     transferKind: {
       upload: "上传",
       download: "下载",
@@ -2197,6 +2221,7 @@ export const messages = {
     settingsNav: {
       downloads: "下載",
       openWith: "開啟方式",
+      transfer: "傳輸",
       mounts: "本機掛載",
     },
     mounts: {
@@ -2392,6 +2417,9 @@ export const messages = {
     shareStopDone: "共享已停止",
     verifySumMenu: "校驗所在目錄",
     verifySumStarted: "校驗已開始——請在傳輸面板查看結果",
+    syncTransfersLabel: "並行傳輸數",
+    syncCheckersLabel: "並行比對數",
+    syncRetriesLabel: "重試次數",
     transferKind: {
       upload: "上傳",
       download: "下載",

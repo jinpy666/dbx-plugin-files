@@ -3,7 +3,7 @@
 // dry-run 预览 + include/exclude 过滤 + backup-dir/suffix 备份 + 高级并发参数。
 // 确认时把非空字段打包成 SyncDialogOptions 交给父层发起 files/syncDir|copyDir；
 // 数值字段在组件内先夹紧范围（rc 对非法值静默忽略，夹紧是唯一防线）。
-import { ref } from "vue";
+import { ref, watch } from "vue";
 import { X } from "@lucide/vue";
 
 /** 确认载荷：空串/空数组/null = 不传该字段（保持 rclone 默认）。 */
@@ -48,8 +48,15 @@ const t = (key: string, values?: Record<string, string | number>) => props.t(key
 const targetPath = ref(props.defaultTarget);
 const dryRun = ref(false);
 const bisyncResync = ref(false);
-// 首次运行（无状态）：resync 是唯一入口，直接勾上且不可取消。
+// 首次运行（无状态）：resync 是唯一入口，直接勾上且不可取消。状态是弹窗
+// 打开后异步取回的（初始 null），prop 晚到必须用 watch 兜住。
 if (props.kind === "bisync" && props.bisyncState === "new") bisyncResync.value = true;
+watch(
+  () => props.bisyncState,
+  (state) => {
+    if (props.kind === "bisync" && state === "new") bisyncResync.value = true;
+  },
+);
 const include = ref("");
 const exclude = ref("");
 const backupDir = ref("");

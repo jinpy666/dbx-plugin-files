@@ -610,7 +610,9 @@ export function installMockHost() {
         const aboutId = connectionIdOf(p.connectionId);
         const aboutTree = treeFor(p.connectionId);
         const count = [...aboutTree.values()].filter((entry) => entry.kind === "file").length;
-        return { used: count * 1024, total: 1024 * 1024, free: 1024 * 1024 - count * 1024, _conn: aboutId };
+        const used = count * 8192;
+        const total = 4 * 1024 * 1024 * 1024;
+        return { used, total, free: total - used, _conn: aboutId };
       }
       case "files/check": {
         const checkSrc = str("sourcePath");
@@ -663,6 +665,10 @@ export function installMockHost() {
         if (rate !== undefined) {
           if (typeof rate !== "string") throw new Error("Invalid request parameters: rate must be a string");
           const normalized = rate.trim();
+          if (normalized && normalized !== "off" && !/^\d+(\.\d+)?[kKmMgGtT]?[bB]?(:\d+(\.\d+)?[kKmMgGtT]?[bB]?)?$/.test(normalized)) {
+            // 与真实 sidecar 对齐：rclone 拒绝无法解析的限速值（bad bwlimit）。
+            throw new Error("bad bwlimit: invalid rate");
+          }
           mockBwlimit = normalized === "off" || !normalized ? null : normalized;
         }
         return { rate: mockBwlimit };
