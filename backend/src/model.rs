@@ -784,6 +784,11 @@ pub struct HashsumRequest {
 /// `files/search`：远端递归搜索（文件名子串、大小写不敏感）。先做文件总数
 /// 预检（超过 [`未导出的 SEARCH_MAX_SCAN`] 由 main.rs 常量定）拒绝，防止在
 /// 巨型目录树上做全量列举。
+///
+/// 真实契约（黑盒验证轮对齐）：pattern 剔除 glob 元字符后以 `**term**` 交给
+/// rclone 的 include 过滤，匹配的是**相对搜索根的整条路径**——文件名或任一
+/// 级目录名含关键词即命中（目录条目被 filesOnly 过滤，但其下文件会带上）；
+/// 始终递归，没有 recurse 字段；未知参数由 serde 静默忽略（不报错）。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchRequest {

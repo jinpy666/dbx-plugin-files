@@ -1338,12 +1338,11 @@ impl Plugin {
                     return Err("search pattern is empty".to_string());
                 }
                 // Scan budget: a full-tree listing is not free — refuse
-                // absurd trees instead of crawling for minutes.
-                let size = client
-                    .operations_size(&fs, &remote)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                let scanned = size.get("count").and_then(Value::as_u64).unwrap_or(0);
+                // absurd trees instead of crawling for minutes. 口径与
+                // files/size 相同（ops::subtree_size）：operations/size 只认
+                // 并入 fs 的路径，`fs`+`remote` 拆传会被 rclone 忽略 remote
+                // 而数成整棵连接根（scanned 会比真实子树多出根下额外文件）。
+                let (scanned, _) = rclone::ops::subtree_size(&client, &fs, &remote).await?;
                 if scanned > SEARCH_MAX_SCAN {
                     return Err(format!(
                         "this tree holds {scanned} files; search is capped at {SEARCH_MAX_SCAN} — pick a smaller folder"

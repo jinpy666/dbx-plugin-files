@@ -72,7 +72,7 @@ use serde_json::{json, Value};
 use crate::policy::PathPolicy;
 use crate::model::{Capabilities, FileEntry};
 
-use super::rc::RcClient;
+use super::rc::{RcClient, RcError};
 
 /// Hard cap for the full enumeration behind `list_paged` (plan §5
 /// files/listPaged: 100,000 entries, cursor evolution deferred to phase C).
@@ -249,8 +249,21 @@ pub async fn size(
     lock_to_root: bool,
 ) -> Result<(u64, u64), String> {
     let remote = gate_read(root, lock_to_root, path)?;
+    subtree_size(client, fs, &remote).await
+}
+
+/// operations/size 的子树计数 —— `files/size` 与 `files/search` 扫描预检的
+/// 统一口径。路径必须并入 fs 字符串：rclone v1.75.1 的 `rcSize` 只解析
+/// `fs` 参数并静默忽略 `remote`（本模块头文档已钉死），`fs`+`remote` 拆开
+/// 传会把**整棵连接根**的文件数算进来——连接根下的额外文件让 search 的
+/// `scanned` 比 files/size 大 1（黑盒验证轮实测），扫描上限判定也随之失真。
+pub(crate) async fn subtree_size(
+    client: &RcClient,
+    fs: &str,
+    remote: &str,
+) -> Result<(u64, u64), String> {
     // operations/size 只读 fs 参数：子路径并入 fs 字符串（remote:path/sub）。
-    let target = fs_with_path(fs, &remote);
+    let target = fs_with_path(fs, remote);
     let response = client
         .call("operations/size", &json!({ "fs": target }))
         .await
@@ -456,8 +469,9 @@ fn gate_purge(root: &str, lock_to_root: bool, path: &str) -> Result<String, Stri
 /// `files/read` byte layer: reads at most `max_bytes` bytes, returns
 /// `(data, truncated)`.
 ///
-/// Flow: stat first (missing → the
-/// read-style error, directory → `it is a directory`), then fetch bytes via
+/// Flow: stat first（not-found 类失败短重试，见
+/// [`stat_with_not_found_retry`]；耗尽后 missing → the read-style error,
+/// directory → `it is a directory`）, then fetch bytes via
 /// the rc-serve channel with `Range: bytes=0-{max_bytes}` (INCLUSIVE end, so
 /// `max_bytes + 1` bytes are requested). A body of exactly `max_bytes + 1`
 /// proves the file is larger → `truncated`; a body of `≤ max_bytes` hit EOF
@@ -468,6 +482,50 @@ fn gate_purge(root: &str, lock_to_root: bool, path: &str) -> Result<String, Stri
 ///
 /// The clamp to `MAX_PREVIEW_BYTES` and the default (256 KiB) belong to the
 /// wiring layer (main.rs `files/read`), byte layer only here.
+///
+/// 只对 not-found 类 stat 失败重试的原因：文件刚被本插件 upload/download
+/// 触碰后，部分后端的目录/对象缓存有一致性窗口，`operations/stat` 会偶发
+/// 一次 `object not found` 404 而磁盘终态正确（黑盒验证轮定向复现约
+/// 1/100）。传输、鉴权等其他错误重试只会掩盖真实故障，必须立即上抛；真
+/// 缺失的文件重试耗尽后仍返回原错误（不吞 NotFound）。
+const NOT_FOUND_STAT_ATTEMPTS: usize = 3; // 首发 1 次 + 重试 2 次
+const NOT_FOUND_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// not-found 类失败判定：rc 非 200 的 404，或错误正文 / rclone 业务错误
+/// 消息含 "not found"（覆盖 rclone 的 `object not found` /
+/// `directory not found` 两种文案，大小写不敏感）。
+fn is_not_found(error: &RcError) -> bool {
+    match error {
+        RcError::Http { status, body } => {
+            *status == 404 || body.to_lowercase().contains("not found")
+        }
+        RcError::Rclone { message } => message.to_lowercase().contains("not found"),
+        _ => false,
+    }
+}
+
+/// stat 探测 + 瞬态 not-found 短重试（[`read_prefix`] 的第一步）。
+async fn stat_with_not_found_retry(
+    client: &RcClient,
+    fs: &str,
+    remote: &str,
+) -> Result<Value, RcError> {
+    let mut attempts_left = NOT_FOUND_STAT_ATTEMPTS;
+    loop {
+        match client.operations_stat(fs, remote).await {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                attempts_left -= 1;
+                if is_not_found(&error) && attempts_left > 0 {
+                    tokio::time::sleep(NOT_FOUND_RETRY_DELAY).await;
+                    continue;
+                }
+                return Err(error);
+            }
+        }
+    }
+}
+
 pub async fn read_prefix(
     client: &RcClient,
     fs: &str,
@@ -475,8 +533,7 @@ pub async fn read_prefix(
     max_bytes: u64,
 ) -> Result<(Vec<u8>, bool), String> {
     let remote = remote.trim_matches('/');
-    let stat = client
-        .operations_stat(fs, remote)
+    let stat = stat_with_not_found_retry(client, fs, remote)
         .await
         .map_err(|error| format!("Failed to read '{remote}': {error}"))?;
     let item = stat.get("item").filter(|item| !item.is_null());
@@ -1179,6 +1236,52 @@ mod tests {
         assert_eq!(fs_with_path("/local/root/", "x"), "/local/root/x");
     }
 
+    // -- is_not_found（read_prefix 瞬态 not-found 短重试的判定） ---------------
+
+    #[test]
+    fn is_not_found_matches_not_found_class_only() {
+        // rc 非 200：404 状态码，或正文里的 rclone 文案（object/directory）。
+        assert!(is_not_found(&RcError::Http {
+            status: 404,
+            body: "object not found".to_string(),
+        }));
+        assert!(is_not_found(&RcError::Http {
+            status: 500,
+            body: r#"{"error":"directory not found"}"#.to_string(),
+        }));
+        // rc 200 + error 包络。
+        assert!(is_not_found(&RcError::Rclone {
+            message: "Object not found".to_string(),
+        }));
+        // 非 not-found 一律不重试：鉴权、无文案的 500、传输层。
+        assert!(!is_not_found(&RcError::Http {
+            status: 401,
+            body: "Unauthorized".to_string(),
+        }));
+        assert!(!is_not_found(&RcError::Http {
+            status: 500,
+            body: "internal error".to_string(),
+        }));
+        assert!(!is_not_found(&RcError::Malformed("nope".to_string())));
+    }
+
+    #[tokio::test]
+    async fn stat_retry_surfaces_transport_errors_immediately() {
+        // dead_client 连接必失败（Transport）且不属于 not-found：立即上抛，
+        // 不进入 200ms 重试延迟。
+        let client = dead_client();
+        let start = std::time::Instant::now();
+        let error = stat_with_not_found_retry(&client, "dbxdead:", "x")
+            .await
+            .unwrap_err();
+        assert!(matches!(error, RcError::Transport(_)), "{error}");
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(200),
+            "{:?}",
+            start.elapsed()
+        );
+    }
+
     // -- path gating（与 policy 文案一致） ------------------------------------
 
     #[tokio::test]
@@ -1699,6 +1802,20 @@ mod tests {
 
         let error = size(&live.client, &live.fs, "nope", "", false).await.unwrap_err();
         assert!(error.contains("Failed to size 'nope'"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn live_subtree_size_matches_files_size_semantics() {
+        let Some(live) = Live::start().await else { return };
+        // search 预检与 files/size 同一口径：remote 并入 fs，只数目标子树 ——
+        // 拆开传 `fs`+`remote` 时 rcd 的 rcSize 会忽略 remote 而数整棵根，
+        // 连接根下的额外文件就会让 scanned 比 files/size 多 1。
+        let (count, bytes) = subtree_size(&live.client, &live.fs, "sub").await.unwrap();
+        assert_eq!(count, 1, "只数 sub/ 子树，不吃整棵根");
+        assert_eq!(bytes, 2);
+        let (count, bytes) = subtree_size(&live.client, &live.fs, "").await.unwrap();
+        assert_eq!(count, 3, "根路径退化为整棵树");
+        assert_eq!(bytes, 5 + 4096 + 2);
     }
 
     #[tokio::test]
