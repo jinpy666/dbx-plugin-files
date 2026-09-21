@@ -4,7 +4,7 @@ import { mount, config, type VueWrapper } from "@vue/test-utils";
 import { defineComponent } from "vue";
 import { bindApi } from "../lib/api";
 import PreviewPane from "./PreviewPane.vue";
-import { READ_MAX_BYTES } from "../lib/preview";
+import { PREVIEW_MAX_BYTES, READ_MAX_BYTES } from "../lib/preview";
 import { vTip } from "../lib/tooltip";
 
 // 模板里的 v-tip（图标按钮提示）在测试挂载时同样需要指令注册。
@@ -42,6 +42,12 @@ function b64decode(value: string): Uint8Array {
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
   return bytes;
+}
+
+function b64encode(value: Uint8Array): string {
+  let binary = "";
+  for (const byte of value) binary += String.fromCharCode(byte);
+  return btoa(binary);
 }
 
 // 1x1 png
@@ -242,5 +248,132 @@ describe("PreviewPane external-open guidance", () => {
     expect(notice.exists()).toBe(true);
     expect(notice.text()).not.toContain("previewExternalHint");
     expect(wrapper.emitted("open-settings")).toBeUndefined();
+  });
+});
+
+// ---- 分块流式加载（files/stat + files/readRange，parity-tools）----------------
+// 二进制预览（图片/媒体/office/pdf）：2MiB 顺序分块拼装 Blob、确定性进度条、
+// 取消干净关闭、>256MiB 超上限保持「下载代替」。
+describe("PreviewPane chunked loading (files/readRange)", () => {
+  interface CallLog {
+    method: string;
+    params: Record<string, unknown>;
+  }
+
+  function bindRangeApi(options: { total: number; gate?: (offset: number) => Promise<void> }) {
+    const calls: CallLog[] = [];
+    bindApi(async <T,>(method: string, params: unknown) => {
+      const p = (params ?? {}) as Record<string, unknown>;
+      calls.push({ method, params: p });
+      if (method === "files/stat") {
+        return { entry: { name: "big.pdf", path: "/docs/big.pdf", kind: "file", size: options.total } } as unknown as T;
+      }
+      if (method === "files/readRange") {
+        const offset = Number(p.offset ?? 0);
+        if (options.gate) await options.gate(offset);
+        const length = Math.min(READ_MAX_BYTES, options.total - offset);
+        const bytes = new Uint8Array(Math.max(0, length));
+        bytes.fill((offset % 250) + 1);
+        return {
+          dataBase64: b64encode(bytes),
+          totalSize: options.total,
+          offset,
+          eof: offset + length >= options.total,
+        } as unknown as T;
+      }
+      throw new Error(`unexpected method ${method}`);
+    }, null);
+    return calls;
+  }
+
+  function mountPane(tOverride?: (key: string, values?: Record<string, string | number>) => string) {
+    window.dbxPlugin = { decodeBase64: b64decode } as DbxPluginApi;
+    wrapper = mount(PreviewPane, {
+      props: {
+        path: "/docs/big.pdf",
+        canWrite: true,
+        appearance,
+        t: tOverride ?? ((key: string) => key),
+      },
+      attachTo: document.body,
+    });
+    return wrapper;
+  }
+
+  it("assembles readRange chunks into a viewer File without files/read", async () => {
+    const total = 2 * READ_MAX_BYTES + 100;
+    const calls = bindRangeApi({ total });
+    const pane = mountPane();
+    await flush(24);
+    const viewer = pane.findComponent({ name: "FileViewerPreview" });
+    expect(viewer.exists()).toBe(true);
+    expect((viewer.props("source") as File).size).toBe(total);
+    // 顺序（并发 1）分块：offset 单调推进；整读路径不再参与。
+    expect(calls.filter((item) => item.method === "files/readRange").map((item) => item.params.offset)).toEqual([
+      0,
+      READ_MAX_BYTES,
+      2 * READ_MAX_BYTES,
+    ]);
+    expect(calls.some((item) => item.method === "files/read")).toBe(false);
+  });
+
+  it("shows determinate byte progress while chunks arrive", async () => {
+    const total = 2 * READ_MAX_BYTES;
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const gated = new Set<number>();
+    bindRangeApi({
+      total,
+      gate: async (offset) => {
+        if (offset === 0) return;
+        gated.add(offset);
+        await gate;
+      },
+    });
+    const pane = mountPane((key, values) => (values?.done !== undefined ? `${key} ${values.done}` : key));
+    await flush(24);
+    // 第一片（2MiB）已取，第二片被闸门挂起：进度条呈现 2MiB / 4MiB。
+    const chunkbar = pane.get("[data-test=chunkbar]");
+    expect(chunkbar.text()).toContain("previewChunkProgress 2.0 MiB");
+    expect(chunkbar.get('[role=progressbar]').attributes("aria-valuenow")).toBe("50");
+    releaseGate();
+    await flush(24);
+    expect(pane.find("[data-test=chunkbar]").exists()).toBe(false);
+  });
+
+  it("cancels the remaining chunks and closes cleanly", async () => {
+    const total = 3 * READ_MAX_BYTES;
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const calls = bindRangeApi({
+      total,
+      gate: async (offset) => {
+        if (offset === READ_MAX_BYTES) await gate;
+      },
+    });
+    const pane = mountPane();
+    await flush(24);
+    const rangesBefore = calls.filter((item) => item.method === "files/readRange").length;
+    await pane.get("[data-test=chunk-cancel]").trigger("click");
+    expect(pane.emitted("close")).toHaveLength(1);
+    // 释放被挂起的第二片后不再有后续分片请求（取消在分片间隙打断）。
+    releaseGate();
+    await flush(24);
+    expect(calls.filter((item) => item.method === "files/readRange").length).toBe(rangesBefore);
+  });
+
+  it("keeps the download-instead hint above the hard cap", async () => {
+    bindRangeApi({ total: PREVIEW_MAX_BYTES + 1 });
+    const pane = mountPane();
+    await flush(24);
+    const overCap = pane.get("[data-test=overcap]");
+    expect(overCap.text()).toContain("previewOverCap");
+    expect(pane.findComponent({ name: "FileViewerPreview" }).exists()).toBe(false);
+    await overCap.get("button").trigger("click");
+    expect(pane.emitted("download")).toEqual([["/docs/big.pdf"]]);
   });
 });
