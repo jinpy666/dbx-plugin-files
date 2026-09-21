@@ -3694,30 +3694,32 @@ onBeforeUnmount(() => {
         <button role="menuitem" @click="menuAction('copyPath')"><Link2 /> {{ t("copyPath") }}</button>
       </template>
       <template v-else>
+        <!-- 常用置顶：打开/预览/下载 → 编辑变换 → 分析校验 → 同步导入分享 → 维护 → 删除独立危险区 → 剪贴板。 -->
         <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('open')"><FolderOpen /> {{ t("openDirectory") }}</button>
         <button v-if="contextMenu.entry.kind === 'file' && !isArchivePath(contextMenu.entry.path)" role="menuitem" @click="menuAction('preview')"><Eye /> {{ t("preview") }}</button>
         <button v-if="contextMenu.entry.kind === 'file' && isArchivePath(contextMenu.entry.path)" role="menuitem" @click="menuAction('archiveContents')"><Archive /> {{ t("archiveContents") }}</button>
         <button v-if="contextMenu.entry.kind === 'file'" role="menuitem" @click="menuAction('download')"><Download /> {{ t("download") }}</button>
+        <hr />
+        <button v-if="canWrite" role="menuitem" @click="menuAction('rename')"><Pencil /> {{ t("rename") }}</button>
+        <button v-if="canWrite" role="menuitem" @click="menuAction('copy')"><Copy /> {{ t("transferKind.copy") }}…</button>
+        <button v-if="canWrite" role="menuitem" @click="menuAction('move')"><FolderInput /> {{ t("transferKind.move") }}…</button>
         <button v-if="contextMenu.entry.kind === 'file' && isArchivePath(contextMenu.entry.path) && canWrite" role="menuitem" @click="menuAction('extract')"><FileOutput /> {{ t("extractTo") }}</button>
-        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('syncDir')"><ArrowRightLeft /> {{ t("transferKind.syncDir") }}…</button>
-        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('copyDir')"><FolderSymlink /> {{ t("transferKind.copyDir") }}…</button>
+        <button v-if="canWrite" role="menuitem" @click="menuAction('compress')"><FileArchive /> {{ t("compress") }}</button>
+        <hr />
         <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('computeSize')"><Calculator /> {{ t("computeSize") }}</button>
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('hashsum')"><FileCheck /> {{ t("hashsumMenu") }}</button>
         <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('checkDir')"><Scale /> {{ t("checkDirMenu") }}</button>
         <button v-if="isSumFile(contextMenu.entry)" role="menuitem" @click="menuAction('verifySum')"><ShieldCheck /> {{ t("verifySumMenu") }}</button>
-        <hr />
+        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('syncDir')"><ArrowRightLeft /> {{ t("transferKind.syncDir") }}…</button>
+        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('copyDir')"><FolderSymlink /> {{ t("transferKind.copyDir") }}…</button>
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('bisyncDir')"><ArrowRightLeft /> {{ t("bisyncMenu") }}…</button>
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('copyurl')"><Link /> {{ t("copyurlMenu") }}</button>
-        <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('serveHttp')"><Globe /> {{ t("shareHttpMenu") }}</button>
-        <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('serveWebdav')"><Share2 /> {{ t("shareWebdavMenu") }}</button>
         <hr />
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('rmdirs')"><FolderMinus /> {{ t("rmdirsMenu") }}</button>
         <button v-if="canUseMount && contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('mountLocal')"><HardDrive /> {{ t("mountToLocal") }}</button>
-        <button v-if="canWrite" role="menuitem" @click="menuAction('compress')"><FileArchive /> {{ t("compress") }}</button>
+        <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('serveHttp')"><Globe /> {{ t("shareHttpMenu") }}</button>
+        <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('serveWebdav')"><Share2 /> {{ t("shareWebdavMenu") }}</button>
         <hr />
-        <button v-if="canWrite" role="menuitem" @click="menuAction('copy')"><Copy /> {{ t("transferKind.copy") }}…</button>
-        <button v-if="canWrite" role="menuitem" @click="menuAction('move')"><FolderInput /> {{ t("transferKind.move") }}…</button>
-        <button v-if="canWrite" role="menuitem" @click="menuAction('rename')"><Pencil /> {{ t("rename") }}</button>
         <button role="menuitem" class="is-danger" :disabled="!canWrite" @click="menuAction('delete')"><Trash2 /> {{ t("delete") }}</button>
         <hr />
         <button role="menuitem" @click="menuAction('copyPath')"><Link2 /> {{ t("copyPath") }}</button>

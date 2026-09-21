@@ -489,7 +489,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-desktop-only-card p { margin: 4px 0 0; font-size: 11px; color: var(--muted-foreground); }
 button.wb-check-summary { border: 0; background: none; padding: 0; cursor: copy; text-align: left; font-size: inherit; }
 .wb-deepsearch-list button.is-active { background: color-mix(in srgb, var(--accent, rgb(128 128 128 / 25%)) 100%, transparent); }
-.wb-settings-modal { overflow: hidden; }
+.wb-settings-modal { overflow: hidden; container-type: inline-size; }
+/* 拖窄时导航列收成图标列（容器查询，随弹窗而非视口变化）。 */
+@container (max-width: 559px) {
+  .wb-settings-nav { flex-basis: 48px; padding: 8px 6px; }
+  .wb-settings-nav-item { justify-content: center; padding: 5px 4px; gap: 0; font-size: 0; }
+}
 .wb-settings-grip { position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; cursor: nwse-resize; border-style: solid; border-width: 0 0 10px 10px; border-color: transparent transparent var(--muted-foreground) transparent; opacity: 0.5; }
 .wb-settings-grip:hover { opacity: 1; }
 .wb-transfer-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; }

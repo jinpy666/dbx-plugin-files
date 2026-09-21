@@ -21,6 +21,8 @@ export interface UiPrefs {
   settingsCategory?: "downloads" | "openWith" | "transfer" | "mounts";
   /** 设置弹窗记忆尺寸（对齐预览浮窗的 per-layout 记忆）；缺省走默认大小。 */
   settingsWin?: PreviewWin;
+  /** 审计面板的操作类型筛选（空 = 全部）。 */
+  auditActionFilter?: string;
 }
 
 export interface PreviewWin {
@@ -80,6 +82,9 @@ function sanitize(raw: unknown): Partial<UiPrefs> {
     prefs.settingsCategory = value.settingsCategory as "downloads" | "openWith" | "transfer" | "mounts";
   }
   prefs.settingsWin = sanitizePreviewWin(value.settingsWin);
+  if (typeof value.auditActionFilter === "string") {
+    prefs.auditActionFilter = value.auditActionFilter.slice(0, 64);
+  }
   return prefs;
 }
 
@@ -106,6 +111,7 @@ export function loadUiPrefs(storage?: Storage): UiPrefs {
       ? (prefs.settingsCategory as "downloads" | "openWith" | "transfer" | "mounts")
       : undefined,
     settingsWin: sanitizePreviewWin(prefs.settingsWin),
+    auditActionFilter: typeof prefs.auditActionFilter === "string" ? prefs.auditActionFilter : undefined,
   };
 }
 

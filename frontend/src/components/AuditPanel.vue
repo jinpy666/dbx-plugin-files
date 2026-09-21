@@ -1,9 +1,10 @@
 <script setup lang="ts">
 // audit.jsonl 只读视图：审计条目由 sidecar store（F-A）经 files/audit/list 透出；
 // 方法未就绪时展示不可用态而非报错。
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { RefreshCw } from "@lucide/vue";
 import { formatTime } from "../lib/api";
+import { loadUiPrefs, saveUiPrefs } from "../lib/prefs";
 
 export interface AuditEntry {
   at: string;
@@ -21,7 +22,10 @@ const props = defineProps<{
 
 const entries = ref<AuditEntry[]>([]);
 /** 操作类型筛选：候选来自当前记录里出现过的 action（全部 = 空串）。 */
-const actionFilter = ref("");
+const actionFilter = ref(loadUiPrefs().auditActionFilter ?? "");
+watch(actionFilter, (value) => {
+  saveUiPrefs({ ...loadUiPrefs(), auditActionFilter: value });
+});
 
 const actionOptions = computed(() => {
   const seen = new Set<string>();
