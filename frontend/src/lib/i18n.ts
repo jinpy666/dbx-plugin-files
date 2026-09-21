@@ -295,6 +295,7 @@ export const messages = {
     desktopOnlyDesc: "This feature runs on your machine (mounting, external apps, local folders). It is available in the DBX desktop client, not in the web version.",
     settingsSave: "Save changes",
     settingsUnsavedHint: "You have unsaved changes",
+    checkSummaryCopy: "Click to copy the summary",
     transferKind: {
       upload: "Upload",
       download: "Download",
@@ -668,6 +669,7 @@ export const messages = {
     desktopOnlyDesc: "Esta función se ejecuta en tu equipo (montaje, apps externas, carpetas locales). Está disponible en el cliente de escritorio de DBX, no en la versión web.",
     settingsSave: "Guardar cambios",
     settingsUnsavedHint: "Tienes cambios sin guardar",
+    checkSummaryCopy: "Haz clic para copiar el resumen",
     transferKind: {
       upload: "Subida",
       download: "Descarga",
@@ -1035,6 +1037,7 @@ export const messages = {
     desktopOnlyDesc: "Questa funzione gira sul tuo computer (mount, app esterne, cartelle locali). È disponibile nel client desktop DBX, non nella versione web.",
     settingsSave: "Salva modifiche",
     settingsUnsavedHint: "Hai modifiche non salvate",
+    checkSummaryCopy: "Fai clic per copiare il riepilogo",
     transferKind: {
       upload: "Caricamento",
       download: "Scaricamento",
@@ -1402,6 +1405,7 @@ export const messages = {
     desktopOnlyDesc: "この機能はローカルマシンで動作します（マウント、外部アプリ、ローカルフォルダー）。Web 版では利用できず、DBX デスクトップクライアントで使用できます。",
     settingsSave: "変更を保存",
     settingsUnsavedHint: "未保存の変更があります",
+    checkSummaryCopy: "クリックで概要をコピー",
     transferKind: {
       upload: "アップロード",
       download: "ダウンロード",
@@ -1769,6 +1773,7 @@ export const messages = {
     desktopOnlyDesc: "Este recurso roda na sua máquina (montagem, apps externos, pastas locais). Está disponível no cliente desktop do DBX, não na versão web.",
     settingsSave: "Salvar alterações",
     settingsUnsavedHint: "Você tem alterações não salvas",
+    checkSummaryCopy: "Clique para copiar o resumo",
     transferKind: {
       upload: "Envio",
       download: "Download",
@@ -2137,6 +2142,7 @@ export const messages = {
     desktopOnlyDesc: "该功能需要在本机执行（挂载、调用外部应用、访问本机目录）。请在 DBX 桌面客户端中使用，Web 版暂不支持。",
     settingsSave: "保存更改",
     settingsUnsavedHint: "有未保存的修改",
+    checkSummaryCopy: "点击复制摘要",
     transferKind: {
       upload: "上传",
       download: "下载",
@@ -2504,6 +2510,7 @@ export const messages = {
     desktopOnlyDesc: "該功能需要在本機執行（掛載、呼叫外部應用、存取本機目錄）。請在 DBX 桌面客戶端中使用，Web 版暫不支援。",
     settingsSave: "儲存變更",
     settingsUnsavedHint: "有未儲存的修改",
+    checkSummaryCopy: "點擊複製摘要",
     transferKind: {
       upload: "上傳",
       download: "下載",

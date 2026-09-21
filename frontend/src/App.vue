@@ -43,6 +43,7 @@ import FileToolbar from "./components/FileToolbar.vue";
 import TransferPanel from "./components/TransferPanel.vue";
 import SettingsPanel from "./components/SettingsPanel.vue";
 import MountDialog from "./components/MountDialog.vue";
+import type { SettingsSection } from "./components/SettingsPanel.vue";
 import SyncDialog, { type SyncDialogOptions } from "./components/SyncDialog.vue";
 import DesktopOnlyCard from "./components/DesktopOnlyCard.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
@@ -309,6 +310,10 @@ const settingsOpen = ref(false);
 const settingsDirty = ref(false);
 const settingsSaving = ref(false);
 const settingsPanelRef = ref<{ save: () => Promise<void> } | null>(null);
+/** 当前挂到 SettingsPanel 的 section（mounts 是自定义面板，不在组件内）。 */
+const panelSection = computed<SettingsSection | undefined>(() =>
+  settingsCategory.value === "mounts" ? undefined : settingsCategory.value,
+);
 const settingsCategory = ref<SettingsCategory>(
   ["downloads", "openWith", "transfer", "mounts"].includes(prefs.settingsCategory as string)
     ? (prefs.settingsCategory as SettingsCategory)
@@ -336,6 +341,7 @@ watch(settingsCategory, (category) => {
   // 记忆上次停留的分类（重开设置回到原地）；同步回快照避免下次打开读旧值。
   prefs.settingsCategory = category;
   saveUiPrefs({ ...prefs, settingsCategory: category });
+  if (category === "mounts") settingsDirty.value = false;
   if (category === "transfer") void loadBwlimit();
   if (category === "mounts") {
     void loadMounts();
@@ -2257,6 +2263,8 @@ const deepSearchSide = ref<PaneSide>("left");
 const deepSearchBusy = ref(false);
 const deepSearchResults = ref<Array<{ path: string; size: number; modifiedAt: string }>>([]);
 const deepSearchTruncated = ref(false);
+/** 键盘 ↑↓ 选中的结果行（-1 = 未选）；Enter 打开选中项或发起搜索。 */
+const deepSearchIndex = ref(-1);
 
 /** 回车触发：从该栏当前目录递归搜索文件名子串。 */
 async function runDeepSearch(side: PaneSide, query: string) {
@@ -2275,11 +2283,26 @@ async function runDeepSearch(side: PaneSide, query: string) {
     );
     deepSearchResults.value = result.entries ?? [];
     deepSearchTruncated.value = Boolean(result.truncated);
+    deepSearchIndex.value = result.entries?.length ? 0 : -1;
   } catch (cause) {
     deepSearchOpen.value = false;
     showError(cause);
   } finally {
     deepSearchBusy.value = false;
+  }
+}
+
+/** 搜索框 ↑↓：在结果间移动选中行（循环）；Enter 打开选中项。 */
+function onSearchKeydown(side: PaneSide, key: string, query: string) {
+  const count = deepSearchResults.value.length;
+  if (!deepSearchOpen.value || !count) {
+    if (key === "Enter") runDeepSearch(side, query);
+    return;
+  }
+  if (key === "ArrowDown") deepSearchIndex.value = (deepSearchIndex.value + 1) % count;
+  else if (key === "ArrowUp") deepSearchIndex.value = (deepSearchIndex.value - 1 + count) % count;
+  else if (key === "Enter" && deepSearchIndex.value >= 0) {
+    void openDeepSearchResult(deepSearchResults.value[deepSearchIndex.value]!);
   }
 }
 
@@ -3274,7 +3297,9 @@ onBeforeUnmount(() => {
                     type="search"
                     spellcheck="false"
                     @input="searchQuery = ($event.target as HTMLInputElement).value"
-                    @keydown.enter.prevent="runDeepSearch('left', ($event.target as HTMLInputElement).value)"
+                    @keydown.down.prevent="onSearchKeydown('left', 'ArrowDown', ($event.target as HTMLInputElement).value)"
+                    @keydown.up.prevent="onSearchKeydown('left', 'ArrowUp', ($event.target as HTMLInputElement).value)"
+                    @keydown.enter.prevent="onSearchKeydown('left', 'Enter', ($event.target as HTMLInputElement).value)"
                     @keydown.esc.prevent="searchQuery = ''; closeDeepSearch()"
                   />
                 </span>
@@ -3365,7 +3390,9 @@ onBeforeUnmount(() => {
                     type="search"
                     spellcheck="false"
                     @input="rightSearchQuery = ($event.target as HTMLInputElement).value"
-                    @keydown.enter.prevent="runDeepSearch('right', ($event.target as HTMLInputElement).value)"
+                    @keydown.down.prevent="onSearchKeydown('right', 'ArrowDown', ($event.target as HTMLInputElement).value)"
+                    @keydown.up.prevent="onSearchKeydown('right', 'ArrowUp', ($event.target as HTMLInputElement).value)"
+                    @keydown.enter.prevent="onSearchKeydown('right', 'Enter', ($event.target as HTMLInputElement).value)"
                     @keydown.esc.prevent="rightSearchQuery = ''; closeDeepSearch()"
                   />
                 </span>
@@ -3526,27 +3553,12 @@ onBeforeUnmount(() => {
             ><component :is="cat.icon" class="wb-settings-nav-icon" /> {{ t(cat.labelKey) }}</button>
           </nav>
           <div class="wb-settings-content">
+            <!-- 单实例常驻：切换分类不卸载组件，各区块未保存草稿得以保留。 -->
             <SettingsPanel
-              v-if="settingsCategory === 'downloads'"
+              v-if="settingsCategory !== 'mounts'"
               ref="settingsPanelRef"
               @dirty="settingsDirty = $event"
-              section="downloads"
-              :t="t"
-              :can-save-local="canSaveLocal"
-              :save-dir="saveDirDraft"
-              :default-save-dir="localDownloadDir"
-              :download-dir-error="saveDirError"
-              :open-app="openAppPrefs"
-              :open-app-error="openAppError"
-              :presets="appPresets"
-              @save-dir="onSaveDirChange"
-              @save-open-app="onOpenAppPrefsChange"
-            />
-            <SettingsPanel
-              v-else-if="settingsCategory === 'transfer'"
-              ref="settingsPanelRef"
-              @dirty="settingsDirty = $event"
-              section="transfer"
+              :section="panelSection"
               :t="t"
               :can-save-local="canSaveLocal"
               :save-dir="saveDirDraft"
@@ -3557,23 +3569,9 @@ onBeforeUnmount(() => {
               :presets="appPresets"
               :bwlimit="bwlimitDraft"
               :bwlimit-error="bwlimitError"
-              @save-bwlimit="onBwlimitSave"
-            />
-            <SettingsPanel
-              v-else-if="settingsCategory === 'openWith'"
-              ref="settingsPanelRef"
-              @dirty="settingsDirty = $event"
-              section="openWith"
-              :t="t"
-              :can-save-local="canSaveLocal"
-              :save-dir="saveDirDraft"
-              :default-save-dir="localDownloadDir"
-              :download-dir-error="saveDirError"
-              :open-app="openAppPrefs"
-              :open-app-error="openAppError"
-              :presets="appPresets"
               @save-dir="onSaveDirChange"
               @save-open-app="onOpenAppPrefsChange"
+              @save-bwlimit="onBwlimitSave"
             />
             <div v-else class="wb-settings-pane" :aria-busy="mountsLoading">
               <DesktopOnlyCard v-if="!canSaveLocal" :t="t" />
@@ -3709,8 +3707,8 @@ onBeforeUnmount(() => {
       <p v-else-if="!deepSearchResults.length" class="wb-muted">{{ t("deepSearchNoResults") }}</p>
       <template v-else>
         <ul class="wb-deepsearch-list">
-          <li v-for="entry in deepSearchResults" :key="entry.path">
-            <button type="button" @click="openDeepSearchResult(entry)">
+          <li v-for="(entry, index) in deepSearchResults" :key="entry.path">
+            <button type="button" :class="{ 'is-active': deepSearchIndex === index }" @click="openDeepSearchResult(entry)">
               <span class="wb-mono">{{ entry.path }}</span>
               <span class="wb-muted">{{ formatBytes(entry.size) }}</span>
             </button>

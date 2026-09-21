@@ -4,6 +4,17 @@ import { CircleCheck, CircleDashed, CircleX, ExternalLink, FolderOpen, FileText,
 import { formatBytes, formatTime } from "../lib/api";
 import { etaSeconds, formatEta, formatRate, isByteBased, isRetryableKind, percentOf, sortedJobs, splitTransferPath, transferPathLabel, type TransferJob } from "../lib/transfers";
 
+/** 复制差异摘要（审计友好的纯文本）；剪贴板不可用时静默失败。 */
+async function copyCheckSummary(job: { checkSummary?: string; jobId: string }) {
+  const text = job.checkSummary;
+  if (!text) return;
+  try {
+    await window.dbxPlugin?.clipboard?.writeText(text);
+  } catch {
+    // 无剪贴板能力（旧宿主/web）时忽略。
+  }
+}
+
 const props = defineProps<{
   jobs: TransferJob[];
   t: (key: string, values?: Record<string, string | number>) => string;
@@ -120,11 +131,14 @@ function timeLabel(job: TransferJob): string {
       </div>
       <div class="wb-transfer-meta">
         <span>{{ t(`transferKind.${job.kind}`) }}</span>
-        <span
+        <button
           v-if="job.checkSummary"
+          type="button"
           class="wb-check-summary"
           :class="job.checkSummary.startsWith('identical') ? 'is-ok' : 'is-diff'"
-        >{{ job.checkSummary }}</span>
+          v-tip="t('checkSummaryCopy')"
+          @click="copyCheckSummary(job)"
+        >{{ job.checkSummary }}</button>
         <span>{{ progressMeta(job) }} · {{ percentOf(job) }}%</span>
       </div>
       <div v-if="speedMeta(job)" class="wb-transfer-meta"><span class="wb-transfer-speed">{{ speedMeta(job) }}</span></div>
@@ -168,10 +182,13 @@ function timeLabel(job: TransferJob): string {
         <span>{{ progressMeta(job) }}</span>
       </div>
       <div v-if="job.checkSummary" class="wb-transfer-meta">
-        <span
+        <button
+          type="button"
           class="wb-check-summary"
           :class="job.checkSummary.startsWith('identical') ? 'is-ok' : 'is-diff'"
-        >{{ job.checkSummary }}</span>
+          v-tip="t('checkSummaryCopy')"
+          @click="copyCheckSummary(job)"
+        >{{ job.checkSummary }}</button>
       </div>
       <p v-if="job.localPath" class="wb-transfer-localpath wb-mono" :title="job.localPath">
         <span v-if="pathParts(job.localPath!).parent" class="wb-transfer-path-parent">{{ pathParts(job.localPath!).parent }}</span>

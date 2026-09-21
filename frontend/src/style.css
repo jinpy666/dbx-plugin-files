@@ -487,3 +487,5 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-desktop-only-card .wb-doc-card-icon { width: 16px; height: 16px; flex: none; color: var(--warning); margin-top: 2px; }
 .wb-desktop-only-card strong { display: block; font-size: 12px; color: var(--foreground); }
 .wb-desktop-only-card p { margin: 4px 0 0; font-size: 11px; color: var(--muted-foreground); }
+button.wb-check-summary { border: 0; background: none; padding: 0; cursor: copy; text-align: left; font-size: inherit; }
+.wb-deepsearch-list button.is-active { background: color-mix(in srgb, var(--accent, rgb(128 128 128 / 25%)) 100%, transparent); }
