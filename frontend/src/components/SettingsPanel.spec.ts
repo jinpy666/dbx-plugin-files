@@ -174,3 +174,40 @@ describe("SettingsPanel transfer (bandwidth) section", () => {
     expect(wrapper.find('[role="alert"]').exists()).toBe(false);
   });
 })
+
+describe("SettingsPanel bwlimit presets & format hint", () => {
+  function transferPanel(bwlimit = "", bwlimitError = "") {
+    return mount(SettingsPanel, {
+      props: { t, canSaveLocal: true, saveDir: "", defaultSaveDir: "", openApp: { defaultApp: "", mappings: [] }, section: "transfer", bwlimit, bwlimitError },
+    });
+  }
+
+  it("fills the draft from preset chips and keeps save explicit", async () => {
+    const wrapper = transferPanel("");
+    const chips = wrapper.findAll(".wb-bwlimit-chip");
+    expect(chips).toHaveLength(4);
+    await chips[2]!.trigger("click");
+    expect((wrapper.get("input").element as HTMLInputElement).value).toBe("10M");
+    expect(wrapper.emitted("save-bwlimit")).toBeUndefined();
+    await wrapper.get(".wb-settings-path-row .wb-toolbar-button").trigger("click");
+    expect(wrapper.emitted("save-bwlimit")).toEqual([["10M"]]);
+  });
+
+  it("moves the active chip as the draft value changes by hand", async () => {
+    const wrapper = transferPanel("");
+    await wrapper.findAll(".wb-bwlimit-chip")[2]!.trigger("click");
+    expect(wrapper.findAll(".wb-bwlimit-chip")[2]!.classes()).toContain("is-active");
+    await wrapper.get("input").setValue("abc");
+    expect(wrapper.findAll(".wb-bwlimit-chip")[2]!.classes()).not.toContain("is-active");
+    await wrapper.get("input").setValue("100M");
+    expect(wrapper.findAll(".wb-bwlimit-chip")[3]!.classes()).toContain("is-active");
+  });
+
+  it("warns about the format while typing, before any save", async () => {
+    const wrapper = transferPanel("");
+    await wrapper.get("input").setValue("abc");
+    expect(wrapper.get(".wb-settings-hint").text()).toContain("bwlimitFormat");
+    await wrapper.get("input").setValue("1M:100k");
+    expect(wrapper.find(".wb-settings-hint").exists()).toBe(false);
+  });
+})

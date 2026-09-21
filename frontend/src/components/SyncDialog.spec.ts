@@ -79,6 +79,13 @@ describe("SyncDialog", () => {
     wrapper.unmount();
   });
 
+  it("closes on Escape like the other top-level dialogs", async () => {
+    const wrapper = dialog();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(wrapper.emitted("close")).toHaveLength(1);
+    wrapper.unmount();
+  });
+
   it("disables confirm while the target path is blank", async () => {
     const wrapper = dialog();
     await wrapper.find('input[placeholder="/mirror/2024"]').setValue("   ");

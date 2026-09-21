@@ -3,7 +3,7 @@
 // dry-run 预览 + include/exclude 过滤 + backup-dir/suffix 备份 + 高级并发参数。
 // 确认时把非空字段打包成 SyncDialogOptions 交给父层发起 files/syncDir|copyDir；
 // 数值字段在组件内先夹紧范围（rc 对非法值静默忽略，夹紧是唯一防线）。
-import { ref, watch } from "vue";
+import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { X } from "@lucide/vue";
 
 /** 确认载荷：空串/空数组/null = 不传该字段（保持 rclone 默认）。 */
@@ -44,6 +44,13 @@ const emit = defineEmits<{
 }>();
 
 const t = (key: string, values?: Record<string, string | number>) => props.t(key, values);
+
+// Esc 关闭：与 ConfirmDialog/MountDialog 的键盘语义对齐。
+function onDialogKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape") emit("close");
+}
+onMounted(() => window.addEventListener("keydown", onDialogKeydown));
+onBeforeUnmount(() => window.removeEventListener("keydown", onDialogKeydown));
 
 const targetPath = ref(props.defaultTarget);
 const dryRun = ref(false);

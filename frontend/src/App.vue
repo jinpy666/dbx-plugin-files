@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, type Component } from "vue";
 import {
   Archive,
   ArrowLeft,
@@ -30,6 +30,8 @@ import {
   Pencil,
   RefreshCw,
   Search,
+  AppWindow,
+  Gauge,
   Scale,
   Share2,
   ShieldCheck,
@@ -289,13 +291,15 @@ const auditRef = ref<InstanceType<typeof AuditPanel>>();
 
 // ---- 独立设置弹窗（对标 ssh 插件 settings-modal）：左导航分类 + 内容面板 --------
 type SettingsCategory = "downloads" | "openWith" | "transfer" | "mounts";
+// 每个分类的导航图标（设置弹窗左侧），扫读时先见图再读字。
+const SETTINGS_CATEGORY_ICONS = { downloads: Download, openWith: AppWindow, transfer: Gauge, mounts: HardDrive } as const;
 // 「本地挂载」分类仅桌面端（canSaveLocal）可见：挂载发生在 sidecar 所在机器。
-const settingsCategories = computed<ReadonlyArray<{ id: SettingsCategory; labelKey: string }>>(() =>
+const settingsCategories = computed<ReadonlyArray<{ id: SettingsCategory; labelKey: string; icon: Component }>>(() =>
   [
-    { id: "downloads", labelKey: "settingsNav.downloads" },
-    { id: "openWith", labelKey: "settingsNav.openWith" },
-    { id: "transfer", labelKey: "settingsNav.transfer" },
-    ...(canSaveLocal.value ? [{ id: "mounts" as const, labelKey: "settingsNav.mounts" }] : []),
+    { id: "downloads", labelKey: "settingsNav.downloads", icon: SETTINGS_CATEGORY_ICONS.downloads },
+    { id: "openWith", labelKey: "settingsNav.openWith", icon: SETTINGS_CATEGORY_ICONS.openWith },
+    { id: "transfer", labelKey: "settingsNav.transfer", icon: SETTINGS_CATEGORY_ICONS.transfer },
+    ...(canSaveLocal.value ? [{ id: "mounts" as const, labelKey: "settingsNav.mounts", icon: SETTINGS_CATEGORY_ICONS.mounts }] : []),
   ],
 );
 const settingsOpen = ref(false);
@@ -643,6 +647,12 @@ let unsubscribeBinary: (() => void) | undefined;
 let unsubscribeContext: (() => void) | undefined;
 let unsubscribeInit: (() => void) | undefined;
 let unsubscribeTheme: (() => void) | undefined;
+
+/** 立即清掉当前横幅：行内报错出现时不让旧的成功提示同屏误导。 */
+function hideNotice() {
+  window.clearTimeout(noticeTimer);
+  notice.value = "";
+}
 
 function showNotice(message: I18nInput) {
   notice.value = message;
@@ -2319,6 +2329,7 @@ async function onBwlimitSave(rate: string) {
     bwlimitError.value = "";
     showNotice(t("settingsSaved"));
   } catch {
+    hideNotice();
     bwlimitError.value = t("bwlimitInvalid");
   }
 }
@@ -3474,7 +3485,7 @@ onBeforeUnmount(() => {
               class="wb-settings-nav-item"
               :class="{ 'is-active': settingsCategory === cat.id }"
               @click="settingsCategory = cat.id"
-            >{{ t(cat.labelKey) }}</button>
+            ><component :is="cat.icon" class="wb-settings-nav-icon" /> {{ t(cat.labelKey) }}</button>
           </nav>
           <div class="wb-settings-content">
             <SettingsPanel
@@ -3588,13 +3599,15 @@ onBeforeUnmount(() => {
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('copyDir')"><FolderSymlink /> {{ t("transferKind.copyDir") }}…</button>
         <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('computeSize')"><Calculator /> {{ t("computeSize") }}</button>
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('hashsum')"><FileCheck /> {{ t("hashsumMenu") }}</button>
-        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('rmdirs')"><FolderMinus /> {{ t("rmdirsMenu") }}</button>
         <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('checkDir')"><Scale /> {{ t("checkDirMenu") }}</button>
         <button v-if="isSumFile(contextMenu.entry)" role="menuitem" @click="menuAction('verifySum')"><ShieldCheck /> {{ t("verifySumMenu") }}</button>
-        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('bisyncDir')"><ArrowRightLeft /> {{ t("bisyncMenu") }}</button>
+        <hr />
+        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('bisyncDir')"><ArrowRightLeft /> {{ t("bisyncMenu") }}…</button>
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('copyurl')"><Link /> {{ t("copyurlMenu") }}</button>
         <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('serveHttp')"><Globe /> {{ t("shareHttpMenu") }}</button>
         <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('serveWebdav')"><Share2 /> {{ t("shareWebdavMenu") }}</button>
+        <hr />
+        <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('rmdirs')"><FolderMinus /> {{ t("rmdirsMenu") }}</button>
         <button v-if="canUseMount && contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('mountLocal')"><HardDrive /> {{ t("mountToLocal") }}</button>
         <button v-if="canWrite" role="menuitem" @click="menuAction('compress')"><FileArchive /> {{ t("compress") }}</button>
         <hr />

@@ -42,6 +42,25 @@ watch(() => props.bwlimit, (value) => {
   bwlimitDraft.value = value ?? "";
 });
 
+// 预设一键填入（保存仍走显式按钮，语义与手输一致）；不限 = 空值。
+const BWLIMIT_PRESETS: Array<{ labelKey: string; value: string }> = [
+  { labelKey: "bwlimitPlaceholder", value: "" },
+  { labelKey: "bwlimitPreset1M", value: "1M" },
+  { labelKey: "bwlimitPreset10M", value: "10M" },
+  { labelKey: "bwlimitPreset100M", value: "100M" },
+];
+
+function applyBwlimitPreset(value: string) {
+  bwlimitDraft.value = value;
+}
+
+// 输入期软提示：非空且形如限速值之外时立即提示格式，不用等保存被 rclone 拒。
+const BWLIMIT_FORMAT = /^\d+(\.\d+)?[kKmMgGtT]?[bB]?(:\d+(\.\d+)?[kKmMgGtT]?[bB]?)?$/;
+const bwlimitFormatWarn = computed(() => {
+  const value = bwlimitDraft.value.trim();
+  return Boolean(value) && value !== "off" && !BWLIMIT_FORMAT.test(value);
+});
+
 function saveBwlimit() {
   emit("save-bwlimit", bwlimitDraft.value.trim());
 }
@@ -145,7 +164,18 @@ function applyPreset(preset: AppPresetOption) {
         />
         <button class="wb-toolbar-button" type="button" @click="saveBwlimit">{{ t("bwlimitSave") }}</button>
       </div>
+      <div class="wb-bwlimit-presets" role="group" :aria-label="t('bwlimitLabel')">
+        <button
+          v-for="preset in BWLIMIT_PRESETS"
+          :key="preset.value || 'off'"
+          type="button"
+          class="wb-bwlimit-chip"
+          :class="{ 'is-active': bwlimitDraft.trim() === preset.value }"
+          @click="applyBwlimitPreset(preset.value)"
+        >{{ t(preset.labelKey) }}</button>
+      </div>
       <p v-if="bwlimitError" class="wb-settings-error" role="alert">{{ bwlimitError }}</p>
+      <p v-else-if="bwlimitFormatWarn" class="wb-settings-hint">{{ t("bwlimitFormat") }}</p>
     </div>
     <div v-if="!props.section || props.section === 'downloads'" class="wb-settings-section">
       <div class="wb-settings-heading">
