@@ -200,7 +200,7 @@ function onDragStart(entry: FileEntry, event: DragEvent) {
     </span>
   </div>
   <!-- R3-P2-8：滚动容器 role=listbox + aria-label，行 role=option + aria-selected。 -->
-  <div ref="viewport" class="wb-file-scroll" role="listbox" aria-multiselectable="true" :aria-label="t('fileListLabel')" :aria-busy="Boolean(loading)" tabindex="0" @scroll="onScroll" @keydown="onListKeydown" @contextmenu.prevent.stop="emit('blank-context', { x: $event.clientX, y: $event.clientY })">
+  <div ref="viewport" class="wb-file-scroll" :data-pane-id="paneId ?? ''" role="listbox" aria-multiselectable="true" :aria-label="t('fileListLabel')" :aria-busy="Boolean(loading)" tabindex="0" @scroll="onScroll" @keydown="onListKeydown" @contextmenu.prevent.stop="emit('blank-context', { x: $event.clientX, y: $event.clientY })">
     <div v-if="failed && !loading" class="wb-file-empty" role="status" style="display: flex; flex-direction: column; align-items: center">
       <p>{{ t("directoryLoadFailed") }}</p>
       <button type="button" class="wb-toolbar-button" @click="emit('retry')">{{ t("retry") }}</button>
