@@ -132,6 +132,30 @@ pub async fn list_mount_points(client: &RcClient) -> Result<Vec<String>, String>
         .unwrap_or_default())
 }
 
+/// Polls `mount/listmounts` until `mount_point` shows up — registration can
+/// lag the `mount/mount` answer, and a host without a usable kernel FUSE
+/// (containers, CI sandboxes) answers Ok while nothing ever registers.
+/// `false` = never registered within ~5s; the caller treats that exactly
+/// like a driver failure (fallback / actionable error).
+pub async fn wait_registered(client: &RcClient, mount_point: &std::path::Path) -> bool {
+    let wanted = mount_point.display().to_string();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if let Ok(points) = list_mount_points(client).await {
+            if points
+                .iter()
+                .any(|point| point.trim_end_matches('/') == wanted)
+            {
+                return true;
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
 pub fn probe_driver() -> DriverProbe {
     match std::env::consts::OS {
         "linux" => {
@@ -358,7 +382,11 @@ mod tests {
             read_only: true,
         };
         if let Err(error) = mount(&client, &spec).await {
-            if error.is_unavailable() {
+            // DriverMissing/Unsupported AND mountpoint-unusable are all
+            // environment verdicts: hosts with WinFSP installed but a
+            // sandboxed mount service (CI) land in MountPointBusy — skip,
+            // the runtime path still surfaces these as real errors.
+            if error.is_unavailable() || matches!(error, MountError::MountPointBusy(_)) {
                 eprintln!("skipping: rclone mount unavailable on this host: {error}");
                 return;
             }
@@ -489,7 +517,11 @@ mod tests {
             read_only: true,
         };
         if let Err(error) = mount(&client, &spec).await {
-            if error.is_unavailable() {
+            // DriverMissing/Unsupported AND mountpoint-unusable are all
+            // environment verdicts: hosts with WinFSP installed but a
+            // sandboxed mount service (CI) land in MountPointBusy — skip,
+            // the runtime path still surfaces these as real errors.
+            if error.is_unavailable() || matches!(error, MountError::MountPointBusy(_)) {
                 eprintln!("skipping: rclone mount unavailable on this host: {error}");
                 return;
             }

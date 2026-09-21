@@ -486,7 +486,7 @@ pub async fn start_mount(
         )
         .await
         {
-            Ok(()) => {
+            Ok(()) if rclone::mount::wait_registered(&client, &mount_point).await => {
                 let mount_id = Uuid::new_v4().simple().to_string();
                 let hint = mount_hint("rclone", &mount_point);
                 lock_table(mounts)?.insert(
@@ -510,6 +510,21 @@ pub async fn start_mount(
                     "readOnly": true,
                     "hint": hint,
                 }));
+            }
+            // rc answered Ok but the kernel side never registered (FUSE-less
+            // container/CI hosts) — a ghost mount reads as an empty dir.
+            // Degrade exactly like a driver failure: cleanup, then fall back
+            // (auto) or fail with an actionable message (explicit rclone).
+            Ok(()) => {
+                let _ = rclone::mount::unmount(&client, &mount_point).await;
+                let ghost = rclone::mount::MountError::DriverMissing(format!(
+                    "mount accepted but never registered at {}",
+                    mount_point.display()
+                ));
+                match on_rclone_failure(&strategy, &ghost) {
+                    Decision::FallBack(reason) => fallback_reason = Some(reason),
+                    Decision::Fail(message) => return Err(message),
+                }
             }
             Err(error) => match on_rclone_failure(&strategy, &error) {
                 Decision::FallBack(reason) => fallback_reason = Some(reason),
