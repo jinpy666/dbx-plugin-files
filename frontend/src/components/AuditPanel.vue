@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // audit.jsonl 只读视图：审计条目由 sidecar store（F-A）经 files/audit/list 透出；
 // 方法未就绪时展示不可用态而非报错。
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { RefreshCw } from "@lucide/vue";
 import { formatTime } from "../lib/api";
 
@@ -20,6 +20,23 @@ const props = defineProps<{
 }>();
 
 const entries = ref<AuditEntry[]>([]);
+/** 操作类型筛选：候选来自当前记录里出现过的 action（全部 = 空串）。 */
+const actionFilter = ref("");
+
+const actionOptions = computed(() => {
+  const seen = new Set<string>();
+  for (const entry of entries.value) {
+    const action = entry.action ?? entry.method ?? "";
+    if (action) seen.add(action);
+  }
+  return [...seen].sort((a, b) => a.localeCompare(b));
+});
+
+const filteredEntries = computed(() =>
+  actionFilter.value
+    ? entries.value.filter((entry) => (entry.action ?? entry.method ?? "") === actionFilter.value)
+    : entries.value,
+);
 const available = ref<boolean | undefined>(undefined);
 const loading = ref(false);
 
@@ -66,10 +83,20 @@ props;
       <div class="wb-file-empty">{{ t("auditUnavailable") }}</div>
       <div class="wb-muted" style="padding: 0 8px; font-size: 11px">{{ t("auditHint") }}</div>
     </template>
-    <div v-else-if="!entries.length" class="wb-file-empty">{{ loading ? "…" : t("auditEmpty") }}</div>
-    <div v-for="(entry, index) in entries" v-else :key="index" class="wb-audit-item">
-      <div class="wb-audit-head"><span>{{ head(entry) }}</span></div>
-      <div class="wb-audit-path wb-mono">{{ detail(entry) }}</div>
-    </div>
+    <template v-else>
+      <label class="wb-audit-filter">
+        <span class="wb-muted">{{ t("auditFilterLabel") }}</span>
+        <select v-model="actionFilter" :aria-label="t('auditFilterLabel')">
+          <option value="">{{ t("auditFilterAll") }}</option>
+          <option v-for="action in actionOptions" :key="action" :value="action">{{ action }}</option>
+        </select>
+      </label>
+      <div v-if="!entries.length" class="wb-file-empty">{{ loading ? "…" : t("auditEmpty") }}</div>
+      <p v-else-if="!filteredEntries.length" class="wb-file-empty">{{ t("auditFilterNoMatch") }}</p>
+      <div v-for="(entry, index) in filteredEntries" v-else :key="index" class="wb-audit-item">
+        <div class="wb-audit-head"><span>{{ head(entry) }}</span></div>
+        <div class="wb-audit-path wb-mono">{{ detail(entry) }}</div>
+      </div>
+    </template>
   </div>
 </template>

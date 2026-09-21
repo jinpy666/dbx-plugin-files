@@ -308,6 +308,52 @@ const settingsCategories = computed<ReadonlyArray<{ id: SettingsCategory; labelK
 const settingsOpen = ref(false);
 // 统一「保存更改」：任一区块草稿变化即点亮；保存走当前区块面板暴露的 save()。
 const settingsDirty = ref(false);
+/** 设置弹窗记忆尺寸（拖右下角调节；对齐预览浮窗的持久化模式）。 */
+const settingsWin = ref<PreviewWin | undefined>(prefs.settingsWin);
+const settingsWinStyle = computed(() => {
+  if (!settingsWin.value) return undefined;
+  return {
+    width: `${settingsWin.value.width}px`,
+    height: `${settingsWin.value.height}px`,
+  };
+});
+
+const SETTINGS_MIN = { width: 680, height: 480 };
+function clampSettingsSize(width: number, height: number): PreviewWin {
+  const maxWidth = Math.max(SETTINGS_MIN.width, window.innerWidth - 40);
+  const maxHeight = Math.max(SETTINGS_MIN.height, window.innerHeight - 40);
+  return {
+    width: Math.min(maxWidth, Math.max(SETTINGS_MIN.width, Math.round(width))),
+    height: Math.min(maxHeight, Math.max(SETTINGS_MIN.height, Math.round(height))),
+  };
+}
+
+let settingsGripActive = false;
+function onSettingsGripPointerdown(event: PointerEvent) {
+  const start = { x: event.clientX, y: event.clientY, width: settingsWin.value?.width ?? 0, height: settingsWin.value?.height ?? 0 };
+  const modal = document.querySelector<HTMLElement>(".wb-settings-modal");
+  if (!modal) return;
+  if (!settingsWin.value) {
+    const rect = modal.getBoundingClientRect();
+    start.width = rect.width;
+    start.height = rect.height;
+  }
+  settingsGripActive = true;
+  (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  const onMove = (move: PointerEvent) => {
+    if (!settingsGripActive) return;
+    settingsWin.value = clampSettingsSize(start.width + (move.clientX - start.x), start.height + (move.clientY - start.y));
+  };
+  const onUp = () => {
+    settingsGripActive = false;
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    prefs.settingsWin = settingsWin.value;
+    saveUiPrefs({ ...prefs, settingsWin: settingsWin.value });
+  };
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+}
 const settingsSaving = ref(false);
 const settingsPanelRef = ref<{ save: () => Promise<void> } | null>(null);
 /** 当前挂到 SettingsPanel 的 section（mounts 是自定义面板，不在组件内）。 */
@@ -612,13 +658,16 @@ function mountToolbarTarget() {
 
 // 双栏开关不持久化；两侧侧栏状态分别持久化，切换一侧不影响另一侧。
 watch([sort, leftSideTab, rightSideTab, leftSideCollapsed, rightSideCollapsed], () => {
-  saveUiPrefs({
+  // 合并进快照再整体写入：这里曾用"只含本组键的新对象"覆盖，抹掉
+  // previewWin/settingsWin/settingsCategory 等其他键（跨键互踩 bug）。
+  Object.assign(prefs, {
     sort: sort.value,
     leftSideTab: leftSideTab.value,
     rightSideTab: rightSideTab.value,
     leftSideCollapsed: leftSideCollapsed.value,
     rightSideCollapsed: rightSideCollapsed.value,
   });
+  saveUiPrefs({ ...prefs });
 }, { deep: true });
 
 // 任一侧切到 tree tab 时懒加载对应根目录。
@@ -1108,7 +1157,10 @@ function onPreviewGripPointerdown(event: PointerEvent) {
     previewGripActive = false;
     window.removeEventListener("pointermove", onMove);
     window.removeEventListener("pointerup", onUp);
-    if (previewWin.value) saveUiPrefs({ ...prefs, previewWin: previewWin.value });
+    if (previewWin.value) {
+      prefs.previewWin = previewWin.value;
+      saveUiPrefs({ ...prefs, previewWin: previewWin.value });
+    }
   };
   window.addEventListener("pointermove", onMove);
   window.addEventListener("pointerup", onUp);
@@ -3536,7 +3588,7 @@ onBeforeUnmount(() => {
       @click.self="closeSettings"
       @keydown="onSettingsTabKeydown"
     >
-      <div class="wb-settings-modal">
+      <div class="wb-settings-modal" :style="settingsWinStyle">
         <header>
           <strong>{{ t("settings") }}</strong>
           <button class="wb-icon-button wb-icon-neutral" v-tip="t('close')" @click="closeSettings"><X /></button>
@@ -3620,6 +3672,8 @@ onBeforeUnmount(() => {
             <span class="wb-muted">{{ settingsDirty ? t("settingsUnsavedHint") : "" }}</span>
             <button class="wb-toolbar-button wb-settings-save" type="button" :disabled="!settingsDirty || settingsSaving" @click="onSettingsSave">{{ t("settingsSave") }}</button>
           </footer>
+        <!-- 右下角拉伸柄：拖动调尺寸，松手即记忆（prefs.settingsWin）。 -->
+        <div class="wb-settings-grip" aria-hidden="true" @pointerdown="onSettingsGripPointerdown"></div>
         </div>
       </div>
     </div>

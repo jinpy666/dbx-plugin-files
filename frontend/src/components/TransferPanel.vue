@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { CircleCheck, CircleDashed, CircleX, ExternalLink, FolderOpen, FileText, LoaderCircle, RotateCw, Trash2, X } from "@lucide/vue";
+import { Inbox, CircleCheck, CircleDashed, CircleX, ExternalLink, FolderOpen, FileText, LoaderCircle, RotateCw, Trash2, X } from "@lucide/vue";
 import { formatBytes, formatTime } from "../lib/api";
 import { etaSeconds, formatEta, formatRate, isByteBased, isRetryableKind, percentOf, sortedJobs, splitTransferPath, transferPathLabel, type TransferJob } from "../lib/transfers";
 
@@ -197,5 +197,9 @@ function timeLabel(job: TransferJob): string {
       <div v-if="job.error" class="wb-transfer-error">{{ job.error }}</div>
     </div>
   </div>
-  <div v-if="!jobs.length" class="wb-file-empty">{{ t("noTransfers") }}</div>
+  <div v-if="!jobs.length" class="wb-file-empty wb-transfer-empty">
+    <Inbox aria-hidden="true" />
+    <strong>{{ t("noTransfers") }}</strong>
+    <p>{{ t("transferEmptyHint") }}</p>
+  </div>
 </template>
