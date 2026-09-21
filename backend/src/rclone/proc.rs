@@ -165,6 +165,12 @@ impl RcdHandle {
         &self.endpoint
     }
 
+    /// OS pid of the rcd child (`None` once it has exited and been reaped).
+    /// Diagnostics and the unix-only orphan regression tests.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.id()
+    }
+
     pub fn binary(&self) -> &Path {
         &self.binary
     }
@@ -200,6 +206,18 @@ impl RcdHandle {
 }
 
 impl Drop for RcdHandle {
+    /// Every in-process exit path (stdin-EOF `serve()` return → `Plugin`
+    /// drop chain, request-handler panic unwind, `connection/disconnect`
+    /// and idle-group teardown) lands here, so the rcd child and its temp
+    /// config die with the handle. The one leak path that remains is an
+    /// external `SIGKILL` of the sidecar itself: no macOS process can
+    /// intercept its own SIGKILL (Linux's `prctl(PR_SET_PDEATHSIG)` has no
+    /// equivalent) and `rclone rcd` has no idle-exit flag to self-reap
+    /// (only per-connection `--rc-server-{read,write}-timeout`). Orphaned
+    /// rcds are inert (they hold no children of their own) but keep their
+    /// loopback rc endpoint until reboot; a POSIX watchdog exec-chain
+    /// remains the fallback if field reports ever make it worth the spawn
+    /// complexity.
     fn drop(&mut self) {
         let _ = self.child.start_kill();
         let _ = std::fs::remove_dir_all(&self.temp_dir);
@@ -820,5 +838,86 @@ mod tests {
             "client() must register the direct group"
         );
         assert_eq!(supervisor.handles.len(), 1, "client() spawns one group");
+    }
+
+    // -- 孤儿 rcd 回归（正常路径 OS 级验证） ---------------------------------
+    //
+    // 黑盒验证轮在本机留下多个 PPID=1 的 rcd 孤儿，根因是 sidecar 被 SIGKILL
+    // （Drop 链无从运行）；下面两条测试锁住"正常路径必须杀干净"的另一半：
+    // drop handle / supervisor shutdown 后，rcd 进程必须从 OS 层面消失。
+    // unix-only：用 `ps` 断言；Windows CI 上由 `kill_on_drop` 语义与上面
+    // 的进程存活行为测试覆盖（进程死了后续 rc 调用必然失败）。
+
+    /// `ps` reports the pid alive and not a zombie. Fully-reaped pids make
+    /// `ps` exit non-zero; zombies are already SIGKILLed (reaping races are
+    /// fine) so both count as dead.
+    #[cfg(unix)]
+    fn unix_process_alive(pid: u32) -> bool {
+        let output = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .expect("ps must exist on unix");
+        if !output.status.success() {
+            return false; // pid fully reaped: ps finds nothing
+        }
+        let stat = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        !stat.is_empty() && !stat.starts_with('Z')
+    }
+
+    #[cfg(unix)]
+    async fn assert_process_gone(pid: u32) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while unix_process_alive(pid) && tokio::time::Instant::now() < deadline {
+            sleep(Duration::from_millis(100)).await;
+        }
+        assert!(!unix_process_alive(pid), "rcd pid {pid} still alive");
+    }
+
+    /// Drop of a live handle must SIGKILL the rcd child for real — the OS
+    /// process disappears, not just the in-process handle (orphan-rcd
+    /// investigation regression, normal-path half).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropped_rcd_handle_kills_child_process() {
+        let Some(binary) = resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let handle = RcdHandle::start(&binary, None)
+            .await
+            .expect("rcd should spawn");
+        let pid = handle.pid().expect("live child pid");
+        assert!(unix_process_alive(pid), "spawned pid must be alive");
+        drop(handle);
+        assert_process_gone(pid).await;
+    }
+
+    /// `shutdown()` (whole-engine teardown; the same Drop path backs
+    /// `shutdown_group` and the EOF drop chain) must kill every group's rcd
+    /// process at the OS level.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn supervisor_shutdown_kills_all_group_processes() {
+        let Some(binary) = resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let mut supervisor = RcdSupervisor::new();
+        supervisor.set_binary(binary);
+        supervisor.client_for("direct", None).await.expect("group 1");
+        supervisor.client_for("second", None).await.expect("group 2");
+        let pids: Vec<u32> = supervisor
+            .handles
+            .values()
+            .filter_map(|handle| handle.pid())
+            .collect();
+        assert_eq!(pids.len(), 2, "two groups, two pids");
+        for pid in &pids {
+            assert!(unix_process_alive(*pid));
+        }
+        supervisor.shutdown();
+        for pid in pids {
+            assert_process_gone(pid).await;
+        }
     }
 }

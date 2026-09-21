@@ -418,6 +418,8 @@ const previewPath = ref<string | null>(null);
 /** 预览条目所属栏连接：openPreview 时固化为快照——单栏预览会顺手开启双栏
  * （左栏随即切到本地），read/write 必须仍指向预览来源连接而非切换后的左栏。 */
 const previewConnectionId = ref<string | undefined>(undefined);
+/** 预览条目所属栏：关闭时用于把焦点归还该栏列表容器。 */
+const previewSide = ref<PaneSide>("left");
 const contextMenu = ref<{ x: number; y: number; entry: FileEntry; side: PaneSide; selection: string[] }>();
 // 空白区右键（P-FILES）：列表空白处不再弹浏览器菜单，改弹新建/刷新动作面。
 const blankMenu = ref<{ x: number; y: number; side: PaneSide }>();
@@ -1175,6 +1177,7 @@ function openPreview(target: string, side: PaneSide = "left") {
   // 弹窗期间两侧栏保持各自连接面可继续导航。
   previewPath.value = target;
   previewConnectionId.value = sideConnectionId(side) ?? connectionId.value;
+  previewSide.value = side;
   previewMinimized.value = false;
 }
 
@@ -1252,8 +1255,17 @@ function closePreview() {
     previewDiscardOpen.value = true;
     return;
   }
+  const side = previewSide.value;
   previewPath.value = null;
   previewMinimized.value = false;
+  // 关闭后把焦点确定性归还所属栏列表容器：PreviewPane 卸载时的 returnFocusTo
+  // 是打开瞬间捕获的 activeElement，经右键菜单等触发元素已随菜单卸载的路径打开
+  // 时捕获到 body，归还落空——Esc 关闭后焦点悬空，紧随的双击存在首击被吞、
+  // dblclick 判定失效的窗口。这里等 overlay 卸载完成后按来源栏 data-pane-id 找回
+  // 列表容器（viewport tabindex=0，键盘 Enter/方向键链路随之恢复）。
+  void nextTick(() => {
+    document.querySelector<HTMLElement>(`.wb-file-scroll[data-pane-id="${side}"]`)?.focus();
+  });
 }
 
 /** 焦点陷阱：Tab 在预览内循环（同 ConfirmDialog 实现）；defaultPrevented
