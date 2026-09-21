@@ -563,6 +563,18 @@ pub struct ReadRequest {
     pub max_bytes: Option<u64>,
 }
 
+/// `files/readRange`（大文件预览的分段读取）：读 `[offset, offset+length)`
+/// 字节窗口。`length` 是单次分片长度，服务端按 `MAX_PREVIEW_BYTES`（2 MiB）
+/// 钳制 —— 超限请求收缩而非报错。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadRangeRequest {
+    pub connection_id: String,
+    pub path: String,
+    pub offset: u64,
+    pub length: u32,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteRequest {

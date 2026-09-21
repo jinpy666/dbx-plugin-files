@@ -395,6 +395,34 @@ impl Plugin {
                     Ok(json!({ "success": true }))
                 }
             }
+            // `files/readRange`：大文件预览的分段读取。读侧门（白名单 +
+            // lock_to_root）与 files/read 完全一致；read_only 不拦读。
+            "files/readRange" => {
+                let request: model::ReadRangeRequest = parse(params)?;
+                let binding = self.rclone.binding(&request.connection_id)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                let remote = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    &request.path,
+                    crate::policy::PathPolicy::check_read,
+                )?;
+                let (data, total_size) = rclone::ops::read_range(
+                    &client,
+                    &rclone::call_fs(&binding),
+                    &remote,
+                    request.offset,
+                    rclone::ops::clamp_range_length(request.length),
+                )
+                .await?;
+                let eof = rclone::ops::range_is_eof(request.offset, data.len(), total_size);
+                Ok(json!({
+                    "dataBase64": BASE64_STANDARD.encode(data),
+                    "totalSize": total_size,
+                    "offset": request.offset,
+                    "eof": eof,
+                }))
+            }
             "files/mkdir" | "files/rmdir" | "files/delete" | "files/purge" => {
                 let request: model::PathRequest = parse(params)?;
                 let binding = self.rclone.binding(&request.connection_id)?;

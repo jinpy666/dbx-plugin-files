@@ -511,7 +511,7 @@ pub async fn read_prefix(
 }
 
 /// rc-serve fs spelling: the fs rides bracket-wrapped in the URL path
-/// (`[{fs}]/{remote}`); `read_prefix` is the only consumer.
+/// (`[{fs}]/{remote}`); `read_prefix` and `read_range` are the consumers.
 fn serve_fs_string(fs: &str) -> String {
     format!("[{fs}]")
 }
@@ -533,6 +533,101 @@ fn encode_serve_path(value: &str) -> String {
         }
     }
     String::from_utf8(out).unwrap_or_else(|_| value.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// files/readRange（大文件预览的分段读取）
+// ---------------------------------------------------------------------------
+
+/// `files/readRange` 的单次分片长度钳制：上限 = MAX_PREVIEW_BYTES（2 MiB）。
+/// 超限请求收缩而非报错（wiring 层与本层各夹一次，防御纵深）。
+pub(crate) fn clamp_range_length(length: u32) -> u32 {
+    length.min(crate::model::MAX_PREVIEW_BYTES as u32)
+}
+
+/// Range 闭区间末端（inclusive）：`offset + length - 1`，且永不越过文件
+/// 末尾 —— 越界末端多数后端照样回 206 + 实际可用字节，但夹紧让 eof 判定
+/// 与 416 行为都不依赖该宽容度。
+pub(crate) fn range_end_byte(offset: u64, length: u32, total_size: u64) -> u64 {
+    offset
+        .saturating_add(u64::from(length))
+        .saturating_sub(1)
+        .min(total_size.saturating_sub(1))
+}
+
+/// eof 判定（契约公式）：请求起点 + 实际返回字节数 ≥ 文件总大小。
+pub(crate) fn range_is_eof(offset: u64, returned_len: usize, total_size: u64) -> bool {
+    offset.saturating_add(returned_len as u64) >= total_size
+}
+
+/// `files/readRange` 字节层：读 `[offset, offset+length)` 窗口，返回
+/// `(data, total_size)`。
+///
+/// Flow mirrors [`read_prefix`]: stat first (missing → read-style error,
+/// directory → `it is a directory`), then one rc-serve GET with
+/// `Range: bytes=offset-end`（inclusive 末端，见 [`range_end_byte`]）。
+/// 两条短路：`offset >= total_size` 直接回空分片（越界起点会 416，且契约
+/// 公式下 eof 恒真）；`length == 0` 回空分片 + eof=false。offset > 0 时若
+/// 后端无视 Range 头（对区间请求回 200），返回的字节就不再对应请求窗口 ——
+/// 按硬错误处理，绝不给前端错位的预览数据；offset == 0 时 200 与 206 的
+/// 前缀读等价，二者都接受。
+pub(crate) async fn read_range(
+    client: &RcClient,
+    fs: &str,
+    remote: &str,
+    offset: u64,
+    length: u32,
+) -> Result<(Vec<u8>, u64), String> {
+    let remote = remote.trim_matches('/');
+    let stat = client
+        .operations_stat(fs, remote)
+        .await
+        .map_err(|error| format!("Failed to read '{remote}': {error}"))?;
+    let item = stat.get("item").filter(|item| !item.is_null());
+    let Some(item) = item else {
+        return Err(format!("Failed to read '{remote}': path does not exist"));
+    };
+    if item.get("IsDir").and_then(Value::as_bool).unwrap_or(false) {
+        return Err(format!("Cannot read '{remote}': it is a directory"));
+    }
+    let total_size = item.get("Size").and_then(Value::as_u64).unwrap_or(0);
+    if offset >= total_size {
+        return Ok((Vec::new(), total_size));
+    }
+    if length == 0 {
+        return Ok((Vec::new(), total_size));
+    }
+    let length = clamp_range_length(length);
+    let end = range_end_byte(offset, length, total_size);
+    let mut response = client
+        .serve_get(
+            &serve_fs_string(fs),
+            &encode_serve_path(remote),
+            Some((offset, Some(end))),
+        )
+        .await
+        .map_err(|error| format!("Failed to read '{remote}': {error}"))?;
+    if offset > 0 && response.status().as_u16() != 206 {
+        return Err(format!(
+            "Failed to read '{remote}': backend ignored the Range request (HTTP {})",
+            response.status().as_u16()
+        ));
+    }
+    let mut body: Vec<u8> = Vec::with_capacity(length as usize);
+    while body.len() < length as usize {
+        match response
+            .chunk()
+            .await
+            .map_err(|error| format!("Failed to read '{remote}': {error}"))?
+        {
+            Some(chunk) => {
+                let take = (length as usize - body.len()).min(chunk.len());
+                body.extend_from_slice(&chunk[..take]);
+            }
+            None => break,
+        }
+    }
+    Ok((body, total_size))
 }
 
 /// `files/write` byte layer: writes `data` to `remote` (overwrite semantics).
@@ -1807,5 +1902,88 @@ mod tests {
             error.contains("doesn't support public links"),
             "rc 错误必须透传: {error}"
         );
+    }
+
+    // -- files/readRange（区间纯逻辑） ---------------------------------------
+
+    #[test]
+    fn read_range_clamps_length_to_preview_cap() {
+        assert_eq!(clamp_range_length(0), 0);
+        assert_eq!(clamp_range_length(1024), 1024);
+        let cap = crate::model::MAX_PREVIEW_BYTES as u32;
+        assert_eq!(clamp_range_length(cap), cap);
+        assert_eq!(clamp_range_length(u32::MAX), cap, "超限请求收缩而非报错");
+    }
+
+    #[test]
+    fn range_end_byte_math() {
+        // 普通区间：inclusive 末端 = offset + length - 1。
+        assert_eq!(range_end_byte(0, 10, 100), 9);
+        assert_eq!(range_end_byte(90, 20, 100), 99, "末端夹到文件末尾");
+        assert_eq!(range_end_byte(99, 1, 100), 99);
+        assert_eq!(range_end_byte(0, u32::MAX, 100), 99);
+        // 溢出安全：巨大的 offset+length 不 panic。
+        assert_eq!(range_end_byte(u64::MAX - 1, u32::MAX, 10), 9);
+    }
+
+    #[test]
+    fn range_is_eof_math() {
+        assert!(range_is_eof(90, 10, 100), "读满最后一个字节即 eof");
+        assert!(!range_is_eof(90, 9, 100));
+        assert!(range_is_eof(100, 0, 100), "起点即文件末尾 → 空分片 + eof");
+        assert!(range_is_eof(101, 0, 100), "越过末尾同样 eof");
+        assert!(!range_is_eof(0, 0, 100), "非空文件的 0 长度读不算 eof");
+        assert!(range_is_eof(0, 5, 5), "读满即 eof");
+    }
+
+    // -- files/readRange（live rc-serve 206 路径） ----------------------------
+
+    #[tokio::test]
+    async fn live_read_range_reads_partial_windows() {
+        let Some(live) = Live::start().await else { return };
+        let payload: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(
+            std::path::Path::new(&live.fs).join("range.bin"),
+            &payload,
+        )
+        .unwrap();
+
+        // 中段窗口：字节精确对位，eof=false。
+        let (data, total) = read_range(&live.client, &live.fs, "/range.bin", 10, 100)
+            .await
+            .unwrap();
+        assert_eq!(total, 1000);
+        assert_eq!(data, &payload[10..110]);
+        assert!(!range_is_eof(10, data.len(), total));
+
+        // 末端截断：请求越过 EOF 只回可用部分，eof=true。
+        let (data, total) = read_range(&live.client, &live.fs, "/range.bin", 990, 100)
+            .await
+            .unwrap();
+        assert_eq!(total, 1000);
+        assert_eq!(data, &payload[990..]);
+        assert!(range_is_eof(990, data.len(), total));
+
+        // 起点越界：空分片 + eof（不发请求，不会 416）。
+        let (data, total) = read_range(&live.client, &live.fs, "/range.bin", 1000, 10)
+            .await
+            .unwrap();
+        assert!(data.is_empty());
+        assert_eq!(total, 1000);
+
+        // offset == 0：200 前缀与 206 等价。
+        let (data, total) = read_range(&live.client, &live.fs, "/range.bin", 0, 4)
+            .await
+            .unwrap();
+        assert_eq!(data, &payload[..4]);
+        assert_eq!(total, 1000);
+
+        // 目录拒绝与缺失路径沿用 read 前缀的错误文案。
+        let error = read_range(&live.client, &live.fs, "/sub", 0, 10).await.unwrap_err();
+        assert!(error.contains("it is a directory"), "{error}");
+        let error = read_range(&live.client, &live.fs, "/missing.bin", 0, 10)
+            .await
+            .unwrap_err();
+        assert!(error.contains("path does not exist"), "{error}");
     }
 }
