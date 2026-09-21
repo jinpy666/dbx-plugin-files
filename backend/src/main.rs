@@ -931,6 +931,105 @@ impl Plugin {
                 ));
                 Ok(json!({ "taskId": task_id, "size": size }))
             }
+            // ------------------------------------------------------------------
+            // files/archiveDownload：远端目录 → 单个 `<dirname>.zip`（与
+            // files/compress 的 .zip 同构，stored 条目）→ 与 files/download/
+            // start 完全相同的下载管道（同一任务表、同一
+            // `files/download/{taskId}` 帧通道、同一 finish）。压缩字节只落
+            // sidecar 临时目录、不写远端 —— read_only 连接同样可下载，目录
+            // 炸弹守卫（条目/字节上限）与 compress 共用。
+            // ------------------------------------------------------------------
+            "files/archiveDownload" => {
+                let request: model::ArchiveDownloadRequest = parse(params)?;
+                let binding = self.rclone.binding(&request.connection_id)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                let fs = rclone::call_fs(&binding);
+                let relative = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    &request.path,
+                    crate::policy::PathPolicy::check_read,
+                )?;
+                // 源校验：只接受目录（文件走普通下载，根目录无名字可打包）。
+                let entry = rclone::ops::stat(
+                    &client,
+                    &fs,
+                    &request.path,
+                    &binding.root,
+                    binding.lock_to_root,
+                )
+                .await?;
+                rclone::archive::validate_archive_source(&entry.kind, &relative)?;
+                let name = rclone::archive::archive_download_artifact_name(&relative)?;
+                let data = rclone::archive::build_dir_zip_bytes(
+                    &client,
+                    &fs,
+                    &request.path,
+                    &binding.root,
+                    binding.lock_to_root,
+                )
+                .await?;
+                // sidecar 临时目录 staging；泵内的 TempArchiveGuard 负责任何
+                // 退出路径（成功/失败/取消/panic）的整目录清扫。
+                let stage_dir = std::env::temp_dir().join(format!(
+                    "dbx-files-archivedl-{}-{}",
+                    std::process::id(),
+                    uuid::Uuid::new_v4().simple()
+                ));
+                std::fs::create_dir_all(&stage_dir)
+                    .map_err(|error| format!("Failed to stage archive: {error}"))?;
+                let archive_path = stage_dir.join(&name);
+                if let Err(error) = std::fs::write(&archive_path, &data) {
+                    let _ = std::fs::remove_dir_all(&stage_dir);
+                    return Err(format!("Failed to stage archive: {error}"));
+                }
+                let size = data.len() as u64;
+                drop(data);
+                let task_id = uuid::Uuid::new_v4().to_string();
+                let cancel = Arc::new(AtomicBool::new(false));
+                let pump_done = Arc::new(AtomicBool::new(false));
+                let job = transfers::TransferJob {
+                    task_id: task_id.clone(),
+                    connection_id: request.connection_id.clone(),
+                    kind: transfers::TransferKind::ArchiveDownload,
+                    remote_path: request.path.clone(),
+                    total_bytes: Some(size),
+                    transferred_bytes: 0,
+                    status: transfers::JobStatus::Queued,
+                    error: None,
+                    started_at: Some(store::unix_millis_now()),
+                    finished_at: None,
+                    local_path: None,
+                };
+                {
+                    rclone_lock(&self.rclone.jobs).insert(task_id.clone(), job.clone());
+                    rclone_lock(&self.rclone.downloads).insert(
+                        task_id.clone(),
+                        rclone::DownloadTask {
+                            size,
+                            cancel: cancel.clone(),
+                            pump_done: pump_done.clone(),
+                            staging: None,
+                            _work: self
+                                .rclone
+                                .start_work(&rclone::registry::group_key_of(
+                                    binding.proxy.as_ref(),
+                                )),
+                        },
+                    );
+                }
+                let _ = emitter.event("files/transfer/progress", rclone_job_progress_event(&job));
+                tokio::spawn(rclone_archive_download_pump(
+                    Arc::clone(&self.rclone),
+                    task_id.clone(),
+                    archive_path,
+                    size,
+                    cancel,
+                    pump_done,
+                    emitter.clone(),
+                ));
+                Ok(json!({ "taskId": task_id, "size": size }))
+            }
             "files/download/finish" => {
                 let request: model::TaskRequest = parse(params)?;
                 let local_path = self
@@ -3279,7 +3378,11 @@ fn persist_rclone_history(rclone: &rclone::RcloneEngine, job: &transfers::Transf
         connection_id: job.connection_id.clone(),
         kind: match job.kind {
             transfers::TransferKind::Upload => "upload".to_string(),
-            transfers::TransferKind::Download => "download".to_string(),
+            // 归档下载按普通下载落历史：`TransferRecord.kind` 契约保持
+            // upload|download（重启示见 is_recorded_download 的白名单语义）。
+            transfers::TransferKind::Download | transfers::TransferKind::ArchiveDownload => {
+                "download".to_string()
+            }
         },
         remote_path: job.remote_path.clone(),
         total_bytes: job.total_bytes,
@@ -3546,6 +3649,7 @@ fn rclone_job_progress_event(job: &transfers::TransferJob) -> Value {
             serde_json::json!(match job.kind {
                 transfers::TransferKind::Upload => "upload",
                 transfers::TransferKind::Download => "download",
+                transfers::TransferKind::ArchiveDownload => "archiveDownload",
             }),
         );
         object.insert("connectionId".into(), serde_json::json!(job.connection_id));
@@ -3856,6 +3960,164 @@ async fn rclone_download_pump(
             );
         }
     }
+}
+
+/// 归档临时目录清扫护栏（files/archiveDownload 专属）：泵的任何退出路径
+/// （成功/失败/取消/panic 展开）都删除整个临时目录 ——
+/// `rclone_pump_cleanup` 对 `.part` 残留的清扫孪生，drop 即执行。
+struct TempArchiveGuard(Option<std::path::PathBuf>);
+
+impl TempArchiveGuard {
+    /// 认领 `dir`（staging 文件的父目录）；drop 时整目录递归删除。
+    fn claim(dir: std::path::PathBuf) -> Self {
+        Self(Some(dir))
+    }
+}
+
+impl Drop for TempArchiveGuard {
+    fn drop(&mut self) {
+        if let Some(dir) = self.0.take() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
+/// 归档下载泵（files/archiveDownload 专属）：把 sidecar 临时目录里的
+/// `<dirname>.zip` 按 ≤256 KiB 切片推成 `files/download/{taskId}` kind-1
+/// 帧（8 字节 BE offset + 载荷）。帧格式、进度节流、协作取消与终态清理
+/// 与 `rclone_download_pump` 完全一致，只是字节源从 rc-serve GET 换成
+/// 本地 staging 文件（归档已在 start 内同步产出，泵不做远端 I/O）。
+async fn rclone_archive_download_pump(
+    rclone: Arc<rclone::RcloneEngine>,
+    task_id: String,
+    archive_path: std::path::PathBuf,
+    size: u64,
+    cancel: Arc<AtomicBool>,
+    pump_done: Arc<AtomicBool>,
+    emitter: PluginEmitter,
+) {
+    let _pump_done_guard = RclonePumpDoneGuard(pump_done.clone());
+    let _archive_guard = TempArchiveGuard::claim(
+        archive_path
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| archive_path.clone()),
+    );
+    rclone_mark_running(&rclone, &task_id);
+    let _ = emitter.event("files/transfer/progress", rclone_running_event(&task_id));
+    let channel = format!("files/download/{task_id}");
+    let canceled = |cancel: &AtomicBool| cancel.load(Ordering::Acquire);
+    if canceled(&cancel) {
+        rclone_pump_cleanup(
+            &rclone,
+            &task_id,
+            &None,
+            transfers::JobStatus::Canceled,
+            None,
+            &emitter,
+            true,
+        );
+        return;
+    }
+    let mut file = match std::fs::File::open(&archive_path) {
+        Ok(file) => file,
+        Err(error) => {
+            rclone_pump_cleanup(
+                &rclone,
+                &task_id,
+                &None,
+                transfers::JobStatus::Failed,
+                Some(format!("Failed to open staged archive: {error}")),
+                &emitter,
+                false,
+            );
+            return;
+        }
+    };
+    let mut offset = 0u64;
+    let mut throttle = transfers::Throttle::default();
+    let jobs = &rclone.jobs;
+    let mut buffer = vec![0u8; crate::model::TRANSFER_CHUNK_SIZE];
+    use std::io::Read as _;
+    loop {
+        if canceled(&cancel) {
+            rclone_pump_cleanup(
+                &rclone,
+                &task_id,
+                &None,
+                transfers::JobStatus::Canceled,
+                None,
+                &emitter,
+                false,
+            );
+            return;
+        }
+        let read = match file.read(&mut buffer) {
+            Ok(0) => break, // EOF：staging 字节已全部出泵
+            Ok(read) => read,
+            Err(error) => {
+                rclone_pump_cleanup(
+                    &rclone,
+                    &task_id,
+                    &None,
+                    transfers::JobStatus::Failed,
+                    Some(format!("Failed to read staged archive: {error}")),
+                    &emitter,
+                    false,
+                );
+                return;
+            }
+        };
+        // Kind-1 download frame: 8-byte BE offset + payload chunk
+        // (≤256 KiB) — byte-identical to rclone_download_pump.
+        let mut payload = Vec::with_capacity(8 + read);
+        payload.extend_from_slice(&offset.to_be_bytes());
+        payload.extend_from_slice(&buffer[..read]);
+        if let Err(error) = emitter.binary(&channel, &payload) {
+            rclone_pump_cleanup(
+                &rclone,
+                &task_id,
+                &None,
+                transfers::JobStatus::Failed,
+                Some(format!("Failed to push download frame: {error:?}")),
+                &emitter,
+                false,
+            );
+            return;
+        }
+        offset = offset.saturating_add(read as u64);
+        if let Some(job) = rclone_lock(jobs).get_mut(&task_id) {
+            job.transferred_bytes = offset;
+        }
+        if throttle.should_emit(offset, Some(size)) {
+            let _ = emitter.event(
+                "files/transfer/progress",
+                rclone_running_at_event(&task_id, offset, Some(size)),
+            );
+        }
+    }
+    if canceled(&cancel) {
+        rclone_pump_cleanup(
+            &rclone,
+            &task_id,
+            &None,
+            transfers::JobStatus::Canceled,
+            None,
+            &emitter,
+            false,
+        );
+        return;
+    }
+    // Channel download: complete immediately; the slot stays until finish
+    // removes it (rclone_download_pump parity — a late cancel still finds
+    // the slot and answers Ok).
+    rclone_complete_job(
+        &rclone,
+        &task_id,
+        transfers::JobStatus::Completed,
+        None,
+        &emitter,
+    );
 }
 
 impl PluginHandler for Plugin {
@@ -4305,5 +4567,59 @@ mod tests {
             assert!(error.contains("root"), "{path}: {error}");
         }
         assert!(refuse_root_purge(&rooted, "/srv/data/child").is_ok());
+    }
+
+    // -- files/archiveDownload ------------------------------------------------
+
+    #[test]
+    fn temp_archive_guard_cleans_staging_on_any_drop() {
+        // 泵失败/取消/panic 展开的共同兜底：整目录（含 .zip）必须消失。
+        let dir = tempfile::tempdir().unwrap();
+        let stage_dir = dir.path().join("dbx-files-archivedl-x");
+        std::fs::create_dir_all(&stage_dir).unwrap();
+        let archive = stage_dir.join("photos.zip");
+        std::fs::write(&archive, b"PK").unwrap();
+
+        let guard = TempArchiveGuard::claim(stage_dir.clone());
+        drop(guard);
+        assert!(!stage_dir.exists(), "drop 必须删除整个临时目录");
+        assert!(!archive.exists());
+
+        // 正常完成路径 take 之后手动清理同样幂等：目录不存在时不报错。
+        let guard = TempArchiveGuard::claim(dir.path().join("missing"));
+        drop(guard);
+        assert!(!dir.path().join("missing").exists());
+    }
+
+    #[test]
+    fn archive_download_job_persists_as_plain_download() {
+        // TransferRecord.kind 契约（upload|download）不被归档下载打破。
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(dir.path().to_path_buf()));
+        let rclone = rclone::RcloneEngine::new();
+        *rclone_lock(&rclone.history) = Some(Arc::clone(&store));
+
+        let job = transfers::TransferJob {
+            task_id: "arch-1".into(),
+            connection_id: "c1".into(),
+            kind: transfers::TransferKind::ArchiveDownload,
+            remote_path: "/photos".into(),
+            total_bytes: Some(10),
+            transferred_bytes: 10,
+            status: transfers::JobStatus::Completed,
+            error: None,
+            started_at: Some(1_700_000_000_000),
+            finished_at: Some(1_700_000_000_001),
+            local_path: None,
+        };
+        persist_rclone_history(&rclone, &job);
+        let record = store
+            .load_transfers()
+            .into_iter()
+            .find(|record| record.task_id == "arch-1")
+            .expect("terminal archive job persisted");
+        assert_eq!(record.kind, "download", "历史仍按普通下载记录");
+        // 活跃镜像仍是 archiveDownload（事件/列表的区分 kind）。
+        assert_eq!(rclone_job_progress_event(&job)["kind"], "archiveDownload");
     }
 }

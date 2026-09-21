@@ -626,6 +626,18 @@ pub struct DownloadStartRequest {
     pub download_dir: Option<String>,
 }
 
+/// `files/archiveDownload`：把一个远端目录打包成单个 `<dirname>.zip`
+/// （与 `files/compress` 的 .zip 同构）后走标准下载管道 —— 同一任务表、
+/// 同一 `files/download/{taskId}` 帧通道、同一 finish。压缩字节只落在
+/// sidecar 临时目录，不写远端，read_only 连接同样可用。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveDownloadRequest {
+    pub connection_id: String,
+    /// 远端目录（只接受目录；文件走普通下载）。
+    pub path: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskRequest {
