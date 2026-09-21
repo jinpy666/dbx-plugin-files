@@ -514,6 +514,12 @@ pub struct Capabilities {
     pub copy: bool,
     pub rename: bool,
     pub presign: bool,
+    /// rc `Features.CanHaveEmptyDirectories` 投影：false 的后端空目录在
+    /// 列表里不可见（`files/mkdir` 因此自动补一个空 `.keep` 占位文件，
+    /// rclone-ui 同款行为）。`None` = fsinfo 不可用（能力未知；前端不要
+    /// 据此隐藏动作）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub can_have_empty_directories: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------

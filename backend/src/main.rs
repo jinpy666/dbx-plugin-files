@@ -431,9 +431,14 @@ impl Plugin {
                 match method {
                     "files/mkdir" => {
                         ensure_binding_writable(&binding)?;
-                        rclone::ops::mkdir(
+                        // 空目录占位回退：CanHaveEmptyDirectories=false 的
+                        // 后端补一个空 `.keep` 让新目录可见（决策见
+                        // ops::needs_empty_dir_placeholder —— 能力未知或
+                        // 权限类失败一律不触发）。
+                        rclone::ops::mkdir_with_placeholder(
                             &client,
                             &fs,
+                            &binding.backend_type,
                             &request.path,
                             &binding.root,
                             binding.lock_to_root,

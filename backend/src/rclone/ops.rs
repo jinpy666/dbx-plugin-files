@@ -305,6 +305,8 @@ fn static_capabilities(backend_type: &str) -> Capabilities {
         copy: is_fs || is_object,
         rename: is_fs || is_object,
         presign: is_object,
+        // 静态基线不知道空目录语义：交给 fsinfo 的 live 覆盖（未知 = None）。
+        can_have_empty_directories: None,
     }
 }
 
@@ -315,6 +317,9 @@ fn apply_features(caps: &mut Capabilities, features: Option<&Value>) {
     let flag = |key: &str| features.get(key).and_then(Value::as_bool);
     if let Some(presign) = flag("PublicLink") {
         caps.presign = presign;
+    }
+    if let Some(can_have_empty_directories) = flag("CanHaveEmptyDirectories") {
+        caps.can_have_empty_directories = Some(can_have_empty_directories);
     }
     // `copy`/`rename` stay on the static baseline: fsinfo's Copy/Move flags
     // advertise server-side copy *optimization*, not capability — the local
@@ -738,6 +743,79 @@ pub async fn mkdir(
         .await
         .map(|_| ())
         .map_err(|error| format!("Failed to create directory '{relative}': {error}"))
+}
+
+// ---------------------------------------------------------------------------
+// files/mkdir 空目录占位回退（CanHaveEmptyDirectories=false 的后端）
+// ---------------------------------------------------------------------------
+
+/// `.keep` 占位文件名：`CanHaveEmptyDirectories=false` 的后端靠"目录里放
+/// 一个文件"让新目录在列表里可见（rclone-ui 同款行为）。
+pub(crate) const EMPTY_DIR_PLACEHOLDER_NAME: &str = ".keep";
+
+/// 空目录类失败关键词：mkdir 在这类后端上通常静默成功（no-op，目录要等
+/// 首个对象落盘才可见），失败时只有文案指向空目录限制的才值得回退重试；
+/// 权限/只读/白名单等无关失败一律直传原始错误。
+const EMPTY_DIR_PLACEHOLDER_ERROR_HINTS: [&str; 1] = ["empty dir"];
+
+/// 空目录占位回退判定（纯函数，单测锁定）：仅当后端**确认**
+/// `CanHaveEmptyDirectories=false` 且（mkdir 成功，或以空目录类错误失败）
+/// 时为 true。能力未知（`None`）、能力为 true、或失败文案与空目录限制
+/// 无关，一律 false —— 保持现状，绝不掩盖权限类错误。
+pub(crate) fn needs_empty_dir_placeholder(
+    can_have_empty_directories: Option<bool>,
+    mkdir_error: Option<&str>,
+) -> bool {
+    if can_have_empty_directories != Some(false) {
+        return false;
+    }
+    match mkdir_error {
+        None => true,
+        Some(error) => EMPTY_DIR_PLACEHOLDER_ERROR_HINTS
+            .iter()
+            .any(|hint| error.contains(hint)),
+    }
+}
+
+/// `files/mkdir`（含空目录占位回退）：先走 [`mkdir`] 的常规路径，随后按
+/// [`needs_empty_dir_placeholder`] 决定是否往新目录写一个空的
+/// [`EMPTY_DIR_PLACEHOLDER_NAME`] 占位文件（经 [`write_bytes`]，远端父目录
+/// 自动创建）。回退生效时 mkdir 的原始失败被吸收（目录经占位文件已可见）；
+/// 占位写失败则以 mkdir 原始错误为主合并上报。capabilities 拉取失败时
+/// [`capabilities`] 自身兜底为静态矩阵（占位能力 = None → 不回退），即
+/// "能力不可得就退化为现状"。
+pub async fn mkdir_with_placeholder(
+    client: &RcClient,
+    fs: &str,
+    backend_type: &str,
+    remote: &str,
+    root: &str,
+    lock_to_root: bool,
+) -> Result<(), String> {
+    let result = mkdir(client, fs, remote, root, lock_to_root).await;
+    let caps = capabilities(client, fs, backend_type)
+        .await
+        .unwrap_or_else(|_| static_capabilities(backend_type));
+    if !needs_empty_dir_placeholder(
+        caps.can_have_empty_directories,
+        result.as_ref().err().map(String::as_str),
+    ) {
+        return result;
+    }
+    // 目标目录在 mkdir 内部已过 write 白名单；占位路径派生自同一个
+    // relative，无需二次 gate。
+    let relative = gate_write(root, lock_to_root, remote)?;
+    let placeholder = format!(
+        "{}/{}",
+        relative.trim_matches('/'),
+        EMPTY_DIR_PLACEHOLDER_NAME
+    );
+    match write_bytes(client, fs, &placeholder, &[]).await {
+        Ok(()) => Ok(()),
+        Err(placeholder_error) => result.map_err(|mkdir_error| {
+            format!("{mkdir_error}; placeholder write also failed: {placeholder_error}")
+        }),
+    }
 }
 
 /// `files/rmdir` (§5: `operations/rmdir`): delete gate + the engine's
@@ -1324,6 +1402,122 @@ mod tests {
         assert!(caps.write);
         apply_features(&mut caps, None);
         assert!(caps.write);
+    }
+
+    // -- mkdir 空目录占位回退（纯决策矩阵） ------------------------------------
+
+    #[test]
+    fn empty_dir_placeholder_decision_matrix() {
+        // 能力未知（fsinfo 失败 → None）：一律不回退，保持现状。
+        assert!(!needs_empty_dir_placeholder(None, None));
+        assert!(!needs_empty_dir_placeholder(None, Some("any failure")));
+
+        // 能力为 true（fs/local 等）：绝不回退，成败都不补占位。
+        assert!(!needs_empty_dir_placeholder(Some(true), None));
+        assert!(!needs_empty_dir_placeholder(
+            Some(true),
+            Some("can't create empty dir")
+        ));
+
+        // 能力为 false + mkdir 成功 → 回退（rclone-ui 同款：占位让目录可见）。
+        assert!(needs_empty_dir_placeholder(Some(false), None));
+
+        // 能力为 false + 空目录类失败文案 → 回退重试。
+        assert!(needs_empty_dir_placeholder(
+            Some(false),
+            Some("can't create empty dir")
+        ));
+        assert!(needs_empty_dir_placeholder(
+            Some(false),
+            Some("backend does not support empty directories")
+        ));
+
+        // 能力为 false + 无关失败（权限/传输层等）→ 不回退，直传原始错误。
+        assert!(!needs_empty_dir_placeholder(
+            Some(false),
+            Some("permission denied")
+        ));
+        assert!(!needs_empty_dir_placeholder(
+            Some(false),
+            Some("connection refused")
+        ));
+    }
+
+    #[test]
+    fn can_have_empty_directories_flows_into_capabilities() {
+        // 静态基线 = 未知（None），序列化时整个字段省略。
+        let caps = static_capabilities("s3");
+        assert_eq!(caps.can_have_empty_directories, None);
+        assert!(
+            !serde_json::to_string(&caps)
+                .unwrap()
+                .contains("canHaveEmptyDirectories")
+        );
+
+        // fsinfo 报告 true/false 时落到线上字段（camelCase）。
+        let mut caps = static_capabilities("s3");
+        apply_features(&mut caps, Some(&json!({ "CanHaveEmptyDirectories": false })));
+        assert_eq!(caps.can_have_empty_directories, Some(false));
+        assert!(serde_json::to_string(&caps)
+            .unwrap()
+            .contains("\"canHaveEmptyDirectories\":false"));
+
+        let mut caps = static_capabilities("smb");
+        apply_features(&mut caps, Some(&json!({ "CanHaveEmptyDirectories": true })));
+        assert_eq!(caps.can_have_empty_directories, Some(true));
+
+        // fsinfo 缺字段保持 None。
+        let mut caps = static_capabilities("smb");
+        apply_features(&mut caps, Some(&json!({})));
+        assert_eq!(caps.can_have_empty_directories, None);
+    }
+
+    // -- mkdir 空目录占位回退（live fsinfo 驱动） ------------------------------
+
+    #[tokio::test]
+    async fn live_mkdir_placeholder_follows_backend_feature() {
+        let Some(live) = Live::start().await else { return };
+
+        // local fs 支持空目录（fsinfo: CanHaveEmptyDirectories=true）：
+        // 新目录保持真空，绝不落 .keep。
+        mkdir_with_placeholder(&live.client, &live.fs, "fs", "plain", "", false)
+            .await
+            .unwrap();
+        let entries = list(&live.client, &live.fs, "plain", false, "", false)
+            .await
+            .unwrap();
+        assert!(entries.is_empty(), "fs 新目录必须是空的: {:?}", entries);
+
+        // 占位文件在需要时确实能写出来（回退路径的写半边）：
+        // 直接写 .keep 验证 write_bytes 的空载荷分支可用。
+        write_bytes(
+            &live.client,
+            &live.fs,
+            &format!("plain/{EMPTY_DIR_PLACEHOLDER_NAME}"),
+            &[],
+        )
+        .await
+        .unwrap();
+        let entries = list(&live.client, &live.fs, "plain", false, "", false)
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, EMPTY_DIR_PLACEHOLDER_NAME);
+
+        // 正向回退：:memory: 内联后端 fsinfo 实测 CanHaveEmptyDirectories=
+        // false 且 mkdir 为静默 no-op —— 占位回退必须让 newdir 真正可见。
+        let caps = capabilities(&live.client, ":memory:", "memory")
+            .await
+            .unwrap();
+        assert_eq!(caps.can_have_empty_directories, Some(false));
+        mkdir_with_placeholder(&live.client, ":memory:", "memory", "newdir", "", false)
+            .await
+            .unwrap();
+        let entries = list(&live.client, ":memory:", "newdir", false, "", false)
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 1, ".keep 必须让空目录可见: {entries:?}");
+        assert_eq!(entries[0].name, EMPTY_DIR_PLACEHOLDER_NAME);
     }
 
     #[test]
