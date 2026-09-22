@@ -102,8 +102,8 @@ jobs:
           sudo mv /tmp/rclone-tmp/*/rclone /usr/local/bin/rclone
           rclone version | head -1
       - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.7
-      - uses: actions/cache@v4
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.sccache-cache
           # sccache is content-keyed, so an unchanged lock hash keeps the key
@@ -143,8 +143,8 @@ jobs:
           sudo mv /tmp/rclone-tmp/*/rclone /usr/local/bin/rclone
           rclone version | head -1
       - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.7
-      - uses: actions/cache@v4
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.sccache-cache
           key: sccache-${{ runner.os }}-${{ github.job }}-${{ hashFiles('backend/Cargo.lock') }}
@@ -265,8 +265,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust_target }}
-      - uses: mozilla-actions/sccache-action@v0.0.7
-      - uses: actions/cache@v4
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.sccache-cache
           # Primary key carries matrix.target so the five parallel saves
