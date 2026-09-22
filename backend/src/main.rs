@@ -72,6 +72,9 @@ struct Plugin {
     /// live edit session. Same std-Mutex discipline — the watcher loops and
     /// the RPC arms only flip short bookkeeping fields under the lock.
     remote_edits: remote_edit::EditEngine,
+    /// 流式目录列表（`files/listStream`，issue #49 P1）：requestId 会话注册
+    /// 表 + 全局/单连接两级并发闸 + 组 teardown 联动入口。
+    list_streams: Arc<rclone::list_stream::ListStreams>,
 }
 
 impl Plugin {
@@ -82,6 +85,20 @@ impl Plugin {
             Runtime::new().map_err(|error| format!("Failed to create async runtime: {error}"))?;
         let store = Arc::new(Store::new(data_dir.clone()));
         let rclone = Arc::new(rclone::RcloneEngine::new());
+        // 流式列表注册表 + 组联动 hook：RcdSupervisor 拆组前先让该组的
+        // 在途 listing 会话终止其 lsjson 子进程（同步 hook 只能置位取消；
+        // SIGKILL + 收割由会话任务执行）。engine 刚构建，锁必然空闲。
+        let list_streams: Arc<rclone::list_stream::ListStreams> =
+            Arc::new(rclone::list_stream::ListStreams::new());
+        {
+            let hook = Arc::clone(&list_streams);
+            rclone.supervisor
+                .try_lock()
+                .expect("engine supervisor lock free during startup")
+                .set_teardown_hook(Arc::new(move |group: &str| {
+                    hook.kill_group(group);
+                }));
+        }
         // Keepalive watchdog: proactive crash respawn + re-registration and
         // idle proxy-group reaping (DBX_FILES_RCLONE_KEEPALIVE_SECS, 0=off).
         rclone.start_keepalive();
@@ -131,6 +148,7 @@ impl Plugin {
             about_cache,
             serves,
             remote_edits: remote_edit::EditEngine::new(),
+            list_streams,
         })
     }
 
@@ -231,6 +249,70 @@ impl Plugin {
                 let group = rclone::registry::group_key_of(binding.proxy.as_ref());
                 self.rclone.shutdown_group_if_idle(&group).await;
                 Ok(json!({ "success": true }))
+            }
+            "files/listStream" | "files/listCancel" => {
+                if method == "files/listCancel" {
+                    let request: model::ListCancelRequest = parse(params)?;
+                    let cancelled = self.list_streams.cancel(&request.request_id);
+                    return Ok(json!({ "cancelled": cancelled }));
+                }
+                // 逃生门：DBX_FILES_LIST_STREAM=off 时一律禁用（契约错误
+                // 文本逐字固定）。
+                if rclone::list_stream::escape_hatch_off() {
+                    return Err("files/listStream is disabled".to_string());
+                }
+                let request: model::ListStreamRequest = parse(params)?;
+                // busy 先于拉起 rcd：超限请求零成本失败（错误以
+                // `listing busy:` 开头，契约前缀）。
+                let slot = self.list_streams.try_acquire(&request.connection_id)?;
+                // 会话入口 gate 与 files/list 完全一致（lock_to_root 语义
+                // 不可绕过）；失败随 slot drop 释放并发名额。
+                let binding = self.rclone.binding(&request.connection_id)?;
+                let remote = rclone::list_stream::gate_remote(
+                    &binding.root,
+                    binding.lock_to_root,
+                    &request.path,
+                )?;
+                // 确保组 rcd 存活，并取该组子进程规格——升级路径的 lsjson
+                // 复用同组 binary/0600 config/代理 env。
+                let (client, spawn_info, group) = self
+                    .rclone
+                    .ensure_group_ready(&request.connection_id)
+                    .await?;
+                let request_id = uuid::Uuid::new_v4().simple().to_string();
+                // ack 前登记：流尚未开始到达时 listCancel 就能命中。guard
+                // 随会话任务持有，任何终态注销。
+                let (cancel, guard) = self.list_streams.register(&request_id, &group);
+                let fs = rclone::call_fs(&binding);
+                let prefix = remote.trim_matches('/').to_string();
+                let mut ack = json!({ "requestId": request_id });
+                if !binding.display_charset.is_empty() {
+                    ack["displayCharset"] =
+                        Value::String(binding.display_charset.clone());
+                }
+                let sink: Arc<dyn rclone::list_stream::ChunkSink> =
+                    Arc::new(EmitterSink { emitter: emitter.clone() });
+                // ack 同步返回后，会话状态机在独立 tokio task 里推进；
+                // chunk 帧经 emitter 异步发往宿主。
+                tokio::spawn(rclone::list_stream::run_session(
+                    rclone::list_stream::SessionSpec {
+                        request_id,
+                        client,
+                        fs,
+                        path: request.path,
+                        remote,
+                        prefix,
+                        root: binding.root.clone(),
+                        lock_to_root: binding.lock_to_root,
+                        spawn_info,
+                        sink,
+                        cancel,
+                        opts: rclone::list_stream::StreamOpts::default(),
+                        slot,
+                        guard,
+                    },
+                ));
+                Ok(ack)
             }
             "files/list" | "files/listPaged" | "files/stat" | "files/size" => {
                 let connection_id = params
@@ -4856,6 +4938,19 @@ fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
 
 fn parse<T: DeserializeOwned>(value: Value) -> Result<T, String> {
     serde_json::from_value(value).map_err(|error| format!("Invalid request parameters: {error}"))
+}
+
+/// listStream chunk 帧到宿主事件通道的桥：`emitter.event` 是同步 stdout
+/// 写，但每帧 ≤256 条目且与 transfer progress 事件同路径，阻塞写可接受。
+/// 发送失败（宿主侧管道问题）静默吞掉——与现有事件发射的容错一致。
+struct EmitterSink {
+    emitter: PluginEmitter,
+}
+
+impl rclone::list_stream::ChunkSink for EmitterSink {
+    fn emit(&self, payload: Value) {
+        let _ = self.emitter.event("files/list/chunk", payload);
+    }
 }
 
 fn connection_id_param(params: &Value) -> Result<&str, String> {

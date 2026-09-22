@@ -16,6 +16,7 @@
 pub mod archive;
 pub mod bytes_channel;
 pub mod display;
+pub mod list_stream;
 pub mod mount;
 pub mod ops;
 pub mod proc;
@@ -25,7 +26,9 @@ pub mod sync;
 #[allow(dead_code)] // several pub helpers exist for the module's own tests
 pub mod tunnel;
 
-pub use proc::{RcdEnv, RcdHandle, RcdSupervisor, MIN_RCLONE_VERSION};
+pub use proc::{
+    RcdEnv, RcdHandle, RcdSpawnInfo, RcdSupervisor, MIN_RCLONE_VERSION,
+};
 pub use rc::{RcClient, RcError};
 pub use tunnel::{TunnelSpec, rewrite_endpoint};
 
@@ -257,6 +260,29 @@ impl RcloneEngine {
     pub async fn client_for_id(&self, connection_id: &str) -> Result<RcClient, String> {
         let binding = self.binding(connection_id)?;
         self.client_for_binding(&binding).await
+    }
+
+    /// 流式列表（`files/listStream`）的会话前置：确保连接所在代理组的 rcd
+    /// 存活（必要时 respawn + replay 注册），并返回该组的子进程规格——升级
+    /// 路径的短命 `lsjson` 子进程必须复用同一 binary、同一 0600 私有 config
+    /// 与同一代理 env（`RcdSpawnInfo`），绝不允许绕过用户代理或持有第二份
+    /// 凭证。第三个返回值是组键（`listCancel` 的组联动按它杀在途子进程）。
+    pub async fn ensure_group_ready(
+        &self,
+        connection_id: &str,
+    ) -> Result<(RcClient, RcdSpawnInfo, String), String> {
+        let binding = self.binding(connection_id)?;
+        let key = registry::group_key_of(binding.proxy.as_ref());
+        let client = self.client_for_binding(&binding).await?;
+        let spawn_info = self
+            .supervisor
+            .lock()
+            .await
+            .spawn_details(&key)
+            .ok_or_else(|| {
+                format!("proxy group '{key}' has no live rcd for a streaming listing")
+            })?;
+        Ok((client, spawn_info, key))
     }
 
     /// Routed rc client for a not-yet-registered connection — the
