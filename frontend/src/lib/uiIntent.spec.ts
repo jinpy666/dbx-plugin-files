@@ -84,9 +84,10 @@ describe("workbench intent wiring (App.vue + mock host)", () => {
     invoke.mockClear();
     emitUiIntent({ intentId: "i-nav", action: "search", params: { path: "/docs" } });
     await settle();
-    // 导航走既有 files/list 管线（PathField 随 path 变化同步展示）。
+    // 导航走既有列表管线（PathField 随 path 变化同步展示）；list-stream P1 起
+    // 浏览通道为 files/listStream。
     const listings = invoke.mock.calls.filter(
-      ([method, params]: [string, unknown]) => method === "files/list" && (params as Record<string, unknown>).path === "/docs",
+      ([method, params]: [string, unknown]) => method === "files/listStream" && (params as Record<string, unknown>).path === "/docs",
     );
     expect(listings).toHaveLength(1);
     const applied = intentReport("i-nav");

@@ -6,6 +6,12 @@
 //   &locale=zh-CN    宿主 locale（默认 zh-CN）
 //   &theme=light     宿主 1.1 theme 通道方案（默认 dark，与真实宿主一致）
 //   &delay=300       files/list 人为延迟 ms（便于观察加载态）
+//   &streamBatch=500 files/listStream 每批条目数（流式分块演示，默认 500）
+//   &streamInterval=0 files/listStream 批间隔 ms（默认 0：一拍内连续送达）
+//   &streamFailAfter=N 第 N 批后注入失败帧（验证「已加载 N 项后失败」横幅）
+//   &streamDisabled=1 files/listStream ack 直接报 disabled（验证无缝回落 files/list）
+//   &streamEventsBeforeAck=1 第一批 chunk 在 ack 应答前同步 emit（复现真实宿主桥
+//                     「事件先于 ack」写入顺序，验证前端预缓冲重放）
 //   &job=1           copy/move 一律走降级 job（默认仅目录/`mockDir`）
 //   &ro=1            只读态注入（connection.readOnly + capabilities.readOnly，
 //                    P2-13①：供只读徽章/写按钮禁用/右键菜单禁用的 UI 走查）
@@ -55,6 +61,14 @@ export function installMockHost() {
   if (window.dbxPlugin) return;
   const params = new URLSearchParams(window.location.search);
   const delayMs = Number(params.get("delay") ?? "250");
+  // 流式列表（files/listStream P1）演示参数：批次大小/批间隔可调（对齐 &delay=
+  // 的查询参数风格）；&streamFailAfter=N 在第 N 批后注入失败帧；&streamDisabled=1
+  // 让 ack 直接报 disabled（走查前端无缝回落 files/list）。
+  const streamBatch = Math.max(1, Number(params.get("streamBatch") ?? "500"));
+  const streamInterval = Math.max(0, Number(params.get("streamInterval") ?? "0"));
+  const streamFailAfter = params.has("streamFailAfter") ? Math.max(0, Number(params.get("streamFailAfter"))) : null;
+  const streamDisabled = params.get("streamDisabled") === "1";
+  const streamEventsBeforeAck = params.get("streamEventsBeforeAck") === "1";
   const forceJob = params.get("job") === "1";
   // P2-13①：?ro=1 只读态注入（与 canWrite = !connection.readOnly && !capabilities.readOnly 双闸对齐）。
   const readOnly = params.get("ro") === "1";
@@ -271,6 +285,11 @@ export function installMockHost() {
   let mockBwlimit: string | null = null;
   const timers = new Map<string, number[]>();
 
+  // ---- 流式列表会话（files/listStream P1）----------------------------------
+  // requestId → 会话状态：files/listCancel 置 canceled 后分批 emit 自行停止。
+  let mockStreamSeq = 0;
+  const streamSessions = new Map<string, { canceled: boolean }>();
+
   function emit(method: string, payload: Record<string, unknown>) {
     for (const listener of eventListeners) listener({ method, params: payload });
   }
@@ -434,6 +453,50 @@ export function installMockHost() {
         const page = Number(p.page ?? 1);
         const size = Number(p.pageSize ?? 200);
         return { entries: all.slice((page - 1) * size, page * size), total: all.length };
+      }
+      case "files/listStream": {
+        // 流式列表（P1）：ack 先行返回 requestId，随后按批次 emit files/list/chunk
+        // 事件（对齐真实 sidecar：ack 应答先于事件）。批次大小/间隔由
+        // &streamBatch/&streamInterval 控制，&streamFailAfter=N 在第 N 批后注入
+        // 失败帧（error + partialCount，entries 空），&streamDisabled=1 模拟
+        // 旧 sidecar 的 ack 失败。mock 不做截断。
+        if (streamDisabled) throw new Error("files/listStream is disabled: not supported by this sidecar");
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        assertOk(str("path"));
+        const requestId = `mock-stream-${++mockStreamSeq}`;
+        const stream = { canceled: false };
+        streamSessions.set(requestId, stream);
+        const all = children(treeFor(p.connectionId), str("path"));
+        const emitBatch = (start: number, seq: number) => {
+          // 取消（files/listCancel）或会话已终止：停止分批。
+          if (stream.canceled || !streamSessions.has(requestId)) return;
+          if (streamFailAfter !== null && seq > streamFailAfter) {
+            streamSessions.delete(requestId);
+            // 失败帧与后端同形：error 非空 + partialCount，不置 done。
+            emit("files/list/chunk", { requestId, seq, entries: [], done: false, error: `mock stream failure for ${str("path")}`, partialCount: start });
+            return;
+          }
+          const slice = all.slice(start, start + streamBatch);
+          const done = start + slice.length >= all.length;
+          emit("files/list/chunk", { requestId, seq, entries: slice, done, ...(done ? { total: all.length } : {}) });
+          if (done) {
+            streamSessions.delete(requestId);
+            return;
+          }
+          window.setTimeout(() => emitBatch(start + slice.length, seq + 1), streamInterval);
+        };
+        // &streamEventsBeforeAck=1：第一批在 invoke 应答前同步 emit——复现真实
+        // 宿主桥「事件先于 ack」的写入顺序（前端预缓冲重放的回归夹具）；
+        // 默认 invoke 返回 ack 之后再开始 emit（setTimeout 排队），保证前端
+        // 先登记 requestId 再收到 chunk 事件。
+        if (streamEventsBeforeAck) emitBatch(0, 1);
+        else window.setTimeout(() => emitBatch(0, 1), streamInterval);
+        return { requestId };
+      }
+      case "files/listCancel": {
+        const stream = streamSessions.get(str("requestId"));
+        if (stream) stream.canceled = true;
+        return { cancelled: true };
       }
       case "files/capabilities":
         return { scheme: "mock", list: true, write: true, read: true, stat: true, delete: true, createDir: true, copy: true, rename: true, presign, readOnly: storageFor(p.connectionId).readOnly };

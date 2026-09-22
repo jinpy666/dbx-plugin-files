@@ -131,7 +131,10 @@ describe("fresh review UI smoke", () => {
     let releaseLocal!: () => void;
     const gate = new Promise<void>((resolve) => { releaseLocal = resolve; });
     vi.spyOn(window.dbxPlugin, "invoke").mockImplementation(async <T,>(method: string, params: unknown) => {
-      if (method === "files/list" && (params as Record<string, unknown>).connectionId === "__local__") await gate;
+      // 主列表浏览走 files/listStream（list-stream P1）：夹具同时闸住两条通道，
+      // 语义不变——本地栏挂起期间右栏照常完成首载。
+      const listMethod = method === "files/list" || method === "files/listStream";
+      if (listMethod && (params as Record<string, unknown>).connectionId === "__local__") await gate;
       return original<T>(method, params);
     });
     await openDualPane();
@@ -153,7 +156,11 @@ describe("fresh review UI smoke", () => {
     let fail = true;
     const invoke = vi.spyOn(window.dbxPlugin, "invoke").mockImplementation(async <T,>(method: string, params: unknown) => {
       const local = (params as Record<string, unknown> | undefined)?.connectionId === "__local__";
-      if (fail && method === "files/list" && local === (side === "left")) throw new Error("connection refused");
+      // 主列表浏览走 files/listStream（list-stream P1）：失败注入覆盖两条通道，
+      // listStream ack 失败后前端无缝回落 files/list，再被同一夹具拒绝——
+      // 与切换前完全一致的失败语义与 files/list 调用次数。
+      const listMethod = method === "files/list" || method === "files/listStream";
+      if (fail && listMethod && local === (side === "left")) throw new Error("connection refused");
       return original<T>(method, params);
     });
     table(side).vm.$emit("retry");
@@ -170,7 +177,8 @@ describe("fresh review UI smoke", () => {
     await settle();
     expect(table(side).props("failed")).toBe(false);
     expect(table(side).props("entries").length).toBeGreaterThan(0);
-    const listings = invoke.mock.calls.filter(([method]) => method === "files/list");
+    // 主列表浏览走 files/listStream（list-stream P1）：重试恰好发起一次该栏列表。
+    const listings = invoke.mock.calls.filter(([method]) => method === "files/listStream");
     expect(listings).toHaveLength(1);
     expect(listings[0][1]).toMatchObject({ connectionId: side === "left" ? "__local__" : "mock-conn" });
   });
@@ -378,7 +386,8 @@ describe("round5 retry UI smoke", () => {
     const panel = await showTransfers();
     await panel.get(`[aria-label="${workbenchMessage("en", "retryTransfer")}"]`).trigger("click");
     await settle();
-    expect(invoke.mock.calls.some(([method]) => method === "files/list")).toBe(true);
+    // 终态自动刷新目录：主列表浏览现在走 files/listStream（list-stream P1）。
+    expect(invoke.mock.calls.some(([method]) => method === "files/listStream")).toBe(true);
     expect(table("left").props("entries").some((entry) => entry.path === "/failed-copy")).toBe(true);
     expect(wrapper!.find(".wb-error-banner").exists()).toBe(false);
     expect(wrapper!.get(".wb-notice").text()).toBe(workbenchMessage("en", "transferStatus.completed"));
@@ -565,7 +574,10 @@ describe("round5 current host context/environment UI smoke", () => {
     const oldListing = new Promise<never>((_resolve, reject) => { rejectOld = reject; });
     vi.spyOn(window.dbxPlugin, "invoke").mockImplementation(async <T,>(method: string, params: unknown) => {
       const p = params as Record<string, unknown>;
-      if (method === "files/list" && p.connectionId === "mock-conn" && p.path === "/docs") return oldListing;
+      // 主列表浏览走 files/listStream（list-stream P1）：挂起旧导航的两条通道，
+      // 语义不变——晚到的旧列表失败不得打扰重绑后的新状态。
+      const listMethod = method === "files/list" || method === "files/listStream";
+      if (listMethod && p.connectionId === "mock-conn" && p.path === "/docs") return oldListing;
       return original<T>(method, params);
     });
     table("left").vm.$emit("open", docs);
