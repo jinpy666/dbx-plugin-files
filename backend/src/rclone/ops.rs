@@ -159,6 +159,38 @@ pub async fn list(
 }
 
 // ---------------------------------------------------------------------------
+// files/list 封顶（issue #49：rclone rc 无服务端分页，浏览路径保序截断）
+// ---------------------------------------------------------------------------
+
+/// `files/list` 浏览路径的封顶版：返回排序后的前 `max` 条与截断标记。
+///
+/// rclone rc 的 `operations/list` 没有任何服务端分页参数（无 offset/limit/
+/// continuation-token，docs live-verified 2026-09），一个巨型 S3 前缀只能
+/// 整包返回。与其让百万条目级目录把内存/宿主网桥打爆后整体失败，不如保序
+/// 截断并显式 `truncated`，由前端提示缩小范围。截断在 `filter_and_sort`
+/// 之后进行（`list` 内部已完成），语义确定为「字典序前 max 条」。
+pub async fn list_capped(
+    client: &RcClient,
+    fs: &str,
+    path: &str,
+    root: &str,
+    lock_to_root: bool,
+    max: usize,
+) -> Result<(Vec<FileEntry>, bool), String> {
+    let entries = list(client, fs, path, false, root, lock_to_root).await?;
+    Ok(cap_entries(entries, max))
+}
+
+/// Pure cap over a sorted listing: `(first `max` entries, truncated?)`.
+fn cap_entries(mut entries: Vec<FileEntry>, max: usize) -> (Vec<FileEntry>, bool) {
+    if entries.len() <= max {
+        return (entries, false);
+    }
+    entries.truncate(max);
+    (entries, true)
+}
+
+// ---------------------------------------------------------------------------
 // files/listPaged (§5: operations/list 全量 + 切片)
 // ---------------------------------------------------------------------------
 
@@ -1340,6 +1372,37 @@ mod tests {
     #[test]
     fn list_paged_cap_constant() {
         assert_eq!(LIST_PAGED_MAX, 100_000);
+    }
+
+    // -- list 封顶截断（issue #49）---------------------------------------------
+
+    fn file_entry(path: &str) -> FileEntry {
+        FileEntry { name: path.into(), path: path.into(), kind: "file", size: Some(1), modified_at: None }
+    }
+
+    #[test]
+    fn cap_entries_keeps_short_listings_intact() {
+        let entries = vec![file_entry("/a"), file_entry("/b")];
+        let (capped, truncated) = cap_entries(entries, 100_000);
+        assert_eq!(capped.len(), 2);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn cap_entries_truncates_at_max_and_flags() {
+        let entries: Vec<FileEntry> = (0..5).map(|index| file_entry(&format!("/{index}"))).collect();
+        let (capped, truncated) = cap_entries(entries, 3);
+        let paths: Vec<&str> = capped.iter().map(|entry| entry.path.as_str()).collect();
+        assert_eq!(paths, vec!["/0", "/1", "/2"], "keeps the sorted head, in order");
+        assert!(truncated);
+    }
+
+    #[test]
+    fn cap_entries_exact_fit_is_not_truncated() {
+        let entries: Vec<FileEntry> = (0..3).map(|index| file_entry(&format!("/{index}"))).collect();
+        let (capped, truncated) = cap_entries(entries, 3);
+        assert_eq!(capped.len(), 3);
+        assert!(!truncated);
     }
 
     // -- ModTime 两种形态（RFC3339 字符串 / 防御性数字） ----------------------

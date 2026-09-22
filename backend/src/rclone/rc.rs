@@ -58,10 +58,24 @@ fn encode_query_component(value: &str) -> String {
     encoded
 }
 
+/// No total timeout; connect stays bounded so a dead rcd fails fast instead
+/// of hanging the caller on the OS connect stack.
+fn build_unbounded_http() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .build()
+        .expect("reqwest client with static options always builds")
+}
+
 /// Client bound to one rcd instance (base URL + session credential).
 #[derive(Debug, Clone)]
 pub struct RcClient {
     http: reqwest::Client,
+    /// Same envelope, no total wall-clock timeout: listings assemble their
+    /// body after server-side work rclone controls internally (a huge S3
+    /// prefix pages ListObjectsV2 1000 keys at a time before rc answers),
+    /// so the 30s client kills them mid-body (issue #49).
+    unbounded_http: reqwest::Client,
     base_url: String,
     user: String,
     pass: String,
@@ -75,6 +89,7 @@ impl RcClient {
             .expect("reqwest client with static options always builds");
         Self {
             http,
+            unbounded_http: build_unbounded_http(),
             base_url: base_url.trim_end_matches('/').to_string(),
             user,
             pass,
@@ -91,6 +106,7 @@ impl RcClient {
             .expect("reqwest client with static options always builds");
         RcClient {
             http,
+            unbounded_http: build_unbounded_http(),
             base_url: self.base_url.clone(),
             user: self.user.clone(),
             pass: self.pass.clone(),
@@ -99,10 +115,26 @@ impl RcClient {
 
     /// One rc call: POST JSON params, unwrap rclone's result envelope.
     pub async fn call(&self, method: &str, params: &Value) -> Result<Value, RcError> {
-        let response = self
-            .http
-            .post(format!("{}/{}", self.base_url, method))
-            .basic_auth(&self.user, Some(&self.pass))
+        Self::send(&self.http, self, method, params).await
+    }
+
+    /// [`Self::call`] over the unbounded client: for calls whose body rclone
+    /// only starts writing after unbounded internal work (operations/list on
+    /// huge object-store prefixes). Connect stays bounded so a dead rcd
+    /// still fails fast.
+    pub async fn call_unbounded(&self, method: &str, params: &Value) -> Result<Value, RcError> {
+        Self::send(&self.unbounded_http, self, method, params).await
+    }
+
+    async fn send(
+        http: &reqwest::Client,
+        ctx: &Self,
+        method: &str,
+        params: &Value,
+    ) -> Result<Value, RcError> {
+        let response = http
+            .post(format!("{}/{method}", ctx.base_url))
+            .basic_auth(&ctx.user, Some(&ctx.pass))
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(params.to_string())
             .send()
@@ -178,6 +210,10 @@ impl RcClient {
 
     /// Lists `remote:path`. Non-recursive by default; `opt` carries extras
     /// (`recurse`, `maxDepth`, `filesOnly`, `dirsOnly`) verbatim.
+    ///
+    /// Unbounded total timeout (issue #49): rclone answers only after its own
+    /// internal S3 pagination finishes, so a huge prefix routinely outlives
+    /// the 30s control-plane client.
     pub async fn operations_list(
         &self,
         fs: &str,
@@ -188,7 +224,7 @@ impl RcClient {
         if !opt.is_null() {
             payload["opt"] = opt;
         }
-        self.call("operations/list", &payload).await
+        self.call_unbounded("operations/list", &payload).await
     }
 
     pub async fn operations_stat(&self, fs: &str, remote: &str) -> Result<Value, RcError> {
@@ -276,7 +312,7 @@ impl RcClient {
         if files_only {
             opt["filesOnly"] = Value::Bool(true);
         }
-        self.call(
+        self.call_unbounded(
             "operations/list",
             &serde_json::json!({
                 "fs": fs,

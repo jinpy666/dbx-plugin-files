@@ -26,6 +26,8 @@ const props = defineProps<{
   paneId?: string;
   /** R3-P2-6：当前处于文件名过滤态——空列表时区分「无匹配」与「空目录」。 */
   filtered?: boolean;
+  /** issue #49：目录超封顶被截断——footer 条目数显示 N+ 提示并非完整清单。 */
+  truncated?: boolean;
   t: (key: string, values?: Record<string, string | number>) => string;
 }>();
 
@@ -446,7 +448,7 @@ function onResizeEnd() {
   <div class="wb-file-footer">
     <span v-if="loading" role="status">{{ t("loading") }}</span>
     <template v-else-if="!failed">
-      <span>{{ t("entriesCount", { count: entries.length }) }}</span>
+      <span>{{ t("entriesCount", { count: entries.length }) }}{{ props.truncated ? "+" : "" }}</span>
       <span v-if="selection.length">{{ t("selectedCount", { count: selection.length }) }}</span>
       <!-- 批量重命名（parity-tools）：多选时可键盘到达的常驻入口（只读态禁用，
            与 delete/rename 门禁一致）。 -->

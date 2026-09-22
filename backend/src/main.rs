@@ -245,16 +245,34 @@ impl Plugin {
                         let request: model::ListRequest = parse(params)?;
                         let binding = self.rclone.binding(&request.connection_id)?;
                         let fs = rclone::call_fs(&binding);
-                        let entries = rclone::ops::list(
-                            &client,
-                            &fs,
-                            &request.path,
-                            request.recurse,
-                            &binding.root,
-                            binding.lock_to_root,
-                        )
-                        .await?;
-                        let mut response = json!({ "entries": entries });
+                        // issue #49：rclone rc 无服务端分页，非递归浏览路径保序
+                        // 截断（上限与 listPaged 对齐）并显式 truncated 交给前端
+                        // 提示；递归语义要求完整结果，维持原行为不封顶。
+                        let (entries, truncated) = if request.recurse {
+                            (
+                                rclone::ops::list(
+                                    &client,
+                                    &fs,
+                                    &request.path,
+                                    true,
+                                    &binding.root,
+                                    binding.lock_to_root,
+                                )
+                                .await?,
+                                false,
+                            )
+                        } else {
+                            rclone::ops::list_capped(
+                                &client,
+                                &fs,
+                                &request.path,
+                                &binding.root,
+                                binding.lock_to_root,
+                                rclone::ops::LIST_PAGED_MAX,
+                            )
+                            .await?
+                        };
+                        let mut response = json!({ "entries": entries, "truncated": truncated });
                         if !binding.display_charset.is_empty() {
                             response["displayCharset"] = Value::String(binding.display_charset.clone());
                         }

@@ -425,7 +425,8 @@ export function installMockHost() {
       case "files/list": {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         assertOk(str("path"));
-        return { entries: children(treeFor(p.connectionId), str("path")) };
+        // mock 不做封顶截断；truncated 与真实 sidecar 响应同形（缺省 false）。
+        return { entries: children(treeFor(p.connectionId), str("path")), truncated: false };
       }
       case "files/listPaged": {
         await new Promise((resolve) => setTimeout(resolve, delayMs));

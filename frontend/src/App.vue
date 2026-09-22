@@ -171,6 +171,8 @@ watch(locale, (next) => (document.documentElement.lang = next || "zh-CN"), { imm
 // ---- 源栏（左栏）-----------------------------------------------------------
 const path = ref("/");
 const entries = ref<FileEntry[]>([]);
+// issue #49：本次列表是否被后端封顶截断（footer 显示 N+，导航时提示）。
+const entriesTruncated = ref(false);
 const selection = ref<string[]>([]);
 const activePath = ref("");
 const sort = ref<SortState>(prefs.sort);
@@ -205,6 +207,7 @@ const leftSideCollapsed = ref(prefs.leftSideCollapsed);
 const rightSideCollapsed = ref(prefs.rightSideCollapsed);
 const rightPath = ref("/");
 const rightEntries = ref<FileEntry[]>([]);
+const rightEntriesTruncated = ref(false);
 const rightSelection = ref<string[]>([]);
 const rightActivePath = ref("");
 const rightLoading = ref(false);
@@ -249,7 +252,7 @@ async function expandTreeNode(side: PaneSide, node: DirTreeNode) {
     try {
       const list = await fetchListing(node.path, sideConnectionId(side));
       if (tree !== (side === "left" ? leftTree.value : rightTree.value)) return;
-      applyTreeChildren(tree, node.path, list);
+      applyTreeChildren(tree, node.path, list.entries);
     } catch (cause) {
       if (tree === (side === "left" ? leftTree.value : rightTree.value)) showError(cause);
     } finally {
@@ -1124,7 +1127,7 @@ function releaseFrames(channel: string) {
 
 // ---- directory -----------------------------------------------------------
 
-async function fetchListing(target: string, explicitConnectionId?: string) {
+async function fetchListing(target: string, explicitConnectionId?: string): Promise<{ entries: FileEntry[]; truncated: boolean }> {
   const version = hostContextVersion;
   const params: Record<string, unknown> = { path: target };
   if (explicitConnectionId) params.connectionId = explicitConnectionId;
@@ -1134,13 +1137,18 @@ async function fetchListing(target: string, explicitConnectionId?: string) {
   const hitsHost = explicitConnectionId !== LOCAL_CONNECTION_ID;
   if (hitsHost) connState.value = "connecting";
   try {
-    const result = await call<{ entries: FileEntry[]; displayCharset?: string }>("files/list", params);
+    // truncated（issue #49）：rclone rc 无服务端分页，后端对非递归浏览在
+    // 排序后封顶截断并显式标记；mock/旧宿主缺省视为未截断。
+    const result = await call<{ entries: FileEntry[]; displayCharset?: string; truncated?: boolean }>("files/list", params);
     if (hitsHost && version === hostContextVersion) connState.value = "connected";
     // FTP 显示解码（issue #32）：仅附加 displayName 供渲染；name/path 保持
     // 原始转义形式，所有操作语义不变。
     const charset = result.displayCharset ?? "";
     if (charset) displayCharsetByConnection.set(explicitConnectionId ?? connectionId.value, charset);
-    return normalizeEntries(result.entries ?? []).map((entry) => withDisplayName(entry, charset));
+    return {
+      entries: normalizeEntries(result.entries ?? []).map((entry) => withDisplayName(entry, charset)),
+      truncated: result.truncated ?? false,
+    };
   } catch (cause) {
     // P2-3：pill 与单次业务失败解耦——仅网络/传输层失败置「已断开」；业务错误
     // （NotFound、权限、参数类）说明 sidecar 应答了连接，置「已连接」而非断开，
@@ -1156,10 +1164,11 @@ async function loadDirectory(target?: string) {
   loading.value = true;
   listingFailed.value = false;
   try {
-    const list = await fetchListing(next, sideConnectionId("left"));
+    const { entries: list, truncated } = await fetchListing(next, sideConnectionId("left"));
     // 晚到的过期响应：直接丢弃，面包屑/列表/选中态保持最新导航的结果。
     if (!leftNav.isCurrent(token)) return;
     entries.value = list;
+    entriesTruncated.value = truncated;
     path.value = next;
     selection.value = [];
     activePath.value = "";
@@ -1167,13 +1176,16 @@ async function loadDirectory(target?: string) {
     // 大目录提示（第 3 轮）：浏览仍走全量 files/list（排序/过滤/全选语义
     // 不回归），仅当条目数达阈值时提示用户列表已虚拟滚动（largeDir.ts 记录
     // 了不切 listPaged 的 bench 依据）。
-    if (isLargeDirectory(entries.value.length)) showNotice(t("largeDirectory", { count: entries.value.length }));
+    // 截断（issue #49）优先于大目录提示：后端已封顶，提示语义是「仅前 N 项」。
+    if (truncated) showNotice(t("directoryTruncated", { count: list.length }));
+    else if (isLargeDirectory(entries.value.length)) showNotice(t("largeDirectory", { count: entries.value.length }));
     // 导航完成后的快照型 report（含 intent search 触发的导航）。
     reportPaneSnapshot("left");
   } catch (cause) {
     // 过期请求的失败同样不打扰新目录（横幅不闪旧导航的错误）。
     if (!leftNav.isCurrent(token)) return;
     listingFailed.value = true;
+    entriesTruncated.value = false;
     selection.value = [];
     activePath.value = "";
     showError(cause, "left");
@@ -1190,17 +1202,20 @@ async function loadRightDirectory(target?: string) {
   rightLoading.value = true;
   rightListingFailed.value = false;
   try {
-    const list = await fetchListing(next, targetConnectionId.value || undefined);
+    const { entries: list, truncated } = await fetchListing(next, targetConnectionId.value || undefined);
     if (!rightNav.isCurrent(token)) return;
     rightEntries.value = list;
+    rightEntriesTruncated.value = truncated;
     rightPath.value = next;
     rightSelection.value = [];
     rightActivePath.value = "";
-    if (isLargeDirectory(rightEntries.value.length)) showNotice(t("largeDirectory", { count: rightEntries.value.length }));
+    if (truncated) showNotice(t("directoryTruncated", { count: list.length }));
+    else if (isLargeDirectory(rightEntries.value.length)) showNotice(t("largeDirectory", { count: rightEntries.value.length }));
     reportPaneSnapshot("right");
   } catch (cause) {
     if (!rightNav.isCurrent(token)) return;
     rightListingFailed.value = true;
+    rightEntriesTruncated.value = false;
     rightSelection.value = [];
     rightActivePath.value = "";
     showError(cause, "right");
@@ -1995,7 +2010,7 @@ async function transferBetween(from: PaneSide, move: boolean, dragged?: FileEntr
 async function findTargetConflicts(to: PaneSide, destPath: string, list: FileEntry[]): Promise<FileEntry[]> {
   try {
     const existing = await fetchListing(destPath, sideConnectionId(to));
-    const names = new Set(existing.map((entry) => entry.name));
+    const names = new Set(existing.entries.map((entry) => entry.name));
     return list.filter((item) => names.has(item.name));
   } catch {
     return [];
@@ -3754,6 +3769,7 @@ onBeforeUnmount(() => {
               :sort="sort"
               :loading="loading"
               :failed="listingFailed"
+              :truncated="entriesTruncated"
               :can-write="canWrite && !confirmOpen && !previewPath"
               :filtered="Boolean(searchQuery.trim())"
               :t="t"
@@ -3849,6 +3865,7 @@ onBeforeUnmount(() => {
               :sort="rightSort"
               :loading="rightLoading"
               :failed="rightListingFailed"
+              :truncated="rightEntriesTruncated"
               :can-write="canWrite && !confirmOpen && !previewPath"
               :filtered="Boolean(rightSearchQuery.trim())"
               :t="t"
