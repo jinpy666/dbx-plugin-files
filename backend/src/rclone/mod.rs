@@ -766,6 +766,51 @@ pub fn call_fs(binding: &registry::RemoteBinding) -> String {
     }
 }
 
+/// rclone 的 bucket 根型后端（首个路径段 = bucket/容器）。这类连接的
+/// binding.root 为空时以「根 = bucket 列表」浏览：rclone 把目标路径的
+/// 首段解析为 bucket，因此根级文件目标（无目录段的文件名）会折叠成空
+/// object key —— S3 家族 SDK 在序列化时直接报
+/// "input member Key must not be empty"（rc 500）。判定键是 rclone
+/// backend type（`registry::binding_for` 已把 s3 家族协议归一成 "s3"、
+/// azblob 归一成 "azureblob"，rclone-custom 透传 service）。
+pub fn is_bucket_rooted(backend_type: &str) -> bool {
+    matches!(
+        backend_type,
+        "s3"
+            | "b2"
+            | "gcs"
+            | "azureblob"
+            | "qingstor"
+            | "swift"
+            | "storj"
+            | "tardigrade"
+            | "internetarchive"
+            | "seafile"
+    )
+}
+
+/// 写侧守卫：bucket 根型连接（root 为空）上，文件目标必须带目录段
+/// （首段 = bucket）。在写入前给出可操作的错误，而不是让 rc 500 的空键
+/// 报错透传给用户。目录级操作（mkdir/列根）不受此限。
+pub fn ensure_nested_file_target(
+    binding: &registry::RemoteBinding,
+    remote: &str,
+) -> Result<(), String> {
+    let target = remote.trim().trim_matches('/');
+    if binding.root.is_empty()
+        && is_bucket_rooted(&binding.backend_type)
+        && !target.is_empty()
+        && !target.contains('/')
+    {
+        return Err(format!(
+            "Cannot write '{remote}' at the connection root: this connection browses \
+             buckets directly, so files must be written inside a bucket \
+             (for example '/bucket/{target}')"
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod wiring_tests {
     use super::*;
@@ -828,6 +873,41 @@ mod wiring_tests {
         );
         // Local bindings already carry the root as the fs string.
         assert_eq!(call_fs(&binding("local", "/tmp/data", "/tmp/data")), "/tmp/data");
+    }
+
+    /// bucket 根型判定覆盖 s3 家族归一后的 rclone backend type；路径根型
+    /// （ftp/sftp/webdav/local）与包装型不得命中。
+    #[test]
+    fn is_bucket_rooted_matches_container_backends_only() {
+        for backend in ["s3", "b2", "gcs", "azureblob", "qingstor", "swift", "storj", "tardigrade", "internetarchive", "seafile"] {
+            assert!(is_bucket_rooted(backend), "{backend} must be bucket-rooted");
+        }
+        for backend in ["ftp", "sftp", "smb", "webdav", "local", "gdrive", "dropbox", "koofr", "chunker", "alias"] {
+            assert!(!is_bucket_rooted(backend), "{backend} must not be bucket-rooted");
+        }
+    }
+
+    /// 根级文件目标只在「bucket 根型 + root 为空」组合下拒绝：绑定过
+    /// bucket/root 的连接、路径根型协议、以及带目录段的目标都放行。
+    #[test]
+    fn ensure_nested_file_target_guards_only_rootless_bucket_bindings() {
+        let rootless_s3 = binding("s3", "dbxAb12:", "");
+        // 根级文件 → 拒绝，错误里带目标名与示例。
+        let error = ensure_nested_file_target(&rootless_s3, "archive.tar.gz").unwrap_err();
+        assert!(error.contains("archive.tar.gz"), "{error}");
+        assert!(error.contains("'/bucket/archive.tar.gz'"), "{error}");
+        // 带目录段（首段即 bucket）→ 放行。
+        assert!(ensure_nested_file_target(&rootless_s3, "/bucket/archive.tar.gz").is_ok());
+        assert!(ensure_nested_file_target(&rootless_s3, "bucket/file.txt").is_ok());
+        // 目录级目标（根/尾斜杠）不是文件写入 → 放行。
+        assert!(ensure_nested_file_target(&rootless_s3, "").is_ok());
+        assert!(ensure_nested_file_target(&rootless_s3, "/").is_ok());
+        // root 非空（绑定了 bucket 前缀）→ 放行：bucket.Join 后 key 非空。
+        let rooted_s3 = binding("s3", "dbxAb12:", "mybucket");
+        assert!(ensure_nested_file_target(&rooted_s3, "archive.tar.gz").is_ok());
+        // 路径根型协议（ftp/sftp/…）根级文件合法 → 放行。
+        let rootless_ftp = binding("ftp", "dbxAb12:", "");
+        assert!(ensure_nested_file_target(&rootless_ftp, "file.txt").is_ok());
     }
 
     /// The built-in `__local__` id resolves without registration (rooted fs

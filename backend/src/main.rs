@@ -391,6 +391,7 @@ impl Plugin {
                             model::MAX_INLINE_WRITE_BYTES
                         ));
                     }
+                    rclone::ensure_nested_file_target(&binding, &remote)?;
                     rclone::ops::write_bytes(
                         &client,
                         &rclone::call_fs(&binding),
@@ -602,6 +603,10 @@ impl Plugin {
                         // Directory rename carries no filters (rename
                         // cannot be a filtered operation anyway).
                         metadata: Some(false),
+                        // 策略旗标同样不适用：rename 不是策略性同步。
+                        update: None,
+                        existing: None,
+                        immutable: None,
                         min_size: None,
                         max_size: None,
                         min_age: None,
@@ -686,6 +691,19 @@ impl Plugin {
                 // Extract writes the target tree but never deletes the source
                 // archive → read_only gate applies, allow_delete does not.
                 ensure_binding_writable(&binding)?;
+                // 解压目标为连接根（"/"）时，归档根级条目会写成一堆根级文件，
+                // 在 bucket 根型连接上必然失败 → 提前拒绝。目标带目录段时
+                // 条目全部落在该目录下，不受影响。
+                if binding.root.is_empty()
+                    && rclone::is_bucket_rooted(&binding.backend_type)
+                    && request.target_path.trim().trim_matches('/').is_empty()
+                {
+                    return Err(
+                        "Cannot extract into the connection root: this connection browses \
+                         buckets directly, so archives must be extracted inside a bucket"
+                            .to_string(),
+                    );
+                }
                 let client = self.rclone.client_for_binding(&binding).await?;
                 rclone::archive::extract(
                     &client,
@@ -734,6 +752,9 @@ impl Plugin {
                     &request.target_path,
                     crate::policy::PathPolicy::check_write,
                 )?;
+                // bucket 根型连接（root 为空）上根级归档无法落盘（rclone 会把
+                // 首段当 bucket、key 折叠为空），提前给出可操作的错误。
+                rclone::ensure_nested_file_target(&binding, &target_rel)?;
                 if !target_rel.trim_matches('/').is_empty() {
                     let stat = client
                         .operations_stat(&fs, target_rel.trim_matches('/'))
@@ -781,6 +802,9 @@ impl Plugin {
                     &request.remote_path,
                     crate::policy::PathPolicy::check_write,
                 )?;
+                // 上传通道的 staging 落盘同样走「首段 = bucket」的解析，根级
+                // 目标在 bucket 根型连接上必然失败，收帧前就拒绝。
+                rclone::ensure_nested_file_target(&binding, &remote)?;
                 // taskId is a uuid v4; the staging sink carries the same id.
                 let task_id = uuid::Uuid::new_v4().to_string();
                 let staging =
@@ -1249,6 +1273,9 @@ impl Plugin {
                     &sum_path,
                     crate::policy::PathPolicy::check_write,
                 )?;
+                // SUM 文件写在被校验文件旁：文件在根级时 sum 落根，bucket 根型
+                // 连接同样无法落盘，提前拒绝。
+                rclone::ensure_nested_file_target(&binding, &sum_remote)?;
                 let mut content = lines.join("\n");
                 content.push('\n');
                 rclone::ops::write_bytes(&client, &fs, &sum_remote, content.as_bytes()).await?;
@@ -1421,6 +1448,7 @@ impl Plugin {
                     &target_wire,
                     crate::policy::PathPolicy::check_write,
                 )?;
+                rclone::ensure_nested_file_target(&binding, &target_remote)?;
                 client
                     .operations_copyurl(&fs, &target_remote, &request.url, false)
                     .await
@@ -2946,6 +2974,9 @@ async fn rclone_start_dir_job(
             backup_dir_rel: request.backup_dir.clone(),
             suffix: request.suffix.clone(),
             metadata: request.metadata.unwrap_or(false),
+            update: request.update.unwrap_or(false),
+            existing: request.existing.unwrap_or(false),
+            immutable: request.immutable.unwrap_or(false),
             min_size: request.min_size.clone(),
             max_size: request.max_size.clone(),
             min_age: request.min_age.clone(),
@@ -3224,6 +3255,10 @@ async fn rclone_start_check_job(
             // would accept them (live-verified v1.75.1) but a filtered
             // comparison quietly narrows the difference report.
             metadata: false,
+            // 策略旗标（--update/--existing/--immutable）同理不进 check。
+            update: false,
+            existing: false,
+            immutable: false,
             min_size: None,
             max_size: None,
             min_age: None,
@@ -3478,6 +3513,9 @@ async fn rclone_start_bisync_job(
             // Bisync never carries the size/age/metadata filters (see the
             // check construction above); resync included.
             metadata: false,
+            update: false,
+            existing: false,
+            immutable: false,
             min_size: None,
             max_size: None,
             min_age: None,

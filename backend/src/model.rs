@@ -699,6 +699,18 @@ pub struct DirJobRequest {
     /// 时间戳、扩展属性等，后端支持程度各异）；缺省 false 不带元数据。
     #[serde(default)]
     pub metadata: Option<bool>,
+    /// rclone `--update` 对齐：true 时跳过目标上同尺寸同修改时间的文件
+    /// （只追加/更新较新者）；缺省 false 按 rclone 默认的大小+哈希比对。
+    #[serde(default)]
+    pub update: Option<bool>,
+    /// rclone `--existing` 对齐：true 时只传输目标端已存在的文件（不在
+    /// 目标端新增文件）；缺省 false 不过滤。
+    #[serde(default)]
+    pub existing: Option<bool>,
+    /// rclone `--immutable` 对齐：true 时目标端已存在的文件视为不可变，
+    /// 跳过且不校验（不覆盖、不比对）；缺省 false 正常覆盖。
+    #[serde(default)]
+    pub immutable: Option<bool>,
     /// rclone `--min-size` 对齐：小于该大小的文件被过滤（如 `"100k"`）；
     /// 缺省不过滤。非法值由 rclone rc 直接拒绝（HTTP 500，作业不启动）。
     #[serde(default)]

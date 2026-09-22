@@ -153,6 +153,12 @@ pub(crate) fn parse_rclone_sync_request(arguments: &Value) -> Result<RcloneSyncR
             // Batch-6 filters stay MCP-unexposed for now (same as
             // include/exclude/backup_dir): the workbench dialog owns them.
             metadata: Some(false),
+            // 策略旗标（--update/--existing/--immutable）同样仅工作台弹窗
+            // 暴露：MCP 侧保持缺省关闭（作业启动共用 rclone_start_dir_job，
+            // 后续如需透传在 missing/bool_arg 解析处对齐即可）。
+            update: None,
+            existing: None,
+            immutable: None,
             min_size: None,
             max_size: None,
             min_age: None,

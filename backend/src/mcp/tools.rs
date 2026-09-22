@@ -552,6 +552,7 @@ impl Mcp {
         )
         .check_write(&path)
         .map(|resolved| resolved.relative)?;
+        crate::rclone::ensure_nested_file_target(&binding, &remote)?;
         crate::rclone::ops::write_bytes(
             &client,
             &crate::rclone::call_fs(&binding),
