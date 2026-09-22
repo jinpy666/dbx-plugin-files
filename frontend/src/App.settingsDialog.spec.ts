@@ -88,14 +88,15 @@ describe("standalone settings dialog", () => {
   it("keeps settings out of the dock tabs", async () => {
     mountWorkbench();
     await settle();
-    // 打开 dock（默认 transfers）：页签只有 transfers/audit/connection 三项，
-    // toolbar 的 dockTab 类型亦不再含 settings。
+    // 打开 dock（默认 transfers）：页签为 transfers/stats/audit/connection 四项
+    // （stats 为新增统计页签），settings 仍只在独立弹窗。
     wrapper!.getComponent(FileToolbar).vm.$emit("toggle-dock", "transfers");
     await settle();
     const tabs = wrapper!.get(".wb-dock-tabs").findAll('[role="tab"]');
-    expect(tabs).toHaveLength(3);
+    expect(tabs).toHaveLength(4);
     expect(tabs.map((tab) => tab.text())).toEqual([
       workbenchMessage("en", "transferPanel"),
+      workbenchMessage("en", "statsPanel"),
       workbenchMessage("en", "auditPanel"),
       workbenchMessage("en", "connectionPanel"),
     ]);
