@@ -1,3 +1,10 @@
+<script lang="ts">
+// Markdown 渲染/源码切换的会话级记忆：script-setup 顶层是实例作用域，
+// 会话记忆须挂模块作用域（同会话多次打开预览沿用上次选择，不持久化）。
+export type MarkdownView = "render" | "source";
+let sessionMarkdownView: MarkdownView = "render";
+</script>
+
 <script setup lang="ts">
 // 预览两套方案：文本/代码走 CodeMirror，图片走原生元素，归档走 files/archiveList，
 // 未知扩展走 text/hex 启发式；Office/PDF/媒体/表格/演示文稿/OFD/XMind/notebook 与
@@ -9,6 +16,7 @@ import { baseName, call, errorMessage, formatBytes, isMethodMissing } from "../l
 import { canEditBytes, hexDump, PREVIEW_MAX_BYTES, READ_MAX_BYTES, WRITE_MAX_BYTES } from "../lib/preview";
 import { resolvePreview, type PreviewResolution } from "../lib/previewResolver";
 import FileViewerPreview from "./FileViewerPreview.vue";
+import MarkdownRender from "./MarkdownRender.vue";
 import TextPreview from "./TextPreview.vue";
 
 const props = defineProps<{
@@ -50,6 +58,28 @@ const dataUri = ref("");
 const hex = ref("");
 const sourceFile = ref<File | null>(null);
 const resolution = ref<PreviewResolution | null>(null);
+
+// Markdown 渲染视图：md 文件默认渲染面，头部「渲染/源码」分段切换。
+// 选择存会话级记忆（不持久化），新开文件沿用上次选择；解析异常回退源码。
+const mdView = ref<MarkdownView>(sessionMarkdownView);
+const isMarkdown = computed(() => resolution.value?.mime === "text/markdown");
+const showMdToggle = computed(() => Boolean(
+  isMarkdown.value
+  && mode.value === "text"
+  && !editing.value
+  && !loading.value
+  && !error.value,
+));
+function setMarkdownView(view: MarkdownView) {
+  mdView.value = view;
+  sessionMarkdownView = view;
+}
+// i18n key（mdRenderView/mdSourceView）由主协调者七语补录；workbenchMessage
+// 缺 key 时返回 key 本身，据此回退到组件内置兜底文案，key 入库后自动生效。
+function mdLabel(key: string, fallback: string): string {
+  const value = t(key);
+  return value === key ? fallback : value;
+}
 
 const t = (key: string, values?: Record<string, string | number>) => props.t(key, values);
 const title = computed(() => (props.path ? baseName(props.path) : ""));
@@ -108,6 +138,7 @@ async function load() {
   hex.value = "";
   sourceFile.value = null;
   resolution.value = resolvePreview(props.path);
+  mdView.value = sessionMarkdownView;
   text.value = "";
   draft.value = "";
   size.value = 0;
@@ -426,6 +457,25 @@ const canOpenExternal = computed(() =>
     <div class="wb-preview-header">
       <strong :title="path">{{ title }}</strong>
       <span class="wb-muted">{{ loading || mode === "image" || mode === "archive" || mode === "viewer" ? "" : formatBytes(size) }}</span>
+      <!-- Markdown 渲染/源码切换（仅 md 文本态出现；i18n key 七语补录前用兜底文案）。 -->
+      <span v-if="showMdToggle" class="wb-md-toggle" data-test="md-toggle">
+        <button
+          class="wb-toolbar-button"
+          :class="{ 'wb-md-toggle-active': mdView === 'render' }"
+          data-test="md-render"
+          :title="`${mdLabel('mdRenderView', '渲染')} / Rendered view`"
+          :aria-pressed="mdView === 'render'"
+          @click="setMarkdownView('render')"
+        >{{ mdLabel("mdRenderView", "渲染") }}</button>
+        <button
+          class="wb-toolbar-button"
+          :class="{ 'wb-md-toggle-active': mdView === 'source' }"
+          data-test="md-source"
+          :title="`${mdLabel('mdSourceView', '源码')} / Markdown source`"
+          :aria-pressed="mdView === 'source'"
+          @click="setMarkdownView('source')"
+        >{{ mdLabel("mdSourceView", "源码") }}</button>
+      </span>
       <button v-if="canEdit && !saving" class="wb-icon-button wb-icon-neutral" v-tip="t('edit')" @click="startEdit"><Pencil /></button>
       <button class="wb-icon-button wb-icon-neutral" v-tip="t('download')" @click="emit('download', path)"><Download /></button>
       <button v-if="allowMinimize" class="wb-icon-button wb-icon-neutral" v-tip="t('minimizePreview')" :aria-label="t('minimizePreview')" @click="emit('minimize')"><Minus /></button>
@@ -470,6 +520,13 @@ const canOpenExternal = computed(() =>
         </div>
       </div>
       <img v-else-if="mode === 'image'" :src="dataUri" :alt="title" />
+      <!-- Markdown 渲染视图：白名单子集 + 全量 HTML 转义（MarkdownRender.vue）；
+           解析异常经 render-error 回退源码（编辑态恒走 CodeMirror）。 -->
+      <MarkdownRender
+        v-else-if="mode === 'text' && showMdToggle && mdView === 'render'"
+        :text="text"
+        @render-error="setMarkdownView('source')"
+      />
       <!-- 文本预览/编辑：CodeMirror（与 ssh sftp 面板同方案）；key 保证
            进入/退出编辑都从 props.text 全新装载，取消编辑即回滚草稿。 -->
       <TextPreview

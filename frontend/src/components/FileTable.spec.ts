@@ -1,8 +1,10 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it } from "vitest";
+import { nextTick } from "vue";
 import { mount } from "@vue/test-utils";
 import FileTable from "./FileTable.vue";
 import type { FileEntry } from "../lib/api";
+import { loadUiPrefs, UI_PREFS_KEY } from "../lib/prefs";
 
 const entries: FileEntry[] = [
   { name: "a.txt", path: "/a.txt", kind: "file", size: 1 },
@@ -301,6 +303,175 @@ describe("FileTable 媒体图标着色与空态（对标 rclone-dashboard）", (
     expect(wrapper.get(".wb-file-empty").text()).toBe("emptyDirectory");
     await wrapper.setProps({ filtered: true });
     expect(wrapper.get(".wb-file-empty").text()).toBe("noMatchResults");
+    wrapper.unmount();
+  });
+});
+
+// —— 列自定义（对标 WinSCP/Finder）：列宽拖拽 + 列显隐，持久化到 dbx-files.ui ——
+function pointerEvent(type: string, clientX: number): Event {
+  // happy-dom 无需真 PointerEvent：处理器只读 clientX/button/currentTarget。
+  return new MouseEvent(type, { bubbles: true, cancelable: true, clientX });
+}
+
+function storedColumns(): Record<string, unknown> | undefined {
+  const raw = window.localStorage.getItem(UI_PREFS_KEY);
+  return raw ? (JSON.parse(raw).columns as Record<string, unknown>) : undefined;
+}
+
+function dragGrip(wrapper: ReturnType<typeof mountTable>, column: string, fromX: number, toX: number) {
+  const grip = wrapper.get(`[data-test="resize-${column}"]`).element;
+  grip.dispatchEvent(pointerEvent("pointerdown", fromX));
+  grip.dispatchEvent(pointerEvent("pointermove", toX));
+  grip.dispatchEvent(pointerEvent("pointerup", toX));
+}
+
+describe("FileTable 列宽拖拽（对标 WinSCP）", () => {
+  it("拖拽调宽后写入 prefs，且表头与行单元格同步换宽", async () => {
+    const wrapper = mountTable();
+    dragGrip(wrapper, "name", 100, 160);
+    const stored = storedColumns();
+    expect(stored?.nameWidth).toBe(300); // 默认 240 + 60
+    await nextTick(); // Vue 批量渲染：落盘后等待 DOM 应用新宽度
+    expect(wrapper.get('[role="columnheader"]').attributes("style")).toContain("width: 300px");
+    expect(wrapper.get(".wb-file-name").attributes("style")).toContain("width: 300px");
+    wrapper.unmount();
+  });
+
+  it("低于列最小宽度时按最小值钳制（名称 120）", () => {
+    const wrapper = mountTable();
+    dragGrip(wrapper, "name", 100, -600);
+    expect(storedColumns()?.nameWidth).toBe(120);
+    wrapper.unmount();
+  });
+
+  it("松手才落盘：拖拽中不写 storage", () => {
+    const wrapper = mountTable();
+    const grip = wrapper.get('[data-test="resize-size"]').element;
+    grip.dispatchEvent(pointerEvent("pointerdown", 100));
+    grip.dispatchEvent(pointerEvent("pointermove", 150));
+    expect(storedColumns()).toBeUndefined();
+    grip.dispatchEvent(pointerEvent("pointerup", 150));
+    expect(storedColumns()?.sizeWidth).toBe(140); // 默认 90 + 50
+    wrapper.unmount();
+  });
+
+  it("落盘为读-改-写：保留存储内其他键（sort 等）", () => {
+    window.localStorage.setItem(
+      UI_PREFS_KEY,
+      JSON.stringify({ sort: { column: "size", direction: "desc" }, auditActionFilter: "delete" }),
+    );
+    const wrapper = mountTable();
+    dragGrip(wrapper, "size", 100, 150);
+    const raw = JSON.parse(window.localStorage.getItem(UI_PREFS_KEY)!);
+    expect(raw.sort).toEqual({ column: "size", direction: "desc" });
+    expect(raw.auditActionFilter).toBe("delete");
+    expect(raw.columns.sizeWidth).toBe(140);
+    wrapper.unmount();
+  });
+
+  it("点击未拖动不落盘", () => {
+    const wrapper = mountTable();
+    const grip = wrapper.get('[data-test="resize-modified"]').element;
+    grip.dispatchEvent(pointerEvent("pointerdown", 100));
+    grip.dispatchEvent(pointerEvent("pointerup", 100));
+    expect(storedColumns()).toBeUndefined();
+    wrapper.unmount();
+  });
+});
+
+describe("FileTable 列显隐（表头右键菜单）", () => {
+  async function openMenu(wrapper: ReturnType<typeof mountTable>) {
+    await wrapper.get(".wb-file-header").trigger("contextmenu", { clientX: 24, clientY: 12 });
+    return wrapper.findAll('[data-test="column-menu-item"]');
+  }
+
+  it("表头右键弹出列菜单：名称列锁定常显，其余列可复选", async () => {
+    const wrapper = mountTable();
+    const items = await openMenu(wrapper);
+    expect(items.length).toBe(3);
+    expect(items[0].text()).toBe("colName");
+    expect(items[0].attributes("aria-checked")).toBe("true");
+    expect(items[0].attributes("disabled")).toBeDefined();
+    expect(items[1].attributes("aria-checked")).toBe("true");
+    expect(items[1].attributes("disabled")).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it("表头右键不再触发 blank-context；列表空白区右键仍触发", async () => {
+    const wrapper = mountTable();
+    await wrapper.get(".wb-file-header").trigger("contextmenu", { clientX: 24, clientY: 12 });
+    expect(wrapper.find('[data-test="column-menu"]').exists()).toBe(true);
+    expect(wrapper.emitted("blank-context")).toBeUndefined();
+    await wrapper.get(".wb-file-scroll").trigger("contextmenu", { clientX: 24, clientY: 60 });
+    expect(wrapper.emitted("blank-context")).toEqual([[{ x: 24, y: 60 }]]);
+    wrapper.unmount();
+  });
+
+  it("隐藏大小列：表头与行单元格同步移除并持久化", async () => {
+    const wrapper = mountTable();
+    const items = await openMenu(wrapper);
+    await items[1].trigger("click"); // colSize
+    expect(wrapper.findAll('[role="columnheader"]').length).toBe(2);
+    expect(wrapper.findAll(".wb-file-row .wb-numeric").length).toBe(0);
+    expect(storedColumns()?.hidden).toEqual(["size"]);
+    wrapper.unmount();
+  });
+
+  it("刷新页面后保持（重新挂载读同一 storage）", async () => {
+    const first = mountTable();
+    const items = await openMenu(first);
+    await items[2].trigger("click"); // colModified
+    first.unmount();
+
+    const second = mountTable();
+    expect(second.findAll('[role="columnheader"]').length).toBe(2);
+    expect(second.findAll(".wb-file-row .wb-muted").length).toBe(0);
+    second.unmount();
+  });
+
+  it("再次点击恢复显示并清除持久化隐藏项", async () => {
+    const wrapper = mountTable();
+    let items = await openMenu(wrapper);
+    await items[1].trigger("click");
+    expect(wrapper.findAll('[role="columnheader"]').length).toBe(2);
+    items = await openMenu(wrapper);
+    expect(items[1].attributes("aria-checked")).toBe("false");
+    await items[1].trigger("click");
+    expect(wrapper.findAll('[role="columnheader"]').length).toBe(3);
+    expect(wrapper.findAll(".wb-file-row .wb-numeric").length).toBe(3);
+    expect(storedColumns()?.hidden).toEqual([]);
+    wrapper.unmount();
+  });
+
+  it("名称列点击无效（不可隐藏）", async () => {
+    const wrapper = mountTable();
+    const items = await openMenu(wrapper);
+    await items[0].trigger("click");
+    expect(wrapper.findAll('[role="columnheader"]').length).toBe(3);
+    expect(storedColumns() ?? {}).toEqual({});
+    wrapper.unmount();
+  });
+
+  it("双栏实例共享全局列配置：一侧隐藏，另一侧即时同步", async () => {
+    const left = mountTable();
+    const right = mountTable();
+    const items = await openMenu(left);
+    await items[1].trigger("click");
+    await nextTick();
+    expect(right.findAll('[role="columnheader"]').length).toBe(2);
+    left.unmount();
+    right.unmount();
+  });
+
+  it("隐藏列后排序点击与 aria-sort 仅作用于可见列且不回归", async () => {
+    const wrapper = mountTable();
+    const items = await openMenu(wrapper);
+    await items[1].trigger("click");
+    const headers = wrapper.findAll('[role="columnheader"]');
+    expect(headers.length).toBe(2);
+    expect(headers[0].attributes("aria-sort")).toBe("ascending"); // 名称列仍是排序列
+    await wrapper.get('button[type="button"]').trigger("click"); // 名称列排序按钮
+    expect(wrapper.emitted("sort")).toEqual([["name"]]);
     wrapper.unmount();
   });
 });

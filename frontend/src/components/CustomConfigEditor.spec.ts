@@ -56,7 +56,7 @@ describe("CustomConfigEditor", () => {
     const wrapper = mountEditor();
     await chooseService(wrapper, "b2");
     await wrapper.find("textarea").setValue('{ "account": "a", "key": "k" }');
-    await wrapper.find(".wb-toolbar-button").trigger("click");
+    await wrapper.find(".wb-action-button").trigger("click");
     await flushPromises();
     expect(call).toHaveBeenCalledTimes(1);
     const [method, params] = call.mock.calls[0];
@@ -86,7 +86,7 @@ describe("CustomConfigEditor", () => {
   it("rejects non-object JSON before calling the lifecycle", async () => {
     const wrapper = mountEditor();
     await wrapper.find("textarea").setValue("[1, 2]");
-    await wrapper.find(".wb-toolbar-button").trigger("click");
+    await wrapper.find(".wb-action-button").trigger("click");
     expect(call).not.toHaveBeenCalled();
     const error = wrapper.emitted("error")?.at(-1)?.[0];
     expect(error).toMatchObject({ key: "customConfigInvalid" });
@@ -96,29 +96,29 @@ describe("CustomConfigEditor", () => {
     call.mockRejectedValueOnce(new Error("boom"));
     const wrapper = mountEditor();
     await chooseService(wrapper, "b2");
-    await wrapper.find(".wb-toolbar-button").trigger("click");
+    await wrapper.find(".wb-action-button").trigger("click");
     await flushPromises();
     expect(wrapper.text()).toContain("customConfigTestFailed");
     expect(wrapper.emitted("error")?.at(-1)?.[0]).toMatchObject({ key: "customConfigTestFailed" });
-    expect(wrapper.find(".wb-toolbar-button").attributes("disabled")).toBeUndefined();
+    expect(wrapper.find(".wb-action-button").attributes("disabled")).toBeUndefined();
   });
 
   it("disables the test button while a test is in flight", async () => {
     let release!: (value: Record<string, unknown>) => void;
     call.mockReturnValueOnce(new Promise((resolve) => (release = resolve)));
     const wrapper = mountEditor();
-    await wrapper.find(".wb-toolbar-button").trigger("click");
-    expect(wrapper.find(".wb-toolbar-button").attributes("disabled")).toBeDefined();
+    await wrapper.find(".wb-action-button").trigger("click");
+    expect(wrapper.find(".wb-action-button").attributes("disabled")).toBeDefined();
     release({});
     await flushPromises();
-    expect(wrapper.find(".wb-toolbar-button").attributes("disabled")).toBeUndefined();
+    expect(wrapper.find(".wb-action-button").attributes("disabled")).toBeUndefined();
   });
 
   it("clears the last result when the service changes", async () => {
     call.mockRejectedValueOnce(new Error("boom"));
     const wrapper = mountEditor();
     await chooseService(wrapper, "b2");
-    await wrapper.find(".wb-toolbar-button").trigger("click");
+    await wrapper.find(".wb-action-button").trigger("click");
     await flushPromises();
     expect(wrapper.text()).toContain("customConfigTestFailed");
     await chooseService(wrapper, "mega");
