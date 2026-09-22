@@ -39,6 +39,10 @@ use crate::model::FileEntry;
 
 /// rc 快路径软超时：小目录几乎总能在此完成（单帧交付，享受完整排序）。
 const SOFT_TIMEOUT: Duration = Duration::from_secs(5);
+/// 软超时的冒烟/联调旋钮：本地 fs 的 rc 列举远快于 5s，真机冒烟无法覆盖
+/// 「升级到 lsjson 子进程」的路径——`DBX_FILES_LIST_STREAM_SOFT_TIMEOUT_MS`
+/// 注入小值强制升级。仅接受 >0 的整数，其余值静默回落生产默认。
+const SOFT_TIMEOUT_ENV: &str = "DBX_FILES_LIST_STREAM_SOFT_TIMEOUT_MS";
 /// 流式硬上限 watchdog：超时 SIGKILL 子进程并发失败帧（timeout）。
 const WATCHDOG: Duration = Duration::from_secs(600);
 /// batcher 双条件之二：50ms 先到即成帧（256 条为先到条件之一）。
@@ -220,11 +224,12 @@ fn keep(entry: &FileEntry, prefix: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// batcher（256 条或 50ms 先到即成帧；flush 后即弃）
+// batcher（256 条 / 帧字节预算 / 50ms 三者先到即成帧；flush 后即弃）
 // ---------------------------------------------------------------------------
 
 struct Batcher {
     pending: Vec<FileEntry>,
+    pending_bytes: usize,
     delivered: u64,
 }
 
@@ -232,14 +237,21 @@ impl Batcher {
     fn new() -> Self {
         Self {
             pending: Vec::with_capacity(BATCH_MAX_ENTRIES),
+            pending_bytes: 0,
             delivered: 0,
         }
     }
 
-    /// 满 [`BATCH_MAX_ENTRIES`] 即刻成帧；否则返回 None 留待时间触发。
+    /// 满 [`BATCH_MAX_ENTRIES`] 或单帧字节预算（8MB 桥上限的 1/4，超预算
+    /// 的帧宿主桥直接拒收——issue #49 深层根因）即刻成帧；否则返回 None
+    /// 留待时间触发。
     fn push(&mut self, entry: FileEntry) -> Option<Vec<FileEntry>> {
+        let size = serde_json::to_vec(&entry).map(|v| v.len() + 1).unwrap_or(1);
+        self.pending_bytes += size;
         self.pending.push(entry);
-        if self.pending.len() >= BATCH_MAX_ENTRIES {
+        if self.pending.len() >= BATCH_MAX_ENTRIES
+            || self.pending_bytes >= crate::rclone::ops::LIST_RESPONSE_BUDGET_BYTES
+        {
             self.flush()
         } else {
             None
@@ -251,6 +263,7 @@ impl Batcher {
         if self.pending.is_empty() {
             return None;
         }
+        self.pending_bytes = 0;
         let batch = std::mem::replace(&mut self.pending, Vec::with_capacity(BATCH_MAX_ENTRIES));
         self.delivered += batch.len() as u64;
         Some(batch)
@@ -551,11 +564,24 @@ pub struct StreamOpts {
 impl Default for StreamOpts {
     fn default() -> Self {
         Self {
-            soft_timeout: SOFT_TIMEOUT,
+            soft_timeout: soft_timeout_from_env(),
             watchdog: WATCHDOG,
             flush_interval: FLUSH_INTERVAL,
         }
     }
+}
+
+/// 解析 `DBX_FILES_LIST_STREAM_SOFT_TIMEOUT_MS`：纯函数便于单测（并发测试
+/// 进程里改真实 env 会互相踩）。
+fn parse_soft_timeout_ms(value: Option<&str>) -> Duration {
+    match value.and_then(|text| text.parse::<u64>().ok()).filter(|ms| *ms > 0) {
+        Some(ms) => Duration::from_millis(ms),
+        None => SOFT_TIMEOUT,
+    }
+}
+
+fn soft_timeout_from_env() -> Duration {
+    parse_soft_timeout_ms(std::env::var(SOFT_TIMEOUT_ENV).ok().as_deref())
 }
 
 /// 一次 listStream 会话的全部输入。`slot`/`guard` 随规格 move 进会话任务：
@@ -622,9 +648,21 @@ pub async fn run_session(spec: SessionSpec) {
         // 已取消：宿主主动放弃，不发任何帧。
         None => return,
         Some(Ok(Ok(entries))) => {
-            // 快路径成功 = 单帧 done:true（filter_and_sort 完整排序）。
+            // 快路径成功：filter_and_sort 完整排序后按帧预算切块交付。
+            // 小目录仍是一帧 done（尾帧）；大响应若单帧梭哈会被 8MB 桥
+            // 上限直接拒收（帧静默丢失、前端悬挂）——issue #49 的深层根因。
             let total = entries.len() as u64;
-            sink.emit(chunk_frame(&request_id, 1, entries, true, Some(total)));
+            let mut seq: u64 = 0;
+            let mut batcher = Batcher::new();
+            for entry in entries {
+                if let Some(batch) = batcher.push(entry) {
+                    seq += 1;
+                    sink.emit(chunk_frame(&request_id, seq, batch, false, None));
+                }
+            }
+            seq += 1;
+            let tail = batcher.flush().unwrap_or_default();
+            sink.emit(chunk_frame(&request_id, seq, tail, true, Some(total)));
             return;
         }
         Some(Ok(Err(error))) => {
@@ -1104,6 +1142,29 @@ mod tests {
         assert!(batcher.flush().is_none());
     }
 
+    #[test]
+    fn batcher_flushes_at_frame_byte_budget_before_entry_cap() {
+        // 单条 ~16KB 名称（序列化后 name+path ≈ 32KB）：帧字节预算（8MB 桥
+        // 上限的 1/4）必然先于 256 条触发——超预算的帧宿主桥直接拒收
+        // （issue #49 深层根因）。
+        let long = "n".repeat(16 * 1024);
+        let mut batcher = Batcher::new();
+        let mut pushed = 0usize;
+        let frame = loop {
+            match batcher.push(entry(&format!("{long}-{pushed}"), "file")) {
+                Some(batch) => break batch,
+                None => pushed += 1,
+            }
+            assert!(pushed < 256, "byte budget must fire before the entry cap");
+        };
+        assert!(pushed >= 32, "2MB 预算应容纳 32KB 级条目数十条以上");
+        let serialized = serde_json::to_vec(&frame).unwrap().len();
+        assert!(
+            serialized < crate::rclone::ops::LIST_RESPONSE_BUDGET_BYTES * 2,
+            "成帧体积必须留在桥上限量级内（含信封余量）"
+        );
+    }
+
 
     // -- busy 并发边界 ----------------------------------------------------------
 
@@ -1249,6 +1310,18 @@ mod tests {
             flush_interval: Duration::from_secs(3600),
         }
     }
+
+    #[test]
+    fn soft_timeout_env_knob_parses_strictly() {
+        assert_eq!(parse_soft_timeout_ms(None), SOFT_TIMEOUT);
+        assert_eq!(parse_soft_timeout_ms(Some("")), SOFT_TIMEOUT);
+        assert_eq!(parse_soft_timeout_ms(Some("abc")), SOFT_TIMEOUT);
+        assert_eq!(parse_soft_timeout_ms(Some("0")), SOFT_TIMEOUT, "0 disables the guard rail semantics — rejected");
+        assert_eq!(parse_soft_timeout_ms(Some("-5")), SOFT_TIMEOUT);
+        assert_eq!(parse_soft_timeout_ms(Some("1")), Duration::from_millis(1));
+        assert_eq!(parse_soft_timeout_ms(Some("750")), Duration::from_millis(750));
+    }
+
 
     fn entry_paths(frame: &Value) -> Vec<String> {
         frame["entries"]
