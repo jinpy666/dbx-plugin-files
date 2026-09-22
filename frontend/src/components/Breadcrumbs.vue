@@ -2,11 +2,14 @@
 // 可点击面包屑（A-FILES ④a）：逐级导航 + 中间层级折叠（点击省略号展开）。
 import { computed, ref, watch } from "vue";
 import { collapseCrumbs, parseCrumbs } from "../lib/breadcrumbs";
+import { decodeDisplayName } from "../lib/charset";
 
 const props = defineProps<{
   path: string;
   /** 超过该级数时折叠中间层级。 */
   maxVisible?: number;
+  /** FTP 显示字符集（issue #32）；空 = 不做显示解码。 */
+  displayCharset?: string;
 }>();
 
 const emit = defineEmits<{
@@ -20,7 +23,10 @@ watch(
 );
 
 const items = computed(() => {
-  const crumbs = parseCrumbs(props.path);
+  const charset = props.displayCharset ?? "";
+  const crumbs = parseCrumbs(props.path).map((item) =>
+    "collapsed" in item || !charset ? item : { ...item, name: decodeDisplayName(item.name, charset) },
+  );
   return expanded.value ? crumbs : collapseCrumbs(crumbs, props.maxVisible ?? 4);
 });
 </script>

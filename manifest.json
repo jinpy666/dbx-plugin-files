@@ -1135,6 +1135,42 @@
           "description": "Strict verifies against known host keys; Tolerate accepts new hosts but rejects changed keys; Trust skips verification (insecure)."
         },
         {
+          "key": "display_charset",
+          "label": "Display filename encoding",
+          "type": "select",
+          "binding": "config",
+          "default": "",
+          "options": [
+            {
+              "label": "Auto (UTF-8)",
+              "value": ""
+            },
+            {
+              "label": "GBK / GB2312 (Simplified Chinese)",
+              "value": "gbk"
+            },
+            {
+              "label": "Big5 (Traditional Chinese)",
+              "value": "big5"
+            },
+            {
+              "label": "Shift-JIS (Japanese)",
+              "value": "shift_jis"
+            },
+            {
+              "label": "Windows-1252 / Latin-1",
+              "value": "windows-1252"
+            }
+          ],
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "ftp"
+            ]
+          },
+          "description": "For FTP servers that store names in a non-UTF-8 legacy encoding (e.g. Chinese GBK servers showing garbled names). Auto keeps rclone UTF-8 behavior; display only — file operations keep working."
+        },
+        {
           "key": "root",
           "label": "Root path",
           "type": "text",
@@ -1451,6 +1487,17 @@
               "label": "API 密钥 / 令牌",
               "placeholder": "your-api-key-or-token",
               "description": "API 密钥、令牌或访问授权，由宿主 secret binding 保管：fichier/filelu/pixeldrain/quatrix/shade 的 API 密钥、ulozto 应用令牌、linkbox 令牌、storj 访问授权、filen API 密钥、filefabric 永久令牌。"
+            },
+            "display_charset": {
+              "label": "文件名显示编码",
+              "description": "适用于文件名使用非 UTF-8 旧编码的 FTP 服务器（如中文 GBK 服务器显示乱码）。自动 = UTF-8；仅影响显示，文件操作不受影响。",
+              "options": {
+                "": "自动（UTF-8）",
+                "gbk": "GBK / GB2312（简体中文）",
+                "big5": "Big5（繁体中文）",
+                "shift_jis": "Shift-JIS（日语）",
+                "windows-1252": "Windows-1252 / Latin-1"
+              }
             }
           }
         },
@@ -1713,6 +1760,17 @@
               "label": "API 金鑰 / 權杖",
               "placeholder": "your-api-key-or-token",
               "description": "API 金鑰、權杖或存取授權，由宿主 secret binding 保管：fichier/filelu/pixeldrain/quatrix/shade 的 API 金鑰、ulozto 應用程式權杖、linkbox 權杖、storj 存取授權、filen API 金鑰、filefabric 永久權杖。"
+            },
+            "display_charset": {
+              "label": "檔名顯示編碼",
+              "description": "適用於檔名使用非 UTF-8 舊編碼的 FTP 伺服器（如中文 Big5 伺服器顯示亂碼）。自動 = UTF-8；僅影響顯示，檔案操作不受影響。",
+              "options": {
+                "": "自動（UTF-8）",
+                "gbk": "GBK / GB2312（簡體中文）",
+                "big5": "Big5（繁體中文）",
+                "shift_jis": "Shift-JIS（日文）",
+                "windows-1252": "Windows-1252 / Latin-1"
+              }
             }
           }
         },
@@ -1975,6 +2033,17 @@
               "label": "API key / token",
               "placeholder": "your-api-key-or-token",
               "description": "API key, token, or access grant, kept in the host secret binding: fichier/filelu/pixeldrain/quatrix/shade API key, ulozto app token, linkbox token, storj access grant, filen API key, filefabric permanent token."
+            },
+            "display_charset": {
+              "label": "Display filename encoding",
+              "description": "For FTP servers that store names in a non-UTF-8 legacy encoding (e.g. Chinese GBK servers showing garbled names). Auto keeps UTF-8 behavior; display only — file operations keep working.",
+              "options": {
+                "": "Auto (UTF-8)",
+                "gbk": "GBK / GB2312 (Simplified Chinese)",
+                "big5": "Big5 (Traditional Chinese)",
+                "shift_jis": "Shift-JIS (Japanese)",
+                "windows-1252": "Windows-1252 / Latin-1"
+              }
             }
           }
         },
@@ -2237,6 +2306,17 @@
               "label": "Clave de API / token",
               "placeholder": "your-api-key-or-token",
               "description": "Clave de API, token o access grant, guardado en el binding secreto del host: clave de API de fichier/filelu/pixeldrain/quatrix/shade, token de aplicación de ulozto, token de linkbox, access grant de storj, clave de API de filen, token permanente de filefabric."
+            },
+            "display_charset": {
+              "label": "Codificación de visualización de nombres",
+              "description": "Para servidores FTP que almacenan nombres en una codificación heredada no UTF-8 (p. ej. servidores chinos GBK que muestran caracteres extraños). Automático mantiene UTF-8; solo afecta a la visualización, las operaciones no cambian.",
+              "options": {
+                "": "Automático (UTF-8)",
+                "gbk": "GBK / GB2312 (chino simplificado)",
+                "big5": "Big5 (chino tradicional)",
+                "shift_jis": "Shift-JIS (japonés)",
+                "windows-1252": "Windows-1252 / Latin-1"
+              }
             }
           }
         },
@@ -2499,6 +2579,17 @@
               "label": "Chiave API / token",
               "placeholder": "your-api-key-or-token",
               "description": "Chiave API, token o access grant, conservato nel binding segreto dell'host: chiave API di fichier/filelu/pixeldrain/quatrix/shade, token applicazione di ulozto, token di linkbox, access grant di storj, chiave API di filen, token permanente di filefabric."
+            },
+            "display_charset": {
+              "label": "Codifica di visualizzazione dei nomi",
+              "description": "Per server FTP che memorizzano i nomi in una codifica legacy non UTF-8 (ad es. server cinesi GBK che mostrano caratteri strani). Automatico mantiene UTF-8; influisce solo sulla visualizzazione, le operazioni restano invariate.",
+              "options": {
+                "": "Automatico (UTF-8)",
+                "gbk": "GBK / GB2312 (cinese semplificato)",
+                "big5": "Big5 (cinese tradizionale)",
+                "shift_jis": "Shift-JIS (giapponese)",
+                "windows-1252": "Windows-1252 / Latin-1"
+              }
             }
           }
         },
@@ -2761,6 +2852,17 @@
               "label": "API キー / トークン",
               "placeholder": "your-api-key-or-token",
               "description": "API キー・トークン・アクセスグラント。ホストの secret binding に保存されます：fichier/filelu/pixeldrain/quatrix/shade の API キー、ulozto のアプリトークン、linkbox のトークン、storj のアクセスグラント、filen の API キー、filefabric の永久トークン。"
+            },
+            "display_charset": {
+              "label": "ファイル名表示エンコーディング",
+              "description": "ファイル名が UTF-8 以外の旧エンコーディングで保存される FTP サーバー向け（例：中国語 GBK サーバーで文字化けする場合）。自動 = UTF-8。表示のみに影響し、ファイル操作には影響しません。",
+              "options": {
+                "": "自動（UTF-8）",
+                "gbk": "GBK / GB2312（簡体字中国語）",
+                "big5": "Big5（繁体字中国語）",
+                "shift_jis": "Shift-JIS（日本語）",
+                "windows-1252": "Windows-1252 / Latin-1"
+              }
             }
           }
         },
@@ -3023,6 +3125,17 @@
               "label": "Chave de API / token",
               "placeholder": "your-api-key-or-token",
               "description": "Chave de API, token ou access grant, guardado no binding secreto do host: chave de API de fichier/filelu/pixeldrain/quatrix/shade, token de aplicativo do ulozto, token do linkbox, access grant do storj, chave de API do filen, token permanente do filefabric."
+            },
+            "display_charset": {
+              "label": "Codificação de exibição de nomes",
+              "description": "Para servidores FTP que armazenam nomes em uma codificação legada não UTF-8 (ex.: servidores chineses GBK exibindo caracteres corrompidos). Automático mantém UTF-8; afeta apenas a exibição, as operações não mudam.",
+              "options": {
+                "": "Automático (UTF-8)",
+                "gbk": "GBK / GB2312 (chinês simplificado)",
+                "big5": "Big5 (chinês tradicional)",
+                "shift_jis": "Shift-JIS (japonês)",
+                "windows-1252": "Windows-1252 / Latin-1"
+              }
             }
           }
         },

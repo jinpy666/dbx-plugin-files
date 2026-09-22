@@ -42,6 +42,7 @@
 
 use serde_json::Value;
 
+use super::display::{decode_display, encode_display};
 use super::ops;
 use super::rc::RcClient;
 use crate::archive as tar;
@@ -281,6 +282,7 @@ pub async fn extract(
     target_path: &str,
     root: &str,
     lock_to_root: bool,
+    display_charset: &str,
 ) -> Result<(u64, u64), String> {
     let remote = gate_read(root, lock_to_root, path)?;
     // `/` is a legitimate target (extract into the connection root).
@@ -289,7 +291,7 @@ pub async fn extract(
     match open_archive(client, fs, &remote, path).await? {
         OpenArchive::Tar(raw) => {
             let plan = tar::extract_entries(&raw, &tar::DEFAULT_LIMITS)?;
-            write_plan(client, fs, plan, &base).await
+            write_plan(client, fs, plan, &base, display_charset).await
         }
         OpenArchive::Zip { entries, .. } => {
             // Same budget walk as `tar::extract_entries`: payload total is
@@ -316,7 +318,7 @@ pub async fn extract(
                     data,
                 });
             }
-            write_plan(client, fs, plan, &base).await
+            write_plan(client, fs, plan, &base, display_charset).await
         }
     }
 }
@@ -329,6 +331,7 @@ async fn write_plan(
     fs: &str,
     plan: Vec<tar::ExtractEntry>,
     base: &str,
+    display_charset: &str,
 ) -> Result<(u64, u64), String> {
     let mut files_done = 0u64;
     let mut bytes_done = 0u64;
@@ -338,6 +341,9 @@ async fn write_plan(
         } else {
             format!("{base}/{}", entry.path)
         };
+        // issue #32：目标路径按显示字符集重编码成 `‛XX` 转义，rclone 解码后
+        // 服务器收到目标字符集的原始字节（GBK 服务器上写出 GBK 文件名）。
+        let target_file = encode_display(&target_file, display_charset);
         ops::write_bytes(client, fs, &target_file, &entry.data).await?;
         files_done += 1;
         bytes_done += entry.size;
@@ -365,6 +371,7 @@ pub async fn compress(
     target_path: &str,
     root: &str,
     lock_to_root: bool,
+    display_charset: &str,
 ) -> Result<(), String> {
     let target = gate_write(root, lock_to_root, target_path)?;
     let target = target.trim_matches('/').to_string();
@@ -373,7 +380,7 @@ pub async fn compress(
             "Archive target '{target_path}' must be a file path below the connection root"
         ));
     }
-    let plan = plan_compress(client, fs, sources, root, lock_to_root).await?;
+    let plan = plan_compress(client, fs, sources, root, lock_to_root, display_charset).await?;
     let gzip = target.to_lowercase().ends_with(".tar.gz")
         || target.to_lowercase().ends_with(".tgz");
     let data = if target.to_lowercase().ends_with(".zip") {
@@ -426,9 +433,10 @@ pub(crate) async fn build_dir_zip_bytes(
     dir: &str,
     root: &str,
     lock_to_root: bool,
+    display_charset: &str,
 ) -> Result<Vec<u8>, String> {
     let sources = [dir.to_string()];
-    let plan = plan_compress(client, fs, &sources, root, lock_to_root).await?;
+    let plan = plan_compress(client, fs, &sources, root, lock_to_root, display_charset).await?;
     build_zip(client, fs, &plan).await
 }
 
@@ -442,6 +450,7 @@ async fn plan_compress(
     sources: &[String],
     root: &str,
     lock_to_root: bool,
+    display_charset: &str,
 ) -> Result<Vec<CompressPlanEntry>, String> {
     let mut plan: Vec<CompressPlanEntry> = Vec::new();
     for source in sources {
@@ -452,7 +461,9 @@ async fn plan_compress(
                 "Cannot compress the connection root; pick a subdirectory instead".to_string(),
             );
         }
-        let base = base_name(&trimmed);
+        // issue #32：归档内条目名按显示字符集解码成可读文本（remote 路径
+        // 保持原始转义形式，读文件不受影响）。
+        let base = decode_display(base_name(&trimmed), display_charset);
         let stat = client
             .operations_stat(fs, &trimmed)
             .await
@@ -484,6 +495,7 @@ async fn plan_compress(
                             source, entry.path
                         )
                     })?;
+                let relative = decode_display(relative, display_charset);
                 let archive_path = tar::sanitize_entry_path(&format!("{base}/{relative}"))?;
                 plan.push(CompressPlanEntry {
                     remote: entry.path.trim_start_matches('/').to_string(),
@@ -503,7 +515,7 @@ async fn plan_compress(
                 .and_then(Value::as_i64)
                 .filter(|size| *size >= 0)
                 .unwrap_or(0) as u64;
-            let archive_path = tar::sanitize_entry_path(base)?;
+            let archive_path = tar::sanitize_entry_path(&base)?;
             plan.push(CompressPlanEntry {
                 remote: trimmed,
                 archive_path,
@@ -1288,6 +1300,7 @@ mod tests {
             "/out",
             "",
             false,
+            "",
         )
         .await
         .expect("zip extract");
@@ -1299,7 +1312,7 @@ mod tests {
         assert_eq!(deep.len(), 70_000);
 
         // Extract into the connection root is legitimate too.
-        let (files, _) = extract(&live.client, &live.fs, "pkg.zip", "/", "", false)
+        let (files, _) = extract(&live.client, &live.fs, "pkg.zip", "/", "", false, "")
             .await
             .expect("root extract");
         assert_eq!(files, 2);
@@ -1322,6 +1335,7 @@ mod tests {
             "/made.zip",
             "",
             false,
+            "",
         )
         .await
         .expect("compress zip");
@@ -1335,7 +1349,7 @@ mod tests {
         );
 
         // 回读: extract the produced zip and compare bytes.
-        extract(&live.client, &live.fs, "made.zip", "/roundtrip", "", false)
+        extract(&live.client, &live.fs, "made.zip", "/roundtrip", "", false, "")
             .await
             .expect("extract made.zip");
         assert_eq!(
@@ -1352,6 +1366,7 @@ mod tests {
             "/made.tar.gz",
             "",
             false,
+            "",
         )
         .await
         .expect("compress tar.gz");
@@ -1359,7 +1374,7 @@ mod tests {
             .await
             .expect("list tar.gz");
         assert!(entry_paths(&entries).contains(&"src/sub/b.txt"));
-        extract(&live.client, &live.fs, "made.tar.gz", "/tarout", "", false)
+        extract(&live.client, &live.fs, "made.tar.gz", "/tarout", "", false, "")
             .await
             .expect("extract tar.gz");
         assert_eq!(
@@ -1414,6 +1429,7 @@ mod tests {
             "/out.zip",
             "",
             false,
+            "",
         )
         .await
         .expect_err("root source");
@@ -1464,7 +1480,7 @@ mod tests {
         std::fs::write(live.abs("pkg/a.txt"), b"alpha").unwrap();
         std::fs::write(live.abs("pkg/sub/deep.bin"), vec![7u8; 1000]).unwrap();
 
-        let data = build_dir_zip_bytes(&live.client, &live.fs, "pkg", "", false)
+        let data = build_dir_zip_bytes(&live.client, &live.fs, "pkg", "", false, "")
             .await
             .expect("dir zip bytes");
         // 字节留在本地（函数不写远端）。stored 条目的名字以原始字节存在，
@@ -1478,7 +1494,7 @@ mod tests {
             .any(|w| w == b"pkg/sub/deep.bin"));
         // 空目录：plan_compress 拒绝（无文件可打包），错误直传。
         std::fs::create_dir_all(live.abs("hollow")).unwrap();
-        let error = build_dir_zip_bytes(&live.client, &live.fs, "hollow", "", false)
+        let error = build_dir_zip_bytes(&live.client, &live.fs, "hollow", "", false, "")
             .await
             .expect_err("empty dir has no files");
         assert!(error.contains("Nothing to compress"), "{error}");

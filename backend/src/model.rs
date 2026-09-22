@@ -307,6 +307,12 @@ pub struct StoredConnection {
     /// Private key content or path (`connection_secrets.key`; legacy config fallback).
     pub key: String,
     pub known_hosts_strategy: String,
+    // --- ftp ---
+    /// FTP 文件名显示编码（`external_config.display_charset`；空 = 按
+    /// UTF-8/服务器默认处理）。rclone 默认 Display 编码把非 UTF-8 字节
+    /// 转义成 `‛XX` 私有序列，前端按此字符集解码后仅用于显示；
+    /// `path` 始终保持原始转义形式供操作使用。
+    pub display_charset: String,
     // --- egress proxy (ftp/sftp backend options; engine per-proxy rcd grouping) ---
     /// Optional proxy (`external_config.proxy`); `None` when absent or null.
     pub proxy: Option<ProxyConfig>,
@@ -455,6 +461,7 @@ impl StoredConnection {
                 optional_string(external_config, "key")
             },
             known_hosts_strategy: optional_string(external_config, "known_hosts_strategy"),
+            display_charset: optional_string(external_config, "display_charset"),
             proxy,
             tunnel,
             share: optional_string(external_config, "share"),
@@ -1502,6 +1509,27 @@ mod tests {
     }
 
     #[test]
+    fn parses_ftp_display_charset_and_defaults_to_empty() {
+        let configured = StoredConnection::from_lifecycle_params(&json!({
+            "connection": {
+                "id": "conn-ftp-gbk",
+                "external_config": { "protocol": "ftp", "endpoint": "ftp://files.example.com", "display_charset": "gbk" }
+            }
+        }))
+        .unwrap();
+        assert_eq!(configured.display_charset, "gbk");
+
+        let default = StoredConnection::from_lifecycle_params(&json!({
+            "connection": {
+                "id": "conn-ftp-plain",
+                "external_config": { "protocol": "ftp", "endpoint": "ftp://files.example.com" }
+            }
+        }))
+        .unwrap();
+        assert!(default.display_charset.is_empty(), "display_charset defaults to empty (UTF-8)");
+    }
+
+    #[test]
     fn parses_s3_virtual_host_style_flag() {
         let connection = StoredConnection::from_lifecycle_params(&json!({
             "connection": {
@@ -2500,6 +2528,7 @@ mod tests {
                 "protondrive", "swift", "ulozto",
             ]),
             ("user", &["ftp", "sftp", "sftp-native"]),
+            ("display_charset", &["ftp"]),
             ("share", &["smb", "azurefiles"]),
             ("domain", &["smb"]),
             // password deliberately excludes `sftp`: the rclone sftp backend

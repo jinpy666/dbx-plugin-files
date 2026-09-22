@@ -7,6 +7,8 @@ export interface FileEntry {
   kind: "file" | "directory";
   size?: number;
   modifiedAt?: string;
+  /** FTP 显示解码名（charset.ts；仅显示用，操作一律用 name/path）。 */
+  displayName?: string;
 }
 
 /**

@@ -225,14 +225,14 @@ function onDragStart(entry: FileEntry, event: DragEvent) {
           <input
             type="checkbox"
             :checked="selectedSet.has(entry.path)"
-            :aria-label="t('selectEntry', { name: entry.name })"
+            :aria-label="t('selectEntry', { name: entry.displayName ?? entry.name })"
             @change="toggleSelection(entry, { meta: true, shift: false })"
           />
         </label>
         <span class="wb-file-name">
           <Folder v-if="entry.kind === 'directory'" class="wb-icon-dir" />
           <component :is="fileIcon(entry.name)" v-else aria-hidden="true" :class="fileIconClass(entry.name)" />
-          <span :title="entry.path">{{ entry.name }}</span>
+          <span :title="entry.path">{{ entry.displayName ?? entry.name }}</span>
         </span>
         <span class="wb-numeric" style="width: 90px">{{ entry.kind === "directory" ? "" : formatBytes(entry.size) }}</span>
         <span class="wb-muted" style="width: 130px; font-size: 11px">{{ formatTime(entry.modifiedAt) }}</span>

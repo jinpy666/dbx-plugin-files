@@ -235,6 +235,7 @@ for (const protocol of options("protocol")) {
     current.visible("username", USERNAME_VISIBLE.includes(protocol));
     current.required("username", USERNAME_REQUIRED.includes(protocol));
     current.visible("user", ["ftp", "sftp", "sftp-native"].includes(protocol));
+    current.visible("display_charset", protocol === "ftp");
     current.visible("share", ["smb", "azurefiles"].includes(protocol));
     current.visible("domain", protocol === "smb");
     current.visible("password", PASSWORD_VISIBLE.includes(protocol));

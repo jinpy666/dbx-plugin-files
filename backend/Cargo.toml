@@ -22,6 +22,9 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "m
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 
 serde = { version = "1", features = ["derive"] }
+# FTP 文件名显示编解码（issue #32）：GBK/Big5/Shift-JIS 等非 UTF-8 文件名
+# 与 rclone `‛XX` 转义字节序列的双向转换。
+encoding_rs = "0.8"
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 uuid = { version = "1", features = ["v4"] }
