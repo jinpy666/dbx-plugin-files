@@ -89,6 +89,13 @@ function onPicked(event: Event) {
   input.value = "";
 }
 
+/** 供 App 在宿主文件桥读盘失败时回退原生选择器（File API，不依赖宿主句柄）。 */
+function openNativePicker() {
+  fileInput.value?.click();
+}
+
+defineExpose({ openNativePicker });
+
 // ---- 限速（rclone 令牌桶）快捷开关：常驻工具栏 icon + 下拉菜单 -------------
 // 旧实现只在限速生效时显示徽标 pill（未设限速时入口不可见，用户找不到切换
 // 的地方）；现在常驻 CircleGauge 按钮，菜单里可一键设预设/关闭/去设置自定义。
