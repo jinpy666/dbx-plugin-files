@@ -83,6 +83,7 @@ import { errorBannerOf, i18nTextOf, workbenchMessage, type ErrorBannerState, typ
 import { isArchivePath } from "./lib/archive";
 import { PREVIEW_MIN, loadDownloadDir, loadFavorites, loadOpenAppPrefs, loadUiPrefs, persistDownloadDir, persistFavorites, persistOpenAppPrefs, saveUiPrefs, resolveOpenApp, type FavoriteMap, type OpenAppPrefs, type PreviewWin } from "./lib/prefs";
 import { sortEntries, toggleSortState, type SortColumn, type SortState } from "./lib/sorting";
+import { withDisplayName } from "./lib/charset";
 import { filterEntries } from "./lib/searchFilter";
 import { isLargeDirectory } from "./lib/largeDir";
 import { applyTreeChildren, createTreeRoot, markTreeStale, type DirTreeNode } from "./lib/dirTree";
@@ -138,6 +139,12 @@ const hostContext = ref<Record<string, unknown>>({});
 let hostContextVersion = 0;
 const locale = ref("zh-CN");
 const connectionId = computed(() => String(hostContext.value.connectionId || ""));
+// 每连接的 FTP 显示字符集（files/list 响应携带；空 = 不解码，issue #32）。
+const displayCharsetByConnection = reactive(new Map<string, string>());
+function paneDisplayCharset(side: PaneSide): string {
+  return displayCharsetByConnection.get(sideConnectionId(side) ?? connectionId.value) ?? "";
+}
+
 const connection = computed<ConnectionSummary>(() => {
   const value = hostContext.value.connection;
   return value && typeof value === "object" ? (value as ConnectionSummary) : {};
@@ -1081,9 +1088,13 @@ async function fetchListing(target: string, explicitConnectionId?: string) {
   const hitsHost = explicitConnectionId !== LOCAL_CONNECTION_ID;
   if (hitsHost) connState.value = "connecting";
   try {
-    const result = await call<{ entries: FileEntry[] }>("files/list", params);
+    const result = await call<{ entries: FileEntry[]; displayCharset?: string }>("files/list", params);
     if (hitsHost && version === hostContextVersion) connState.value = "connected";
-    return normalizeEntries(result.entries ?? []);
+    // FTP 显示解码（issue #32）：仅附加 displayName 供渲染；name/path 保持
+    // 原始转义形式，所有操作语义不变。
+    const charset = result.displayCharset ?? "";
+    if (charset) displayCharsetByConnection.set(explicitConnectionId ?? connectionId.value, charset);
+    return normalizeEntries(result.entries ?? []).map((entry) => withDisplayName(entry, charset));
   } catch (cause) {
     // P2-3：pill 与单次业务失败解耦——仅网络/传输层失败置「已断开」；业务错误
     // （NotFound、权限、参数类）说明 sidecar 应答了连接，置「已连接」而非断开，
@@ -3594,7 +3605,7 @@ onBeforeUnmount(() => {
               <button class="wb-icon-button wb-icon-neutral" v-tip="t('up')" :disabled="!path || path === '/'" @click="onToolbarNavigate(parentPath(path))"><ArrowUp /></button>
               <button class="wb-icon-button wb-icon-neutral" v-tip="t('refresh')" :disabled="loading" @click="markActiveSide('left'); refreshDirectory()"><RefreshCw :class="{ 'wb-spin': loading }" /></button>
               <div class="wb-path-toolbar">
-                <PathField :path="path" :t="t" @navigate="onToolbarNavigate" />
+                <PathField :path="path" :display-charset="paneDisplayCharset('left')" :t="t" @navigate="onToolbarNavigate" />
                 <span class="wb-search-box">
                   <Search class="wb-search-icon" aria-hidden="true" />
                   <input
@@ -3689,7 +3700,7 @@ onBeforeUnmount(() => {
               <button class="wb-icon-button wb-icon-neutral" v-tip="t('up')" :disabled="!rightPath || rightPath === '/'" @click="onRightNavigate(parentPath(rightPath))"><ArrowUp /></button>
               <button class="wb-icon-button wb-icon-neutral" v-tip="t('refresh')" :disabled="rightLoading" @click="markActiveSide('right'); refreshRightDirectory()"><RefreshCw :class="{ 'wb-spin': rightLoading }" /></button>
               <div class="wb-path-toolbar">
-                <PathField :path="rightPath" :t="t" @navigate="onRightNavigate" />
+                <PathField :path="rightPath" :display-charset="paneDisplayCharset('right')" :t="t" @navigate="onRightNavigate" />
                 <span class="wb-search-box">
                   <Search class="wb-search-icon" aria-hidden="true" />
                   <input

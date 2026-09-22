@@ -447,6 +447,9 @@ pub struct RemoteBinding {
     /// `params_for` injects the backend option directly); HTTP-family
     /// backends rely on this field for process-level proxy routing instead.
     pub proxy: Option<ProxyConfig>,
+    /// FTP 文件名显示编码（空 = 无；仅 ftp 连接携带）。原样下发给前端，
+    /// 由前端在渲染层解码 rclone `‛XX` 转义序列；`path` 语义不受影响。
+    pub display_charset: String,
 }
 
 /// rclone remote name for a connection id: `dbx` + the first 10 characters
@@ -630,6 +633,7 @@ pub fn binding_for(connection: &StoredConnection) -> Result<RemoteBinding, Strin
         read_only: connection.read_only,
         allow_delete: connection.allow_delete,
         proxy: connection.proxy.clone(),
+        display_charset: connection.display_charset.clone(),
     })
 }
 
@@ -1411,6 +1415,7 @@ mod tests {
             password: String::new(),
             key: String::new(),
             known_hosts_strategy: String::new(),
+            display_charset: String::new(),
             proxy: None,
             tunnel: None,
             share: String::new(),
@@ -1970,6 +1975,19 @@ mod tests {
 
         let binding = binding_for(&fixture("fs")).expect("binding");
         assert!(binding.proxy.is_none());
+    }
+
+    #[test]
+    fn binding_for_carries_ftp_display_charset() {
+        let mut connection = fixture("ftp");
+        connection.endpoint = "ftp://files.example.com".into();
+        connection.display_charset = "gbk".into();
+        let binding = binding_for(&connection).expect("binding");
+        assert_eq!(binding.display_charset, "gbk");
+
+        // 非 ftp 协议与未配置时保持空串（前端按 UTF-8 处理）。
+        let binding = binding_for(&fixture("fs")).expect("binding");
+        assert!(binding.display_charset.is_empty());
     }
 
     // -- OAuth / phase C families --------------------------------------------
@@ -2839,6 +2857,8 @@ mod manifest_matrix {
             "password" => json!(secret("pass")),
             "key" => json!("~/.ssh/dbx-matrix-key"),
             "known_hosts_strategy" => json!("Tolerate"),
+            // Ships default "": UTF-8 display, no decoding.
+            "display_charset" => json!(""),
             // Ships default "off": the flat parser short-circuits before the
             // dependent samples (stale-superset inputs) can matter.
             "proxy_type" => json!("off"),

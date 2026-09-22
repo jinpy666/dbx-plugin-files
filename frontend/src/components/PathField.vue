@@ -9,6 +9,8 @@ import Breadcrumbs from "./Breadcrumbs.vue";
 const props = defineProps<{
   path: string;
   maxVisible?: number;
+  /** FTP 显示字符集（issue #32）；仅用于面包屑显示解码。 */
+  displayCharset?: string;
   t: (key: string, values?: Record<string, string | number>) => string;
 }>();
 
@@ -68,7 +70,7 @@ function onBlur() {
     </button>
     <!-- 面包屑占满剩余宽度：点级（button）跳转，点空白任意处直接进入编辑态。 -->
     <div v-if="!editing" class="wb-path-crumb-area" @click="onCrumbAreaClick">
-      <Breadcrumbs :path="path" :max-visible="maxVisible ?? 3" @navigate="emit('navigate', $event)" />
+      <Breadcrumbs :path="path" :max-visible="maxVisible ?? 3" :display-charset="displayCharset" @navigate="emit('navigate', $event)" />
     </div>
     <input
       v-else

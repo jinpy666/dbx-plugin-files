@@ -15,6 +15,7 @@
 
 pub mod archive;
 pub mod bytes_channel;
+pub mod display;
 pub mod mount;
 pub mod ops;
 pub mod proc;
@@ -816,6 +817,7 @@ mod wiring_tests {
             read_only: false,
             allow_delete: true,
             proxy: None,
+            display_charset: String::new(),
         }
     }
 

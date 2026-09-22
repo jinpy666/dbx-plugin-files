@@ -1230,6 +1230,7 @@ mod tests {
             read_only: false,
             allow_delete: true,
             proxy: None,
+            display_charset: String::new(),
         };
         // Whole root: one fs string, no re-basing.
         assert_eq!(

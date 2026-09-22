@@ -254,7 +254,11 @@ impl Plugin {
                             binding.lock_to_root,
                         )
                         .await?;
-                        Ok(json!({ "entries": entries }))
+                        let mut response = json!({ "entries": entries });
+                        if !binding.display_charset.is_empty() {
+                            response["displayCharset"] = Value::String(binding.display_charset.clone());
+                        }
+                        Ok(response)
                     }
                     "files/listPaged" => {
                         let request: model::ListPagedRequest = parse(params)?;
@@ -270,7 +274,11 @@ impl Plugin {
                             binding.lock_to_root,
                         )
                         .await?;
-                        Ok(json!({ "entries": entries, "total": total }))
+                        let mut response = json!({ "entries": entries, "total": total });
+                        if !binding.display_charset.is_empty() {
+                            response["displayCharset"] = Value::String(binding.display_charset.clone());
+                        }
+                        Ok(response)
                     }
                     "files/stat" => {
                         let request: model::PathRequest = parse(params)?;
@@ -694,6 +702,7 @@ impl Plugin {
                     &request.target_path,
                     &binding.root,
                     binding.lock_to_root,
+                    &binding.display_charset,
                 )
                 .await?;
                 self.audit_id(&request.connection_id, method, &request.path, "ok")?;
@@ -755,6 +764,7 @@ impl Plugin {
                     &request.target_path,
                     &binding.root,
                     binding.lock_to_root,
+                    &binding.display_charset,
                 )
                 .await?;
                 self.audit_id(&request.connection_id, method, &request.target_path, "ok")?;
@@ -978,6 +988,7 @@ impl Plugin {
                     &request.path,
                     &binding.root,
                     binding.lock_to_root,
+                    &binding.display_charset,
                 )
                 .await?;
                 // sidecar 临时目录 staging；泵内的 TempArchiveGuard 负责任何
