@@ -23,6 +23,86 @@ export interface UiPrefs {
   settingsWin?: PreviewWin;
   /** 审计面板的操作类型筛选（空 = 全部）。 */
   auditActionFilter?: string;
+  /** 文件表列自定义（列宽 + 显隐），全局生效（双栏共用）；缺省走默认列。 */
+  columns?: ColumnPrefs;
+}
+
+// —— 文件表列自定义（对标 WinSCP/Finder）——————————————————————————————
+// 列宽与显隐存在 dbx-files.ui 顶层 columns 键；写入一律走 updateColumnPrefs
+// 的读-改-写（先读 storage 最新值再合并写回），避免整对象覆盖吃掉并发写入
+// 的其他键（sort / sideTab 等）。字段非法时按默认值兜底。
+
+export interface ColumnPrefs {
+  nameWidth: number;
+  sizeWidth: number;
+  modifiedWidth: number;
+  /** 隐藏列；"name" 永不可隐藏（sanitize 强制剔除），合法值仅 size/modified。 */
+  hidden: string[];
+}
+
+/** 列宽下限：名称 120、大小/时间 90（与交互规范一致）。 */
+export const COLUMN_MIN_WIDTH: Record<"name" | "size" | "modified", number> = {
+  name: 120,
+  size: 90,
+  modified: 90,
+};
+export const COLUMN_MAX_WIDTH = 1200;
+
+/** 默认列：大小/时间沿用旧版内联宽度；名称列取常见双栏视口下的可读宽度。 */
+export const DEFAULT_COLUMN_PREFS: ColumnPrefs = {
+  nameWidth: 240,
+  sizeWidth: 90,
+  modifiedWidth: 130,
+  hidden: [],
+};
+
+/** 列宽钳制：非法值回落最小值，越界收敛到 [min, max]。 */
+export function clampColumnWidth(width: number, key: "name" | "size" | "modified"): number {
+  const value = Number.isFinite(width) ? Math.round(width) : COLUMN_MIN_WIDTH[key];
+  return Math.min(Math.max(value, COLUMN_MIN_WIDTH[key]), COLUMN_MAX_WIDTH);
+}
+
+function sanitizeColumnWidth(raw: unknown, key: "name" | "size" | "modified", fallback: number): number {
+  const value = typeof raw === "number" ? raw : Number(raw);
+  return Number.isFinite(value) ? clampColumnWidth(value, key) : fallback;
+}
+
+export function sanitizeColumnPrefs(raw: unknown): ColumnPrefs {
+  if (!raw || typeof raw !== "object") return { ...DEFAULT_COLUMN_PREFS };
+  const value = raw as Record<string, unknown>;
+  // 名称列是唯一的内容锚点列，显隐集合里不允许出现。
+  const hidden = Array.isArray(value.hidden)
+    ? [...new Set(value.hidden.filter((item): item is "size" | "modified" => item === "size" || item === "modified"))]
+    : [];
+  return {
+    nameWidth: sanitizeColumnWidth(value.nameWidth, "name", DEFAULT_COLUMN_PREFS.nameWidth),
+    sizeWidth: sanitizeColumnWidth(value.sizeWidth, "size", DEFAULT_COLUMN_PREFS.sizeWidth),
+    modifiedWidth: sanitizeColumnWidth(value.modifiedWidth, "modified", DEFAULT_COLUMN_PREFS.modifiedWidth),
+    hidden,
+  };
+}
+
+type ColumnPrefsListener = (columns: ColumnPrefs) => void;
+const columnPrefsListeners = new Set<ColumnPrefsListener>();
+
+/** 订阅列偏好变更（同文档多实例同步，如双栏两个 FileTable）；返回退订函数。 */
+export function onColumnPrefsChange(listener: ColumnPrefsListener): () => void {
+  columnPrefsListeners.add(listener);
+  return () => {
+    columnPrefsListeners.delete(listener);
+  };
+}
+
+/**
+ * 读-改-写更新列偏好：基于 storage 内最新值合并后整体写回，
+ * 不覆盖并发其他键；写入前按同一规则清洗，并广播给订阅者。
+ */
+export function updateColumnPrefs(mutate: (current: ColumnPrefs) => ColumnPrefs, storage?: Storage): ColumnPrefs {
+  const latest = loadUiPrefs(storage);
+  const next = sanitizeColumnPrefs(mutate(latest.columns ?? { ...DEFAULT_COLUMN_PREFS }));
+  saveUiPrefs({ ...latest, columns: next }, storage);
+  for (const listener of [...columnPrefsListeners]) listener(next);
+  return next;
 }
 
 export interface PreviewWin {
@@ -85,6 +165,8 @@ function sanitize(raw: unknown): Partial<UiPrefs> {
   if (typeof value.auditActionFilter === "string") {
     prefs.auditActionFilter = value.auditActionFilter.slice(0, 64);
   }
+  // 缺失时不物化默认列（保持「未配置」语义）；消费方用 DEFAULT_COLUMN_PREFS 兜底。
+  if (value.columns !== undefined) prefs.columns = sanitizeColumnPrefs(value.columns);
   return prefs;
 }
 
@@ -112,6 +194,7 @@ export function loadUiPrefs(storage?: Storage): UiPrefs {
       : undefined,
     settingsWin: sanitizePreviewWin(prefs.settingsWin),
     auditActionFilter: typeof prefs.auditActionFilter === "string" ? prefs.auditActionFilter : undefined,
+    columns: prefs.columns,
   };
 }
 

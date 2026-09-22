@@ -92,13 +92,15 @@ describe("directory sync options flow", () => {
     await menuItem(workbenchMessage("en", "transferKind.syncDir"))!.trigger("click");
     await settle();
 
-    // 对话框先出现，确认前不发 files/syncDir。
+    // 对话框先出现，确认前不发 files/syncDir。源路径是可编辑输入框（默认
+    // 取右键目录），按 aria-label 断言初值。
     const dialog = () => wrapper!.find(".wb-sync-dialog");
     expect(dialog().exists()).toBe(true);
-    expect(dialog().text()).toContain("/docs");
+    expect((dialog().find('input[aria-label="Source"]').element as HTMLInputElement).value).toBe("/docs");
     expect(spy).not.toHaveBeenCalledWith("files/syncDir", expect.anything(), undefined);
 
-    // dry-run + 过滤器 → 确认。
+    // 目标改为与源不同（自配对被前置拦截），dry-run + 过滤器 → 确认。
+    await dialog().find('input[placeholder="/docs"]').setValue("/docs-backup");
     await dialog().find('input[type="checkbox"]').setValue(true);
     await dialog().find('input[placeholder="*.tmp, .DS_Store"]').setValue("*.tmp");
     await dialog().find(".wb-dialog-primary").trigger("click");
@@ -143,6 +145,8 @@ describe("directory sync options flow", () => {
     expect(dialog.exists()).toBe(true);
     expect(dialog.text()).not.toContain(workbenchMessage("en", "syncDirBody"));
 
+    // 目标改为与源不同（自配对被前置拦截）再确认。
+    await dialog.find('input[placeholder="/docs"]').setValue("/docs-copy");
     await dialog.find(".wb-dialog-primary").trigger("click");
     await settle();
     expect(spy).toHaveBeenCalledWith(

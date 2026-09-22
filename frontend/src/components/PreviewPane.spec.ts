@@ -377,3 +377,71 @@ describe("PreviewPane chunked loading (files/readRange)", () => {
     expect(pane.emitted("download")).toEqual([["/docs/big.pdf"]]);
   });
 });
+
+// ---- Markdown 渲染视图（MarkdownRender.vue + 头部「渲染/源码」切换）----------
+// md 默认进渲染面（.wb-md-render）；切换回 CodeMirror 源码（.preview-editor）；
+// <script> 内容不落 DOM；解析异常回退源码由组件 emit render-error 驱动。
+describe("PreviewPane markdown render view", () => {
+  const MD_TEXT = ["# Readme", "", "hello <script>alert(1)</script> world", "", "- alpha", "- beta"].join("\n");
+
+  function mountMd(path = "/docs/README.md") {
+    bindApi(async <T,>() => ({
+      dataBase64: b64encode(new TextEncoder().encode(MD_TEXT)),
+      truncated: false,
+      size: MD_TEXT.length,
+    } as unknown as T), null);
+    window.dbxPlugin = { decodeBase64: b64decode } as DbxPluginApi;
+    wrapper = mount(PreviewPane, {
+      props: { path, canWrite: true, appearance, t: (key: string) => key },
+      attachTo: document.body,
+    });
+  }
+
+  function b64encode(value: Uint8Array): string {
+    let binary = "";
+    for (const byte of value) binary += String.fromCharCode(byte);
+    return btoa(binary);
+  }
+
+  it("opens .md in the rendered view by default with the toggle present", async () => {
+    mountMd();
+    await flush();
+    expect(wrapper!.find("[data-test=md-toggle]").exists()).toBe(true);
+    const rendered = wrapper!.get(".wb-md-render");
+    expect(rendered.get("h1").text()).toBe("Readme");
+    expect(rendered.find("script").exists()).toBe(false);
+    // 渲染态不再挂 CodeMirror 源码容器。
+    expect(rendered.find(".preview-editor").exists()).toBe(false);
+  });
+
+  it("switches to the CodeMirror source view and back to the rendered view", async () => {
+    mountMd();
+    await flush();
+    await wrapper!.get("[data-test=md-source]").trigger("click");
+    await flush();
+    expect(wrapper!.find(".wb-md-render").exists()).toBe(false);
+    expect(wrapper!.find(".preview-editor").exists()).toBe(true);
+    await wrapper!.get("[data-test=md-render]").trigger("click");
+    await flush();
+    expect(wrapper!.find(".wb-md-render").exists()).toBe(true);
+    // 会话记忆复位为渲染态，避免污染同文件后续用例的默认视图。
+    await wrapper!.get("[data-test=md-source]").trigger("click");
+    await wrapper!.get("[data-test=md-render]").trigger("click");
+    await flush();
+  });
+
+  it("hides the toggle for non-markdown text files", async () => {
+    bindApi(async <T,>() => ({
+      dataBase64: b64encode(new TextEncoder().encode("plain notes")),
+      truncated: false,
+      size: 11,
+    } as unknown as T), null);
+    window.dbxPlugin = { decodeBase64: b64decode } as DbxPluginApi;
+    wrapper = mount(PreviewPane, {
+      props: { path: "/notes.txt", canWrite: true, appearance, t: (key: string) => key },
+    });
+    await flush();
+    expect(wrapper.find("[data-test=md-toggle]").exists()).toBe(false);
+    expect(wrapper.find(".preview-editor").exists()).toBe(true);
+  });
+});

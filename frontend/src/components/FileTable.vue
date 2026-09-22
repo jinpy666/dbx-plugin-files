@@ -1,9 +1,18 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
-import { Folder, FolderOpen, SearchX } from "@lucide/vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { Check, Folder, FolderOpen, SearchX } from "@lucide/vue";
 import { formatBytes, formatTime, type FileEntry } from "../lib/api";
 import { fileIcon, fileIconClass } from "../lib/fileIcons";
 import { listNav, scrollRowIntoView, selectionRange, type ListNavState } from "../lib/listNav";
+import {
+  clampColumnWidth,
+  COLUMN_MIN_WIDTH,
+  DEFAULT_COLUMN_PREFS,
+  loadUiPrefs,
+  onColumnPrefsChange,
+  updateColumnPrefs,
+  type ColumnPrefs,
+} from "../lib/prefs";
 
 const props = defineProps<{
   entries: FileEntry[];
@@ -184,19 +193,199 @@ function onDragStart(entry: FileEntry, event: DragEvent) {
   if (event.dataTransfer) event.dataTransfer.effectAllowed = "copyMove";
   emit("drag-entries", { paneId: props.paneId ?? "", entries: dragged });
 }
+
+// —— 列自定义（对标 WinSCP/Finder）：表头拖宽 + 列显隐菜单，全局偏好持久化 ——
+// 双栏是同一组件的两个实例：任一侧变更经 onColumnPrefsChange 广播即时同步，
+// 落盘走 updateColumnPrefs 的读-改-写（不覆盖并发其他键）。
+type ColumnKey = "name" | "size" | "modified";
+
+/** 列 key → ColumnPrefs 宽度字段（显式赋值，避免联合键的展开类型歧义）。 */
+function withColumnWidth(current: ColumnPrefs, key: ColumnKey, width: number): ColumnPrefs {
+  const next = { ...current };
+  if (key === "name") next.nameWidth = width;
+  else if (key === "size") next.sizeWidth = width;
+  else next.modifiedWidth = width;
+  return next;
+}
+
+/** 列显隐菜单条目；名称列是内容锚点，永远保留（对标 WinSCP 至少一列）。 */
+const COLUMN_DEFS: { key: ColumnKey; labelKey: string; locked?: boolean }[] = [
+  { key: "name", labelKey: "colName", locked: true },
+  { key: "size", labelKey: "colSize" },
+  { key: "modified", labelKey: "colModified" },
+];
+
+const columns = ref<ColumnPrefs>(loadUiPrefs().columns ?? { ...DEFAULT_COLUMN_PREFS });
+const columnMenu = ref<{ x: number; y: number } | null>(null);
+const columnMenuEl = ref<HTMLElement>();
+const resizingCol = ref<ColumnKey>();
+
+const columnWidths = computed<Record<ColumnKey, number>>(() => ({
+  name: columns.value.nameWidth,
+  size: columns.value.sizeWidth,
+  modified: columns.value.modifiedWidth,
+}));
+
+function isColumnHidden(key: ColumnKey) {
+  return columns.value.hidden.includes(key);
+}
+
+/** 表头/行单元格共用同一套宽度：显式宽 + 允许窄视口收缩，下限对齐列最小宽。 */
+function cellStyle(key: ColumnKey) {
+  return {
+    width: `${columnWidths.value[key]}px`,
+    flex: "0 1 auto",
+    minWidth: `${COLUMN_MIN_WIDTH[key]}px`,
+  };
+}
+
+let unsubscribeColumns: (() => void) | undefined;
+
+function onDocumentPointerDown(event: PointerEvent) {
+  if (columnMenu.value && columnMenuEl.value && !columnMenuEl.value.contains(event.target as Node)) {
+    closeColumnMenu();
+  }
+}
+
+onMounted(() => {
+  unsubscribeColumns = onColumnPrefsChange((next) => {
+    columns.value = next;
+  });
+  document.addEventListener("pointerdown", onDocumentPointerDown, true);
+});
+
+onBeforeUnmount(() => {
+  unsubscribeColumns?.();
+  document.removeEventListener("pointerdown", onDocumentPointerDown, true);
+  document.body.classList.remove("wb-col-resizing");
+});
+
+// 列显隐菜单：表头右键弹出（沿用 wb-context-menu 视觉），外部按下 / Esc 关闭。
+function openColumnMenu(event: MouseEvent) {
+  const x = Math.min(event.clientX, Math.max(0, window.innerWidth - 200));
+  const y = Math.min(event.clientY, Math.max(0, window.innerHeight - 140));
+  columnMenu.value = { x, y };
+}
+
+function closeColumnMenu() {
+  columnMenu.value = null;
+}
+
+function toggleColumn(key: ColumnKey) {
+  if (key === "name") return; // 名称列不可隐藏
+  const hidden = isColumnHidden(key)
+    ? columns.value.hidden.filter((item) => item !== key)
+    : [...columns.value.hidden, key];
+  columns.value = updateColumnPrefs((current) => ({ ...current, hidden }));
+}
+
+// 列宽拖拽：pointerdown 记起点，pointermove 实时调宽（钳制最小值），
+// pointerup 落盘；拖拽期间禁用页面文本选择（body.wb-col-resizing）。
+interface ResizeState {
+  key: ColumnKey;
+  startX: number;
+  startWidth: number;
+  moved: boolean;
+}
+let resizeState: ResizeState | null = null;
+
+function onResizeStart(key: ColumnKey, event: PointerEvent) {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const el = event.currentTarget as HTMLElement;
+  try {
+    // Pointer Capture 让指针移出热区后 move/up 仍送达热区；测试环境缺失时静默。
+    el.setPointerCapture?.(event.pointerId);
+  } catch {
+    /* 无 Pointer Capture 环境下同样可用 */
+  }
+  resizeState = { key, startX: event.clientX, startWidth: columnWidths.value[key], moved: false };
+  resizingCol.value = key;
+  document.body.classList.add("wb-col-resizing");
+}
+
+function onResizeMove(event: PointerEvent) {
+  if (!resizeState) return;
+  const next = clampColumnWidth(resizeState.startWidth + (event.clientX - resizeState.startX), resizeState.key);
+  if (next !== columnWidths.value[resizeState.key]) resizeState.moved = true;
+  columns.value = withColumnWidth(columns.value, resizeState.key, next);
+}
+
+function onResizeEnd() {
+  if (!resizeState) return;
+  const { key, moved } = resizeState;
+  resizeState = null;
+  resizingCol.value = undefined;
+  document.body.classList.remove("wb-col-resizing");
+  if (!moved) return; // 未动过不落盘
+  columns.value = updateColumnPrefs(
+    (current) => withColumnWidth(current, key, columnWidths.value[key]),
+  );
+}
 </script>
 
 <template>
-  <!-- R3-P2-8：表头 role=row/columnheader + aria-sort（排序方向对屏幕阅读器可感知）。 -->
-  <div class="wb-file-header" role="row" @contextmenu.prevent.stop="emit('blank-context', { x: $event.clientX, y: $event.clientY })">
-    <span class="wb-col-name" role="columnheader" :aria-sort="sort.column === 'name' ? (sort.direction === 'asc' ? 'ascending' : 'descending') : undefined">
+  <!-- R3-P2-8：表头 role=row/columnheader + aria-sort（排序方向对屏幕阅读器可感知）。
+       表头右键弹出列显隐菜单（对标 WinSCP/Finder）；行内空白区右键仍走 blank-context。 -->
+  <div class="wb-file-header" role="row" @contextmenu.prevent.stop="openColumnMenu">
+    <!-- 与行首复选框（14px + gap）对齐的占位，保证表头列边界与行单元格对齐。 -->
+    <span class="wb-col-check-spacer" aria-hidden="true" />
+    <span
+      v-if="!isColumnHidden('name')"
+      class="wb-col-name"
+      role="columnheader"
+      :style="cellStyle('name')"
+      :aria-sort="sort.column === 'name' ? (sort.direction === 'asc' ? 'ascending' : 'descending') : undefined"
+    >
       <button type="button" @click="emit('sort', 'name')">{{ t("colName") }}<span v-if="sort.column === 'name'" aria-hidden="true">{{ sort.direction === "asc" ? " ↑" : " ↓" }}</span></button>
+      <span
+        class="wb-col-resize"
+        :class="{ 'is-resizing': resizingCol === 'name' }"
+        data-test="resize-name"
+        aria-hidden="true"
+        @pointerdown="onResizeStart('name', $event)"
+        @pointermove="onResizeMove"
+        @pointerup="onResizeEnd"
+        @pointercancel="onResizeEnd"
+      />
     </span>
-    <span class="wb-numeric" style="width: 90px" role="columnheader" :aria-sort="sort.column === 'size' ? (sort.direction === 'asc' ? 'ascending' : 'descending') : undefined">
+    <span
+      v-if="!isColumnHidden('size')"
+      class="wb-numeric"
+      role="columnheader"
+      :style="cellStyle('size')"
+      :aria-sort="sort.column === 'size' ? (sort.direction === 'asc' ? 'ascending' : 'descending') : undefined"
+    >
       <button type="button" @click="emit('sort', 'size')">{{ t("colSize") }}<span v-if="sort.column === 'size'" aria-hidden="true">{{ sort.direction === "asc" ? " ↑" : " ↓" }}</span></button>
+      <span
+        class="wb-col-resize"
+        :class="{ 'is-resizing': resizingCol === 'size' }"
+        data-test="resize-size"
+        aria-hidden="true"
+        @pointerdown="onResizeStart('size', $event)"
+        @pointermove="onResizeMove"
+        @pointerup="onResizeEnd"
+        @pointercancel="onResizeEnd"
+      />
     </span>
-    <span style="width: 130px" role="columnheader" :aria-sort="sort.column === 'modified' ? (sort.direction === 'asc' ? 'ascending' : 'descending') : undefined">
+    <span
+      v-if="!isColumnHidden('modified')"
+      role="columnheader"
+      :style="cellStyle('modified')"
+      :aria-sort="sort.column === 'modified' ? (sort.direction === 'asc' ? 'ascending' : 'descending') : undefined"
+    >
       <button type="button" @click="emit('sort', 'modified')">{{ t("colModified") }}<span v-if="sort.column === 'modified'" aria-hidden="true">{{ sort.direction === "asc" ? " ↑" : " ↓" }}</span></button>
+      <span
+        class="wb-col-resize"
+        :class="{ 'is-resizing': resizingCol === 'modified' }"
+        data-test="resize-modified"
+        aria-hidden="true"
+        @pointerdown="onResizeStart('modified', $event)"
+        @pointermove="onResizeMove"
+        @pointerup="onResizeEnd"
+        @pointercancel="onResizeEnd"
+      />
     </span>
   </div>
   <!-- R3-P2-8：滚动容器 role=listbox + aria-label，行 role=option + aria-selected。 -->
@@ -229,13 +418,13 @@ function onDragStart(entry: FileEntry, event: DragEvent) {
             @change="toggleSelection(entry, { meta: true, shift: false })"
           />
         </label>
-        <span class="wb-file-name">
+        <span class="wb-file-name" :style="cellStyle('name')">
           <Folder v-if="entry.kind === 'directory'" class="wb-icon-dir" />
           <component :is="fileIcon(entry.name)" v-else aria-hidden="true" :class="fileIconClass(entry.name)" />
           <span :title="entry.path">{{ entry.displayName ?? entry.name }}</span>
         </span>
-        <span class="wb-numeric" style="width: 90px">{{ entry.kind === "directory" ? "" : formatBytes(entry.size) }}</span>
-        <span class="wb-muted" style="width: 130px; font-size: 11px">{{ formatTime(entry.modifiedAt) }}</span>
+        <span v-if="!isColumnHidden('size')" class="wb-numeric" :style="cellStyle('size')">{{ entry.kind === "directory" ? "" : formatBytes(entry.size) }}</span>
+        <span v-if="!isColumnHidden('modified')" class="wb-muted" :style="{ ...cellStyle('modified'), fontSize: '11px' }">{{ formatTime(entry.modifiedAt) }}</span>
       </div>
       <!-- 加载骨架屏（A-FILES ④d）：与行同高的 shimmer 占位 -->
       <template v-if="loading">
@@ -270,5 +459,32 @@ function onDragStart(entry: FileEntry, event: DragEvent) {
         @click="emit('batch-rename')"
       >{{ t("batchRenameMenu") }}</button>
     </template>
+  </div>
+  <!-- 列显隐菜单：复用 wb-context-menu 视觉；名称列锁定为常显（disabled），
+       其余列为 menuitemcheckbox 复选语义。切换后菜单保持打开便于连续调整。 -->
+  <div
+    v-if="columnMenu"
+    ref="columnMenuEl"
+    class="wb-context-menu"
+    role="menu"
+    data-test="column-menu"
+    :style="{ left: `${columnMenu.x}px`, top: `${columnMenu.y}px` }"
+    @click.stop
+    @keydown.esc.stop.prevent="closeColumnMenu"
+  >
+    <button
+      v-for="col in COLUMN_DEFS"
+      :key="col.key"
+      type="button"
+      role="menuitemcheckbox"
+      data-test="column-menu-item"
+      :aria-checked="!isColumnHidden(col.key)"
+      :disabled="col.locked"
+      @click="toggleColumn(col.key)"
+    >
+      <Check v-if="!isColumnHidden(col.key)" aria-hidden="true" />
+      <span v-else class="wb-col-menu-gap" aria-hidden="true" />
+      {{ t(col.labelKey) }}
+    </button>
   </div>
 </template>

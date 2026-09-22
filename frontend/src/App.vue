@@ -53,6 +53,7 @@ import SyncDialog, { type SyncDialogOptions } from "./components/SyncDialog.vue"
 import DesktopOnlyCard from "./components/DesktopOnlyCard.vue";
 import OpenWithDialog from "./components/OpenWithDialog.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
+import PathBrowseField from "./components/PathBrowseField.vue";
 import DropActionDialog from "./components/DropActionDialog.vue";
 import AuditPanel from "./components/AuditPanel.vue";
 import PreviewPane from "./components/PreviewPane.vue";
@@ -581,7 +582,49 @@ const confirmForce = ref(false);
 const confirmForcePath = ref("");
 // R3-P2-5：跨栏 copy/move 冲突预检命中时挂起整批传输，弹「覆盖确认」后原样执行。
 const pendingPaneTransfer = ref<{ from: PaneSide; move: boolean; list: FileEntry[]; destPath: string }>();
-const confirmInput = computed(() => confirmKind.value === "newFolder" || confirmKind.value === "newFile" || confirmKind.value === "rename" || confirmKind.value === "copy" || confirmKind.value === "move" || confirmKind.value === "extract" || confirmKind.value === "compress" || confirmKind.value === "check" || confirmKind.value === "copyurl");
+// 右键表单字段规格：每个 ConfirmKind 的标签/占位/提示与是否带目录选择器
+// （路径目标类），ConfirmDialog 的 slot 按此渲染，替代一份通用文案。
+// 返回 null = 非输入类确认（删除/覆盖等），弹层不渲染表单。
+const confirmFieldSpec = computed(() => {
+  switch (confirmKind.value) {
+    case "newFolder":
+      return { label: t("newFolderPlaceholder"), placeholder: t("newFolderPlaceholder") };
+    case "newFile":
+      return { label: t("newFilePlaceholder"), placeholder: t("newFilePlaceholder") };
+    case "rename":
+      return { label: t("renameNewLabel") };
+    case "copy":
+    case "move":
+    case "check":
+      return { label: t("syncTargetLabel"), placeholder: t("pathPlaceholder"), browse: true };
+    case "extract":
+      return { label: t("extractToLabel"), placeholder: t("pathPlaceholder"), browse: true };
+    case "compress":
+      return { label: t("compressTargetLabel"), placeholder: t("pathPlaceholder"), browse: true, mode: "file" as const, hint: t("compressSuffixHint") };
+    case "copyurl":
+      return { label: t("copyurlUrlLabel"), placeholder: "https://…", hint: t("copyurlFilenameHint") };
+    default:
+      return null;
+  }
+});
+/** 确认按钮与 Enter 的可用性：输入类表单空草稿禁用；压缩目标后缀非法禁用。 */
+const confirmInputBlocked = computed(() => {
+  if (!confirmFieldSpec.value) return false;
+  const draft = confirmDraft.value.trim();
+  if (!draft) return true;
+  if (confirmKind.value === "compress" && !/\.(?:tar\.gz|tgz|tar|zip)$/i.test(draft)) return true;
+  return false;
+});
+/** 行内警告：压缩后缀非法实时提示；其余沿用提交期的文件名校验文案。 */
+const confirmFormWarning = computed(() => {
+  if (confirmKind.value === "compress" && confirmDraft.value.trim()
+    && !/\.(?:tar\.gz|tgz|tar|zip)$/i.test(confirmDraft.value.trim())) {
+    return t("compressSuffixInvalid");
+  }
+  return confirmNameIssue.value;
+});
+/** 表单里路径选择器浏览的连接（与 onConfirm 提交用的连接一致）。 */
+const confirmConnectionId = computed(() => sideConnectionId(confirmSide.value) ?? connectionId.value);
 // P2-2：危险确认列表走 i18n 七语（lib 侧 label 为英文兜底，路径类条目原样展示）。
 const confirmDangerList = computed(() =>
   confirmHits.value.map((hit) => {
@@ -1468,27 +1511,9 @@ function startDirJob(kind: "syncDir" | "copyDir" | "bisync", entry: FileEntry, s
   syncDialogDraft.value = defaultTarget;
   syncDialogSourceConnectionId.value = sideConnectionId(side) ?? connectionId.value;
   syncDialogOpen.value = true;
-  // 双向同步：先查路径对状态（决定 resync 引导），查完前 state 为 null。
+  // 双向同步：先查路径对状态（决定 resync 引导）。
   if (kind === "bisync") {
-    const source = entry;
-    const target = defaultTarget;
-    const id = syncDialogSourceConnectionId.value;
-    syncDialogBisyncState.value = null;
-    void call<{ state: "synced" | "new" }>("files/bisync/state", {
-      connectionId: id,
-      sourceConnectionId: id,
-      targetConnectionId: id,
-      sourcePath: source.path,
-      targetPath: target,
-    })
-      .then((result) => {
-        if (syncDialogOpen.value && syncDialogEntry.value?.path === source.path) {
-          syncDialogBisyncState.value = result.state;
-        }
-      })
-      .catch(() => {
-        if (syncDialogOpen.value) syncDialogBisyncState.value = "new";
-      });
+    queryBisyncState(entry.path, defaultTarget);
   } else {
     syncDialogBisyncState.value = null;
   }
@@ -1503,10 +1528,57 @@ const syncDialogDraft = ref("");
 const syncDialogSourceConnectionId = ref("");
 const syncDialogBusy = ref(false);
 const syncDialogBisyncState = ref<"synced" | "new" | null>(null);
+/** 最近一次 bisync 状态查询对应的路径对：回包时对不上（用户已改路径）即丢弃。 */
+const syncDialogBisyncPair = ref<{ sourcePath: string; targetPath: string } | null>(null);
 
 function closeSyncDialog() {
   syncDialogOpen.value = false;
   syncDialogEntry.value = null;
+}
+
+/** 查询 bisync 路径对状态（决定 resync 引导）：查完前 state 为 null，
+ * 回包仅在该路径对仍是当前弹窗路径对时生效（编辑路径后旧回包作废）。 */
+function queryBisyncState(sourcePath: string, targetPath: string) {
+  const id = syncDialogSourceConnectionId.value;
+  syncDialogBisyncPair.value = { sourcePath, targetPath };
+  syncDialogBisyncState.value = null;
+  void call<{ state: "synced" | "new" }>("files/bisync/state", {
+    connectionId: id,
+    sourceConnectionId: id,
+    targetConnectionId: id,
+    sourcePath,
+    targetPath,
+  })
+    .then((result) => {
+      if (
+        syncDialogOpen.value &&
+        syncDialogBisyncPair.value?.sourcePath === sourcePath &&
+        syncDialogBisyncPair.value?.targetPath === targetPath
+      ) {
+        syncDialogBisyncState.value = result.state;
+      }
+    })
+    .catch(() => {
+      if (
+        syncDialogOpen.value &&
+        syncDialogBisyncPair.value?.sourcePath === sourcePath &&
+        syncDialogBisyncPair.value?.targetPath === targetPath
+      ) {
+        syncDialogBisyncState.value = "new";
+      }
+    });
+}
+
+/** 弹窗内路径对提交（可编辑源/目标）：bisync 需按新路径对重查状态。 */
+function onSyncPairChange(pair: { sourcePath: string; targetPath: string }) {
+  const last = syncDialogBisyncPair.value;
+  if (
+    syncDialogKind.value !== "bisync" ||
+    (last && last.sourcePath === pair.sourcePath && last.targetPath === pair.targetPath)
+  ) {
+    return;
+  }
+  queryBisyncState(pair.sourcePath, pair.targetPath);
 }
 
 /** SyncDialog 确认：非空字段才下发（保持 rclone 默认）；dry-run 同样入传输
@@ -1518,11 +1590,13 @@ async function onSyncDialogConfirm(options: SyncDialogOptions) {
   syncDialogBusy.value = true;
   const side = syncDialogSide.value;
   const id = syncDialogSourceConnectionId.value;
+  // 弹窗里源/目标均可改写；空串兜底回右键目录（正常不可达：确认按钮有校验）。
+  const sourcePath = options.sourcePath.trim() || entry.path;
   let jobStarted = false;
   try {
     const method = kind === "bisync" ? "files/bisync/start" : `files/${kind}`;
     const retry = transferRequest(id, method, {
-      sourcePath: entry.path,
+      sourcePath,
       targetPath: options.targetPath,
       ...(kind === "bisync" && options.bisyncResync ? { mode: "resync", resyncMode: "newer" } : {}),
       ...(options.dryRun ? { dryRun: true } : {}),
@@ -1533,6 +1607,11 @@ async function onSyncDialogConfirm(options: SyncDialogOptions) {
       // 批次6条件过滤：仅 sync/copy 下发（bisync 不带过滤器，后端对
       // check 也不注入——语义会收窄比对报告）。
       ...(kind !== "bisync" && options.metadata ? { metadata: true } : {}),
+      // rclone 策略旗标：仅 true 才下发（与「非空才下发」同口径），bisync
+      // 不带（后端对 check 也不注入）。
+      ...(kind !== "bisync" && options.update ? { update: true } : {}),
+      ...(kind !== "bisync" && options.existing ? { existing: true } : {}),
+      ...(kind !== "bisync" && options.immutable ? { immutable: true } : {}),
       ...(kind !== "bisync" && options.minSize ? { minSize: options.minSize } : {}),
       ...(kind !== "bisync" && options.maxSize ? { maxSize: options.maxSize } : {}),
       ...(kind !== "bisync" && options.minAge ? { minAge: options.minAge } : {}),
@@ -1543,7 +1622,7 @@ async function onSyncDialogConfirm(options: SyncDialogOptions) {
     });
     const result = await call<{ jobId: string }>(retry.method, retry.params);
     if (result.jobId) {
-      trackSidecarJob(result.jobId, kind === "bisync" ? "bisync" : kind, `${entry.path} ⇄ ${options.targetPath}`, retry);
+      trackSidecarJob(result.jobId, kind === "bisync" ? "bisync" : kind, `${sourcePath} ⇄ ${options.targetPath}`, retry);
     }
     jobStarted = true;
     closeSyncDialog();
@@ -3860,8 +3939,10 @@ onBeforeUnmount(() => {
       :source-path="syncDialogEntry?.path ?? ''"
       :default-target="syncDialogDraft"
       :bisync-state="syncDialogBisyncState"
+      :connection-id="syncDialogSourceConnectionId"
       @close="closeSyncDialog"
       @confirm="onSyncDialogConfirm"
+      @pair-change="onSyncPairChange"
     />
 
     <!-- 打开方式：远程编辑本地副本（FinalShell 式），选默认/预设/手输应用 -->
@@ -3949,8 +4030,8 @@ onBeforeUnmount(() => {
               </ul>
               </template>
               <!-- 本机共享（files/serve/*）：挂载列表下方常驻区块 -->
-              <p class="wb-settings-help wb-shares-title">{{ t("shareSectionTitle") }}</p>
-              <div class="wb-mounts-actions">
+              <div class="wb-settings-heading">
+                <strong>{{ t("shareSectionTitle") }}</strong>
                 <button class="wb-icon-button wb-icon-neutral" v-tip="t('refresh')" :disabled="sharesLoading" @click="loadShares"><RefreshCw :class="{ 'wb-spin': sharesLoading }" /></button>
               </div>
               <p v-if="sharesError" class="wb-settings-error" role="alert">{{ t("operationFailed", { error: sharesError }) }}</p>
@@ -3966,16 +4047,18 @@ onBeforeUnmount(() => {
               </ul>
             </div>
           </div>
-          <!-- 统一保存：任一区块有未保存修改时点亮；成功通知由各链路自发。 -->
+          </div>
+          <!-- 统一保存：任一区块有未保存修改时点亮；成功通知由各链路自发。
+               注意 footer 必须是 modal（纵向 flex）的直接子级——放在
+               wb-settings-layout（横向 flex）里会被当作第三列渲染。 -->
           <footer class="wb-settings-footer">
             <span class="wb-muted">{{ settingsDirty ? t("settingsUnsavedHint") : "" }}</span>
-            <button class="wb-toolbar-button wb-settings-save" type="button" :disabled="!settingsDirty || settingsSaving" @click="onSettingsSave">{{ t("settingsSave") }}</button>
+            <button class="wb-action-button wb-settings-save" type="button" :disabled="!settingsDirty || settingsSaving" @click="onSettingsSave">{{ t("settingsSave") }}</button>
           </footer>
         <!-- 右下角拉伸柄：拖动调尺寸，松手即记忆（prefs.settingsWin）。 -->
         <div class="wb-settings-grip" aria-hidden="true" @pointerdown="onSettingsGripPointerdown"></div>
         </div>
       </div>
-    </div>
 
     <!-- 统一右键菜单（A-FILES ④b）：源栏/目标栏共用；多选时切批量动作面。
          R3-P2-8：role="menu"/menuitem 语义。 -->
@@ -4095,21 +4178,31 @@ onBeforeUnmount(() => {
       :body="confirmBodyText"
       :danger="confirmDanger"
       :danger-list="confirmDangerList"
-      :warning="confirmNameIssue"
+      :warning="confirmFormWarning"
       :confirm-label="confirmLabel"
       :cancel-label="t('cancel')"
       :busy="confirmBusy"
+      :confirm-disabled="confirmInputBlocked"
       @confirm="onConfirm"
       @cancel="closeConfirm"
     >
-      <label v-if="confirmInput" style="display: flex; flex-direction: column; gap: 4px">
-        <span v-if="confirmKind === 'newFolder'">{{ t("newFolderPlaceholder") }}</span>
-        <span v-else-if="confirmKind === 'newFile'">{{ t("newFilePlaceholder") }}</span>
-        <span v-else-if="confirmKind === 'rename'">{{ t("renameTitle") }}</span>
-        <span v-else-if="confirmKind === 'copyurl'">{{ t("copyurlUrlLabel") }}</span>
-        <span v-else>{{ t("pathPlaceholder") }}</span>
-        <input v-model="confirmDraft" spellcheck="false" @keydown.enter.prevent="!confirmDanger && onConfirm()" />
+      <!-- 路径目标类表单：输入行 + 内嵌目录选择器（copy/move/extract/compress/check）。 -->
+      <PathBrowseField
+        v-if="confirmFieldSpec?.browse"
+        v-model="confirmDraft"
+        :t="t"
+        :label="confirmFieldSpec.label"
+        :placeholder="confirmFieldSpec.placeholder"
+        :connection-id="confirmConnectionId"
+        :mode="confirmFieldSpec.mode"
+        @submit="!confirmDanger && !confirmInputBlocked && onConfirm()"
+      />
+      <!-- 其余输入类表单（新建/重命名/URL）：单行输入，Enter 确认。 -->
+      <label v-else-if="confirmFieldSpec" class="wb-confirm-field">
+        <span>{{ confirmFieldSpec.label }}</span>
+        <input v-model="confirmDraft" spellcheck="false" :placeholder="confirmFieldSpec.placeholder" @keydown.enter.prevent="!confirmDanger && !confirmInputBlocked && onConfirm()" />
       </label>
+      <span v-if="confirmFieldSpec?.hint" class="wb-confirm-hint">{{ confirmFieldSpec.hint }}</span>
     </ConfirmDialog>
 
     <!-- 跨栏拖放动作选择（rclone-ui parity）：复制/移动二选一，确认后才执行

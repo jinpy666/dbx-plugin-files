@@ -205,7 +205,6 @@ defineExpose({ save });
     <div v-if="props.section === 'transfer'" class="wb-settings-section">
       <div class="wb-settings-heading">
         <strong>{{ t("bwlimitLabel") }}</strong>
-        <span class="wb-muted">{{ t("settings") }}</span>
       </div>
       <p class="wb-settings-help">{{ t("bwlimitHelp") }}</p>
       <div class="wb-bwlimit-combo">
@@ -233,7 +232,6 @@ defineExpose({ save });
     <div v-if="!props.section || props.section === 'downloads'" class="wb-settings-section">
       <div class="wb-settings-heading">
         <strong>{{ t("downloadDirectory") }}</strong>
-        <span class="wb-muted">{{ t("settings") }}</span>
       </div>
       <p class="wb-settings-help">{{ t("downloadDirectoryHelp") }}</p>
 
@@ -277,7 +275,6 @@ defineExpose({ save });
     <div v-if="!props.section || props.section === 'openWith'" class="wb-settings-section">
       <div class="wb-settings-heading">
         <strong>{{ t("externalApp") }}</strong>
-        <span class="wb-muted">{{ t("settings") }}</span>
       </div>
       <p class="wb-settings-help">{{ t("externalAppHelp") }}</p>
 

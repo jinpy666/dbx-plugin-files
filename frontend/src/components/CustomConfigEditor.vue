@@ -110,7 +110,7 @@ async function test() {
     </label>
 
     <div style="display: flex; align-items: center; gap: 8px">
-      <button type="button" class="wb-toolbar-button" :disabled="testing" @click="test">
+      <button type="button" class="wb-action-button" :disabled="testing" @click="test">
         {{ t("customConfigTest") }}
       </button>
       <span v-if="lastResult === 'ok'" class="wb-icon-emerald">{{ t("customConfigTestOk") }}</span>

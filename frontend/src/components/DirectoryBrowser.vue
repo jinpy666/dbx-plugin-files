@@ -1,7 +1,8 @@
 <script setup lang="ts">
-// 本机目录浏览器（挂载对话框 / 设置下载目录共用）：files/list + __local__ 保留
-// 连接逐级浏览；面包屑可跳级，上级按钮回父目录。选择结果通过 navigate 上抛，
-// 由父层决定填入哪个输入框。
+// 目录浏览器（挂载/设置下载目录在 __local__ 浏览；SyncDialog 传 connectionId
+// 在当前连接上选路径）：files/list 逐级浏览；面包屑可跳级，上级按钮回父目录。
+// 选择结果通过 navigate 上抛，由父层决定填入哪个输入框。initialPath 给出时
+// 直接从该目录起步（跳过 home 探测，避免异步回写覆盖父层指定的起点）。
 import { computed, onMounted, ref } from "vue";
 import { ArrowUp, Folder } from "@lucide/vue";
 import { normalizeEntries, type FileEntry } from "../lib/api";
@@ -9,6 +10,12 @@ import { isNotFoundMessage } from "../lib/friendlyError";
 
 const props = defineProps<{
   t: (key: string, values?: Record<string, string | number>) => string;
+  /** 浏览目标连接；缺省 = 本机 __local__（既有挂载/设置语义）。 */
+  connectionId?: string;
+  /** 挂载后首个浏览目录；缺省 = 连接 quickPaths 的 home（拿不到回退根）。 */
+  initialPath?: string;
+  /** 目录不存在时的提示文案 key（挂载场景默认「确认时自动创建」语义）。 */
+  missingHintKey?: string;
 }>();
 
 const emit = defineEmits<{
@@ -24,15 +31,16 @@ const notFound = ref(false);
 const dirs = ref<string[]>([]);
 
 onMounted(() => {
-  void startFromHome();
+  if (props.initialPath) void browse(props.initialPath, true);
+  else void startFromHome();
 });
 
-/** 浏览起点 = 本机 home（quickPaths 的 home 项）；拿不到回退根目录。 */
+/** 浏览起点 = 连接 quickPaths 的 home 项；拿不到回退根目录。 */
 async function startFromHome() {
   try {
     const result = await window.dbxPlugin.invoke<{ paths: Array<{ key?: string; path: string }> }>(
       "files/quickPaths",
-      { connectionId: "__local__" },
+      { connectionId: props.connectionId ?? "__local__" },
     );
     const home = (result.paths ?? []).find((item) => item.key === "home");
     await browse(home?.path ?? "/", true);
@@ -50,7 +58,7 @@ async function browse(target: string, silent = false) {
   try {
     const result = await window.dbxPlugin.invoke<{ entries?: FileEntry[] }>(
       "files/list",
-      { connectionId: "__local__", path: clean },
+      { connectionId: props.connectionId ?? "__local__", path: clean },
     );
     // 隐藏目录（. 开头）不进列表——home 下几十个 dot 目录会淹没浏览体验。
     dirs.value = normalizeEntries(result.entries ?? [])
@@ -119,7 +127,7 @@ defineExpose({ browse });
     </div>
     <div class="wb-mount-list" :aria-busy="browsing">
       <span v-if="browsing" class="wb-muted">{{ t("loading") }}</span>
-      <span v-else-if="notFound" class="wb-muted">{{ t("mountBrowseCreateHint") }}</span>
+      <span v-else-if="notFound" class="wb-muted">{{ t(props.missingHintKey ?? "mountBrowseCreateHint") }}</span>
       <span v-else-if="browseError" class="wb-mount-error">{{ browseError }}</span>
       <span v-else-if="!dirs.length" class="wb-muted">{{ t("mountBrowseEmpty") }}</span>
       <template v-else>

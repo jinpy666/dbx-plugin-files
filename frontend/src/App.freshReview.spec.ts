@@ -272,7 +272,12 @@ async function submitFailedTransfer(kind: RetryKind, source = "/docs") {
   await nextTick();
   const label = kind === "rename" ? workbenchMessage("en", "rename") : `${workbenchMessage("en", `transferKind.${kind}`)}…`;
   await wrapper!.findAll("[role=menuitem]").find((item) => item.text() === label)!.trigger("click");
-  await wrapper!.get("[role=dialog] input").setValue(kind === "rename" ? `failed-${kind}` : `/failed-${kind}`);
+  // SyncDialog（copyDir/syncDir）第一个输入框是可编辑源路径，目标路径按
+  // aria-label 定位；其余确认弹窗只有单个输入框。
+  const dialogInput = kind === "copyDir" || kind === "syncDir"
+    ? wrapper!.get('[role=dialog] input[aria-label="Target path"]')
+    : wrapper!.get("[role=dialog] input");
+  await dialogInput.setValue(kind === "rename" ? `failed-${kind}` : `/failed-${kind}`);
   await wrapper!.get("[role=dialog] footer button:last-child").trigger("click");
   await settle();
   await vi.advanceTimersByTimeAsync(450);

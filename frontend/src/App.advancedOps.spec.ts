@@ -194,6 +194,8 @@ describe("advanced ops UI", () => {
     expect(dialog().text()).toContain(workbenchMessage("en", "bisyncBetaWarn"));
     // 已有状态：resync 默认关，确认时也不带 mode=resync。
     expect(spy).toHaveBeenCalledWith("files/bisync/state", expect.objectContaining({ sourcePath: "/docs" }), undefined);
+    // 目标改为与源不同（自配对被前置拦截）再开始。
+    await dialog().find('input[placeholder="/docs"]').setValue("/mirror-docs");
     await dialog().find(".wb-dialog-primary").trigger("click");
     await settle();
     expect(spy).toHaveBeenCalledWith(
@@ -299,9 +301,9 @@ describe("advanced ops UI", () => {
     await navButton(workbenchMessage("en", "settingsNav.mounts"))!.trigger("click");
     await settle();
     expect(spy).toHaveBeenCalledWith("files/serve/list", expect.objectContaining({ connectionId: expect.any(String) }), undefined);
-    const shares = wrapper!.find(".wb-shares-title");
-    expect(shares.exists()).toBe(true);
-    expect(shares.text()).toContain(workbenchMessage("en", "shareSectionTitle"));
+    // 本机共享标题行（标题 + 刷新按钮同排）。
+    const sharesHeading = wrapper!.findAll(".wb-settings-heading").find((h) => h.text().includes(workbenchMessage("en", "shareSectionTitle")));
+    expect(sharesHeading).toBeTruthy();
     expect(wrapper!.text()).toContain("http://127.0.0.1:41234");
     // 停止按钮（v-tip 同步 aria-label）调 files/serve/stop。
     const stop = wrapper!

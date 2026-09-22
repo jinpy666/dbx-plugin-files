@@ -141,6 +141,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-file-empty svg { width: 22px; height: 22px; stroke-width: 1.5; opacity: .8; }
 .wb-file-empty p { margin: 0; }
 .wb-file-footer { display: flex; align-items: center; gap: 10px; border-top: 1px solid var(--border); padding: 3px 10px; color: var(--muted-foreground); font-size: 11px; }
+/* 列自定义（对标 WinSCP/Finder）：表头单元格与行单元格共用显式宽度；
+   列右边界 6px 拖拽热区，悬停/拖拽中高亮，拖拽期间锁定光标与选择。 */
+.wb-file-header [role="columnheader"] { position: relative; }
+.wb-col-check-spacer { flex: 0 0 14px; width: 14px; }
+.wb-col-resize { position: absolute; top: -3px; bottom: -3px; right: -4px; width: 6px; cursor: col-resize; touch-action: none; border-radius: 2px; }
+.wb-file-header .wb-col-resize:hover, .wb-file-header .wb-col-resize.is-resizing { background: color-mix(in srgb, var(--primary) 45%, transparent); }
+body.wb-col-resizing { cursor: col-resize; user-select: none; -webkit-user-select: none; }
+.wb-col-menu-gap { width: 16px; flex: 0 0 16px; }
 
 /* ---- context menu --------------------------------------------------------- */
 /* 对齐 DBX 宿主右键菜单（globals.css cn-menu-translucent / context-menu 规格，
@@ -155,6 +163,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-context-menu button.is-danger { color: var(--destructive); }
 .wb-context-menu button.is-danger svg { color: inherit; }
 .wb-context-menu button.is-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--destructive) 10%, transparent); color: var(--destructive); }
+/* 列显隐菜单：锁定的名称列保持可读但不可点。 */
+.wb-context-menu button:disabled { opacity: .5; cursor: default; }
 .wb-context-menu hr { border: 0; height: 1px; margin: 2px -4px; background: color-mix(in srgb, var(--foreground) 6%, transparent); }
 
 /* ---- right dock (transfer / audit panels) --------------------------------- */
@@ -251,7 +261,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-mount-error { margin: 4px 8px; color: var(--destructive); font-size: 11px; overflow-wrap: anywhere; }
 .wb-mount-dialog footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid var(--border); padding: 10px 14px; }
 .wb-mount-foot-hint { font-size: 10px; overflow-wrap: anywhere; }
-.wb-mount-foot-actions { display: inline-flex; flex: 0 0 auto; gap: 8px; }
+/* 左侧提示可能整段不渲染（bisync 无高级字段）：margin-left 兜底让按钮组保持右置。 */
+.wb-mount-foot-actions { display: inline-flex; flex: 0 0 auto; gap: 8px; margin-left: auto; }
 .wb-mount-dialog footer button { border-radius: var(--radius); padding: 4px 12px; }
 .wb-mount-dialog .wb-dialog-primary { background: var(--primary); color: var(--primary-foreground); border: 0; }
 .wb-mount-dialog .wb-dialog-cancel { border: 1px solid var(--border); background: transparent; cursor: pointer; }
@@ -316,6 +327,32 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-preview-body .wb-file-viewer-preview { flex: 1 1 auto; min-height: 360px; }
 .wb-preview-body .wb-archive { flex: 1 1 auto; min-height: 200px; }
 
+/* Markdown 渲染视图（MarkdownRender.vue，白名单子集）：头部「渲染/源码」
+   分段切换 + 阅读面排版；与 CodeMirror 源码视图共用 .wb-preview-body 弹性高度。 */
+.wb-md-toggle { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 2px; border: 1px solid var(--border); border-radius: 4px; padding: 1px; }
+.wb-md-toggle .wb-toolbar-button { height: 20px; padding: 0 8px; border-radius: 3px; font-size: 11px; color: var(--muted-foreground); }
+.wb-md-toggle .wb-toolbar-button.wb-md-toggle-active { background: var(--accent); color: var(--accent-foreground); }
+.wb-preview-body .wb-md-render { flex: 1 1 auto; min-height: 220px; overflow: auto; padding: 14px 16px 28px; }
+.wb-md-render .wb-md-render-failed { margin: 0; }
+.wb-md-body { max-width: 860px; margin: 0 auto; font-size: 13px; line-height: 1.7; color: var(--foreground); overflow-wrap: break-word; }
+.wb-md-body .wb-md-h { margin: 18px 0 8px; line-height: 1.3; font-weight: 600; }
+.wb-md-body h1.wb-md-h { font-size: 1.7em; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+.wb-md-body h2.wb-md-h { font-size: 1.4em; border-bottom: 1px solid var(--border); padding-bottom: 3px; }
+.wb-md-body h3.wb-md-h { font-size: 1.2em; }
+.wb-md-body h4.wb-md-h { font-size: 1.05em; }
+.wb-md-body h5.wb-md-h, .wb-md-body h6.wb-md-h { font-size: 1em; }
+.wb-md-body .wb-md-p { margin: 0 0 10px; }
+.wb-md-body .wb-md-list { margin: 0 0 10px; padding-left: 22px; }
+.wb-md-body .wb-md-list li { margin: 2px 0; }
+.wb-md-body .wb-md-quote { margin: 0 0 10px; padding: 2px 12px; border-left: 3px solid var(--border); color: var(--muted-foreground); }
+.wb-md-body .wb-md-quote .wb-md-p:last-child { margin-bottom: 0; }
+.wb-md-body pre.wb-md-code { margin: 0 0 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--muted); white-space: pre; overflow: auto; }
+.wb-md-body pre.wb-md-code code { font-family: var(--mono-font-family); font-size: 12px; background: transparent; padding: 0; }
+.wb-md-body code.wb-md-code-inline { font-family: var(--mono-font-family); font-size: 12px; background: var(--muted); border-radius: 3px; padding: 1px 4px; }
+.wb-md-body a.wb-md-link { color: var(--primary); text-decoration: none; }
+.wb-md-body a.wb-md-link:hover { text-decoration: underline; }
+.wb-md-body .wb-md-hr { margin: 14px 0; border: 0; border-top: 1px solid var(--border); }
+
 .wb-preview-skeleton { display: flex; flex-direction: column; gap: 10px; padding: 14px; }
 .wb-preview-skeleton .wb-skeleton { height: 12px; }
 
@@ -330,6 +367,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-dialog .wb-dialog-body textarea { min-height: 150px; font-family: var(--mono-font-family); resize: vertical; }
 /* R3-P2-4：弹层内行内校验提示（文件名非法等）。 */
 .wb-dialog .wb-dialog-warning { margin: 6px 0 0; color: var(--destructive); font-size: 12px; }
+/* ConfirmDialog 表单字段（右键操作共用）：标签-输入行-提示三段式，与
+   mount/sync 弹窗的字段形态一致；路径值走等宽字体，内嵌浏览器不留双重边距。 */
+.wb-confirm-field { display: flex; flex-direction: column; gap: 4px; color: var(--muted-foreground); font-size: 11px; }
+.wb-confirm-field input { margin-top: 0; }
+.wb-dialog .wb-confirm-field input { margin-top: 0; }
+.wb-confirm-hint { display: block; margin: 6px 0 0; color: var(--muted-foreground); font-size: 11px; overflow-wrap: anywhere; }
+.wb-confirm-browser .wb-mount-browse-toolbar { margin: 8px 0 0; }
+.wb-confirm-browser .wb-mount-list { margin: 8px 0; }
 .wb-dialog footer { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--border); }
 .wb-dialog button { border-radius: var(--radius); padding: 4px 12px; }
 .wb-dialog .wb-dialog-primary { background: var(--primary); color: var(--primary-foreground); border: 0; }
@@ -386,6 +431,27 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-deepsearch { position: fixed; top: 96px; right: 24px; width: min(480px, calc(100vw - 48px)); max-height: 60vh; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; z-index: 95; color: var(--foreground); background: var(--popover); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 16px 40px rgb(0 0 0 / 45%); overflow: hidden; }
 .wb-deepsearch header strong { color: var(--foreground); }
 .wb-sync-dialog { overflow-y: auto; max-height: min(720px, calc(100vh - 40px)); }
+/* 同步/双向同步选项弹窗：复选行此前无样式（浏览器默认尺寸突兀），统一到
+   工作台的 12px 行高与主题色；过滤/备份/高级参数用双列网格收敛宽度。 */
+.wb-sync-check { display: flex; align-items: center; gap: 7px; margin: 10px 14px 0; color: var(--foreground); font-size: 12px; cursor: pointer; }
+.wb-sync-check input { flex: 0 0 auto; width: 13px; height: 13px; margin: 0; accent-color: var(--primary); cursor: pointer; }
+.wb-sync-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 12px; margin: 0 14px; }
+.wb-sync-grid > * { margin-left: 0; margin-right: 0; }
+.wb-sync-grid-hint { grid-column: 1 / -1; }
+/* 源/目标路径行：输入框 + 内嵌目录选择器开关（激活时高亮指示浏览器归属）。 */
+.wb-sync-path-row { display: flex; align-items: center; gap: 6px; }
+.wb-sync-path-row input { flex: 1; min-width: 0; }
+.wb-sync-path-row .wb-icon-button { flex: 0 0 auto; width: 26px; height: 26px; border: 1px solid var(--border); border-radius: var(--radius); }
+.wb-sync-path-row .wb-icon-button:hover { border-color: var(--accent); }
+.wb-sync-browse-active { background: var(--accent); color: var(--foreground); border-color: var(--accent); }
+.wb-sync-advanced-toggle { align-self: flex-start; margin: 12px 14px 0; border: 0; background: transparent; cursor: pointer; padding: 2px 0; color: var(--muted-foreground); font-size: 11px; text-decoration: underline dotted; }
+.wb-sync-advanced-toggle:hover { color: var(--foreground); }
+/* bisync 引导区块：resync 开关与首跑/覆盖警示收进同一警示框，视觉成组。 */
+.wb-sync-note { margin: 10px 14px 0; border: 1px solid color-mix(in srgb, var(--warning, #f59e0b) 45%, var(--border)); border-radius: 6px; padding: 8px 10px; background: color-mix(in srgb, var(--warning, #f59e0b) 10%, transparent); }
+.wb-sync-note .wb-sync-check { margin: 0; }
+.wb-sync-note-text { margin: 6px 0 0; color: var(--muted-foreground); font-size: 11px; overflow-wrap: anywhere; }
+/* 源 = 目标的前置拦截提示：区别于普通灰 hint。 */
+.wb-sync-warning { color: var(--destructive); }
 .wb-deepsearch header { display: flex; align-items: center; justify-content: space-between; }
 .wb-deepsearch-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; }
 .wb-deepsearch-list button { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 12px; padding: 5px 6px; border: 0; background: none; cursor: pointer; text-align: left; border-radius: 6px; }
@@ -522,8 +588,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-check-summary.is-ok { color: var(--success); }
 .wb-check-summary.is-diff { color: var(--warning); }
 .wb-settings-footer { display: flex; align-items: center; justify-content: flex-end; gap: 10px; border-top: 1px solid var(--border); padding: 10px 14px; }
-.wb-settings-footer .wb-toolbar-button { min-width: 96px; }
-.wb-settings-footer .wb-toolbar-button:disabled { opacity: 0.45; cursor: default; }
+.wb-settings-footer .wb-settings-save { min-width: 96px; }
+/* 面板/弹层内的动作按钮（连接测试、设置保存等）：wb-toolbar-button 的无边框
+   形态在面板里与正文无异，这里给出可点击的描边形态。 */
+.wb-action-button { border: 1px solid var(--border); border-radius: var(--radius); background: var(--background); padding: 4px 12px; font-size: 12px; color: var(--foreground); }
+.wb-action-button:hover:not(:disabled) { background: var(--accent); }
+.wb-action-button:disabled { opacity: 0.45; cursor: default; }
 .wb-desktop-only-card { display: flex; gap: 10px; align-items: flex-start; border: 1px solid color-mix(in srgb, var(--warning) 35%, var(--border)); background: color-mix(in srgb, var(--warning) 8%, var(--popover)); border-radius: 8px; padding: 10px 12px; }
 .wb-desktop-only-card .wb-doc-card-icon { width: 16px; height: 16px; flex: none; color: var(--warning); margin-top: 2px; }
 .wb-desktop-only-card strong { display: block; font-size: 12px; color: var(--foreground); }

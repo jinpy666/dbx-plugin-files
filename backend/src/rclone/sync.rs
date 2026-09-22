@@ -111,6 +111,17 @@ pub struct SyncJobParams {
     /// or metadata-flagging a comparison silently narrows the report, so
     /// check/bisync never carry it.
     pub metadata: bool,
+    /// `--update`: skip destination files whose size and modification time
+    /// both match the source (only new/newer files travel). Copy/Sync/Move
+    /// only — carried in the same filters block as `metadata`.
+    pub update: bool,
+    /// `--existing`: only transfer files that already exist at the
+    /// destination (never creates new files there). Copy/Sync/Move only.
+    pub existing: bool,
+    /// `--immutable`: files already present at the destination are assumed
+    /// immutable — skipped without even a checksum comparison, never
+    /// overwritten. Copy/Sync/Move only.
+    pub immutable: bool,
     /// `--min-size`: files smaller than this (e.g. `"100k"`) are filtered
     /// out. rc validates the value itself — a malformed string is rejected
     /// with HTTP 500 before the job starts (NOT silently ignored).
@@ -247,23 +258,13 @@ fn paths_overlap(a: &str, b: &str) -> bool {
     nested(a, b) || nested(b, a)
 }
 
-/// Starts an rc `_async` sync job and spawns its 500ms poll task
-/// (`core/stats{group}` + `job/status`). Events reach `on_event`, throttled
-/// for Progress via [`Throttle`] (200ms / 1%). The module owns the callback
-/// until the terminal event; afterwards the poll task exits — no leak, and
-/// the callback never fires again.
-pub async fn start_job(
-    client: RcClient,
-    params: SyncJobParams,
-    on_event: Box<dyn FnMut(SyncEvent) + Send>,
-) -> Result<SyncJobHandle, String> {
-    let method = match params.kind {
-        SyncKind::Copy => "sync/copy",
-        SyncKind::Sync => "sync/sync",
-        SyncKind::Move => "sync/move",
-        SyncKind::Check => "operations/check",
-        SyncKind::Bisync => "sync/bisync",
-    };
+/// Pure assembly of the rc request body, shared by [`start_job`] and the
+/// wire-shape tests: every optional param is injected snake_case and only
+/// when non-default (rc silently ignores camelCase spellings, and an absent
+/// key means rclone's own default). The pre-start validations (overlapping
+/// `--backup-dir`) live here too, so the tests pin the exact shape that
+/// would go on the wire.
+fn build_rc_body(params: &SyncJobParams) -> Result<Value, String> {
     // SUM mode (batch 7): verify the directory in `dst_rel` against an
     // existing checksum file instead of a live source tree. Live-pinned
     // v1.75.1 quirks: `srcFs` must be ABSENT (sending it trips the misleading
@@ -343,6 +344,19 @@ pub async fn start_job(
         if params.metadata {
             body["metadata"] = Value::Bool(true);
         }
+        // Policy flags (--update/--existing/--immutable): only sent when
+        // true, same assembly style as metadata — an absent key keeps
+        // rclone's default semantics (size+hash compare, new files allowed,
+        // overwrites allowed).
+        if params.update {
+            body["update"] = Value::Bool(true);
+        }
+        if params.existing {
+            body["existing"] = Value::Bool(true);
+        }
+        if params.immutable {
+            body["immutable"] = Value::Bool(true);
+        }
         if let Some(min_size) = params
             .min_size
             .as_deref()
@@ -421,6 +435,27 @@ pub async fn start_job(
             }
         }
     }
+    Ok(body)
+}
+
+/// Starts an rc `_async` sync job and spawns its 500ms poll task
+/// (`core/stats{group}` + `job/status`). Events reach `on_event`, throttled
+/// for Progress via [`Throttle`] (200ms / 1%). The module owns the callback
+/// until the terminal event; afterwards the poll task exits — no leak, and
+/// the callback never fires again.
+pub async fn start_job(
+    client: RcClient,
+    params: SyncJobParams,
+    on_event: Box<dyn FnMut(SyncEvent) + Send>,
+) -> Result<SyncJobHandle, String> {
+    let method = match params.kind {
+        SyncKind::Copy => "sync/copy",
+        SyncKind::Sync => "sync/sync",
+        SyncKind::Move => "sync/move",
+        SyncKind::Check => "operations/check",
+        SyncKind::Bisync => "sync/bisync",
+    };
+    let body = build_rc_body(&params)?;
     let response = client
         .call(method, &body)
         .await
@@ -762,6 +797,9 @@ mod tests {
             backup_dir_rel: None,
             suffix: None,
             metadata: false,
+            update: false,
+            existing: false,
+            immutable: false,
             min_size: None,
             max_size: None,
             min_age: None,
@@ -802,6 +840,43 @@ mod tests {
         assert!(!paths_overlap("_backups", "backups2"));
         // Cosmetic slashes do not change the answer.
         assert!(!paths_overlap("/_backups/", "/sub/"));
+    }
+
+    /// 策略旗标（--update/--existing/--immutable，与 metadata 同块装配）：
+    /// true 时 rc body 必须按 rc 键名携带布尔 true —— 缺一个就会静默退回
+    /// rclone 默认语义，旗标形同虚设。
+    #[test]
+    fn policy_flags_true_reach_the_rc_body() {
+        let mut job = params(SyncKind::Copy, std::path::Path::new("/s"), std::path::Path::new("/d"));
+        job.update = true;
+        job.existing = true;
+        job.immutable = true;
+        let body = build_rc_body(&job).expect("body");
+        for key in ["update", "existing", "immutable"] {
+            assert_eq!(
+                body.get(key).and_then(Value::as_bool),
+                Some(true),
+                "{key} must ride along as true: {body}"
+            );
+        }
+    }
+
+    /// 缺省（false）时三个键必须整体缺席：缺席 = rclone 默认语义，与
+    /// dry_run/max_delete「不设置就不下发」的装配口径一致。
+    #[test]
+    fn policy_flags_default_to_absent_in_the_rc_body() {
+        let body = build_rc_body(&params(
+            SyncKind::Copy,
+            std::path::Path::new("/s"),
+            std::path::Path::new("/d"),
+        ))
+        .expect("body");
+        for key in ["update", "existing", "immutable"] {
+            assert!(
+                body.get(key).is_none(),
+                "{key} must stay absent by default: {body}"
+            );
+        }
     }
 
     /// A backup dir inside the mirrored subtree is refused before any rc
