@@ -44,6 +44,8 @@ import {
 } from "@lucide/vue";
 import FileTable from "./components/FileTable.vue";
 import FileToolbar from "./components/FileToolbar.vue";
+// 宿主文件桥失败时由 App 主动唤起工具栏里的原生文件选择器（见 fallbackToNativeUploadPicker）。
+const fileToolbarRef = ref<InstanceType<typeof FileToolbar> | null>(null);
 import TransferPanel from "./components/TransferPanel.vue";
 import StatsPanel from "./components/StatsPanel.vue";
 import SettingsPanel from "./components/SettingsPanel.vue";
@@ -2235,6 +2237,21 @@ async function uploadLocalFiles(files: readonly File[], target: UploadTarget) {
   await afterUpload(uploaded, target, hadFailure);
 }
 
+/** 宿主文件桥读盘失败判定（对标 ssh 仓库 PR #92，issue #83/#79：宿主句柄
+ * 失效会以 "unknown plugin file handle" 之类原始英文错误直达用户）。 */
+function isHostBridgeReadFailure(cause: unknown): boolean {
+  if (!(cause instanceof Error)) return false;
+  const code = (cause as Error & { code?: unknown }).code;
+  return code === "upload-read-failed" || /file handle/i.test(cause.message);
+}
+
+/** 桥接不可用时的兜底：提示后自动打开 webview 原生文件选择器（File API，
+ * 不依赖宿主句柄），上传仍可完成。 */
+function fallbackToNativeUploadPicker() {
+  showNotice(t("uploadBridgeFallback"));
+  fileToolbarRef.value?.openNativePicker();
+}
+
 async function uploadHostFiles(files: Array<{ handleId: string; name: string; size: number }>, target: UploadTarget) {
   const fileTransfer = window.dbxPlugin.fileTransfer;
   if (!fileTransfer) return;
@@ -2253,6 +2270,15 @@ async function uploadHostFiles(files: Array<{ handleId: string; name: string; si
       // finally 统一处理）。
       if (cause instanceof TransferCanceled) return;
       hadFailure = true;
+      // 桥接读盘失败（如 unknown plugin file handle）不再直接走死：转成带
+      // 文件名的可读提示，剩余文件改由原生选择器重新挑（原 code 保留）。
+      if (isHostBridgeReadFailure(cause)) {
+        const code = (cause as Error & { code?: unknown }).code;
+        showError(Object.assign(new Error(t("uploadBridgeReadFailed", { name: file.name })), { code, cause }));
+        await afterUpload(uploaded, target, true);
+        fallbackToNativeUploadPicker();
+        return;
+      }
       showError(cause);
     } finally {
       await fileTransfer.cancel(file.handleId).catch(() => undefined);
@@ -2271,6 +2297,11 @@ async function onUpload(files: File[] | null) {
       const picked = await fileTransfer.pick({ multiple: true });
       await uploadHostFiles(picked.files, target);
     } catch (cause) {
+      // pick 就失败（同一宿主桥故障）同样回退原生选择器，而非弹原始错误。
+      if (isHostBridgeReadFailure(cause)) {
+        fallbackToNativeUploadPicker();
+        return;
+      }
       showError(cause);
     }
     return;
@@ -3634,6 +3665,7 @@ onBeforeUnmount(() => {
     <!-- 审计#17：工具栏为单一 dock 开关（不带 tab = 切换当前页签开/关）；
          带 tab 的旧语义保留，供既有调用方/MCP intent 兼容。 -->
     <FileToolbar
+      ref="fileToolbarRef"
       :can-write="canWrite"
       :busy="loading"
       :has-selection="toolbarTarget.hasSelection"
