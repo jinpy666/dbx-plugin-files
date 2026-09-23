@@ -35,8 +35,10 @@ into a coherent, auditable, and automatable workflow.
 ## Highlights
 
 - Multi-protocol engine (managed rclone rcd): local filesystems,
-  S3/MinIO, Alibaba Cloud OSS, Tencent Cloud COS, Qiniu Kodo, Huawei OBS, WebDAV,
-  FTP, SFTP, SMB/CIFS, and 50 generic rclone backends such as hdfs/qingstor.
+  S3/MinIO, Alibaba Cloud OSS, Tencent Cloud COS, Qiniu Kodo, Huawei OBS,
+  Cloudflare R2, Wasabi, DigitalOcean Spaces, Scaleway, IDrive e2, UCloud US3,
+  China Mobile EOS, Netease NOS, Baidu BOS, Volcengine TOS, Kingsoft KS3,
+  WebDAV, FTP, SFTP, SMB/CIFS, and 50 generic rclone backends such as hdfs/qingstor.
 - SFTP dual stack: the `sftp` quick protocol (OpenDAL, keyfile auth) and
   `sftp-native` (russh, password or keyfile) coexist; on Windows use `sftp-native`.
 - Consistent browse, read, upload, download, copy, move, rename, and delete operations.

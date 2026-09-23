@@ -37,7 +37,7 @@ pub const JSON_CHUNK_BYTES: usize = 1024 * 1024;
 /// (stored `service` + JSON parameters). Stored connections from the
 /// OpenDAL era (`opendal-custom`) are normalized onto `rclone-custom` at
 /// parse time — the alias never reaches the engine.
-pub const PROTOCOLS: [&str; 72] = [
+pub const PROTOCOLS: [&str; 83] = [
     "fs",
     "s3",
     "gcs",
@@ -46,6 +46,20 @@ pub const PROTOCOLS: [&str; 72] = [
     "oss",
     "cos",
     "qiniu",
+    // S3-compatible vendor profiles: dedicated provider signatures on the
+    // rclone `s3` backend (r2/wasabi/spaces/scaleway/idrive/us3/ecloud/nos)
+    // or the `Other` signature with a mandatory endpoint (bos/tos/ks3).
+    "r2",
+    "wasabi",
+    "spaces",
+    "scaleway",
+    "idrive",
+    "us3",
+    "ecloud",
+    "nos",
+    "bos",
+    "tos",
+    "ks3",
     "webdav",
     "ftp",
     "sftp",
@@ -2523,31 +2537,44 @@ mod tests {
         }
 
         // Protocol-gated field matrix: each protocol only surfaces its own
-        // fields, global fields stay ungated.
+        // fields, global fields stay ungated. The S3-compatible vendor
+        // protocols (r2..ks3) mirror the s3-family gating exactly.
+        let s3_vendors = [
+            "r2", "wasabi", "spaces", "scaleway", "idrive", "us3", "ecloud", "nos", "bos",
+            "tos", "ks3",
+        ];
+        let mut bucket_protocols = vec!["s3", "gcs", "obs", "oss", "cos", "qiniu"];
+        bucket_protocols.extend_from_slice(&s3_vendors);
+        let mut key_protocols = vec!["s3", "obs", "oss", "qiniu"];
+        key_protocols.extend_from_slice(&[
+            "r2", "wasabi", "spaces", "scaleway", "idrive", "us3", "ecloud", "nos", "bos",
+            "tos", "ks3",
+        ]);
+        key_protocols.extend_from_slice(&[
+            "azurefiles", "b2", "cloudinary", "imagekit", "internetarchive", "qingstor",
+            "sugarsync",
+        ]);
+        let mut endpoint_protocols = vec![
+            "s3", "gcs", "azblob", "obs", "oss", "cos", "qiniu",
+        ];
+        endpoint_protocols.extend_from_slice(&s3_vendors);
+        endpoint_protocols.extend_from_slice(&[
+            "webdav", "ftp", "sftp", "smb", "sftp-native", "koofr", "pcloud", "seafile",
+            "azurefiles", "filefabric", "hdfs", "http", "imagekit", "netstorage", "qingstor",
+            "quatrix", "sia",
+        ]);
         let expects: &[(&str, &[&str])] = &[
-            ("bucket", &["s3", "gcs", "obs", "oss", "cos", "qiniu"]),
+            ("bucket", &bucket_protocols),
             ("container", &["azblob"]),
             ("account_name", &["azblob"]),
             ("account_key", &["azblob"]),
             ("credential", &["gcs"]),
             ("scope", &["gcs"]),
             ("region", &["s3"]),
-            ("access_key_id", &[
-                "s3", "obs", "oss", "qiniu",
-                "azurefiles", "b2", "cloudinary", "imagekit", "internetarchive", "qingstor",
-                "sugarsync",
-            ]),
-            ("secret_access_key", &[
-                "s3", "obs", "oss", "qiniu",
-                "azurefiles", "b2", "cloudinary", "imagekit", "internetarchive", "qingstor",
-                "sugarsync",
-            ]),
+            ("access_key_id", &key_protocols),
+            ("secret_access_key", &key_protocols),
             ("enable_virtual_host_style", &["s3"]),
-            (
-                "endpoint",
-                &["s3", "gcs", "azblob", "obs", "oss", "cos", "qiniu", "webdav", "ftp", "sftp", "smb", "sftp-native", "koofr", "pcloud", "seafile",
-                  "azurefiles", "filefabric", "hdfs", "http", "imagekit", "netstorage", "qingstor", "quatrix", "sia"],
-            ),
+            ("endpoint", &endpoint_protocols),
             ("secret_id", &["cos"]),
             ("secret_key", &["cos"]),
             ("security_token", &["cos"]),
@@ -2821,9 +2848,10 @@ mod tests {
             "endpoint required_when must stay inside its visible_when"
         );
         for required_protocol in [
-            "gcs", "azblob", "obs", "oss", "cos", "qiniu", "webdav", "ftp", "sftp", "smb", "sftp-native",
-            "koofr", "pcloud", "seafile", "filefabric", "hdfs", "http", "imagekit", "netstorage",
-            "quatrix",
+            "gcs", "azblob", "obs", "oss", "cos", "qiniu", "r2", "wasabi", "spaces", "scaleway",
+            "idrive", "us3", "ecloud", "nos", "bos", "tos", "ks3", "webdav", "ftp", "sftp",
+            "smb", "sftp-native", "koofr", "pcloud", "seafile", "filefabric", "hdfs", "http",
+            "imagekit", "netstorage", "quatrix",
         ] {
             assert!(
                 endpoint_required.contains(&required_protocol),

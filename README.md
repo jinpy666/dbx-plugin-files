@@ -34,8 +34,10 @@ Files Studio（`io.dbx.files`）是统一的多后端文件工作台：本地文
 ## 核心能力
 
 - 多协议引擎（托管 rclone rcd）：本地文件系统、S3/MinIO、阿里云 OSS、
-  腾讯云 COS、七牛云 Kodo、华为云 OBS、WebDAV、FTP、SFTP、SMB/CIFS，
-  以及 hdfs/qingstor 等 50 个通用 rclone 后端。
+  腾讯云 COS、七牛云 Kodo、华为云 OBS、Cloudflare R2、Wasabi、
+  DigitalOcean Spaces、Scaleway、IDrive e2、UCloud US3、移动云 EOS、
+  网易数帆 NOS、百度智能云 BOS、火山引擎 TOS、金山云 KS3、
+  WebDAV、FTP、SFTP、SMB/CIFS，以及 hdfs/qingstor 等 50 个通用 rclone 后端。
 - SFTP 双栈：`sftp` 快捷协议（OpenDAL，keyfile 认证）与 `sftp-native`（russh，
   密码或 keyfile）并存；Windows 平台请使用 `sftp-native`。
 - 统一浏览、读取、上传、下载、复制、移动、重命名和删除操作。

@@ -88,6 +88,50 @@
               "value": "qiniu"
             },
             {
+              "label": "Cloudflare R2",
+              "value": "r2"
+            },
+            {
+              "label": "Wasabi",
+              "value": "wasabi"
+            },
+            {
+              "label": "DigitalOcean Spaces",
+              "value": "spaces"
+            },
+            {
+              "label": "Scaleway",
+              "value": "scaleway"
+            },
+            {
+              "label": "IDrive e2",
+              "value": "idrive"
+            },
+            {
+              "label": "UCloud US3",
+              "value": "us3"
+            },
+            {
+              "label": "China Mobile EOS",
+              "value": "ecloud"
+            },
+            {
+              "label": "Netease NOS",
+              "value": "nos"
+            },
+            {
+              "label": "Baidu BOS",
+              "value": "bos"
+            },
+            {
+              "label": "Volcengine TOS",
+              "value": "tos"
+            },
+            {
+              "label": "Kingsoft KS3",
+              "value": "ks3"
+            },
+            {
               "label": "WebDAV",
               "value": "webdav"
             },
@@ -358,6 +402,17 @@
               "oss",
               "cos",
               "qiniu",
+              "r2",
+              "wasabi",
+              "spaces",
+              "scaleway",
+              "idrive",
+              "us3",
+              "ecloud",
+              "nos",
+              "bos",
+              "tos",
+              "ks3",
               "webdav",
               "ftp",
               "sftp",
@@ -386,6 +441,17 @@
               "obs",
               "cos",
               "qiniu",
+              "r2",
+              "wasabi",
+              "spaces",
+              "scaleway",
+              "idrive",
+              "us3",
+              "ecloud",
+              "nos",
+              "bos",
+              "tos",
+              "ks3",
               "webdav",
               "ftp",
               "sftp",
@@ -402,7 +468,7 @@
               "quatrix"
             ]
           },
-          "description": "Service address. Object storage/WebDAV: https://host; FTP: ftp(s)://host[:21]; SFTP: ssh://user@host[:22]; SMB: host[:445]; http: full URL; hdfs: namenode:8020; netstorage/quatrix: host name; azurefiles: optional service URL."
+          "description": "Service address. Object storage/WebDAV: https://host; FTP: ftp(s)://host[:21]; SFTP: ssh://user@host[:22]; SMB: host[:445]; http: full URL; hdfs: namenode:8020; netstorage/quatrix: host name; azurefiles: optional service URL. S3-compatible vendors take their vendor S3 endpoint: R2 https://<accountid>.r2.cloudflarestorage.com; Wasabi https://s3.<region>.wasabisys.com; Spaces https://<region>.digitaloceanspaces.com; Scaleway https://s3.<region>.scw.cloud; IDrive e2 account endpoint; US3 https://s3-<region>.ufileos.com; China Mobile EOS https://eos-<region>-1.cmecloud.cn; Netease NOS https://s3.netease.com; BOS https://s3.<region>.bcebos.com; TOS https://tos-s3-<region>.volces.com; KS3 https://s3.<region>.ksyuncs.com."
         },
         {
           "key": "config",
@@ -650,7 +716,18 @@
               "obs",
               "oss",
               "cos",
-              "qiniu"
+              "qiniu",
+              "r2",
+              "wasabi",
+              "spaces",
+              "scaleway",
+              "idrive",
+              "us3",
+              "ecloud",
+              "nos",
+              "bos",
+              "tos",
+              "ks3"
             ]
           },
           "required_when": {
@@ -794,6 +871,17 @@
               "obs",
               "oss",
               "qiniu",
+              "r2",
+              "wasabi",
+              "spaces",
+              "scaleway",
+              "idrive",
+              "us3",
+              "ecloud",
+              "nos",
+              "bos",
+              "tos",
+              "ks3",
               "azurefiles",
               "b2",
               "cloudinary",
@@ -810,12 +898,23 @@
               "obs",
               "oss",
               "qiniu",
+              "r2",
+              "wasabi",
+              "spaces",
+              "scaleway",
+              "idrive",
+              "us3",
+              "ecloud",
+              "nos",
+              "bos",
+              "tos",
+              "ks3",
               "b2",
               "cloudinary",
               "imagekit"
             ]
           },
-          "description": "Access key or public identifier: S3/OBS/OSS/Qiniu access key ID; b2 account ID; azurefiles storage account; qingstor/internetarchive/sugarsync access key; cloudinary API key; imagekit public key."
+          "description": "Access key or public identifier: S3-compatible access key ID (s3/obs/oss/qiniu/r2/wasabi/spaces/scaleway/idrive/us3/ecloud/nos/bos/tos/ks3 — for R2, the Access Key ID of an R2 API token); b2 account ID; azurefiles storage account; qingstor/internetarchive/sugarsync access key; cloudinary API key; imagekit public key."
         },
         {
           "key": "secret_access_key",
@@ -830,6 +929,17 @@
               "obs",
               "oss",
               "qiniu",
+              "r2",
+              "wasabi",
+              "spaces",
+              "scaleway",
+              "idrive",
+              "us3",
+              "ecloud",
+              "nos",
+              "bos",
+              "tos",
+              "ks3",
               "azurefiles",
               "b2",
               "cloudinary",
@@ -846,12 +956,23 @@
               "obs",
               "oss",
               "qiniu",
+              "r2",
+              "wasabi",
+              "spaces",
+              "scaleway",
+              "idrive",
+              "us3",
+              "ecloud",
+              "nos",
+              "bos",
+              "tos",
+              "ks3",
               "b2",
               "cloudinary",
               "imagekit"
             ]
           },
-          "description": "Secret kept in the host secret binding: S3/OBS/OSS/Qiniu secret key; b2 application key; azurefiles account key; qingstor/internetarchive access secret; sugarsync private access key; cloudinary API secret; imagekit private key."
+          "description": "Secret kept in the host secret binding: S3-compatible secret access key (s3/obs/oss/qiniu/r2/wasabi/spaces/scaleway/idrive/us3/ecloud/nos/bos/tos/ks3 — for R2, the Secret Access Key of an R2 API token); b2 application key; azurefiles account key; qingstor/internetarchive access secret; sugarsync private access key; cloudinary API secret; imagekit private key."
         },
         {
           "key": "token",
@@ -1319,7 +1440,18 @@
                 "tardigrade": "Tardigrade",
                 "ulozto": "Uloz.to",
                 "union": "Union",
-                "zoho": "Zoho WorkDrive"
+                "zoho": "Zoho WorkDrive",
+                "r2": "Cloudflare R2",
+                "wasabi": "Wasabi",
+                "spaces": "DigitalOcean Spaces",
+                "scaleway": "Scaleway",
+                "idrive": "IDrive e2",
+                "us3": "UCloud US3",
+                "ecloud": "移动云 EOS",
+                "nos": "网易数帆 NOS",
+                "bos": "百度智能云 BOS",
+                "tos": "火山引擎 TOS",
+                "ks3": "金山云 KS3"
               },
               "description": "选择存储后端：常见后端有专属表单；通用后端复用下方通用字段，额外选项以 JSON 提供。"
             },
@@ -1368,7 +1500,7 @@
             },
             "endpoint": {
               "label": "端点",
-              "description": "服务地址。对象存储/WebDAV：https://host；FTP：ftp(s)://host[:21]；SFTP：ssh://user@host[:22]；SMB：host[:445]；http：完整 URL；hdfs：namenode:8020；netstorage/quatrix：主机名；azurefiles：可选服务 URL。"
+              "description": "服务地址。对象存储/WebDAV：https://host；FTP：ftp(s)://host[:21]；SFTP：ssh://user@host[:22]；SMB：host[:445]；http：完整 URL；hdfs：namenode:8020；netstorage/quatrix：主机名；azurefiles：可选服务 URL。 S3 兼容厂商填写其 S3 端点：R2 https://<accountid>.r2.cloudflarestorage.com；Wasabi https://s3.<region>.wasabisys.com；Spaces https://<region>.digitaloceanspaces.com；Scaleway https://s3.<region>.scw.cloud；IDrive e2 账号端点；US3 https://s3-<region>.ufileos.com；移动云 EOS https://eos-<region>-1.cmecloud.cn；网易数帆 NOS https://s3.netease.com；BOS https://s3.<region>.bcebos.com；TOS https://tos-s3-<region>.volces.com；KS3 https://s3.<region>.ksyuncs.com。"
             },
             "share": {
               "label": "共享名",
@@ -1381,11 +1513,11 @@
             },
             "access_key_id": {
               "label": "Access Key ID",
-              "description": "访问密钥或公开标识：S3/OBS/OSS/Qiniu 的 Access Key ID；b2 账户 ID；azurefiles 存储账户；qingstor/internetarchive/sugarsync 访问密钥；cloudinary API 密钥；imagekit 公钥。"
+              "description": "访问密钥或公开标识：S3/OBS/OSS/Qiniu 的 Access Key ID；b2 账户 ID；azurefiles 存储账户；qingstor/internetarchive/sugarsync 访问密钥；cloudinary API 密钥；imagekit 公钥。 S3 兼容协议（s3/obs/oss/qiniu/r2/wasabi/spaces/scaleway/idrive/us3/ecloud/nos/bos/tos/ks3）的 Access Key ID（R2 填 R2 API 令牌的 Access Key ID）"
             },
             "secret_access_key": {
               "label": "Secret Access Key",
-              "description": "由宿主 secret binding 保管的机密：S3/OBS/OSS/Qiniu 的 Secret Key；b2 应用密钥；azurefiles 账户密钥；qingstor/internetarchive 访问私钥；sugarsync 私有访问密钥；cloudinary API 密钥；imagekit 私钥。"
+              "description": "由宿主 secret binding 保管的机密：S3/OBS/OSS/Qiniu 的 Secret Key；b2 应用密钥；azurefiles 账户密钥；qingstor/internetarchive 访问私钥；sugarsync 私有访问密钥；cloudinary API 密钥；imagekit 私钥。 S3 兼容协议的 Secret Access Key（协议范围同访问密钥；R2 填 R2 API 令牌的 Secret Access Key）"
             },
             "secret_id": {
               "label": "Secret ID",
@@ -1592,7 +1724,18 @@
                 "tardigrade": "Tardigrade",
                 "ulozto": "Uloz.to",
                 "union": "Union",
-                "zoho": "Zoho WorkDrive"
+                "zoho": "Zoho WorkDrive",
+                "r2": "Cloudflare R2",
+                "wasabi": "Wasabi",
+                "spaces": "DigitalOcean Spaces",
+                "scaleway": "Scaleway",
+                "idrive": "IDrive e2",
+                "us3": "UCloud US3",
+                "ecloud": "移動雲 EOS",
+                "nos": "網易數帆 NOS",
+                "bos": "百度智能雲 BOS",
+                "tos": "火山引擎 TOS",
+                "ks3": "金山雲 KS3"
               },
               "description": "選擇儲存後端：常見後端有專屬表單；通用後端重複使用下方通用欄位，額外選項以 JSON 提供。"
             },
@@ -1641,7 +1784,7 @@
             },
             "endpoint": {
               "label": "端點",
-              "description": "服務位址。物件儲存/WebDAV：https://host；FTP：ftp(s)://host[:21]；SFTP：ssh://user@host[:22]；SMB：host[:445]；http：完整 URL；hdfs：namenode:8020；netstorage/quatrix：主機名稱；azurefiles：可選服務 URL。"
+              "description": "服務位址。物件儲存/WebDAV：https://host；FTP：ftp(s)://host[:21]；SFTP：ssh://user@host[:22]；SMB：host[:445]；http：完整 URL；hdfs：namenode:8020；netstorage/quatrix：主機名稱；azurefiles：可選服務 URL。 S3 相容廠商填寫其 S3 端點：R2 https://<accountid>.r2.cloudflarestorage.com；Wasabi https://s3.<region>.wasabisys.com；Spaces https://<region>.digitaloceanspaces.com；Scaleway https://s3.<region>.scw.cloud；IDrive e2 帳號端點；US3 https://s3-<region>.ufileos.com；移動雲 EOS https://eos-<region>-1.cmecloud.cn；網易數帆 NOS https://s3.netease.com；BOS https://s3.<region>.bcebos.com；TOS https://tos-s3-<region>.volces.com；KS3 https://s3.<region>.ksyuncs.com。"
             },
             "share": {
               "label": "共用名稱",
@@ -1654,11 +1797,11 @@
             },
             "access_key_id": {
               "label": "Access Key ID",
-              "description": "存取金鑰或公開識別：S3/OBS/OSS/Qiniu 的 Access Key ID；b2 帳戶 ID；azurefiles 儲存體帳戶；qingstor/internetarchive/sugarsync 存取金鑰；cloudinary API 金鑰；imagekit 公鑰。"
+              "description": "存取金鑰或公開識別：S3/OBS/OSS/Qiniu 的 Access Key ID；b2 帳戶 ID；azurefiles 儲存體帳戶；qingstor/internetarchive/sugarsync 存取金鑰；cloudinary API 金鑰；imagekit 公鑰。 S3 相容協定（s3/obs/oss/qiniu/r2/wasabi/spaces/scaleway/idrive/us3/ecloud/nos/bos/tos/ks3）的 Access Key ID（R2 填 R2 API 權杖的 Access Key ID）"
             },
             "secret_access_key": {
               "label": "Secret Access Key",
-              "description": "由宿主 secret binding 保管的機密：S3/OBS/OSS/Qiniu 的 Secret Key；b2 應用程式金鑰；azurefiles 帳戶金鑰；qingstor/internetarchive 存取私鑰；sugarsync 私有存取金鑰；cloudinary API 金鑰；imagekit 私鑰。"
+              "description": "由宿主 secret binding 保管的機密：S3/OBS/OSS/Qiniu 的 Secret Key；b2 應用程式金鑰；azurefiles 帳戶金鑰；qingstor/internetarchive 存取私鑰；sugarsync 私有存取金鑰；cloudinary API 金鑰；imagekit 私鑰。 S3 相容協定的 Secret Access Key（協定範圍同存取金鑰；R2 填 R2 API 權杖的 Secret Access Key）"
             },
             "secret_id": {
               "label": "Secret ID",
@@ -1865,7 +2008,18 @@
                 "tardigrade": "Tardigrade",
                 "ulozto": "Uloz.to",
                 "union": "Union",
-                "zoho": "Zoho WorkDrive"
+                "zoho": "Zoho WorkDrive",
+                "r2": "Cloudflare R2",
+                "wasabi": "Wasabi",
+                "spaces": "DigitalOcean Spaces",
+                "scaleway": "Scaleway",
+                "idrive": "IDrive e2",
+                "us3": "UCloud US3",
+                "ecloud": "China Mobile EOS",
+                "nos": "Netease NOS",
+                "bos": "Baidu BOS",
+                "tos": "Volcengine TOS",
+                "ks3": "Kingsoft KS3"
               },
               "description": "Pick a storage backend: popular backends get a dedicated form; generic backends reuse the common fields and take extra options as JSON."
             },
@@ -1914,7 +2068,7 @@
             },
             "endpoint": {
               "label": "Endpoint",
-              "description": "Service address. Object storage/WebDAV: https://host; FTP: ftp(s)://host[:21]; SFTP: ssh://user@host[:22]; SMB: host[:445]; http: full URL; hdfs: namenode:8020; netstorage/quatrix: host name; azurefiles: optional service URL."
+              "description": "Service address. Object storage/WebDAV: https://host; FTP: ftp(s)://host[:21]; SFTP: ssh://user@host[:22]; SMB: host[:445]; http: full URL; hdfs: namenode:8020; netstorage/quatrix: host name; azurefiles: optional service URL. S3-compatible vendors take their vendor S3 endpoint: R2 https://<accountid>.r2.cloudflarestorage.com; Wasabi https://s3.<region>.wasabisys.com; Spaces https://<region>.digitaloceanspaces.com; Scaleway https://s3.<region>.scw.cloud; IDrive e2 account endpoint; US3 https://s3-<region>.ufileos.com; China Mobile EOS https://eos-<region>-1.cmecloud.cn; Netease NOS https://s3.netease.com; BOS https://s3.<region>.bcebos.com; TOS https://tos-s3-<region>.volces.com; KS3 https://s3.<region>.ksyuncs.com."
             },
             "share": {
               "label": "Share",
@@ -1927,11 +2081,11 @@
             },
             "access_key_id": {
               "label": "Access key ID",
-              "description": "Access key or public identifier: S3/OBS/OSS/Qiniu access key ID; b2 account ID; azurefiles storage account; qingstor/internetarchive/sugarsync access key; cloudinary API key; imagekit public key."
+              "description": "Access key or public identifier: S3/OBS/OSS/Qiniu access key ID; b2 account ID; azurefiles storage account; qingstor/internetarchive/sugarsync access key; cloudinary API key; imagekit public key. S3-compatible access key ID (s3/obs/oss/qiniu/r2/wasabi/spaces/scaleway/idrive/us3/ecloud/nos/bos/tos/ks3 — for R2, the Access Key ID of an R2 API token)"
             },
             "secret_access_key": {
               "label": "Secret access key",
-              "description": "Secret kept in the host secret binding: S3/OBS/OSS/Qiniu secret key; b2 application key; azurefiles account key; qingstor/internetarchive access secret; sugarsync private access key; cloudinary API secret; imagekit private key."
+              "description": "Secret kept in the host secret binding: S3/OBS/OSS/Qiniu secret key; b2 application key; azurefiles account key; qingstor/internetarchive access secret; sugarsync private access key; cloudinary API secret; imagekit private key. S3-compatible secret access key (s3/obs/oss/qiniu/r2/wasabi/spaces/scaleway/idrive/us3/ecloud/nos/bos/tos/ks3 — for R2, the Secret Access Key of an R2 API token)"
             },
             "secret_id": {
               "label": "Secret ID",
@@ -2138,7 +2292,18 @@
                 "tardigrade": "Tardigrade",
                 "ulozto": "Uloz.to",
                 "union": "Union",
-                "zoho": "Zoho WorkDrive"
+                "zoho": "Zoho WorkDrive",
+                "r2": "Cloudflare R2",
+                "wasabi": "Wasabi",
+                "spaces": "DigitalOcean Spaces",
+                "scaleway": "Scaleway",
+                "idrive": "IDrive e2",
+                "us3": "UCloud US3",
+                "ecloud": "China Mobile EOS",
+                "nos": "Netease NOS",
+                "bos": "Baidu BOS",
+                "tos": "Volcengine TOS",
+                "ks3": "Kingsoft KS3"
               },
               "description": "Elija un backend de almacenamiento: los más comunes tienen formulario propio; los genéricos reutilizan los campos comunes y aceptan opciones extra en JSON."
             },
@@ -2187,7 +2352,7 @@
             },
             "endpoint": {
               "label": "Endpoint",
-              "description": "Dirección del servicio. Almacenamiento de objetos/WebDAV: https://host; FTP: ftp(s)://host[:21]; SFTP: ssh://user@host[:22]; SMB: host[:445]; http: URL completa; hdfs: namenode:8020; netstorage/quatrix: nombre de host; azurefiles: URL de servicio opcional."
+              "description": "Dirección del servicio. Almacenamiento de objetos/WebDAV: https://host; FTP: ftp(s)://host[:21]; SFTP: ssh://user@host[:22]; SMB: host[:445]; http: URL completa; hdfs: namenode:8020; netstorage/quatrix: nombre de host; azurefiles: URL de servicio opcional. Los proveedores compatibles con S3 usan su endpoint S3: R2 https://<accountid>.r2.cloudflarestorage.com; Wasabi https://s3.<region>.wasabisys.com; Spaces https://<region>.digitaloceanspaces.com; Scaleway https://s3.<region>.scw.cloud; IDrive e2 endpoint de la cuenta; US3 https://s3-<region>.ufileos.com; China Mobile EOS https://eos-<region>-1.cmecloud.cn; Netease NOS https://s3.netease.com; BOS https://s3.<region>.bcebos.com; TOS https://tos-s3-<region>.volces.com; KS3 https://s3.<region>.ksyuncs.com."
             },
             "share": {
               "label": "Recurso compartido",
@@ -2200,11 +2365,11 @@
             },
             "access_key_id": {
               "label": "ID de clave de acceso",
-              "description": "Clave de acceso o identificador público: Access Key ID de S3/OBS/OSS/Qiniu; ID de cuenta de b2; cuenta de almacenamiento de azurefiles; clave de acceso de qingstor/internetarchive/sugarsync; clave de API de cloudinary; clave pública de imagekit."
+              "description": "Clave de acceso o identificador público: Access Key ID de S3/OBS/OSS/Qiniu; ID de cuenta de b2; cuenta de almacenamiento de azurefiles; clave de acceso de qingstor/internetarchive/sugarsync; clave de API de cloudinary; clave pública de imagekit. Access Key ID de los protocolos compatibles con S3 (s3/obs/oss/qiniu/r2/wasabi/spaces/scaleway/idrive/us3/ecloud/nos/bos/tos/ks3; en R2, el Access Key ID de un token de API de R2)"
             },
             "secret_access_key": {
               "label": "Clave de acceso secreta",
-              "description": "Secreto guardado en el binding secreto del host: clave secreta de S3/OBS/OSS/Qiniu; clave de aplicación de b2; clave de cuenta de azurefiles; secreto de acceso de qingstor/internetarchive; clave de acceso privada de sugarsync; secreto de API de cloudinary; clave privada de imagekit."
+              "description": "Secreto guardado en el binding secreto del host: clave secreta de S3/OBS/OSS/Qiniu; clave de aplicación de b2; clave de cuenta de azurefiles; secreto de acceso de qingstor/internetarchive; clave de acceso privada de sugarsync; secreto de API de cloudinary; clave privada de imagekit. Clave secreta de los protocolos compatibles con S3 (mismos protocolos que la clave de acceso; en R2, el Secret Access Key de un token de API de R2)"
             },
             "secret_id": {
               "label": "ID secreto",
@@ -2411,7 +2576,18 @@
                 "tardigrade": "Tardigrade",
                 "ulozto": "Uloz.to",
                 "union": "Union",
-                "zoho": "Zoho WorkDrive"
+                "zoho": "Zoho WorkDrive",
+                "r2": "Cloudflare R2",
+                "wasabi": "Wasabi",
+                "spaces": "DigitalOcean Spaces",
+                "scaleway": "Scaleway",
+                "idrive": "IDrive e2",
+                "us3": "UCloud US3",
+                "ecloud": "China Mobile EOS",
+                "nos": "Netease NOS",
+                "bos": "Baidu BOS",
+                "tos": "Volcengine TOS",
+                "ks3": "Kingsoft KS3"
               },
               "description": "Scegliere un backend di archiviazione: i più comuni hanno un modulo dedicato; quelli generici riutilizzano i campi comuni e accettano opzioni extra in JSON."
             },
@@ -2460,7 +2636,7 @@
             },
             "endpoint": {
               "label": "Endpoint",
-              "description": "Indirizzo del servizio. Object storage/WebDAV: https://host; FTP: ftp(s)://host[:21]; SFTP: ssh://user@host[:22]; SMB: host[:445]; http: URL completo; hdfs: namenode:8020; netstorage/quatrix: nome host; azurefiles: URL di servizio opzionale."
+              "description": "Indirizzo del servizio. Object storage/WebDAV: https://host; FTP: ftp(s)://host[:21]; SFTP: ssh://user@host[:22]; SMB: host[:445]; http: URL completo; hdfs: namenode:8020; netstorage/quatrix: nome host; azurefiles: URL di servizio opzionale. I provider compatibili S3 usano il loro endpoint S3: R2 https://<accountid>.r2.cloudflarestorage.com; Wasabi https://s3.<region>.wasabisys.com; Spaces https://<region>.digitaloceanspaces.com; Scaleway https://s3.<region>.scw.cloud; IDrive e2 endpoint dell'account; US3 https://s3-<region>.ufileos.com; China Mobile EOS https://eos-<region>-1.cmecloud.cn; Netease NOS https://s3.netease.com; BOS https://s3.<region>.bcebos.com; TOS https://tos-s3-<region>.volces.com; KS3 https://s3.<region>.ksyuncs.com."
             },
             "share": {
               "label": "Condivisione",
@@ -2473,11 +2649,11 @@
             },
             "access_key_id": {
               "label": "ID chiave di accesso",
-              "description": "Chiave di accesso o identificatore pubblico: Access Key ID di S3/OBS/OSS/Qiniu; ID account di b2; account di archiviazione di azurefiles; chiave di accesso di qingstor/internetarchive/sugarsync; chiave API di cloudinary; chiave pubblica di imagekit."
+              "description": "Chiave di accesso o identificatore pubblico: Access Key ID di S3/OBS/OSS/Qiniu; ID account di b2; account di archiviazione di azurefiles; chiave di accesso di qingstor/internetarchive/sugarsync; chiave API di cloudinary; chiave pubblica di imagekit. Access Key ID dei protocolli compatibili S3 (s3/obs/oss/qiniu/r2/wasabi/spaces/scaleway/idrive/us3/ecloud/nos/bos/tos/ks3; per R2, l'Access Key ID di un token API R2)"
             },
             "secret_access_key": {
               "label": "Chiave di accesso segreta",
-              "description": "Segreto conservato nel binding segreto dell'host: chiave segreta di S3/OBS/OSS/Qiniu; chiave applicazione di b2; chiave account di azurefiles; segreto di accesso di qingstor/internetarchive; chiave di accesso privata di sugarsync; segreto API di cloudinary; chiave privata di imagekit."
+              "description": "Segreto conservato nel binding segreto dell'host: chiave segreta di S3/OBS/OSS/Qiniu; chiave applicazione di b2; chiave account di azurefiles; segreto di accesso di qingstor/internetarchive; chiave di accesso privata di sugarsync; segreto API di cloudinary; chiave privata di imagekit. Chiave segreta dei protocolli compatibili S3 (stessi protocolli della chiave di accesso; per R2, il Secret Access Key di un token API R2)"
             },
             "secret_id": {
               "label": "ID segreto",
@@ -2684,7 +2860,18 @@
                 "tardigrade": "Tardigrade",
                 "ulozto": "Uloz.to",
                 "union": "Union",
-                "zoho": "Zoho WorkDrive"
+                "zoho": "Zoho WorkDrive",
+                "r2": "Cloudflare R2",
+                "wasabi": "Wasabi",
+                "spaces": "DigitalOcean Spaces",
+                "scaleway": "Scaleway",
+                "idrive": "IDrive e2",
+                "us3": "UCloud US3",
+                "ecloud": "China Mobile EOS",
+                "nos": "Netease NOS",
+                "bos": "Baidu BOS",
+                "tos": "Volcengine TOS",
+                "ks3": "Kingsoft KS3"
               },
               "description": "ストレージバックエンドを選択します。主要なバックエンドには専用フォームがあり、汎用バックエンドは共通フィールドを再利用し、追加オプションは JSON で設定します。"
             },
@@ -2733,7 +2920,7 @@
             },
             "endpoint": {
               "label": "エンドポイント",
-              "description": "サービスアドレス。オブジェクトストレージ/WebDAV：https://host、FTP：ftp(s)://host[:21]、SFTP：ssh://user@host[:22]、SMB：host[:445]、http：完全な URL、hdfs：namenode:8020、netstorage/quatrix：ホスト名、azurefiles：任意のサービス URL。"
+              "description": "サービスアドレス。オブジェクトストレージ/WebDAV：https://host、FTP：ftp(s)://host[:21]、SFTP：ssh://user@host[:22]、SMB：host[:445]、http：完全な URL、hdfs：namenode:8020、netstorage/quatrix：ホスト名、azurefiles：任意のサービス URL。 S3 互換ベンダーは各社の S3 エンドポイントを指定：R2 https://<accountid>.r2.cloudflarestorage.com、Wasabi https://s3.<region>.wasabisys.com、Spaces https://<region>.digitaloceanspaces.com、Scaleway https://s3.<region>.scw.cloud、IDrive e2 はアカウント固有エンドポイント、US3 https://s3-<region>.ufileos.com、China Mobile EOS https://eos-<region>-1.cmecloud.cn、Netease NOS https://s3.netease.com、BOS https://s3.<region>.bcebos.com、TOS https://tos-s3-<region>.volces.com、KS3 https://s3.<region>.ksyuncs.com。"
             },
             "share": {
               "label": "共有名",
@@ -2746,11 +2933,11 @@
             },
             "access_key_id": {
               "label": "アクセスキー ID",
-              "description": "アクセスキーまたは公開識別子：S3/OBS/OSS/Qiniu の Access Key ID、b2 のアカウント ID、azurefiles のストレージアカウント、qingstor/internetarchive/sugarsync のアクセスキー、cloudinary の API キー、imagekit の公開キー。"
+              "description": "アクセスキーまたは公開識別子：S3/OBS/OSS/Qiniu の Access Key ID、b2 のアカウント ID、azurefiles のストレージアカウント、qingstor/internetarchive/sugarsync のアクセスキー、cloudinary の API キー、imagekit の公開キー。 S3 互換プロトコル（s3/obs/oss/qiniu/r2/wasabi/spaces/scaleway/idrive/us3/ecloud/nos/bos/tos/ks3）の Access Key ID（R2 は R2 API トークンの Access Key ID）"
             },
             "secret_access_key": {
               "label": "シークレットアクセスキー",
-              "description": "ホストの secret binding に保存されるシークレット：S3/OBS/OSS/Qiniu のシークレットキー、b2 のアプリケーションキー、azurefiles のアカウントキー、qingstor/internetarchive のアクセスシークレット、sugarsync のプライベートアクセスキー、cloudinary の API シークレット、imagekit の秘密キー。"
+              "description": "ホストの secret binding に保存されるシークレット：S3/OBS/OSS/Qiniu のシークレットキー、b2 のアプリケーションキー、azurefiles のアカウントキー、qingstor/internetarchive のアクセスシークレット、sugarsync のプライベートアクセスキー、cloudinary の API シークレット、imagekit の秘密キー。 S3 互換プロトコルのシークレットアクセスキー（対象はアクセスキーと同じプロトコル、R2 は R2 API トークンの Secret Access Key）"
             },
             "secret_id": {
               "label": "Secret ID",
@@ -2957,7 +3144,18 @@
                 "tardigrade": "Tardigrade",
                 "ulozto": "Uloz.to",
                 "union": "Union",
-                "zoho": "Zoho WorkDrive"
+                "zoho": "Zoho WorkDrive",
+                "r2": "Cloudflare R2",
+                "wasabi": "Wasabi",
+                "spaces": "DigitalOcean Spaces",
+                "scaleway": "Scaleway",
+                "idrive": "IDrive e2",
+                "us3": "UCloud US3",
+                "ecloud": "China Mobile EOS",
+                "nos": "Netease NOS",
+                "bos": "Baidu BOS",
+                "tos": "Volcengine TOS",
+                "ks3": "Kingsoft KS3"
               },
               "description": "Escolha um backend de armazenamento: os mais comuns têm formulário próprio; os genéricos reutilizam os campos comuns e aceitam opções extras em JSON."
             },
@@ -3006,7 +3204,7 @@
             },
             "endpoint": {
               "label": "Endpoint",
-              "description": "Endereço do serviço. Armazenamento de objetos/WebDAV: https://host; FTP: ftp(s)://host[:21]; SFTP: ssh://user@host[:22]; SMB: host[:445]; http: URL completa; hdfs: namenode:8020; netstorage/quatrix: nome do host; azurefiles: URL de serviço opcional."
+              "description": "Endereço do serviço. Armazenamento de objetos/WebDAV: https://host; FTP: ftp(s)://host[:21]; SFTP: ssh://user@host[:22]; SMB: host[:445]; http: URL completa; hdfs: namenode:8020; netstorage/quatrix: nome do host; azurefiles: URL de serviço opcional. Provedores compatíveis com S3 usam o endpoint S3 deles: R2 https://<accountid>.r2.cloudflarestorage.com; Wasabi https://s3.<region>.wasabisys.com; Spaces https://<region>.digitaloceanspaces.com; Scaleway https://s3.<region>.scw.cloud; IDrive e2 endpoint da conta; US3 https://s3-<region>.ufileos.com; China Mobile EOS https://eos-<region>-1.cmecloud.cn; Netease NOS https://s3.netease.com; BOS https://s3.<region>.bcebos.com; TOS https://tos-s3-<region>.volces.com; KS3 https://s3.<region>.ksyuncs.com."
             },
             "share": {
               "label": "Compartilhamento",
@@ -3019,11 +3217,11 @@
             },
             "access_key_id": {
               "label": "ID da chave de acesso",
-              "description": "Chave de acesso ou identificador público: Access Key ID de S3/OBS/OSS/Qiniu; ID de conta do b2; conta de armazenamento do azurefiles; chave de acesso de qingstor/internetarchive/sugarsync; chave de API do cloudinary; chave pública do imagekit."
+              "description": "Chave de acesso ou identificador público: Access Key ID de S3/OBS/OSS/Qiniu; ID de conta do b2; conta de armazenamento do azurefiles; chave de acesso de qingstor/internetarchive/sugarsync; chave de API do cloudinary; chave pública do imagekit. Access Key ID dos protocolos compatíveis com S3 (s3/obs/oss/qiniu/r2/wasabi/spaces/scaleway/idrive/us3/ecloud/nos/bos/tos/ks3; no R2, o Access Key ID de um token de API do R2)"
             },
             "secret_access_key": {
               "label": "Chave de acesso secreta",
-              "description": "Segredo guardado no binding secreto do host: chave secreta de S3/OBS/OSS/Qiniu; chave de aplicativo do b2; chave de conta do azurefiles; segredo de acesso de qingstor/internetarchive; chave de acesso privada do sugarsync; segredo de API do cloudinary; chave privada do imagekit."
+              "description": "Segredo guardado no binding secreto do host: chave secreta de S3/OBS/OSS/Qiniu; chave de aplicativo do b2; chave de conta do azurefiles; segredo de acesso de qingstor/internetarchive; chave de acesso privada do sugarsync; segredo de API do cloudinary; chave privada do imagekit. Chave secreta dos protocolos compatíveis com S3 (mesmos protocolos da chave de acesso; no R2, o Secret Access Key de um token de API do R2)"
             },
             "secret_id": {
               "label": "ID secreto",

@@ -62,6 +62,18 @@ DBX 宿主 ⇄ stdio 帧协议（不变） ⇄ Rust sidecar
 | `oss` | `s3` | `provider=Alibaba` + endpoint/access_key_id/secret_access_key | 同 `s3` 行的 bucket/root 组合 |
 | `cos` | `s3` | `provider=TencentCOS`；`secret_id`/`secret_key` → `access_key_id`/`secret_access_key`；`security_token` → s3 STS 参数（键名以 `rclone config providers s3` 实测为准） | 同 `s3` 行的 bucket/root 组合；COS 桶名须含 APPID 后缀（`name-125xxxxxxx`） |
 | `obs` | `s3` | `provider=HuaweiOBS` | 同 `s3` 行的 bucket/root 组合 |
+| `qiniu` | `s3` | `provider=Qiniu` + endpoint/access_key_id/secret_access_key | 同 `s3` 行的 bucket/root 组合；endpoint 必填（如 `https://s3-cn-east-1.qiniucs.com`） |
+| `r2` | `s3` | `provider=Cloudflare` + endpoint/access_key_id/secret_access_key；`region` 引擎侧固定 `auto`（表单隐藏 region） | 同 `s3` 行的 bucket/root 组合；endpoint 必填，形如 `https://<accountid>.r2.cloudflarestorage.com`，密钥用 R2 API 令牌的 Access Key ID / Secret Access Key（2026-09-23） |
+| `wasabi` | `s3` | `provider=Wasabi` | 同 `s3` 行的 bucket/root 组合；endpoint 必填（如 `https://s3.eu-central-1.wasabisys.com`） |
+| `spaces` | `s3` | `provider=DigitalOcean` | 同 `s3` 行的 bucket/root 组合；endpoint 必填（如 `https://nyc3.digitaloceanspaces.com`） |
+| `scaleway` | `s3` | `provider=Scaleway` | 同 `s3` 行的 bucket/root 组合；endpoint 必填（如 `https://s3.fr-par.scw.cloud`） |
+| `idrive` | `s3` | `provider=IDrive` | 同 `s3` 行的 bucket/root 组合；endpoint 必填（账号专属 `*.idrivee2-<id>.com`） |
+| `us3` | `s3` | `provider=US3` | 同 `s3` 行的 bucket/root 组合；endpoint 必填（如 `https://s3-cn-bj.ufileos.com`） |
+| `ecloud` | `s3` | `provider=ChinaMobile` | 同 `s3` 行的 bucket/root 组合；endpoint 必填（如 `https://eos-beijing-1.cmecloud.cn`） |
+| `nos` | `s3` | `provider=Netease` | 同 `s3` 行的 bucket/root 组合；endpoint 必填（如 `https://s3.netease.com`） |
+| `bos` | `s3` | `provider=Other`（v1.75.1 无专属 provider yaml） | 同 `s3` 行的 bucket/root 组合；endpoint 必填（如 `https://s3.bj.bcebos.com`） |
+| `tos` | `s3` | `provider=Other` | 同 `s3` 行的 bucket/root 组合；endpoint 必填（如 `https://tos-s3-cn-beijing.volces.com`） |
+| `ks3` | `s3` | `provider=Other` | 同 `s3` 行的 bucket/root 组合；endpoint 必填（如 `https://s3.cn-beijing.ksyuncs.com`） |
 | `gcs` | `gcs` | `service_account_credentials` = base64 解码后的凭据 JSON（secret）；`bucket` 留空列桶待实测验证 | 同 `s3` 行的 bucket/root 组合 |
 | `azblob` | `azureblob` | `account`、`key`(obscure)、`endpoint` 可选 | **container/root 组合同 `s3` 行**（`container` 非空折进路径根）；container 留空列容器 |
 | `webdav` | `webdav` | `url=endpoint`、`vendor=other`、`user`、`pass`(obscure) | |
