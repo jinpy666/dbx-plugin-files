@@ -1,8 +1,12 @@
-// UI 偏好持久化（A-FILES ①/④c）：localStorage 保存布局偏好（排序/侧栏）。
-// 只存非敏感 UI 状态；沙箱环境 localStorage 可能不可用，全部 try/catch 兜底。
+// UI 偏好持久化（A-FILES ①/④c）：宿主 host.storage 保存布局偏好（排序/侧栏）。
+// 只存非敏感 UI 状态；通道与降级见 shared/frontend/pluginStorage.ts——
+// 工作台 iframe 是 opaque origin，localStorage 会直接抛 SecurityError，
+// 统一经 prefsStore（宿主桥 → guarded localStorage → 内存）读写，调用点
+// 语义不变；显式注入 storage 仅测试用。
 // 历史版本存过 rightTab（预览已改弹窗）、dualPane（已改为会话内开关），
 // sanitize 直接忽略这些未知字段。
 
+import { createPluginKvStore, type KvBacking } from "../../../shared/frontend/pluginStorage";
 import type { SortState } from "./sorting";
 import { DEFAULT_SORT } from "./sorting";
 
@@ -97,7 +101,7 @@ export function onColumnPrefsChange(listener: ColumnPrefsListener): () => void {
  * 读-改-写更新列偏好：基于 storage 内最新值合并后整体写回，
  * 不覆盖并发其他键；写入前按同一规则清洗，并广播给订阅者。
  */
-export function updateColumnPrefs(mutate: (current: ColumnPrefs) => ColumnPrefs, storage?: Storage): ColumnPrefs {
+export function updateColumnPrefs(mutate: (current: ColumnPrefs) => ColumnPrefs, storage?: KvBacking): ColumnPrefs {
   const latest = loadUiPrefs(storage);
   const next = sanitizeColumnPrefs(mutate(latest.columns ?? { ...DEFAULT_COLUMN_PREFS }));
   saveUiPrefs({ ...latest, columns: next }, storage);
@@ -171,10 +175,10 @@ function sanitize(raw: unknown): Partial<UiPrefs> {
 }
 
 /** 读取偏好；损坏/缺失字段回退默认值。storage 可注入（测试用）。 */
-export function loadUiPrefs(storage?: Storage): UiPrefs {
+export function loadUiPrefs(storage?: KvBacking): UiPrefs {
   let raw: string | null = null;
   try {
-    raw = (storage ?? window.localStorage).getItem(UI_PREFS_KEY);
+    raw = (storage ?? prefsStore).getItem(UI_PREFS_KEY);
   } catch {
     raw = null;
   }
@@ -198,9 +202,9 @@ export function loadUiPrefs(storage?: Storage): UiPrefs {
   };
 }
 
-export function saveUiPrefs(prefs: UiPrefs, storage?: Storage): void {
+export function saveUiPrefs(prefs: UiPrefs, storage?: KvBacking): void {
   try {
-    (storage ?? window.localStorage).setItem(UI_PREFS_KEY, JSON.stringify(prefs));
+    (storage ?? prefsStore).setItem(UI_PREFS_KEY, JSON.stringify(prefs));
   } catch {
     /* 沙箱/隐私模式：偏好不可持久化，静默忽略 */
   }
@@ -214,10 +218,10 @@ export function saveUiPrefs(prefs: UiPrefs, storage?: Storage): void {
 export const DOWNLOAD_DIR_KEY = "dbx-files.downloadDir";
 
 /** 读取下载目录偏好；未设置/不可用返回空串（跟随默认）。storage 可注入。 */
-export function loadDownloadDir(storage?: Storage): string {
+export function loadDownloadDir(storage?: KvBacking): string {
   let raw: string | null = null;
   try {
-    raw = (storage ?? window.localStorage).getItem(DOWNLOAD_DIR_KEY);
+    raw = (storage ?? prefsStore).getItem(DOWNLOAD_DIR_KEY);
   } catch {
     raw = null;
   }
@@ -225,11 +229,11 @@ export function loadDownloadDir(storage?: Storage): string {
 }
 
 /** 保存下载目录偏好；空串 = 清除偏好（恢复默认目录）。 */
-export function persistDownloadDir(value: string, storage?: Storage): void {
+export function persistDownloadDir(value: string, storage?: KvBacking): void {
   const normalized = value.trim();
   try {
-    if (normalized) (storage ?? window.localStorage).setItem(DOWNLOAD_DIR_KEY, normalized);
-    else (storage ?? window.localStorage).removeItem(DOWNLOAD_DIR_KEY);
+    if (normalized) (storage ?? prefsStore).setItem(DOWNLOAD_DIR_KEY, normalized);
+    else (storage ?? prefsStore).removeItem(DOWNLOAD_DIR_KEY);
   } catch {
     /* 偏好仅对当前会话生效 */
   }
@@ -284,10 +288,10 @@ function sanitizeOpenAppPrefs(raw: unknown): OpenAppPrefs {
 }
 
 /** 读取外部应用偏好；损坏/缺失字段回退默认值（系统默认应用）。storage 可注入。 */
-export function loadOpenAppPrefs(storage?: Storage): OpenAppPrefs {
+export function loadOpenAppPrefs(storage?: KvBacking): OpenAppPrefs {
   let raw: string | null = null;
   try {
-    raw = (storage ?? window.localStorage).getItem(OPEN_APP_KEY);
+    raw = (storage ?? prefsStore).getItem(OPEN_APP_KEY);
   } catch {
     raw = null;
   }
@@ -296,10 +300,10 @@ export function loadOpenAppPrefs(storage?: Storage): OpenAppPrefs {
 }
 
 /** 保存外部应用偏好；写入前按同一规则清洗（默认 + 空 mappings = 系统默认应用）。 */
-export function persistOpenAppPrefs(prefs: OpenAppPrefs, storage?: Storage): void {
+export function persistOpenAppPrefs(prefs: OpenAppPrefs, storage?: KvBacking): void {
   const normalized = sanitizeOpenAppPrefs(prefs);
   try {
-    (storage ?? window.localStorage).setItem(OPEN_APP_KEY, JSON.stringify(normalized));
+    (storage ?? prefsStore).setItem(OPEN_APP_KEY, JSON.stringify(normalized));
   } catch {
     /* 沙箱/隐私模式：偏好仅对当前会话生效 */
   }
@@ -346,10 +350,10 @@ function sanitizeFavorites(raw: unknown): FavoriteMap {
 }
 
 /** 读取收藏夹；损坏/缺失字段回退空表。storage 可注入（测试用）。 */
-export function loadFavorites(storage?: Storage): FavoriteMap {
+export function loadFavorites(storage?: KvBacking): FavoriteMap {
   let raw: string | null = null;
   try {
-    raw = (storage ?? window.localStorage).getItem(FAVORITES_KEY);
+    raw = (storage ?? prefsStore).getItem(FAVORITES_KEY);
   } catch {
     raw = null;
   }
@@ -358,10 +362,10 @@ export function loadFavorites(storage?: Storage): FavoriteMap {
 }
 
 /** 保存收藏夹；写入前按同一规则清洗（空数组与坏键丢弃）。 */
-export function persistFavorites(favorites: FavoriteMap, storage?: Storage): void {
+export function persistFavorites(favorites: FavoriteMap, storage?: KvBacking): void {
   const normalized = sanitizeFavorites(favorites);
   try {
-    (storage ?? window.localStorage).setItem(FAVORITES_KEY, JSON.stringify(normalized));
+    (storage ?? prefsStore).setItem(FAVORITES_KEY, JSON.stringify(normalized));
   } catch {
     /* 沙箱/隐私模式：收藏仅对当前会话生效 */
   }
@@ -374,3 +378,13 @@ function safeParse(raw: string): unknown {
     return null;
   }
 }
+
+// —— 持久化通道（shared/frontend/pluginStorage.ts）———————————————————————
+// 宿主 host.storage → guarded localStorage（web 直连/dev）→ 内存，三级降级；
+// 启动时 main.ts await prefsStore.ready 完成水合（含旧 localStorage 键搬家），
+// 之后读写全同步。键常量集中在此声明后统一建 store。
+
+/** 本插件全部 UI 状态键（宿主 storage 无列键方法，水合需显式声明）。 */
+export const PREFS_STORE_KEYS = [UI_PREFS_KEY, DOWNLOAD_DIR_KEY, OPEN_APP_KEY, FAVORITES_KEY];
+
+export const prefsStore = createPluginKvStore(PREFS_STORE_KEYS);

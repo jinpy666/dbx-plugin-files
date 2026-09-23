@@ -12,13 +12,15 @@ import PathField from "./components/PathField.vue";
 import { installMockHost } from "./lib/mockHost";
 import { messages, workbenchMessage, type WorkbenchLocale } from "./lib/i18n";
 import { vTip } from "./lib/tooltip";
-import { FAVORITES_KEY, saveUiPrefs } from "./lib/prefs";
+import { FAVORITES_KEY, prefsStore, saveUiPrefs, UI_PREFS_KEY } from "./lib/prefs";
 
 let wrapper: VueWrapper | undefined;
 
 beforeEach(() => {
   vi.useFakeTimers();
-  window.localStorage.clear();
+  // 默认持久化后端是 prefsStore（宿主 storage 适配），播种/清理须走同一实例。
+  prefsStore.removeItem(UI_PREFS_KEY);
+  prefsStore.removeItem(FAVORITES_KEY);
   saveUiPrefs({
     sort: { column: "name", direction: "asc" },
     leftSideTab: "quick",
@@ -53,7 +55,7 @@ async function settle() {
 }
 
 function storedFavorites(): Record<string, string[]> {
-  const raw = window.localStorage.getItem(FAVORITES_KEY);
+  const raw = prefsStore.getItem(FAVORITES_KEY);
   return raw ? (JSON.parse(raw) as Record<string, string[]>) : {};
 }
 

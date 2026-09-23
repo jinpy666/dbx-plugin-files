@@ -17,7 +17,8 @@
     "host.workbench",
     "host.events",
     "host.binary",
-    "host.filesystem"
+    "host.filesystem",
+    "host.storage"
   ],
   "entrypoints": {
     "backend": {
