@@ -75,6 +75,8 @@ struct Plugin {
     /// 流式目录列表（`files/listStream`，issue #49 P1）：requestId 会话注册
     /// 表 + 全局/单连接两级并发闸 + 组 teardown 联动入口。
     list_streams: Arc<rclone::list_stream::ListStreams>,
+    /// P2 升级决策缓存（已知巨型目录直通流式；写操作失效钩子见各写分支）。
+    list_cache: Arc<rclone::list_decision::DecisionCache>,
 }
 
 impl Plugin {
@@ -90,6 +92,8 @@ impl Plugin {
         // SIGKILL + 收割由会话任务执行）。engine 刚构建，锁必然空闲。
         let list_streams: Arc<rclone::list_stream::ListStreams> =
             Arc::new(rclone::list_stream::ListStreams::new());
+        let list_cache: Arc<rclone::list_decision::DecisionCache> =
+            Arc::new(rclone::list_decision::DecisionCache::new());
         {
             let hook = Arc::clone(&list_streams);
             rclone.supervisor
@@ -149,6 +153,7 @@ impl Plugin {
             serves,
             remote_edits: remote_edit::EditEngine::new(),
             list_streams,
+            list_cache,
         })
     }
 
@@ -299,6 +304,8 @@ impl Plugin {
                         request_id,
                         client,
                         fs,
+                        connection_id: request.connection_id.clone(),
+                        cache: Arc::clone(&self.list_cache),
                         path: request.path,
                         remote,
                         prefix,
@@ -507,6 +514,8 @@ impl Plugin {
                         &data,
                     )
                     .await?;
+                    // P2 决策缓存失效：新文件出现在其父目录列表里。
+                    self.list_cache.invalidate_around(&request.connection_id, &remote);
                     Ok(json!({ "success": true }))
                 }
             }
@@ -618,6 +627,18 @@ impl Plugin {
                         .await;
                     }
                 }
+                // P2 决策缓存失效：目录内条目增删改变父目录（及自身子树）
+                // 的列表计数。键必须与 record 侧一致（gate 后的
+                // root-relative 形式）——原始 UI 路径带前导斜杠，恒不命中
+                // （M2 评审修复）。
+                if let Ok(relative) = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    &request.path,
+                    crate::policy::PathPolicy::check_read,
+                ) {
+                    self.list_cache.invalidate_around(&request.connection_id, &relative);
+                }
                 Ok(json!({ "success": true }))
             }
             "files/copy" | "files/move" => {
@@ -668,6 +689,23 @@ impl Plugin {
                     .await?;
                 }
                 self.audit_id(&request.connection_id, method, &request.source_path, "ok")?;
+                // P2 决策缓存失效：目标父目录 +1 条目；move 的源父目录 -1。
+                if let Ok(relative) = rclone_gate(
+                    &source_binding.root,
+                    source_binding.lock_to_root,
+                    &request.source_path,
+                    crate::policy::PathPolicy::check_read,
+                ) {
+                    self.list_cache.invalidate_around(&source_connection_id, &relative);
+                }
+                if let Ok(relative) = rclone_gate(
+                    &target_binding.root,
+                    target_binding.lock_to_root,
+                    &request.target_path,
+                    crate::policy::PathPolicy::check_read,
+                ) {
+                    self.list_cache.invalidate_around(&target_connection_id, &relative);
+                }
                 // rc operations/copyfile|movefile answer synchronously — no
                 // degraded job, so `transport` is always "native".
                 Ok(json!({
@@ -697,6 +735,11 @@ impl Plugin {
                 )
                 .await?;
                 if source.kind == "dir" {
+                    // 外层 RenameRequest 被 dirJob 的同名遮蔽前先捕获
+                    // （失效钩子要引用原语义的连接与路径）。
+                    let rename_conn = request.connection_id.clone();
+                    let rename_from = request.path.clone();
+                    let rename_to = request.new_path.clone();
                     let request = model::DirJobRequest {
                         source_connection_id: request.connection_id.clone(),
                         source_path: request.path.clone(),
@@ -732,6 +775,24 @@ impl Plugin {
                         Some(emitter),
                     )
                     .await?;
+                    // P2 决策缓存失效（目录 job 异步完成，先失效靠 TTL 兜
+                    // 底竞态窗口；两端父目录 + 自身子树都受影响）。
+                    if let Ok(relative) = rclone_gate(
+                        &binding.root,
+                        binding.lock_to_root,
+                        &rename_from,
+                        crate::policy::PathPolicy::check_read,
+                    ) {
+                        self.list_cache.invalidate_around(&rename_conn, &relative);
+                    }
+                    if let Ok(relative) = rclone_gate(
+                        &binding.root,
+                        binding.lock_to_root,
+                        &rename_to,
+                        crate::policy::PathPolicy::check_read,
+                    ) {
+                        self.list_cache.invalidate_around(&rename_conn, &relative);
+                    }
                     return Ok(json!({ "success": true, "transport": "dirJob", "jobId": job_id }));
                 }
                 rclone::ops::rename(
@@ -744,6 +805,22 @@ impl Plugin {
                 )
                 .await?;
                 self.audit_id(&request.connection_id, method, &request.path, "ok")?;
+                if let Ok(relative) = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    &request.path,
+                    crate::policy::PathPolicy::check_read,
+                ) {
+                    self.list_cache.invalidate_around(&request.connection_id, &relative);
+                }
+                if let Ok(relative) = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    &request.new_path,
+                    crate::policy::PathPolicy::check_read,
+                ) {
+                    self.list_cache.invalidate_around(&request.connection_id, &relative);
+                }
                 Ok(json!({ "success": true, "transport": "native", "jobId": Option::<String>::None }))
             }
             "files/publicLink" => {

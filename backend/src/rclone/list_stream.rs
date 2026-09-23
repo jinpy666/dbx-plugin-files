@@ -536,6 +536,18 @@ fn chunk_frame(
     frame
 }
 
+/// 取消终帧：后端侧取消（组 teardown、快路径期取消竞态）也必须给前端
+/// 一个可结算的终态——静默结束曾让 ack 已登记的会话永久悬挂（M3）。
+/// 前端自己发起的取消已把会话置终态，该帧按契约被丢弃，无副作用。
+fn emit_cancelled_frame(request_id: &str, prefix: &str, sink: &dyn ChunkSink) {
+    sink.emit(error_frame(
+        request_id,
+        1,
+        format!("Failed to list '{prefix}': listing cancelled"),
+        0,
+    ));
+}
+
 /// 失败帧：`error` 非空 + `partialCount`（已交付条数），不置 done。
 fn error_frame(request_id: &str, seq: u64, error: String, partial_count: u64) -> Value {
     json!({
@@ -604,6 +616,10 @@ pub struct SessionSpec {
     pub opts: StreamOpts,
     pub slot: ListSlot,
     pub guard: SessionGuard,
+    /// 升级决策缓存键的一半（连接维度）+ 成功回写归属。
+    pub connection_id: String,
+    /// P2：升级决策缓存（已知巨型目录免软超时直通；成功完成回写计数）。
+    pub cache: Arc<super::list_decision::DecisionCache>,
 }
 
 /// 会话终态（sink 已发对应帧；取消不发帧）。sidecar 日志 + 测试断言用。
@@ -632,26 +648,57 @@ pub async fn run_session(spec: SessionSpec) {
         opts,
         slot: _slot,
         guard: _guard,
+        connection_id,
+        cache,
     } = spec;
+
+    // P2 升级决策：记忆中的巨型目录免软超时直通（误触发只付一次冷启动，
+    // 漏触发用户每次导航干等——代价不对称，允许缓存粗糙）。
+    let cached_escalate = cache.escalate_hint(&connection_id, &remote);
+    if cached_escalate {
+        eprintln!("[io.dbx.files] listStream '{prefix}' ({request_id}): escalate (cached huge dir)");
+    }
 
     // 快路径：软超时包住 ops::list（与 files/list 同一入口，内部完成
     // gate_read）。它走无总超时的 rc 客户端——timeout 中断即放弃该 future。
-    // 取消优先于快路径结果。
-    let fast = tokio::select! {
-        _ = cancel.wait() => None,
+    // 取消优先于快路径结果；缓存直通（Skipped）必须落入下方升级段——
+    // 三者折叠成同一个值会让缓存命中静默零帧（B1 评审修复）。
+    enum FastAttempt {
+        Cancelled,
+        Skipped,
+        Done(Vec<FileEntry>),
+        Failed(String),
+    }
+    let fast = if cached_escalate {
+        FastAttempt::Skipped
+    } else {
+        tokio::select! {
+        _ = cancel.wait() => FastAttempt::Cancelled,
         result = tokio::time::timeout(
             opts.soft_timeout,
             ops::list(&client, &fs, &path, false, &root, lock_to_root),
-        ) => Some(result),
+        ) => match result {
+            Ok(Ok(entries)) => FastAttempt::Done(entries),
+            Ok(Err(error)) => FastAttempt::Failed(error),
+            Err(_elapsed) => FastAttempt::Skipped,
+        },
+        }
     };
     match fast {
-        // 已取消：宿主主动放弃，不发任何帧。
-        None => return,
-        Some(Ok(Ok(entries))) => {
+        // 已取消：终帧显式告知（后端组 teardown 等静默取消也曾让前端
+        // 永久悬挂——M3 评审修复）。前端对自身发起的取消已置终态，
+        // 该帧会被 requestId 会话的终态检查丢弃。
+        FastAttempt::Cancelled => {
+            emit_cancelled_frame(&request_id, &prefix, sink.as_ref());
+            return;
+        }
+        FastAttempt::Skipped => {} // 缓存直通/软超时 → 升级为 lsjson 流式
+        FastAttempt::Done(entries) => {
             // 快路径成功：filter_and_sort 完整排序后按帧预算切块交付。
             // 小目录仍是一帧 done（尾帧）；大响应若单帧梭哈会被 8MB 桥
             // 上限直接拒收（帧静默丢失、前端悬挂）——issue #49 的深层根因。
             let total = entries.len() as u64;
+            cache.record(&connection_id, &remote, total);
             let mut seq: u64 = 0;
             let mut batcher = Batcher::new();
             for entry in entries {
@@ -665,12 +712,11 @@ pub async fn run_session(spec: SessionSpec) {
             sink.emit(chunk_frame(&request_id, seq, tail, true, Some(total)));
             return;
         }
-        Some(Ok(Err(error))) => {
+        FastAttempt::Failed(error) => {
             // rc 真实失败（路径不存在等）：失败帧即终态，不再升级。
             sink.emit(error_frame(&request_id, 1, error, 0));
             return;
         }
-        Some(Err(_elapsed)) => {} // 软超时先到 → 升级为 lsjson 流式
     }
 
     // 升级：spawn 短命 lsjson。stdin=null（无输入），stdout/stderr=piped。
@@ -692,8 +738,13 @@ pub async fn run_session(spec: SessionSpec) {
         .spawn();
     match child {
         Ok(child) => {
-            let outcome = stream_child(&request_id, &prefix, child, &cancel, &opts, sink.as_ref())
-                .await;
+            let (outcome, delivered) =
+                stream_child(&request_id, &prefix, child, &cancel, &opts, sink.as_ref()).await;
+            if outcome == StreamOutcome::Completed {
+                if let Some(total) = delivered {
+                    cache.record(&connection_id, &remote, total);
+                }
+            }
             eprintln!("[io.dbx.files] listStream '{prefix}' ({request_id}): {outcome:?}");
         }
         Err(error) => {
@@ -726,7 +777,8 @@ pub(crate) async fn stream_child(
     cancel: &CancelFlag,
     opts: &StreamOpts,
     sink: &dyn ChunkSink,
-) -> StreamOutcome {
+) -> (StreamOutcome, Option<u64>) {
+    // 第二个值：成功完成时 done 帧的 total（P2 决策缓存回写用）。
     use tokio::io::AsyncBufReadExt;
 
     let stdout = child.stdout.take().expect("lsjson stdout is piped");
@@ -749,7 +801,17 @@ pub(crate) async fn stream_child(
             _ = cancel.wait() => {
                 kill_and_reap(&mut child).await;
                 let _ = take_stderr(&mut stderr_task).await;
-                return StreamOutcome::Cancelled; // 取消：不发任何帧
+                // 终帧显式告知：后端侧静默取消（组 teardown）曾让 ack 已
+                // 登记的前端会话永久悬挂（M3）。前端自己发起的取消早已把
+                // 会话置终态，该帧按契约被丢弃，无副作用。
+                seq += 1;
+                sink.emit(error_frame(
+                    request_id,
+                    seq,
+                    format!("Failed to list '{prefix}': listing cancelled"),
+                    batcher.delivered(),
+                ));
+                return (StreamOutcome::Cancelled, None);
             }
             _ = tokio::time::sleep_until(watchdog_deadline) => {
                 kill_and_reap(&mut child).await;
@@ -764,7 +826,7 @@ pub(crate) async fn stream_child(
                     ),
                     batcher.delivered(),
                 ));
-                return StreamOutcome::TimedOut;
+                return (StreamOutcome::TimedOut, None);
             }
             _ = flush_ticker.tick() => {
                 // 50ms 先到即成帧；batcher 空 = 无帧（interval 首个 tick
@@ -817,7 +879,7 @@ pub(crate) async fn stream_child(
                 true,
                 Some(batcher.delivered()),
             ));
-            StreamOutcome::Completed
+            (StreamOutcome::Completed, Some(batcher.delivered()))
         }
         LoopEnd::Eof => {
             // stdout 先于 `]` 结束：输出被截断。退出码非 0 时优先报告真实
@@ -839,7 +901,7 @@ pub(crate) async fn stream_child(
                 format!("Failed to list '{prefix}': {detail}"),
                 batcher.delivered(),
             ));
-            StreamOutcome::Failed
+            (StreamOutcome::Failed, None)
         }
         LoopEnd::Parse(error) | LoopEnd::Read(error) => {
             kill_and_reap(&mut child).await;
@@ -855,7 +917,7 @@ pub(crate) async fn stream_child(
                 format!("Failed to list '{prefix}': {error}{stderr}"),
                 batcher.delivered(),
             ));
-            StreamOutcome::Failed
+            (StreamOutcome::Failed, None)
         }
     }
 }
@@ -1346,7 +1408,7 @@ mod tests {
         script.push_str("printf '{\"Path\":\"last\",\"Name\":\"last\",\"IsDir\":false,\"Size\":0,\"ModTime\":\"2024-01-01T00:00:00.000000000Z\"}\\n'\nprintf ']\\n'\n");
         let child = spawn_sh(&script);
         let sink = VecSink::default();
-        let outcome = stream_child(
+        let (outcome, _total) = stream_child(
             "req",
             "",
             child,
@@ -1383,7 +1445,7 @@ mod tests {
             printf ']\\n'\n";
         let child = spawn_sh(script);
         let sink = VecSink::default();
-        let outcome = stream_child(
+        let (outcome, _total) = stream_child(
             "req",
             "",
             child,
@@ -1394,12 +1456,12 @@ mod tests {
         .await;
         assert_eq!(outcome, StreamOutcome::Completed);
         let frames = sink.frames();
-        assert_eq!(frames.len(), 2, "one data frame + done: {frames:?}");
-        assert_eq!(
-            entry_paths(&frames[0]),
-            vec!["/z", "/a", "/m"],
-            "到达顺序，不排序"
-        );
+        // 分帧数由 tick/字节预算自由决定（CI 负载下时间 flush 可能在任意
+        // 条目边界成帧）；要钉死的是顺序属性：拼接后 = 到达序，不排序。
+        assert!(frames.len() >= 2, "data frame(s) + done: {frames:?}");
+        assert_eq!(frames.last().unwrap()["done"], true);
+        let flat: Vec<String> = frames.iter().flat_map(entry_paths).collect();
+        assert_eq!(flat, vec!["/z", "/a", "/m"], "到达顺序，不排序");
     }
 
     /// 前缀 marker 与根 marker 被过滤，其余保留（与 filter_and_sort 的过滤
@@ -1414,7 +1476,7 @@ mod tests {
             printf ']\\n'\n";
         let child = spawn_sh(script);
         let sink = VecSink::default();
-        let outcome = stream_child(
+        let (outcome, _total) = stream_child(
             "req",
             "sub",
             child,
@@ -1440,7 +1502,7 @@ mod tests {
             exit 3\n";
         let child = spawn_sh(script);
         let sink = VecSink::default();
-        let outcome = stream_child(
+        let (outcome, _total) = stream_child(
             "req",
             "",
             child,
@@ -1466,7 +1528,7 @@ mod tests {
     async fn stream_garbage_first_line_yields_failure_frame() {
         let child = spawn_sh("echo garbage");
         let sink = VecSink::default();
-        let outcome = stream_child(
+        let (outcome, _total) = stream_child(
             "req",
             "",
             child,
@@ -1495,7 +1557,7 @@ mod tests {
     async fn stream_broken_entry_line_yields_failure_frame() {
         let child = spawn_sh("printf '[\\nnot-json\\n]\\n'");
         let sink = VecSink::default();
-        let outcome = stream_child(
+        let (outcome, _total) = stream_child(
             "req",
             "",
             child,
@@ -1523,7 +1585,7 @@ mod tests {
     async fn stream_truncated_output_yields_failure_frame() {
         let child = spawn_sh("printf '[\\n'");
         let sink = VecSink::default();
-        let outcome = stream_child(
+        let (outcome, _total) = stream_child(
             "req",
             "",
             child,
@@ -1556,7 +1618,7 @@ mod tests {
         let mut opts = deterministic_opts();
         opts.watchdog = Duration::from_millis(150);
         let sink = VecSink::default();
-        let outcome = stream_child("req", "", child, &CancelFlag::new(), &opts, &sink).await;
+        let (outcome, _total) = stream_child("req", "", child, &CancelFlag::new(), &opts, &sink).await;
         assert_eq!(outcome, StreamOutcome::TimedOut);
         let frames = sink.frames();
         assert_eq!(frames.len(), 1);
@@ -1583,9 +1645,14 @@ mod tests {
         cancel.cancel();
         let mut opts = deterministic_opts();
         opts.watchdog = Duration::from_secs(3600);
-        let outcome = stream_child("req", "", child, &cancel, &opts, &sink).await;
+        let (outcome, _total) = stream_child("req", "", child, &cancel, &opts, &sink).await;
         assert_eq!(outcome, StreamOutcome::Cancelled);
-        assert!(sink.frames().is_empty(), "取消不发任何帧");
+        // M3：取消必须发恰好一帧 cancelled 终帧——后端侧静默取消（组
+        // teardown）曾让 ack 已登记的前端会话永久悬挂。前端自己发起的
+        // 取消已置终态，该帧按契约被丢弃。
+        let frames = sink.frames();
+        assert_eq!(frames.len(), 1, "取消发且仅发一帧终态: {frames:?}");
+        assert!(frames[0].get("error").and_then(Value::as_str).unwrap_or("").contains("listing cancelled"));
         assert!(!unix_process_alive(pid.expect("pid")), "pid {pid:?} still alive");
     }
 

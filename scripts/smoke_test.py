@@ -24,6 +24,8 @@ Drives the sidecar over its stdio-framed protocol (sidecar_client.py):
     path (single done frame), soft-timeout escalation to a real `rclone
     lsjson` child (multi-chunk, arrival parity with files/list), cancel with
     no lingering child process, DBX_FILES_LIST_STREAM=off escape hatch,
+  - decision-cache-hits: a completed huge listing escalates instantly on
+    its next visit (sidecar log evidence, no soft-timeout wait),
     missing-path error, and the >100k-entries directory that files/list caps
     but listStream delivers in full — SKIP unless rclone is on PATH
     (DBX_FILES_RCLONE_BIN); fixture size via STREAM_SMOKE_BIG_FILES
@@ -54,9 +56,11 @@ from __future__ import annotations
 import base64
 import json
 import os
+import collections
 import shutil
 import struct
 import subprocess
+import threading
 import sys
 import tempfile
 import time
@@ -1536,6 +1540,13 @@ def run_stream_section(client: SidecarClient, fs_root: str) -> None:
         env_updates={"DBX_FILES_RCLONE_BIN": rclone_bin, "DBX_FILES_LIST_STREAM_SOFT_TIMEOUT_MS": "1"},
         timeout=60,
     )
+    # sidecar 日志旁路：drain_stderr 在活进程上会阻塞到 EOF（评审用例
+    # decision-cache-hits 需要 sidecar 还活着时读它的会话日志）。
+    stderr_tail: "collections.deque[str]" = collections.deque(maxlen=50)
+    def _tail_stderr(pipe) -> None:
+        for raw in iter(pipe.readline, b""):
+            stderr_tail.append(raw.decode(errors="replace"))
+    threading.Thread(target=_tail_stderr, args=(escalated.process.stderr,), daemon=True).start()
     try:
         escalated.initialize()
         connect(escalated, "stream-esc", {"protocol": "fs"}, fs_root)
@@ -1601,6 +1612,23 @@ def run_stream_section(client: SidecarClient, fs_root: str) -> None:
             mark(section, "missing-path-error", "pass")
         else:
             mark(section, "missing-path-error", "fail", outcome[:120] or "no error surfaced")
+
+        # -- P2 decision cache: /stream-big completed once (100500 entries),
+        # so a later listStream on the same path must skip the rc attempt
+        # entirely AND still deliver the full listing — a cached-hit session
+        # that goes silent after the ack was exactly the B1 regression
+        # (collect frames, don't just grep the log line).
+        ack = escalated.request("files/listStream", {"connectionId": "stream-esc", "path": "/stream-big"})
+        frames, terminal = _collect_stream(escalated, ack["requestId"], timeout=300)
+        streamed = sum(len(frame.get("entries", [])) for frame in frames)
+        logged = any("escalate (cached huge dir)" in line for line in stderr_tail)
+        if (terminal and terminal.get("done") and terminal.get("total") == big_count
+                and streamed == big_count and logged):
+            mark(section, "decision-cache-hits", "pass",
+                 f"{big_count} entries re-delivered, log={logged}")
+        else:
+            mark(section, "decision-cache-hits", "fail",
+                 f"streamed={streamed} want={big_count} terminal={terminal} logged={logged}")
     finally:
         escalated.close()
 
