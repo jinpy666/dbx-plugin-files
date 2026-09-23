@@ -24,6 +24,8 @@ Drives the sidecar over its stdio-framed protocol (sidecar_client.py):
     path (single done frame), soft-timeout escalation to a real `rclone
     lsjson` child (multi-chunk, arrival parity with files/list), cancel with
     no lingering child process, DBX_FILES_LIST_STREAM=off escape hatch,
+  - decision-cache-hits: a completed huge listing escalates instantly on
+    its next visit (sidecar log evidence, no soft-timeout wait),
     missing-path error, and the >100k-entries directory that files/list caps
     but listStream delivers in full — SKIP unless rclone is on PATH
     (DBX_FILES_RCLONE_BIN); fixture size via STREAM_SMOKE_BIG_FILES
@@ -1603,6 +1605,15 @@ def run_stream_section(client: SidecarClient, fs_root: str) -> None:
             mark(section, "missing-path-error", "fail", outcome[:120] or "no error surfaced")
     finally:
         escalated.close()
+
+    # -- P2 decision cache: /stream-big completed once (100500 entries), so a
+    # later listStream on the same path must skip the rc attempt entirely —
+    # observable as the sidecar's own "escalate (cached huge dir)" log line.
+    stderr = escalated.drain_stderr()
+    if "escalate (cached huge dir)" in stderr:
+        mark(section, "decision-cache-hits", "pass")
+    else:
+        mark(section, "decision-cache-hits", "fail", "no cached-escalate log line")
 
     # -- escape hatch: DBX_FILES_LIST_STREAM=off refuses the method
     off_client = SidecarClient.start(

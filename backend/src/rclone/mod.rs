@@ -16,6 +16,7 @@
 pub mod archive;
 pub mod bytes_channel;
 pub mod display;
+pub mod list_decision;
 pub mod list_stream;
 pub mod mount;
 pub mod ops;

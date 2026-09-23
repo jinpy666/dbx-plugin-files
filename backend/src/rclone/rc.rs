@@ -236,8 +236,12 @@ impl RcClient {
     }
 
     /// Recursive file count + byte total for a path.
+    ///
+    /// Unbounded total timeout（与 operations/list 同理）：巨型子树的
+    /// 枚举在 rclone 内部完成前 rc 不吐字节，30s 控制面客户端会拦腰
+    /// 掐断（files/size 属性面板与 search 扫描预检都走这里）。
     pub async fn operations_size(&self, fs: &str, remote: &str) -> Result<Value, RcError> {
-        self.call(
+        self.call_unbounded(
             "operations/size",
             &serde_json::json!({ "fs": fs, "remote": remote }),
         )
