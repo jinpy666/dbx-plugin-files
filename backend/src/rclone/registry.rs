@@ -480,7 +480,8 @@ pub fn is_supported(protocol: &str) -> bool {
 fn rclone_type(protocol: &str) -> Option<String> {
     let backend: &str = match protocol {
         "fs" => "local",
-        "s3" | "oss" | "cos" | "obs" | "qiniu" => "s3",
+        "s3" | "oss" | "cos" | "obs" | "qiniu" | "r2" | "wasabi" | "spaces" | "scaleway"
+        | "idrive" | "us3" | "ecloud" | "nos" | "bos" | "tos" | "ks3" => "s3",
         "gcs" => "gcs",
         "azblob" => "azureblob",
         "webdav" => "webdav",
@@ -559,7 +560,10 @@ pub fn params_for(connection: &StoredConnection) -> Result<(String, Value, bool)
             })?;
             let mut parameters = match connection.protocol.as_str() {
                 "fs" => Value::Object(Map::new()),
-                "s3" | "oss" | "cos" | "obs" | "qiniu" => s3_family_parameters(connection)?,
+                "s3" | "oss" | "cos" | "obs" | "qiniu" | "r2" | "wasabi" | "spaces"
+                | "scaleway" | "idrive" | "us3" | "ecloud" | "nos" | "bos" | "tos" | "ks3" => {
+                    s3_family_parameters(connection)?
+                }
                 "gcs" => gcs_parameters(connection)?,
                 "azblob" => azblob_parameters(connection),
                 "webdav" => webdav_parameters(connection)?,
@@ -614,7 +618,10 @@ pub fn params_for(connection: &StoredConnection) -> Result<(String, Value, bool)
 /// connection test die with rc 404 "directory not found" (TencentCOS).
 fn composed_root(connection: &StoredConnection) -> String {
     let bucket_field = match connection.protocol.as_str() {
-        "s3" | "cos" | "oss" | "obs" | "qiniu" | "gcs" => &connection.bucket,
+        "s3" | "cos" | "oss" | "obs" | "qiniu" | "r2" | "wasabi" | "spaces" | "scaleway"
+        | "idrive" | "us3" | "ecloud" | "nos" | "bos" | "tos" | "ks3" | "gcs" => {
+            &connection.bucket
+        }
         "azblob" => &connection.container,
         _ => return connection.root.clone(),
     };
@@ -1092,9 +1099,32 @@ fn oauth_token_json(connection: &StoredConnection) -> Option<String> {
     Some(Value::Object(token).to_string())
 }
 
-/// s3 + the S3-compatible quick protocols (oss/cos/obs/qiniu), all mapping
-/// onto the rclone `s3` backend. Provider values verified against `rclone
-/// config providers s3` Examples on v1.75.1.
+/// Vendor quick protocols without a dedicated form whose rclone provider
+/// has no default service address: the endpoint is mandatory (verified
+/// against `rclone config providers s3` on v1.75.1 — none of these carry a
+/// global default endpoint). The example lands in the connection error so
+/// the host can point at the right shape.
+const S3_ENDPOINT_REQUIRED: &[(&str, &str)] = &[
+    ("qiniu", "https://s3-cn-east-1.qiniucs.com"),
+    ("r2", "https://<accountid>.r2.cloudflarestorage.com"),
+    ("wasabi", "https://s3.eu-central-1.wasabisys.com"),
+    ("spaces", "https://nyc3.digitaloceanspaces.com"),
+    ("scaleway", "https://s3.fr-par.scw.cloud"),
+    // IDrive e2 and Netease NOS endpoints are account/address specific.
+    ("idrive", "https://<your-endpoint>.idrivee2-<id>.com"),
+    ("us3", "https://s3-cn-bj.ufileos.com"),
+    ("ecloud", "https://eos-beijing-1.cmecloud.cn"),
+    ("nos", "https://s3.netease.com"),
+    // bos/tos/ks3 ride the `Other` provider signature (no upstream
+    // provider yaml on v1.75.1), so the endpoint is their whole address.
+    ("bos", "https://s3.bj.bcebos.com"),
+    ("tos", "https://tos-s3-cn-beijing.volces.com"),
+    ("ks3", "https://s3.cn-beijing.ksyuncs.com"),
+];
+
+/// s3 + the S3-compatible quick protocols, all mapping onto the rclone `s3`
+/// backend. Provider values verified against `rclone config providers s3`
+/// Examples on v1.75.1.
 fn s3_family_parameters(connection: &StoredConnection) -> Result<Value, String> {
     let mut params = Map::new();
     let provider = match connection.protocol.as_str() {
@@ -1106,18 +1136,34 @@ fn s3_family_parameters(connection: &StoredConnection) -> Result<Value, String> 
         // (s3-<region>.qiniucs.com); there is no global default endpoint, so
         // one is mandatory — enforced below, not by a provider fallback.
         "qiniu" => "Qiniu",
-        // A custom endpoint without a dedicated provider: `Other` ("Any other
-        // S3 compatible provider") is the generic signature set.
+        // Dedicated provider signatures keep rclone's own quirks (path
+        // style, signature version, region semantics) aligned with the
+        // vendor without per-vendor overrides here.
+        "r2" => "Cloudflare",
+        "wasabi" => "Wasabi",
+        "spaces" => "DigitalOcean",
+        "scaleway" => "Scaleway",
+        "idrive" => "IDrive",
+        "us3" => "US3",
+        "ecloud" => "ChinaMobile",
+        "nos" => "Netease",
+        // A custom endpoint without a dedicated provider (`bos`/`tos`/`ks3`
+        // and any future S3 clone): `Other` ("Any other S3 compatible
+        // provider") is the generic signature set.
         _ if connection.endpoint.trim().is_empty() => "AWS",
         _ => "Other",
     };
     insert_str(&mut params, "provider", provider);
-    if connection.protocol == "qiniu" && connection.endpoint.trim().is_empty() {
-        return Err(
-            "qiniu connection requires a non-empty endpoint (http/https URL, \
-             e.g. https://s3-cn-east-1.qiniucs.com)"
-                .to_string(),
-        );
+    if let Some((_, example)) = S3_ENDPOINT_REQUIRED
+        .iter()
+        .find(|(protocol, _)| *protocol == connection.protocol.as_str())
+    {
+        if connection.endpoint.trim().is_empty() {
+            return Err(format!(
+                "protocol '{}' requires a non-empty endpoint (http/https URL, e.g. {})",
+                connection.protocol, example
+            ));
+        }
     }
     // The COS form fields normalize onto the shared s3 keys.
     let access_key = if connection.protocol == "cos" {
@@ -1153,6 +1199,13 @@ fn s3_family_parameters(connection: &StoredConnection) -> Result<Value, String> 
             connection.region.trim()
         };
         insert_str(&mut params, "region", region);
+    }
+    if connection.protocol == "r2" {
+        // R2 buckets are distributed across Cloudflare's data centers; the
+        // documented region value is `auto` (v1.75.1 region example for the
+        // Cloudflare provider). The form hides the region field for vendor
+        // protocols, so it is pinned here.
+        insert_str(&mut params, "region", "auto");
     }
     // qiniu deliberately sends no region/force_path_style: the provider's
     // own quirks pin path-style access (force_path_style: true, v1.75.1
@@ -1742,6 +1795,90 @@ mod tests {
         assert!(params_for(&connection).is_err(), "whitespace endpoint rejected");
     }
 
+    /// The vendor quick protocols map onto the rclone `s3` backend with
+    /// their dedicated provider signatures (verified against `rclone config
+    /// providers s3` Examples on v1.75.1). Only plain s3 pins region/
+    /// force_path_style from the form — except r2, whose documented `auto`
+    /// region is pinned here; every other vendor profile stays
+    /// endpoint-addressed with rclone's provider quirks owning the rest.
+    #[test]
+    fn params_for_s3_vendor_protocols_map_provider_signatures() {
+        let cases: &[(&str, &str, &str)] = &[
+            ("r2", "Cloudflare", "https://abc123.r2.cloudflarestorage.com"),
+            ("wasabi", "Wasabi", "https://s3.eu-central-1.wasabisys.com"),
+            ("spaces", "DigitalOcean", "https://nyc3.digitaloceanspaces.com"),
+            ("scaleway", "Scaleway", "https://s3.fr-par.scw.cloud"),
+            ("idrive", "IDrive", "https://demo.idrivee2-12.com"),
+            ("us3", "US3", "https://s3-cn-bj.ufileos.com"),
+            ("ecloud", "ChinaMobile", "https://eos-beijing-1.cmecloud.cn"),
+            ("nos", "Netease", "https://s3.netease.com"),
+        ];
+        for (protocol, provider, endpoint) in cases {
+            let mut connection = fixture(protocol);
+            connection.access_key_id = "AK".into();
+            connection.secret_access_key = secret("sk");
+            connection.endpoint = endpoint.to_string();
+            let params = param_map(&connection);
+            assert_eq!(params["provider"], *provider, "{protocol} provider");
+            assert_eq!(params["access_key_id"], "AK", "{protocol} access key");
+            assert_eq!(params["secret_access_key"], secret("sk"), "{protocol} secret");
+            assert_eq!(params["endpoint"], *endpoint, "{protocol} endpoint verbatim");
+            assert!(
+                params.get("force_path_style").is_none(),
+                "{protocol} must leave path style to the provider quirks"
+            );
+            if *protocol == "r2" {
+                assert_eq!(params["region"], "auto", "R2 signs with the auto region");
+            } else {
+                assert!(params.get("region").is_none(), "{protocol} sends no region");
+            }
+        }
+
+        // bos/tos/ks3 have no upstream provider yaml on v1.75.1: they ride
+        // the `Other` signature with a mandatory endpoint.
+        for (protocol, endpoint) in [
+            ("bos", "https://s3.bj.bcebos.com"),
+            ("tos", "https://tos-s3-cn-beijing.volces.com"),
+            ("ks3", "https://s3.cn-beijing.ksyuncs.com"),
+        ] {
+            let mut connection = fixture(protocol);
+            connection.access_key_id = "AK".into();
+            connection.secret_access_key = secret("sk");
+            connection.endpoint = endpoint.into();
+            let params = param_map(&connection);
+            assert_eq!(params["provider"], "Other", "{protocol} rides the Other signature");
+            assert_eq!(params["endpoint"], endpoint, "{protocol} endpoint verbatim");
+        }
+    }
+
+    /// Every vendor quick protocol without a provider default endpoint
+    /// (the whole S3_ENDPOINT_REQUIRED table) rejects an empty endpoint
+    /// with the worked example in the message — never a silent AWS mapping.
+    #[test]
+    fn params_for_s3_vendor_protocols_require_endpoint() {
+        for (protocol, example) in [
+            ("r2", "r2.cloudflarestorage.com"),
+            ("wasabi", "wasabisys.com"),
+            ("spaces", "digitaloceanspaces.com"),
+            ("scaleway", "scw.cloud"),
+            ("idrive", "idrivee2"),
+            ("us3", "ufileos.com"),
+            ("ecloud", "cmecloud.cn"),
+            ("nos", "netease.com"),
+            ("bos", "bcebos.com"),
+            ("tos", "volces.com"),
+            ("ks3", "ksyuncs.com"),
+        ] {
+            let mut connection = fixture(protocol);
+            connection.access_key_id = "AK".into();
+            connection.secret_access_key = secret("sk");
+            let error = params_for(&connection).expect_err("empty endpoint");
+            assert!(error.contains("requires a non-empty endpoint"), "{error}");
+            assert!(error.contains(example), "{error}");
+            assert!(!error.contains("AWS"), "{error}");
+        }
+    }
+
     #[test]
     fn params_for_gcs_decodes_credential() {
         let mut connection = fixture("gcs");
@@ -2318,6 +2455,8 @@ mod tests {
             ("oss", "bucket", "bkt"),
             ("obs", "bucket", "bkt"),
             ("qiniu", "bucket", "bkt"),
+            ("r2", "bucket", "bkt"),
+            ("ks3", "bucket", "bkt"),
             ("gcs", "bucket", "bkt"),
             ("azblob", "container", "cont"),
         ] {
@@ -2731,6 +2870,16 @@ mod tests {
                 c.secret_access_key = secret("sk");
                 c.endpoint = "https://s3-cn-east-1.qiniucs.com".into();
             }),
+            maximal_case("r2", &|c: &mut StoredConnection| {
+                c.access_key_id = "AK".into();
+                c.secret_access_key = secret("sk");
+                c.endpoint = "https://abc123.r2.cloudflarestorage.com".into();
+            }),
+            maximal_case("bos", &|c: &mut StoredConnection| {
+                c.access_key_id = "AK".into();
+                c.secret_access_key = secret("sk");
+                c.endpoint = "https://s3.bj.bcebos.com".into();
+            }),
             maximal_case("obs", &|c: &mut StoredConnection| {
                 c.access_key_id = "AK".into();
                 c.secret_access_key = secret("sk");
@@ -2922,7 +3071,9 @@ mod manifest_matrix {
             "display_name" => json!("Matrix"),
             "protocol" => json!(protocol),
             "endpoint" => json!(match protocol {
-                "s3" | "gcs" | "azblob" | "obs" | "oss" | "cos" | "qiniu" | "webdav" | "seafile"
+                "s3" | "gcs" | "azblob" | "obs" | "oss" | "cos" | "qiniu" | "r2" | "wasabi"
+                | "spaces" | "scaleway" | "idrive" | "us3" | "ecloud" | "nos" | "bos" | "tos"
+                | "ks3" | "webdav" | "seafile"
                 | "koofr" | "pcloud" => "https://svc.example.com",
                 "ftp" => "ftp://127.0.0.1:2121",
                 "sftp" | "sftp-native" => "127.0.0.1:22",
@@ -3107,6 +3258,11 @@ mod manifest_matrix {
             ],
             "oss" | "obs" => vec!["provider", "access_key_id", "secret_access_key", "endpoint"],
             "qiniu" => vec!["provider", "access_key_id", "secret_access_key", "endpoint"],
+            // r2 pins the documented `auto` region; the rest of the vendor
+            // profiles are endpoint-addressed with no extra options.
+            "r2" => vec!["provider", "access_key_id", "secret_access_key", "endpoint", "region"],
+            "wasabi" | "spaces" | "scaleway" | "idrive" | "us3" | "ecloud" | "nos" | "bos"
+            | "tos" | "ks3" => vec!["provider", "access_key_id", "secret_access_key", "endpoint"],
             "cos" => vec![
                 "provider", "access_key_id", "secret_access_key", "session_token", "endpoint",
             ],
