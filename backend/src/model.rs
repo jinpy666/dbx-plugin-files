@@ -551,6 +551,24 @@ pub struct ListPagedRequest {
     pub page_size: u64,
 }
 
+/// `files/listStream`（issue #49 P1 流式目录列表）：非递归列举，先同步
+/// ack `{requestId, displayCharset?}`，条目经 `files/list/chunk` 事件分帧
+/// 交付。无 recurse 参数——流式形态本身就是为巨型目录准备的。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListStreamRequest {
+    pub connection_id: String,
+    pub path: String,
+}
+
+/// `files/listCancel`：按 `requestId` 取消在途流式列举；幂等，未知或已
+/// 结束的 id 返回 `{cancelled:false}`。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListCancelRequest {
+    pub request_id: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PathRequest {

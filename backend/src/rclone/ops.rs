@@ -169,13 +169,13 @@ pub async fn list(
 /// files/list 的截断在条目数与字节双预算下取先到。
 pub const LIST_RESPONSE_BUDGET_BYTES: usize = 2 * 1024 * 1024;
 
-/// `files/list` 浏览路径的封顶版：返回排序后的前 `max` 条与截断标记。
+/// `files/list` 浏览路径的封顶版：返回排序后的头部条目与截断标记。
 ///
 /// rclone rc 的 `operations/list` 没有任何服务端分页参数（无 offset/limit/
 /// continuation-token，docs live-verified 2026-09），一个巨型 S3 前缀只能
-/// 整包返回。与其让百万条目级目录把内存/宿主网桥打爆后整体失败，不如保序
+/// 整包返回。与其让巨型目录把响应撑过宿主桥上限后整体失败，不如保序
 /// 截断并显式 `truncated`，由前端提示缩小范围。截断在 `filter_and_sort`
-/// 之后进行（`list` 内部已完成），语义确定为「字典序前 max 条」。
+/// 之后进行（`list` 内部已完成），语义确定为「字典序头部条目」。
 pub async fn list_capped(
     client: &RcClient,
     fs: &str,
@@ -185,25 +185,18 @@ pub async fn list_capped(
     max: usize,
 ) -> Result<(Vec<FileEntry>, bool), String> {
     let entries = list(client, fs, path, false, root, lock_to_root).await?;
-    Ok(cap_entries(entries, max))
+    Ok(cap_entries_for_response(entries, max, LIST_RESPONSE_BUDGET_BYTES))
 }
 
-/// Pure cap over a sorted listing: `(first `max` entries, truncated?)`.
-fn cap_entries(mut entries: Vec<FileEntry>, max: usize) -> (Vec<FileEntry>, bool) {
-    cap_entries_for_response(entries, max, LIST_RESPONSE_BUDGET_BYTES)
-}
-
-/// 双预算（条目数 + 序列化字节）截断：宿主桥 SDK 拒绝超过 8MB 的单条
-/// JSON 消息（shared/sdk/rust/dbx-plugin-sdk `MAX_JSON_BYTES`，issue #49
-/// 深层根因——10 万条目 ≈ 25MB，桥上必死）。2MB 留 4x 余量给响应信封。
-/// 单条自身超预算时无法再切，仍保底交付该条。
+/// 双预算（条目数 + 序列化字节）截断：`(排序头部条目, truncated?)`。
+/// 单条自身超预算时无法再切，仍保底交付该条（截断救不了超长单条目）。
 fn cap_entries_for_response(
     mut entries: Vec<FileEntry>,
     max_entries: usize,
     byte_budget: usize,
 ) -> (Vec<FileEntry>, bool) {
     let mut kept = 0usize;
-    // 2 = JSON 数组的 `[]` 开销；+1 条目间逗号分隔
+    // 2 = JSON 数组的 `[]` 开销
     let mut used = 2usize;
     let mut truncated = false;
     for entry in entries.iter() {
@@ -211,6 +204,7 @@ fn cap_entries_for_response(
             truncated = true;
             break;
         }
+        // +1 条目间逗号分隔
         let size = serde_json::to_vec(entry).map(|v| v.len() + 1).unwrap_or(1);
         if kept > 0 && used + size > byte_budget {
             truncated = true;
@@ -1444,6 +1438,7 @@ mod tests {
 
     #[test]
     fn cap_entries_byte_budget_truncates_long_names_first() {
+        // 单条 ~2KB 名称：2MB 预算下 256 条条数上限远未触达，字节先到。
         let long = "n".repeat(2048);
         let entries: Vec<FileEntry> =
             (0..4000).map(|index| file_entry(&format!("/{long}-{index}"))).collect();
@@ -1458,6 +1453,7 @@ mod tests {
 
     #[test]
     fn cap_entries_single_oversize_entry_still_ships() {
+        // 单条自身超预算：无法再切，保底交付且不得误判为空列表。
         let long = "n".repeat(LIST_RESPONSE_BUDGET_BYTES);
         let entries = vec![file_entry(&format!("/{long}"))];
         let (capped, truncated) = cap_entries_for_response(entries, LIST_PAGED_MAX, LIST_RESPONSE_BUDGET_BYTES);

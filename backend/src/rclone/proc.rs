@@ -79,6 +79,11 @@ pub struct RcdHandle {
     endpoint: RcdEndpoint,
     temp_dir: PathBuf,
     binary: PathBuf,
+    /// Spawn-time proxy env (see [`RcdEnv`]). Kept only so the streaming
+    /// listing (`list_stream.rs`) can re-apply the SAME overrides to its
+    /// short-lived `lsjson` child — a proxy-group connection must never
+    /// bypass the user's proxy. Values may embed credentials: never log.
+    env: Option<RcdEnv>,
 }
 
 impl std::fmt::Debug for RcdHandle {
@@ -158,11 +163,25 @@ impl RcdHandle {
             endpoint,
             temp_dir,
             binary: binary.to_path_buf(),
+            env: env.cloned(),
         })
     }
 
     pub fn endpoint(&self) -> &RcdEndpoint {
         &self.endpoint
+    }
+
+    /// Path of this group's private config file (`0600`, credentials land
+    /// here via `config/create`). The streaming listing reuses it so a
+    /// short-lived `lsjson` child sees exactly the remotes the rcd holds —
+    /// never a second copy of the credentials.
+    pub fn config_path(&self) -> PathBuf {
+        self.temp_dir.join("rclone.conf")
+    }
+
+    /// Spawn-time proxy overrides (`None` = inherit sidecar env).
+    pub fn env(&self) -> Option<&RcdEnv> {
+        self.env.as_ref()
     }
 
     /// OS pid of the rcd child (`None` once it has exited and been reaped).
@@ -224,6 +243,37 @@ impl Drop for RcdHandle {
     }
 }
 
+/// Everything a consumer needs to spawn a short-lived child that shares a
+/// group rcd's identity: the same binary, the same private config (so the
+/// child resolves the same remotes — no second credential copy) and the same
+/// proxy env (a proxy-group connection must never bypass the user's proxy).
+/// `Debug` skips every field on purpose: `env` may embed proxy credentials.
+pub struct RcdSpawnInfo {
+    pub binary: PathBuf,
+    pub config_path: PathBuf,
+    pub env: Option<RcdEnv>,
+}
+
+impl std::fmt::Debug for RcdSpawnInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RcdSpawnInfo")
+            .field("binary", &self.binary)
+            .field("config_path", &self.config_path)
+            .field("env", &self.env.is_some())
+            .finish()
+    }
+}
+
+impl RcdSpawnInfo {
+    /// Applies the group's proxy overrides to a std command (wrap into the
+    /// tokio command afterwards, same pattern as [`RcdHandle::start`]).
+    pub fn apply_env_to(&self, command: &mut std::process::Command) {
+        if let Some(env) = &self.env {
+            env.apply_to(command);
+        }
+    }
+}
+
 /// Owns one rcd per proxy group and respawns groups after crashes.
 ///
 /// Process-wide single instance by design (the engine holds one); keys are
@@ -232,10 +282,34 @@ impl Drop for RcdHandle {
 /// group. Env overrides are spawn-time only: once a group's rcd is up,
 /// later [`RcdSupervisor::client_for`] calls with a different `RcdEnv`
 /// reuse the running process instead of restarting it.
-#[derive(Debug, Default)]
 pub struct RcdSupervisor {
     binary: Option<PathBuf>,
     handles: std::collections::HashMap<String, RcdHandle>,
+    /// Pre-teardown callback (installed once by the engine owner): runs with
+    /// the group key BEFORE the rcd handle is dropped, so dependents can
+    /// kill their children first — the streaming listing kills in-flight
+    /// `lsjson` children here, otherwise one could still be reading the
+    /// half-deleted temp config while the rcd is being torn down.
+    teardown_hook: Option<std::sync::Arc<dyn Fn(&str) + Send + Sync>>,
+}
+
+impl std::fmt::Debug for RcdSupervisor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RcdSupervisor")
+            .field("binary", &self.binary)
+            .field("handles", &self.handles.keys())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for RcdSupervisor {
+    fn default() -> Self {
+        Self {
+            binary: None,
+            handles: std::collections::HashMap::new(),
+            teardown_hook: None,
+        }
+    }
 }
 
 impl RcdSupervisor {
@@ -285,11 +359,40 @@ impl RcdSupervisor {
         self.binary = Some(binary);
     }
 
+    /// Installs the pre-teardown hook (see the field docs). At most one
+    /// hook: a later call replaces the previous one.
+    pub fn set_teardown_hook(&mut self, hook: std::sync::Arc<dyn Fn(&str) + Send + Sync>) {
+        self.teardown_hook = Some(hook);
+    }
+
+    fn run_teardown_hook(&self, key: &str) {
+        if let Some(hook) = &self.teardown_hook {
+            hook(key);
+        }
+    }
+
+    /// Spawn identity of a live group (`None` for an unknown/tearing-down
+    /// key): binary + private config + proxy env, for children that must
+    /// share the rcd's view of the world.
+    pub fn spawn_details(&self, key: &str) -> Option<RcdSpawnInfo> {
+        let handle = self.handles.get(key)?;
+        Some(RcdSpawnInfo {
+            binary: handle.binary.clone(),
+            config_path: handle.config_path(),
+            env: handle.env.clone(),
+        })
+    }
+
     /// Stops and forgets ONE group's rcd (idle-group teardown / keepalive
     /// reaping). `true` when a handle existed and was killed; a group whose
     /// rcd is already gone is a no-op success. The dropped handle's Drop
-    /// kills the child.
+    /// kills the child. The teardown hook runs FIRST so dependents (the
+    /// streaming listing) can SIGKILL their children before the temp config
+    /// disappears under them.
     pub fn shutdown_group(&mut self, key: &str) -> bool {
+        if self.handles.contains_key(key) {
+            self.run_teardown_hook(key);
+        }
         self.handles.remove(key).is_some()
     }
 
@@ -315,8 +418,12 @@ impl RcdSupervisor {
 
     /// Stops every group's rcd and forgets it. Remotes registered in the
     /// configs die with the temp dirs — `connection/disconnect` uses this
-    /// only when the whole engine has no live connections left.
+    /// only when the whole engine has no live connections left. Same
+    /// hook-first discipline as [`Self::shutdown_group`].
     pub fn shutdown(&mut self) {
+        for key in self.handles.keys() {
+            self.run_teardown_hook(key);
+        }
         self.handles.clear();
     }
 }
@@ -819,6 +926,39 @@ mod tests {
         // shutdown clears every group; Drop kills the children.
         supervisor.shutdown();
         assert!(supervisor.handles.is_empty(), "shutdown clears all groups");
+    }
+
+    /// The teardown hook fires with the group key BEFORE the handle is
+    /// removed (`list_stream` kills its in-flight children there — the
+    /// ordering is the whole point). Ghost keys never fire; a removed group
+    /// never fires twice.
+    #[tokio::test]
+    async fn teardown_hook_fires_before_group_removal() {
+        let Some(binary) = resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let mut supervisor = RcdSupervisor::new();
+        supervisor.set_binary(binary);
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = std::sync::Arc::clone(&calls);
+        supervisor.set_teardown_hook(std::sync::Arc::new(move |key: &str| {
+            sink.lock().unwrap().push(key.to_string());
+        }));
+        // No such group: no fire.
+        assert!(!supervisor.shutdown_group("ghost"));
+        assert!(calls.lock().unwrap().is_empty());
+        supervisor.client_for("hook-group", None).await.expect("group");
+        assert!(supervisor.shutdown_group("hook-group"));
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            ["hook-group".to_string()]
+        );
+        // Idempotent: the removed group does not fire again.
+        assert!(!supervisor.shutdown_group("hook-group"));
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        supervisor.shutdown();
+        assert_eq!(calls.lock().unwrap().len(), 1);
     }
 
     /// The `client()` compat entry must keep working and must land in the
