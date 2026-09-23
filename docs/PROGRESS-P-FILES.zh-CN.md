@@ -3,6 +3,48 @@
 > 执行说明：本路 agent 运行中两次因模型服务中断，任务在首次实例内完成绝大部分；
 > 巡逻会话（patrol）于 2026-08-29 复核其产出、补齐全量验证与本收口文档。
 
+## 0a. issue #53 修复：bucket 字段被 rclone 引擎丢弃（2026-09-23）
+
+**现象**：腾讯 COS 连接在新版（rclone 引擎）「测试连接」失败，`operations/stat`
+对 `fs=dbx…_test:/sip-mac-nl-sit/`、`remote=""` 返回 rc 404 "directory not found"；
+OpenDAL 引擎（0.1.59）同配置正常。
+
+**根因**：OpenDAL 时代 `bucket`（azblob: `container`）与 `root` 是两个独立
+builder 选项（桶名 + 桶内前缀）；rclone 桶根型后端没有桶参数——**fs 字符串
+首段即桶名**。rclone 引擎迁移时 `connection.bucket` 被静默丢弃，root 单独成为
+fs 路径，其首段被 rclone 误当桶名 → ListObjectsV2 NoSuchBucket → 404。
+`StatJSON` 对根路径的实现就是 `fsrc.List("")`（rclone v1.75 源码
+`fs/operations/lsjson.go`），s3 后端把 HTTP 404 翻译成 ErrorDirNotFound，故报错
+恰好是 "directory not found"。rclone 迁移后的容器冒烟只跑过 fs+memory 段，
+MinIO s3 段未复跑，回归漏网。
+
+**修复**（`backend/src/rclone/registry.rs`）：
+- 新增 `composed_root()`：bucket 字段协议（s3/oss/cos/obs/qiniu/gcs 折
+  `bucket`，azblob 折 `container`）非空时组合 `/{bucket}{root}`，空则维持
+  bucket-namespace 语义（根=列桶）不变；非桶根协议、smb share 折叠不受影响。
+- `binding_for()` 与 `test_connection()` 统一走该组合（connect 路径经
+  binding_for 自动生效）；全插件 fs 字符串单点组合（`call_fs` = remote_fs+root）。
+- 桶根型后端 stat 404 时追加诊断提示（首段=桶名、COS 桶名须含 APPID 后缀）。
+
+**验证**：
+- `cargo check --tests` 通过（新增
+  `composed_root_folds_bucket_field_in_front_of_root` 回归单测 +
+  `binding_for_remote_uses_named_fs` 期望更新）。本机（Windows/UCRT MinGW）
+  cargo test 链接受阻于 aws-lc-sys `nanosleep64`（已知环境限制），测试执行随
+  CI/macOS 跑。
+- **真机 rcd 实证**（rclone serve s3 起本地 S3 端点 + rc 调用，等价
+  connection/test 全路径）：旧组合 `stat t_old:/sip-mac-nl-sit/` → 逐字复现
+  issue 的 rc 404 "directory not found"；新组合
+  `stat t_new:/sip-1250000000/sip-mac-nl-sit/` → 目录 item 正常、
+  operations/list 列出桶内前缀下的文件。
+- smoke 无改动：s3 段本就以 `bucket=<桶>` 发起，修复后该段才真正覆盖桶路径
+  （此前会被静默丢弃）；容器段待 docker 环境复跑。
+- 七语文案：纯后端修复 + 后端英文诊断文案，无 UI 文案改动，不涉及。
+
+**对既有用户的含义**：OpenDAL 时代遗留的连接（bucket 字段非空）升级后**无需
+删除重建**——修复在引擎层恢复 OpenDAL 的组合语义，存量配置直接生效。新表单
+用户填 Bucket 字段的行为也与字段描述（"Bucket name"）一致。
+
 ## 0. 验证终值（patrol 复核实测）
 
 | 套件 | 结果 |
