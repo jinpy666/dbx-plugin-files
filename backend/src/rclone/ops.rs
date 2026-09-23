@@ -159,6 +159,73 @@ pub async fn list(
 }
 
 // ---------------------------------------------------------------------------
+// files/list 封顶（issue #49：rclone rc 无服务端分页，浏览路径保序截断）
+// ---------------------------------------------------------------------------
+
+/// 单条 JSON 响应的字节预算：宿主桥 SDK 拒绝超过 8MB 的 JSON 消息
+/// （shared/sdk/rust/dbx-plugin-sdk `MAX_JSON_BYTES`，冒烟实测
+/// "JSON message is too large"——issue #49 的深层根因之一：大响应在
+/// 桥上必死，rclone 慢只是表象的一半）。2MB 留 4x 余量给响应信封；
+/// files/list 的截断在条目数与字节双预算下取先到。
+pub const LIST_RESPONSE_BUDGET_BYTES: usize = 2 * 1024 * 1024;
+
+/// `files/list` 浏览路径的封顶版：返回排序后的前 `max` 条与截断标记。
+///
+/// rclone rc 的 `operations/list` 没有任何服务端分页参数（无 offset/limit/
+/// continuation-token，docs live-verified 2026-09），一个巨型 S3 前缀只能
+/// 整包返回。与其让百万条目级目录把内存/宿主网桥打爆后整体失败，不如保序
+/// 截断并显式 `truncated`，由前端提示缩小范围。截断在 `filter_and_sort`
+/// 之后进行（`list` 内部已完成），语义确定为「字典序前 max 条」。
+pub async fn list_capped(
+    client: &RcClient,
+    fs: &str,
+    path: &str,
+    root: &str,
+    lock_to_root: bool,
+    max: usize,
+) -> Result<(Vec<FileEntry>, bool), String> {
+    let entries = list(client, fs, path, false, root, lock_to_root).await?;
+    Ok(cap_entries(entries, max))
+}
+
+/// Pure cap over a sorted listing: `(first `max` entries, truncated?)`.
+fn cap_entries(mut entries: Vec<FileEntry>, max: usize) -> (Vec<FileEntry>, bool) {
+    cap_entries_for_response(entries, max, LIST_RESPONSE_BUDGET_BYTES)
+}
+
+/// 双预算（条目数 + 序列化字节）截断：宿主桥 SDK 拒绝超过 8MB 的单条
+/// JSON 消息（shared/sdk/rust/dbx-plugin-sdk `MAX_JSON_BYTES`，issue #49
+/// 深层根因——10 万条目 ≈ 25MB，桥上必死）。2MB 留 4x 余量给响应信封。
+/// 单条自身超预算时无法再切，仍保底交付该条。
+fn cap_entries_for_response(
+    mut entries: Vec<FileEntry>,
+    max_entries: usize,
+    byte_budget: usize,
+) -> (Vec<FileEntry>, bool) {
+    let mut kept = 0usize;
+    // 2 = JSON 数组的 `[]` 开销；+1 条目间逗号分隔
+    let mut used = 2usize;
+    let mut truncated = false;
+    for entry in entries.iter() {
+        if kept >= max_entries {
+            truncated = true;
+            break;
+        }
+        let size = serde_json::to_vec(entry).map(|v| v.len() + 1).unwrap_or(1);
+        if kept > 0 && used + size > byte_budget {
+            truncated = true;
+            break;
+        }
+        used += size;
+        kept += 1;
+    }
+    if truncated {
+        entries.truncate(kept);
+    }
+    (entries, truncated)
+}
+
+// ---------------------------------------------------------------------------
 // files/listPaged (§5: operations/list 全量 + 切片)
 // ---------------------------------------------------------------------------
 
@@ -1340,6 +1407,62 @@ mod tests {
     #[test]
     fn list_paged_cap_constant() {
         assert_eq!(LIST_PAGED_MAX, 100_000);
+    }
+
+    // -- list 封顶截断（issue #49）---------------------------------------------
+
+    fn file_entry(path: &str) -> FileEntry {
+        FileEntry { name: path.into(), path: path.into(), kind: "file", size: Some(1), modified_at: None }
+    }
+
+    #[test]
+    fn cap_entries_keeps_short_listings_intact() {
+        let entries = vec![file_entry("/a"), file_entry("/b")];
+        let (capped, truncated) =
+            cap_entries_for_response(entries, LIST_PAGED_MAX, LIST_RESPONSE_BUDGET_BYTES);
+        assert_eq!(capped.len(), 2);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn cap_entries_truncates_at_max_and_flags() {
+        let entries: Vec<FileEntry> = (0..5).map(|index| file_entry(&format!("/{index}"))).collect();
+        let (capped, truncated) =
+            cap_entries_for_response(entries, 3, LIST_RESPONSE_BUDGET_BYTES);
+        let paths: Vec<&str> = capped.iter().map(|entry| entry.path.as_str()).collect();
+        assert_eq!(paths, vec!["/0", "/1", "/2"], "keeps the sorted head, in order");
+        assert!(truncated);
+    }
+
+    #[test]
+    fn cap_entries_exact_fit_is_not_truncated() {
+        let entries: Vec<FileEntry> = (0..3).map(|index| file_entry(&format!("/{index}"))).collect();
+        let (capped, truncated) = cap_entries_for_response(entries, 3, LIST_RESPONSE_BUDGET_BYTES);
+        assert_eq!(capped.len(), 3);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn cap_entries_byte_budget_truncates_long_names_first() {
+        let long = "n".repeat(2048);
+        let entries: Vec<FileEntry> =
+            (0..4000).map(|index| file_entry(&format!("/{long}-{index}"))).collect();
+        let (capped, truncated) =
+            cap_entries_for_response(entries, LIST_PAGED_MAX, LIST_RESPONSE_BUDGET_BYTES);
+        assert!(truncated);
+        assert!(capped.len() < 4000);
+        assert!(capped.len() >= 256, "2MB 预算至少容纳 2KB 级条目数百条以上");
+        let serialized = serde_json::to_vec(&capped).unwrap().len();
+        assert!(serialized < LIST_RESPONSE_BUDGET_BYTES * 2, "截断后的体积必须在桥上限量级内");
+    }
+
+    #[test]
+    fn cap_entries_single_oversize_entry_still_ships() {
+        let long = "n".repeat(LIST_RESPONSE_BUDGET_BYTES);
+        let entries = vec![file_entry(&format!("/{long}"))];
+        let (capped, truncated) = cap_entries_for_response(entries, LIST_PAGED_MAX, LIST_RESPONSE_BUDGET_BYTES);
+        assert_eq!(capped.len(), 1);
+        assert!(!truncated);
     }
 
     // -- ModTime 两种形态（RFC3339 字符串 / 防御性数字） ----------------------

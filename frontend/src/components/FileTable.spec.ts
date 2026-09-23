@@ -475,3 +475,27 @@ describe("FileTable 列显隐（表头右键菜单）", () => {
     wrapper.unmount();
   });
 });
+
+// issue #49：后端封顶截断时 footer 条目数以 N+ 提示并非完整清单。
+describe("FileTable truncated footer (issue #49)", () => {
+  it("footer shows plain count when not truncated", () => {
+    const wrapper = mountTable();
+    expect(wrapper.find(".wb-file-footer span").text()).toBe("entriesCount");
+    wrapper.unmount();
+  });
+
+  it("footer appends + when truncated", () => {
+    const wrapper = mount(FileTable, {
+      props: {
+        entries,
+        selection: [],
+        activePath: "",
+        sort: { column: "name", direction: "asc" },
+        truncated: true,
+        t: (key: string, values?: Record<string, string | number>) => (values ? `${key}:${values.count}` : key),
+      },
+    });
+    expect(wrapper.find(".wb-file-footer span").text()).toBe("entriesCount:3+");
+    wrapper.unmount();
+  });
+});
