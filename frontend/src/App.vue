@@ -82,6 +82,7 @@ import {
   type FileEntry,
 } from "./lib/api";
 import { createTransferTracker, isActive, isRetryableKind, type TransferJob, type TransferKind } from "./lib/transfers";
+import { filesFromClipboard } from "./lib/clipboardFiles";
 import { inspect, type DangerousHit } from "./lib/dangerousPaths";
 import { errorBannerOf, i18nTextOf, workbenchMessage, type ErrorBannerState, type I18nInput, type I18nText } from "./lib/i18n";
 import { isArchivePath } from "./lib/archive";
@@ -847,6 +848,8 @@ let unsubscribeBinary: (() => void) | undefined;
 let unsubscribeContext: (() => void) | undefined;
 let unsubscribeInit: (() => void) | undefined;
 let unsubscribeTheme: (() => void) | undefined;
+let unsubscribeFileDrag: (() => void) | undefined;
+let unsubscribeFileDrop: (() => void) | undefined;
 
 /** 立即清掉当前横幅：行内报错出现时不让旧的成功提示同屏误导。 */
 function hideNotice() {
@@ -2296,6 +2299,38 @@ function onDropTo(side: PaneSide, event: DragEvent) {
     return;
   }
   void onUpload(files);
+}
+
+// ---- paste upload + 宿主级拖拽（对标 ssh 插件）---------------------------------
+
+/** 宿主 fileTransfer 拖拽态（桌面端原生文件拖入 webview）：驱动全局放置提示。 */
+const hostDragActive = ref(false);
+
+/**
+ * 剪贴板粘贴上传（Finder/Explorer「复制文件 → Ctrl/Cmd+V」，对标 ssh sftp 面板）。
+ * 仅当剪贴板携带文件时拦截事件；文本/截图之外的纯文本粘贴完全放行，不影响
+ * 路径、搜索、重命名等输入框。目标目录与工具栏上传一致（双栏=右栏，单栏=当前目录）。
+ */
+function onWorkspacePaste(event: ClipboardEvent) {
+  const files = filesFromClipboard(event.clipboardData);
+  if (!files.length) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (!canWrite.value) {
+    showNotice(t("readOnly"));
+    return;
+  }
+  void onUpload(files);
+}
+
+/** 宿主桥 onDrop（句柄对象，非 File）：与 OS 拖入同门禁，经 fileTransfer.read 走上传泵。 */
+function onHostFileDrop(files: Array<{ handleId: string; name: string; size: number; contentType: string }>) {
+  hostDragActive.value = false;
+  if (!canWrite.value) {
+    showNotice(t("readOnly"));
+    return;
+  }
+  void uploadHostFiles(files, uploadTarget());
 }
 
 // ---- transfers ---------------------------------------------------------------
@@ -3799,6 +3834,11 @@ onMounted(() => {
   // 顶栏限速徽标：启动即拉取当前持久化限速（空 = 不限，徽标隐藏）。
   void loadBwlimit();
   document.addEventListener("keydown", onDocumentKeydown);
+  // 粘贴上传：document 级冒泡监听——有文件才拦截，无文件放行（不干扰输入框）。
+  document.addEventListener("paste", onWorkspacePaste);
+  // 宿主 fileTransfer 拖拽（桌面端原生拖入；web/dev host 无此桥时静默跳过）。
+  unsubscribeFileDrag = window.dbxPlugin.fileTransfer?.onDragState((active) => (hostDragActive.value = active));
+  unsubscribeFileDrop = window.dbxPlugin.fileTransfer?.onDrop(onHostFileDrop);
   window.addEventListener("resize", syncViewportLayout);
   syncViewportLayout();
   // 本机落盘能力探测（决定下载走 sidecar 落盘还是宿主/浏览器兜底）+ 平台
@@ -3815,6 +3855,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener("click", onContextClick);
   document.removeEventListener("keydown", onDocumentKeydown);
+  document.removeEventListener("paste", onWorkspacePaste);
   window.removeEventListener("resize", syncViewportLayout);
   window.clearTimeout(noticeTimer);
   window.clearTimeout(errorTimer);
@@ -3828,6 +3869,8 @@ onBeforeUnmount(() => {
   unsubscribeContext?.();
   unsubscribeInit?.();
   unsubscribeTheme?.();
+  unsubscribeFileDrag?.();
+  unsubscribeFileDrop?.();
 });
 </script>
 
@@ -4092,6 +4135,9 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </aside>
+      <!-- 宿主级拖拽提示（fileTransfer.onDragState）：pane 内拖拽已有点位 overlay
+           时让位（互斥），避免两层提示叠加。 -->
+      <div v-if="hostDragActive && !dragOverSide" class="wb-drop-overlay wb-host-drop-overlay">{{ t("dropToUpload") }}</div>
     </div>
 
     <!-- 文件概览弹窗：来自任一栏的预览/压缩包列表；遮罩点击 / Esc / 关闭按钮均可关闭。

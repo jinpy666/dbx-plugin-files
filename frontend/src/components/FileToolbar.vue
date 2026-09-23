@@ -158,7 +158,7 @@ const statsDockOpen = computed(() => props.dockOpen && props.dockTab === "stats"
     <div class="wb-toolbar-actions">
       <!-- 审计中#13：文字按钮统一 v-tip（宿主 webview 不渲染原生 title）。 -->
       <button class="wb-toolbar-button" v-tip="t('newFolder')" :disabled="!canWrite || busy" @click="emit('new-folder')"><FolderPlus /> {{ t("newFolder") }}</button>
-      <button class="wb-toolbar-button" v-tip="t('upload')" :disabled="!canWrite || busy" @click="pickFiles"><Upload /> {{ t("upload") }}</button>
+      <button class="wb-toolbar-button" v-tip="t('uploadPasteHint')" :disabled="!canWrite || busy" @click="pickFiles"><Upload /> {{ t("upload") }}</button>
       <input ref="fileInput" type="file" multiple class="hidden" @change="onPicked" />
       <button class="wb-toolbar-button" v-tip="t('download')" :disabled="!hasSelection || busy" @click="emit('download')"><Download /> {{ t("download") }}</button>
       <button class="wb-toolbar-button" v-tip="t('deleteSelected')" :disabled="!hasSelection || !canWrite || busy" @click="emit('delete')"><Trash2 /> {{ t("deleteSelected") }}</button>
