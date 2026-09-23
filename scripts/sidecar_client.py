@@ -226,6 +226,22 @@ class SidecarClient:
                 return event
         return None
 
+    def pump(self, timeout: float = 1.0) -> None:
+        """Read frames for up to `timeout` seconds, stashing events.
+
+        Unlike wait_event, this never early-returns on already-buffered
+        events — it is the drain primitive for multi-event sequences
+        (files/list/chunk): wait_event stops reading as soon as ONE match
+        sits in history, which starves every later frame in the pipe.
+        """
+        previous, self.timeout = self.timeout, max(0.05, timeout)
+        try:
+            self._pump(None)
+        except SidecarError:
+            pass
+        finally:
+            self.timeout = previous
+
     def drain_stderr(self) -> str:
         try:
             return self.process.stderr.read().decode(errors="replace") if self.process.stderr else ""

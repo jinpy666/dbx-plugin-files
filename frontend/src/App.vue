@@ -100,6 +100,7 @@ import { createNavGuard } from "./lib/navGuard";
 import { resolveToolbarTarget } from "./lib/toolbarTarget";
 import { validateFileName } from "./lib/fileName";
 import { runBatchTasks } from "./lib/batchRunner";
+import { createChunkHoldback, createListStreamBrowse, ListStreamPartialError, type ListStreamAck, type ListStreamBrowse, type ListStreamChunk, type ListStreamResult } from "./lib/listStream";
 
 type ConfirmKind = "delete" | "purge" | "newFolder" | "newFile" | "rename" | "copy" | "move" | "extract" | "compress" | "overwrite" | "check" | "cleanup" | "copyurl";
 type PaneSide = "left" | "right";
@@ -178,6 +179,10 @@ const activePath = ref("");
 const sort = ref<SortState>(prefs.sort);
 const loading = ref(true);
 const listingFailed = ref(false);
+// 流式目录列表（files/listStream P1）：chunk 陆续到达期间 sortedEntries 跳过
+// 列排序（每帧全量重排 10 万条目会带来 CPU 抖动），按到达顺序展示；done 帧
+// 交付后置回 false，恢复既有排序语义（排序/过滤/全选最终语义不变）。
+const leftStreaming = ref(false);
 // 顶栏连接状态 pill（对标 ssh session-pill）：存储连接（非本地栏）最近一次
 // files/list 成败，在 fetchListing 统一挂钩。
 const connState = ref<"connecting" | "connected" | "disconnected">("connecting");
@@ -212,6 +217,8 @@ const rightSelection = ref<string[]>([]);
 const rightActivePath = ref("");
 const rightLoading = ref(false);
 const rightListingFailed = ref(false);
+// 右栏流式标志（与左栏 leftStreaming 对称，见上方注释）。
+const rightStreaming = ref(false);
 /** "" = 与左栏同连接；宿主提供连接枚举时可切换其它连接（cross-connection 走 targetConnectionId）。 */
 const targetConnectionId = ref("");
 const targetConnections = ref<Array<{ id: string; name: string }>>([]);
@@ -660,13 +667,16 @@ const confirmLabel = computed(() => {
   return t("confirm");
 });
 
-const sortedEntries = computed(() => sortEntries(entries.value, sort.value));
+// 流式浏览（listStream）期间跳过列排序：避免每个 chunk 全量重排（10 万条目
+// 级别的 CPU 抖动），流式期间按到达顺序展示；done 交付后 streaming 落 false，
+// computed 自动恢复 sortEntries 路径，排序/过滤/全选最终语义不变。
+const sortedEntries = computed(() => (leftStreaming.value ? entries.value : sortEntries(entries.value, sort.value)));
 // 当前目录文件名过滤（tiny-rdm 对标缺口#7）：仅影响展示，不影响选择/删除语义。
 const searchQuery = ref("");
 const filteredEntries = computed(() => filterEntries(sortedEntries.value, searchQuery.value));
 // P2-12：右栏排序状态独立（双栏各自连接，排序互不联动；左栏排序仍持久化）。
 const rightSort = ref<SortState>(prefs.sort);
-const rightSorted = computed(() => sortEntries(rightEntries.value, rightSort.value));
+const rightSorted = computed(() => (rightStreaming.value ? rightEntries.value : sortEntries(rightEntries.value, rightSort.value)));
 // 右栏同款过滤（双栏对称性修复）：与左栏共用 filterEntries 语义。
 const rightSearchQuery = ref("");
 const filteredRightEntries = computed(() => filterEntries(rightSorted.value, rightSearchQuery.value));
@@ -931,6 +941,18 @@ function handleEvent(event: DbxPluginEvent) {
     else if (state.state === "error") showError(new Error(t("remoteEditFailed", { error: state.error ?? "" })));
     return;
   }
+  if (event.method === "files/list/chunk") {
+    // 流式目录列表分块（files/listStream P1）：按 requestId 路由到对应栏的
+    // 在途会话；认领不到的帧（ack 未登记——真实宿主桥里事件可能先于 RPC
+    // 应答写入）进预缓冲，ack 登记后原序重放；迟到/重复帧由会话拒绝。
+    const chunk = event.params as unknown as ListStreamChunk;
+    const session = leftStream && leftStream.requestId === chunk.requestId ? leftStream
+      : rightStream && rightStream.requestId === chunk.requestId ? rightStream
+      : null;
+    if (session) session.handleChunk(chunk);
+    else pendingChunks.push(chunk);
+    return;
+  }
   if (event.method === "files/transfer/progress") {
     const progress = event.params as Parameters<typeof tracker.onProgress>[0];
     const job = tracker.onProgress(progress);
@@ -1158,26 +1180,138 @@ async function fetchListing(target: string, explicitConnectionId?: string): Prom
   }
 }
 
+// ---- 流式目录列表（files/listStream P1 前端）--------------------------------
+// 主列表浏览（loadDirectory/loadRightDirectory）从一次性 files/list 切换为
+// listStream 会话：ack 登记 requestId，chunk 事件分批累加（到达顺序渲染），
+// done 帧一次性交付；ack 失败（旧 sidecar 方法缺失 / listing busy: / disabled
+// 等任何错误）无缝回落 files/list（现行为），UI 无感。树展开（expandTreeNode）、
+// findTargetConflicts 等内部调用仍走 fetchListing（files/list，需要完整结果）。
+
+// 每栏当前在途的流式会话句柄（handleEvent 按 requestId 路由事件帧；下一次
+// 导航经 abandonStream 弃置并 best-effort 取消）。
+let leftStream: ListStreamBrowse | null = null;
+let rightStream: ListStreamBrowse | null = null;
+
+// ack 前到达帧的预缓冲：真实宿主桥里 chunk 事件可能先于 RPC 应答写入（快
+// 路径 done 帧尤甚），先缓冲再在 ack 登记后原序重放，否则会话永久悬挂。
+const pendingChunks = createChunkHoldback();
+
+/** 结束该栏在途流式会话：best-effort files/listCancel（不 await）+ 丢弃后续帧。 */
+function abandonStream(side: PaneSide) {
+  const session = side === "left" ? leftStream : rightStream;
+  if (!session || session.finished) return;
+  const requestId = session.abandon();
+  cancelStreamRequest(requestId);
+  if (requestId) pendingChunks.drop(requestId);
+}
+
+/** best-effort 取消（协议契约：files/listCancel 不 await，失败静默收敛）。 */
+function cancelStreamRequest(requestId: string | null) {
+  if (!requestId) return;
+  void call("files/listCancel", { requestId }).catch(() => undefined);
+}
+
+interface StreamBrowseHooks {
+  /** 每个有效 chunk 落地后的到达顺序累加数组（App 直接渲染进该栏 entries）。 */
+  onChunk: (entries: FileEntry[]) => void;
+}
+
+/**
+ * 主列表流式浏览：files/listStream 会话；ack 失败无缝回落 files/list。
+ * resolve 于 done 帧 / 失败帧 / 会话被弃置（stale:true，调用方按导航 token 丢弃）。
+ */
+/** ack 等待上限：真实桥 ack 丢失时放弃会话回落 files/list，避免结果永久悬挂。 */
+const STREAM_ACK_TIMEOUT_MS = 10_000;
+
+async function streamListing(side: PaneSide, target: string, explicitConnectionId: string | undefined, hooks: StreamBrowseHooks): Promise<ListStreamResult> {
+  const version = hostContextVersion;
+  const params: Record<string, unknown> = { path: target };
+  if (explicitConnectionId) params.connectionId = explicitConnectionId;
+  // 连接状态 pill 与 fetchListing 同语义：非本地栏的应答反映存储连接健康度。
+  const hitsHost = explicitConnectionId !== LOCAL_CONNECTION_ID;
+  const session = createListStreamBrowse({
+    // chunk 装饰与 fetchListing 完全一致：normalize（dir→directory）+ FTP
+    // 显示解码（issue #32，charset 取自 ack；name/path 保持原始形式）。
+    decorate: (list, charset) => normalizeEntries(list).map((entry) => withDisplayName(entry, charset)),
+    onAck: (ack) => {
+      if (hitsHost && version === hostContextVersion) connState.value = "connected";
+      const charset = ack.displayCharset ?? "";
+      if (charset) displayCharsetByConnection.set(explicitConnectionId ?? connectionId.value, charset);
+    },
+    onChunk: (partial) => hooks.onChunk(partial),
+  });
+  if (side === "left") leftStream = session;
+  else rightStream = session;
+  let ack: ListStreamAck;
+  try {
+    ack = await new Promise<ListStreamAck>((resolve, reject) => {
+      const timer = window.setTimeout(() => reject(new Error("files/listStream ack timeout")), STREAM_ACK_TIMEOUT_MS);
+      call<ListStreamAck>("files/listStream", params).then(
+        (value) => { window.clearTimeout(timer); resolve(value); },
+        (cause) => { window.clearTimeout(timer); reject(cause); },
+      );
+    });
+  } catch {
+    // ack 失败（任何错误/超时）：无缝回落 files/list（现行为），UI 无感。
+    // 会话尚未登记 requestId，无可取消对象，直接弃置以结束等待。
+    session.abandon();
+    const fallback = await fetchListing(target, explicitConnectionId);
+    return { entries: fallback.entries, failed: false, truncated: fallback.truncated };
+  }
+  if (session.register(ack)) {
+    // 重放 ack 前到达的暂存帧（原序；handleChunk 的 seq 单调检查兜住乱序）。
+    for (const frame of pendingChunks.drain(ack.requestId)) session.handleChunk(frame);
+  } else {
+    // ack 晚于新导航（token 已失效）：best-effort 取消，结果由 token 检查丢弃。
+    cancelStreamRequest(ack.requestId);
+  }
+  return await session.result;
+}
+
 async function loadDirectory(target?: string) {
   const next = target ?? path.value;
   const token = leftNav.next();
+  // 上一次流式会话仍在途中：best-effort listCancel 并结束其等待（晚到结果
+  // 会被下方 token 检查丢弃，不覆盖新导航）。
+  abandonStream("left");
   loading.value = true;
   listingFailed.value = false;
+  // 流式标志一并复位：上一次导航流式中段置 true 后，本次若走回落且失败，
+  // catch 路径不经过成功赋值，旧标志会让新目录按到达顺序渲染（m1）。
+  leftStreaming.value = false;
   try {
-    const { entries: list, truncated } = await fetchListing(next, sideConnectionId("left"));
-    // 晚到的过期响应：直接丢弃，面包屑/列表/选中态保持最新导航的结果。
+    const { entries: list, failed, errorMessage: streamError, partialCount, truncated } = await streamListing("left", next, sideConnectionId("left"), {
+      onChunk: (partial) => {
+        // 流式渲染：首个 chunk 到达即让骨架屏让位（footer 条目数随 chunk 实时
+        // 增长），streaming 期间 sortedEntries 按到达顺序展示。
+        if (!leftNav.isCurrent(token)) return;
+        leftStreaming.value = true;
+        loading.value = false;
+        entries.value = partial;
+      },
+    });
+    // 晚到的过期会话：面包屑/列表/选中态保持最新导航的结果。
     if (!leftNav.isCurrent(token)) return;
+    leftStreaming.value = false;
+    if (failed) {
+      // 失败帧：保留已到条目（可能为空）+ listingFailed 错误横幅路径；
+      // 文案经 ListStreamPartialError 体现「已加载 N 项后失败」。
+      entries.value = list;
+      entriesTruncated.value = false;
+      path.value = next;
+      selection.value = [];
+      activePath.value = "";
+      throw new ListStreamPartialError(streamError ?? "listing failed", partialCount ?? list.length);
+    }
     entries.value = list;
-    entriesTruncated.value = truncated;
+    entriesTruncated.value = truncated ?? false;
     path.value = next;
     selection.value = [];
     activePath.value = "";
     error.value = "";
-    // 大目录提示（第 3 轮）：浏览仍走全量 files/list（排序/过滤/全选语义
-    // 不回归），仅当条目数达阈值时提示用户列表已虚拟滚动（largeDir.ts 记录
-    // 了不切 listPaged 的 bench 依据）。
-    // 截断（issue #49）优先于大目录提示：后端已封顶，提示语义是「仅前 N 项」。
-    if (truncated) showNotice(t("directoryTruncated", { count: list.length }));
+    // 大目录提示（第 3 轮）：listStream 的 done 帧条目数达阈值时仍提示
+    // （回落 files/list 时既有 truncated 提示优先于大目录提示，语义不变）。
+    if (entriesTruncated.value) showNotice(t("directoryTruncated", { count: list.length }));
     else if (isLargeDirectory(entries.value.length)) showNotice(t("largeDirectory", { count: entries.value.length }));
     // 导航完成后的快照型 report（含 intent search 触发的导航）。
     reportPaneSnapshot("left");
@@ -1188,7 +1322,11 @@ async function loadDirectory(target?: string) {
     entriesTruncated.value = false;
     selection.value = [];
     activePath.value = "";
-    showError(cause, "left");
+    if (cause instanceof ListStreamPartialError) {
+      showError({ key: "partialListFailed", values: { count: cause.count } }, "left");
+    } else {
+      showError(cause, "left");
+    }
     throw cause;
   } finally {
     // loading 由最新一次请求收尾（过期请求不抢着关，避免闪烁）。
@@ -1199,17 +1337,36 @@ async function loadDirectory(target?: string) {
 async function loadRightDirectory(target?: string) {
   const next = target ?? rightPath.value;
   const token = rightNav.next();
+  abandonStream("right");
   rightLoading.value = true;
   rightListingFailed.value = false;
+  // 与左栏一致（m1）：catch 路径不经过流式标志的成功赋值，需在导航起点复位。
+  rightStreaming.value = false;
   try {
-    const { entries: list, truncated } = await fetchListing(next, targetConnectionId.value || undefined);
+    const { entries: list, failed, errorMessage: streamError, partialCount, truncated } = await streamListing("right", next, targetConnectionId.value || undefined, {
+      onChunk: (partial) => {
+        if (!rightNav.isCurrent(token)) return;
+        rightStreaming.value = true;
+        rightLoading.value = false;
+        rightEntries.value = partial;
+      },
+    });
     if (!rightNav.isCurrent(token)) return;
+    rightStreaming.value = false;
+    if (failed) {
+      rightEntries.value = list;
+      rightEntriesTruncated.value = false;
+      rightPath.value = next;
+      rightSelection.value = [];
+      rightActivePath.value = "";
+      throw new ListStreamPartialError(streamError ?? "listing failed", partialCount ?? list.length);
+    }
     rightEntries.value = list;
-    rightEntriesTruncated.value = truncated;
+    rightEntriesTruncated.value = truncated ?? false;
     rightPath.value = next;
     rightSelection.value = [];
     rightActivePath.value = "";
-    if (truncated) showNotice(t("directoryTruncated", { count: list.length }));
+    if (rightEntriesTruncated.value) showNotice(t("directoryTruncated", { count: list.length }));
     else if (isLargeDirectory(rightEntries.value.length)) showNotice(t("largeDirectory", { count: rightEntries.value.length }));
     reportPaneSnapshot("right");
   } catch (cause) {
@@ -1218,7 +1375,11 @@ async function loadRightDirectory(target?: string) {
     rightEntriesTruncated.value = false;
     rightSelection.value = [];
     rightActivePath.value = "";
-    showError(cause, "right");
+    if (cause instanceof ListStreamPartialError) {
+      showError({ key: "partialListFailed", values: { count: cause.count } }, "right");
+    } else {
+      showError(cause, "right");
+    }
     throw cause;
   } finally {
     if (rightNav.isCurrent(token)) rightLoading.value = false;
@@ -3658,6 +3819,9 @@ onBeforeUnmount(() => {
   window.clearTimeout(noticeTimer);
   window.clearTimeout(errorTimer);
   window.clearInterval(pollTimer);
+  // 在途流式列表会话：卸载时 best-effort 取消，sidecar 不再白做枚举。
+  abandonStream("left");
+  abandonStream("right");
   uiIntent.stop();
   unsubscribeEvent?.();
   unsubscribeBinary?.();

@@ -63,6 +63,10 @@ fn encode_query_component(value: &str) -> String {
 fn build_unbounded_http() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
+        // M1：总超时兜底放宽到 10 分钟（与流式 watchdog 同量级）——去掉
+        // 30s 悬崖是为了让巨型列举跑完，不是允许 rcd stall 时永久悬挂：
+        // 无读超时的 future 会让 files/list 的同步 RPC 永不返回。
+        .timeout(Duration::from_secs(600))
         .build()
         .expect("reqwest client with static options always builds")
 }
@@ -236,8 +240,12 @@ impl RcClient {
     }
 
     /// Recursive file count + byte total for a path.
+    ///
+    /// Unbounded total timeout（与 operations/list 同理）：巨型子树的
+    /// 枚举在 rclone 内部完成前 rc 不吐字节，30s 控制面客户端会拦腰
+    /// 掐断（files/size 属性面板与 search 扫描预检都走这里）。
     pub async fn operations_size(&self, fs: &str, remote: &str) -> Result<Value, RcError> {
-        self.call(
+        self.call_unbounded(
             "operations/size",
             &serde_json::json!({ "fs": fs, "remote": remote }),
         )

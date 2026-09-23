@@ -20,6 +20,15 @@ Drives the sidecar over its stdio-framed protocol (sidecar_client.py):
   - sftp-native section: the dedicated password-auth face (keyfile auth is
     pinned by the plain sftp section above) — SKIP unless
     DBX_FILES_SFTP_NATIVE_HOST/PORT/USER/PASSWORD/KEY/BASE are set
+  - stream section (issue #49): files/listStream real-wire faces — rc fast
+    path (single done frame), soft-timeout escalation to a real `rclone
+    lsjson` child (multi-chunk, arrival parity with files/list), cancel with
+    no lingering child process, DBX_FILES_LIST_STREAM=off escape hatch,
+  - decision-cache-hits: a completed huge listing escalates instantly on
+    its next visit (sidecar log evidence, no soft-timeout wait),
+    missing-path error, and the >100k-entries directory that files/list caps
+    but listStream delivers in full — SKIP unless rclone is on PATH
+    (DBX_FILES_RCLONE_BIN); fixture size via STREAM_SMOKE_BIG_FILES
   - webdav/ftp sections additionally re-dial the same backend with a
     confined root (root-connection-settings variant) to prove the root field
     scopes listings on a real wire
@@ -47,7 +56,11 @@ from __future__ import annotations
 import base64
 import json
 import os
+import collections
+import shutil
 import struct
+import subprocess
+import threading
 import sys
 import tempfile
 import time
@@ -1403,6 +1416,242 @@ def scenario_sftp_native_capabilities(runner: Runner) -> None:
     assert_protocol_contract(runner, "sftp-native")
 
 
+def _make_files(path: str, count: int) -> None:
+    """Flat directory with `count` empty files (issue #49 listing fixture)."""
+    os.makedirs(path, exist_ok=True)
+    for index in range(count):
+        fd = os.open(os.path.join(path, f"f-{index:06d}"), os.O_CREAT | os.O_WRONLY, 0o644)
+        os.close(fd)
+
+
+def _collect_stream(client: SidecarClient, request_id: str, timeout: float = 90.0):
+    """Drain files/list/chunk frames for `requestId` until done/error/timeout.
+
+    Frames are consumed from client.events via a cursor; between arrivals
+    client.pump() actually reads the pipe (wait_event would early-return on
+    the first buffered match and starve every later frame). Returns
+    (frames, terminal_frame).
+    """
+    frames: list[dict] = []
+    seen = 0
+    terminal = None
+    deadline = time.monotonic() + timeout
+    while terminal is None and time.monotonic() < deadline:
+        while seen < len(client.events):
+            event = client.events[seen]
+            seen += 1
+            if event.get("method") != "files/list/chunk":
+                continue
+            params = event.get("params", {})
+            if params.get("requestId") != request_id:
+                continue
+            frames.append(params)
+            if params.get("done") or params.get("error"):
+                terminal = params
+        if terminal is None:
+            client.pump(timeout=max(0.05, min(0.5, deadline - time.monotonic())))
+    return frames, terminal
+
+
+def _entry_names(client: SidecarClient, connection_id: str, path: str) -> set:
+    result = client.request("files/list", {"connectionId": connection_id, "path": path})
+    return {entry["name"] for entry in result.get("entries", [])}
+
+
+def _no_lingering_lsjson(grace: float = 4.0) -> bool:
+    """True once no `rclone lsjson` child process remains (cancel hygiene)."""
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        probe = subprocess.run(["pgrep", "-f", "rclone lsjson"], capture_output=True)
+        if probe.returncode != 0:
+            return True
+        time.sleep(0.4)
+    return False
+
+
+def run_stream_section(client: SidecarClient, fs_root: str) -> None:
+    """files/listStream real-wire faces (issue #49 P1).
+
+    Production soft timeout is 5s and local fs never reaches it, so the
+    escalation/child-process faces run against a dedicated sidecar instance
+    with DBX_FILES_LIST_STREAM_SOFT_TIMEOUT_MS=1 (env knob, exercised here
+    end-to-end). The fast-path face reuses the main (default-env) client.
+    """
+    section = "stream"
+    rclone_bin = os.environ.get("DBX_FILES_RCLONE_BIN") or shutil.which("rclone")
+    if not rclone_bin:
+        mark(section, "rclone-binary", "skip", "rclone not found; set DBX_FILES_RCLONE_BIN")
+        return
+
+    small = os.path.join(fs_root, "stream-small")
+    medium = os.path.join(fs_root, "stream-medium")
+    big = os.path.join(fs_root, "stream-big")
+    _make_files(small, 12)
+    _make_files(medium, 5000)
+    big_count = int(os.environ.get("STREAM_SMOKE_BIG_FILES", "100500"))
+    print(f"    [stream] creating {big_count}-file fixture (takes a moment)...")
+    _make_files(big, big_count)
+
+    # -- fast path: production 5s soft timeout, small dir => single done frame
+    try:
+        connect(client, "stream-fast", {"protocol": "fs"}, small)
+        ack = client.request("files/listStream", {"connectionId": "stream-fast", "path": "/"})
+        frames, terminal = _collect_stream(client, ack["requestId"], timeout=30)
+        if not frames:
+            mark(section, "fast-path-single-done", "skip", "listStream not served by this build")
+            return
+        wire_names = {entry["name"] for frame in frames for entry in frame.get("entries", [])}
+        disk_names = _entry_names(client, "stream-fast", "/")
+        if (len(frames) == 1 and terminal and terminal.get("done")
+                and terminal.get("total") == 12 and wire_names == disk_names):
+            mark(section, "fast-path-single-done", "pass")
+        else:
+            mark(section, "fast-path-single-done", "fail",
+                 f"frames={len(frames)} terminal={terminal}")
+    except SidecarError as error:
+        if is_method_missing(str(error)):
+            mark(section, "fast-path-single-done", "skip", str(error)[:120])
+            return
+        mark(section, "fast-path-single-done", "fail", str(error)[:160])
+        return
+
+    # -- fast path over the 8MB bridge ceiling (issue #49 deep root cause):
+    # the >100k dir blows the soft-timeout budget OR completes and gets
+    # byte-chunked — either way the FULL listing must arrive (never a
+    # silently dropped giant frame, never the 8MB refusal).
+    try:
+        connect(client, "stream-root", {"protocol": "fs"}, fs_root)
+        ack = client.request("files/listStream", {"connectionId": "stream-root", "path": "/stream-big"})
+        frames, terminal = _collect_stream(client, ack["requestId"], timeout=300)
+        streamed = sum(len(frame.get("entries", [])) for frame in frames)
+        if (len(frames) >= 2 and terminal and terminal.get("done")
+                and terminal.get("total") == big_count and streamed == big_count):
+            mark(section, "big-dir-full-delivery", "pass",
+                 f"{big_count} entries in {len(frames)} frames")
+        else:
+            mark(section, "big-dir-full-delivery", "fail",
+                 f"frames={len(frames)} streamed={streamed} want={big_count} terminal={terminal}")
+    except SidecarError as error:
+        mark(section, "big-dir-full-delivery", "fail", str(error)[:160])
+
+    # -- escalation faces: dedicated sidecar, 1ms soft timeout forces the
+    # real `rclone lsjson` child on every listing
+    escalated = SidecarClient.start(
+        env_updates={"DBX_FILES_RCLONE_BIN": rclone_bin, "DBX_FILES_LIST_STREAM_SOFT_TIMEOUT_MS": "1"},
+        timeout=60,
+    )
+    # sidecar 日志旁路：drain_stderr 在活进程上会阻塞到 EOF（评审用例
+    # decision-cache-hits 需要 sidecar 还活着时读它的会话日志）。
+    stderr_tail: "collections.deque[str]" = collections.deque(maxlen=50)
+    def _tail_stderr(pipe) -> None:
+        for raw in iter(pipe.readline, b""):
+            stderr_tail.append(raw.decode(errors="replace"))
+    threading.Thread(target=_tail_stderr, args=(escalated.process.stderr,), daemon=True).start()
+    try:
+        escalated.initialize()
+        connect(escalated, "stream-esc", {"protocol": "fs"}, fs_root)
+
+        # multi-chunk escalation with wire/disk parity
+        ack = escalated.request("files/listStream", {"connectionId": "stream-esc", "path": "/stream-medium"})
+        frames, terminal = _collect_stream(escalated, ack["requestId"], timeout=60)
+        streamed = sum(len(frame.get("entries", [])) for frame in frames)
+        if (len(frames) >= 2 and terminal and terminal.get("done")
+                and terminal.get("total") == 5000 and streamed == 5000):
+            mark(section, "escalation-multi-chunk", "pass", f"{len(frames)} frames")
+        else:
+            mark(section, "escalation-multi-chunk", "fail",
+                 f"frames={len(frames)} streamed={streamed} terminal={terminal}")
+
+        # files/list 仍受 2MB 响应预算封顶（SDK 拒收 >8MB JSON——修复前
+        # 10 万条目的响应就是死在这里）：truncated 如实标记，绝不悬挂。
+        listing = escalated.request("files/list", {"connectionId": "stream-esc", "path": "/stream-big"}, timeout=300)
+        if (listing.get("truncated") is True and 0 < len(listing.get("entries", [])) < big_count):
+            mark(section, "files-list-capped-truncated", "pass",
+                 f"{len(listing.get('entries', []))} of {big_count}")
+        else:
+            mark(section, "files-list-capped-truncated", "fail",
+                 f"truncated={listing.get('truncated')} len={len(listing.get('entries', []))}")
+
+        # the >100k directory files/list caps: listStream delivers in full
+        ack = escalated.request("files/listStream", {"connectionId": "stream-esc", "path": "/stream-big"})
+        frames, terminal = _collect_stream(escalated, ack["requestId"], timeout=300)
+        streamed = sum(len(frame.get("entries", [])) for frame in frames)
+        if (terminal and terminal.get("done")
+                and terminal.get("total") == big_count and streamed == big_count):
+            mark(section, "escalation-beats-truncation", "pass", f"{big_count} entries streamed")
+        else:
+            mark(section, "escalation-beats-truncation", "fail",
+                 f"streamed={streamed} want={big_count}")
+
+        # cancel: child killed, no orphan left behind, sidecar stays healthy
+        ack = escalated.request("files/listStream", {"connectionId": "stream-esc", "path": "/stream-big"})
+        time.sleep(0.3)
+        cancel = escalated.request("files/listCancel", {"requestId": ack["requestId"]})
+        orphan_free = _no_lingering_lsjson()
+        probe = escalated.request("files/list", {"connectionId": "stream-esc", "path": "/stream-small"})
+        healthy = len(probe.get("entries", [])) == 12
+        if orphan_free and healthy:
+            mark(section, "cancel-kills-child-no-orphan", "pass", f"cancelled={cancel.get('cancelled')}")
+        else:
+            mark(section, "cancel-kills-child-no-orphan", "fail",
+                 f"orphan_free={orphan_free} healthy={healthy}")
+
+        # missing path: rc error (fast path) or lsjson failure frame — the
+        # wire must carry "Failed to list" through either channel
+        outcome = ""
+        try:
+            ack = escalated.request("files/listStream", {"connectionId": "stream-esc", "path": "/no-such-dir"})
+            frames, terminal = _collect_stream(escalated, ack["requestId"], timeout=30)
+            if terminal and terminal.get("error"):
+                outcome = terminal["error"]
+            elif terminal and terminal.get("done"):
+                outcome = f"unexpected done frame with {terminal.get('total')} entries"
+        except SidecarError as error:
+            outcome = str(error)
+        if "Failed to list" in outcome:
+            mark(section, "missing-path-error", "pass")
+        else:
+            mark(section, "missing-path-error", "fail", outcome[:120] or "no error surfaced")
+
+        # -- P2 decision cache: /stream-big completed once (100500 entries),
+        # so a later listStream on the same path must skip the rc attempt
+        # entirely AND still deliver the full listing — a cached-hit session
+        # that goes silent after the ack was exactly the B1 regression
+        # (collect frames, don't just grep the log line).
+        ack = escalated.request("files/listStream", {"connectionId": "stream-esc", "path": "/stream-big"})
+        frames, terminal = _collect_stream(escalated, ack["requestId"], timeout=300)
+        streamed = sum(len(frame.get("entries", [])) for frame in frames)
+        logged = any("escalate (cached huge dir)" in line for line in stderr_tail)
+        if (terminal and terminal.get("done") and terminal.get("total") == big_count
+                and streamed == big_count and logged):
+            mark(section, "decision-cache-hits", "pass",
+                 f"{big_count} entries re-delivered, log={logged}")
+        else:
+            mark(section, "decision-cache-hits", "fail",
+                 f"streamed={streamed} want={big_count} terminal={terminal} logged={logged}")
+    finally:
+        escalated.close()
+
+    # -- escape hatch: DBX_FILES_LIST_STREAM=off refuses the method
+    off_client = SidecarClient.start(
+        env_updates={"DBX_FILES_RCLONE_BIN": rclone_bin, "DBX_FILES_LIST_STREAM": "off"},
+        timeout=30,
+    )
+    try:
+        off_client.initialize()
+        connect(off_client, "stream-off", {"protocol": "fs"}, fs_root)
+        try:
+            off_client.request("files/listStream", {"connectionId": "stream-off", "path": "/stream-small"})
+            mark(section, "escape-hatch-refuses", "fail", "listStream answered while disabled")
+        except SidecarError as error:
+            if "files/listStream is disabled" in str(error):
+                mark(section, "escape-hatch-refuses", "pass")
+            else:
+                mark(section, "escape-hatch-refuses", "fail", str(error)[:120])
+    finally:
+        off_client.close()
+
+
 def main() -> None:
     started = time.monotonic()
     sidecar = os.environ.get("DBX_PLUGIN_SIDECAR") or default_binary()
@@ -1420,6 +1669,7 @@ def main() -> None:
             print(json.dumps(info, ensure_ascii=False)[:200])
 
             run_core_sections(client, fs_root)
+            run_stream_section(client, fs_root)
             run_s3_section(client)
             run_sftp_section(client)
             run_webdav_section(client)
