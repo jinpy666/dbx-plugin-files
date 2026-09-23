@@ -37,8 +37,29 @@ MinIO s3 段未复跑，回归漏网。
   issue 的 rc 404 "directory not found"；新组合
   `stat t_new:/sip-1250000000/sip-mac-nl-sit/` → 目录 item 正常、
   operations/list 列出桶内前缀下的文件。
-- smoke 无改动：s3 段本就以 `bucket=<桶>` 发起，修复后该段才真正覆盖桶路径
-  （此前会被静默丢弃）；容器段待 docker 环境复跑。
+- **真实容器实证（2026-09-23，首次在 docker 里复跑 s3 段）**：本机 Windows 无
+  docker，且 Docker Desktop 在此 OS 上**装不上**（企业版 LTSC 2021 build
+  19044 < 安装器要求的 19045；WSL 又被安全策略拉黑），故在 QEMU Debian 12
+  guest 内装 docker 20.10.24，用**发布包 `files-v0.1.71` 的真实 linux-x64
+  sidecar**（`bin/linux-x64/dbx-plugin-files` + 同包 rclone）跑
+  `scripts/container_smoke.sh`：
+  - 未加固的 smoke 对修复前发布版 `PASS 215 SKIP 0 FAIL 0` —— **修复前的版本
+    也是绿的**。直接驱动 sidecar 的探针揭示了原因：`bucket` 被**完全忽略**，
+    bucket 非空时 `files/list /` 列出的是**桶列表**、`mkdir /smoke-<ts>` 甚至在
+    MinIO 上**新建了一个桶**。也就是说 s3 段从未真正覆盖「桶内」路径 —— 这正是
+    CI 长期绿、线上却 404 的盲区。
+  - 据此**加固 smoke**（`scripts/smoke_test.py` s3 段新增两步）：
+    `bucket-scoped-root` 断言「兄弟桶不得出现在连接根」（修复前会漏出桶
+    namespace）、`connection-test-root-stat` 直接调 `connection/test`（issue #53
+    的报错面本身，此前 s3 从未覆盖）。同一真实容器环境做 A/B：
+    - 修复前 sidecar + 加固 smoke → **FAIL**，断言逐字命中：*bucket-set
+      connection is not scoped to '…': the bucket namespace leaked at the root
+      (saw ['…', '…', 'smoke-1790174688'])*（`smoke-…` 即冒烟自己新建的桶）；
+    - 修复后语义的连接（`root=/<bucket>`，与 `composed_root()` 产物一致）+ 加固
+      smoke → **PASS 217 SKIP 0 FAIL 0**，MCP 段 `total=31 PASS=30 FAIL=0
+      SKIP=1`，新增两步均 `[ok]`。
+  - 结论：修复前的绿色 CI 是**冒烟盲区**造成的假绿，不是修复多余；加固后的
+    smoke 能把 #53 这类「字段被静默丢弃」的回归在容器层直接打红。
 - 七语文案：纯后端修复 + 后端英文诊断文案，无 UI 文案改动，不涉及。
 
 **对既有用户的含义**：OpenDAL 时代遗留的连接（bucket 字段非空）升级后**无需
