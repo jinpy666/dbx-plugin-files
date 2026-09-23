@@ -1456,12 +1456,12 @@ mod tests {
         .await;
         assert_eq!(outcome, StreamOutcome::Completed);
         let frames = sink.frames();
-        assert_eq!(frames.len(), 2, "one data frame + done: {frames:?}");
-        assert_eq!(
-            entry_paths(&frames[0]),
-            vec!["/z", "/a", "/m"],
-            "到达顺序，不排序"
-        );
+        // 分帧数由 tick/字节预算自由决定（CI 负载下时间 flush 可能在任意
+        // 条目边界成帧）；要钉死的是顺序属性：拼接后 = 到达序，不排序。
+        assert!(frames.len() >= 2, "data frame(s) + done: {frames:?}");
+        assert_eq!(frames.last().unwrap()["done"], true);
+        let flat: Vec<String> = frames.iter().flat_map(entry_paths).collect();
+        assert_eq!(flat, vec!["/z", "/a", "/m"], "到达顺序，不排序");
     }
 
     /// 前缀 marker 与根 marker 被过滤，其余保留（与 filter_and_sort 的过滤
