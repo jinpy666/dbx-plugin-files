@@ -383,6 +383,15 @@ impl RcdSupervisor {
         })
     }
 
+    /// Post-mortem liveness of one group's rcd (`None` = never spawned /
+    /// already torn down; `Some(false)` = the child exited). Issue #46: lets
+    /// a lifecycle caller distinguish "rcd died right after its spawn health
+    /// check" (respawn + retry is safe) from "rcd alive but failing" (return
+    /// the error). Reading the state also reaps the exited child.
+    pub fn group_alive(&mut self, key: &str) -> Option<bool> {
+        self.handles.get_mut(key).map(|handle| handle.is_running())
+    }
+
     /// Stops and forgets ONE group's rcd (idle-group teardown / keepalive
     /// reaping). `true` when a handle existed and was killed; a group whose
     /// rcd is already gone is a no-op success. The dropped handle's Drop

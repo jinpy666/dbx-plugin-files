@@ -179,8 +179,9 @@ impl Plugin {
                     .rclone
                     .prepare(&format!("{}::test", connection.id), &connection)
                     .await?;
-                let client = self.rclone.client_for(&connection).await?;
-                rclone::registry::test_connection(&client, &connection).await?;
+                // Engine-level call (not registry:: directly) so a transport
+                // failure right after spawn gets the issue #46 self-heal.
+                self.rclone.test_connection(&connection).await?;
                 Ok(json!({
                     "success": true,
                     "message": "Storage backend reachable"
@@ -212,9 +213,10 @@ impl Plugin {
                     }
                 }
                 let connection = self.rclone.prepare(&connection.id, &connection).await?;
-                let client = self.rclone.client_for(&connection).await?;
+                // Engine-level call (not registry:: directly) so a transport
+                // failure right after spawn gets the issue #46 self-heal.
                 if let Err(error) =
-                    rclone::registry::connect(&self.rclone.registry, &client, &connection).await
+                    self.rclone.connect_connection(&connection).await
                 {
                     // A failed connect must not leave a half-established
                     // forwarder behind for this id.
