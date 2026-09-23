@@ -496,7 +496,8 @@ export function installMockHost() {
       case "files/listCancel": {
         const stream = streamSessions.get(str("requestId"));
         if (stream) stream.canceled = true;
-        return { cancelled: true };
+        // 与后端契约一致：未知/已结束的 requestId 返回 false。
+        return { cancelled: Boolean(stream) };
       }
       case "files/capabilities":
         return { scheme: "mock", list: true, write: true, read: true, stat: true, delete: true, createDir: true, copy: true, rename: true, presign, readOnly: storageFor(p.connectionId).readOnly };

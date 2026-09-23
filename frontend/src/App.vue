@@ -1276,6 +1276,9 @@ async function loadDirectory(target?: string) {
   abandonStream("left");
   loading.value = true;
   listingFailed.value = false;
+  // 流式标志一并复位：上一次导航流式中段置 true 后，本次若走回落且失败，
+  // catch 路径不经过成功赋值，旧标志会让新目录按到达顺序渲染（m1）。
+  leftStreaming.value = false;
   try {
     const { entries: list, failed, errorMessage: streamError, partialCount, truncated } = await streamListing("left", next, sideConnectionId("left"), {
       onChunk: (partial) => {
@@ -1337,6 +1340,8 @@ async function loadRightDirectory(target?: string) {
   abandonStream("right");
   rightLoading.value = true;
   rightListingFailed.value = false;
+  // 与左栏一致（m1）：catch 路径不经过流式标志的成功赋值，需在导航起点复位。
+  rightStreaming.value = false;
   try {
     const { entries: list, failed, errorMessage: streamError, partialCount, truncated } = await streamListing("right", next, targetConnectionId.value || undefined, {
       onChunk: (partial) => {

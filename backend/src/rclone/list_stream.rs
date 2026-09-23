@@ -536,6 +536,18 @@ fn chunk_frame(
     frame
 }
 
+/// 取消终帧：后端侧取消（组 teardown、快路径期取消竞态）也必须给前端
+/// 一个可结算的终态——静默结束曾让 ack 已登记的会话永久悬挂（M3）。
+/// 前端自己发起的取消已把会话置终态，该帧按契约被丢弃，无副作用。
+fn emit_cancelled_frame(request_id: &str, prefix: &str, sink: &dyn ChunkSink) {
+    sink.emit(error_frame(
+        request_id,
+        1,
+        format!("Failed to list '{prefix}': listing cancelled"),
+        0,
+    ));
+}
+
 /// 失败帧：`error` 非空 + `partialCount`（已交付条数），不置 done。
 fn error_frame(request_id: &str, seq: u64, error: String, partial_count: u64) -> Value {
     json!({
@@ -649,22 +661,39 @@ pub async fn run_session(spec: SessionSpec) {
 
     // 快路径：软超时包住 ops::list（与 files/list 同一入口，内部完成
     // gate_read）。它走无总超时的 rc 客户端——timeout 中断即放弃该 future。
-    // 取消优先于快路径结果。
+    // 取消优先于快路径结果；缓存直通（Skipped）必须落入下方升级段——
+    // 三者折叠成同一个值会让缓存命中静默零帧（B1 评审修复）。
+    enum FastAttempt {
+        Cancelled,
+        Skipped,
+        Done(Vec<FileEntry>),
+        Failed(String),
+    }
     let fast = if cached_escalate {
-        None
+        FastAttempt::Skipped
     } else {
         tokio::select! {
-        _ = cancel.wait() => None,
+        _ = cancel.wait() => FastAttempt::Cancelled,
         result = tokio::time::timeout(
             opts.soft_timeout,
             ops::list(&client, &fs, &path, false, &root, lock_to_root),
-        ) => Some(result),
+        ) => match result {
+            Ok(Ok(entries)) => FastAttempt::Done(entries),
+            Ok(Err(error)) => FastAttempt::Failed(error),
+            Err(_elapsed) => FastAttempt::Skipped,
+        },
         }
     };
     match fast {
-        // 已取消：宿主主动放弃，不发任何帧。
-        None => return,
-        Some(Ok(Ok(entries))) => {
+        // 已取消：终帧显式告知（后端组 teardown 等静默取消也曾让前端
+        // 永久悬挂——M3 评审修复）。前端对自身发起的取消已置终态，
+        // 该帧会被 requestId 会话的终态检查丢弃。
+        FastAttempt::Cancelled => {
+            emit_cancelled_frame(&request_id, &prefix, sink.as_ref());
+            return;
+        }
+        FastAttempt::Skipped => {} // 缓存直通/软超时 → 升级为 lsjson 流式
+        FastAttempt::Done(entries) => {
             // 快路径成功：filter_and_sort 完整排序后按帧预算切块交付。
             // 小目录仍是一帧 done（尾帧）；大响应若单帧梭哈会被 8MB 桥
             // 上限直接拒收（帧静默丢失、前端悬挂）——issue #49 的深层根因。
@@ -683,12 +712,11 @@ pub async fn run_session(spec: SessionSpec) {
             sink.emit(chunk_frame(&request_id, seq, tail, true, Some(total)));
             return;
         }
-        Some(Ok(Err(error))) => {
+        FastAttempt::Failed(error) => {
             // rc 真实失败（路径不存在等）：失败帧即终态，不再升级。
             sink.emit(error_frame(&request_id, 1, error, 0));
             return;
         }
-        Some(Err(_elapsed)) => {} // 软超时先到 → 升级为 lsjson 流式
     }
 
     // 升级：spawn 短命 lsjson。stdin=null（无输入），stdout/stderr=piped。
@@ -773,7 +801,17 @@ pub(crate) async fn stream_child(
             _ = cancel.wait() => {
                 kill_and_reap(&mut child).await;
                 let _ = take_stderr(&mut stderr_task).await;
-                return (StreamOutcome::Cancelled, None); // 取消：不发任何帧
+                // 终帧显式告知：后端侧静默取消（组 teardown）曾让 ack 已
+                // 登记的前端会话永久悬挂（M3）。前端自己发起的取消早已把
+                // 会话置终态，该帧按契约被丢弃，无副作用。
+                seq += 1;
+                sink.emit(error_frame(
+                    request_id,
+                    seq,
+                    format!("Failed to list '{prefix}': listing cancelled"),
+                    batcher.delivered(),
+                ));
+                return (StreamOutcome::Cancelled, None);
             }
             _ = tokio::time::sleep_until(watchdog_deadline) => {
                 kill_and_reap(&mut child).await;
@@ -1609,7 +1647,12 @@ mod tests {
         opts.watchdog = Duration::from_secs(3600);
         let (outcome, _total) = stream_child("req", "", child, &cancel, &opts, &sink).await;
         assert_eq!(outcome, StreamOutcome::Cancelled);
-        assert!(sink.frames().is_empty(), "取消不发任何帧");
+        // M3：取消必须发恰好一帧 cancelled 终帧——后端侧静默取消（组
+        // teardown）曾让 ack 已登记的前端会话永久悬挂。前端自己发起的
+        // 取消已置终态，该帧按契约被丢弃。
+        let frames = sink.frames();
+        assert_eq!(frames.len(), 1, "取消发且仅发一帧终态: {frames:?}");
+        assert!(frames[0].get("error").and_then(Value::as_str).unwrap_or("").contains("listing cancelled"));
         assert!(!unix_process_alive(pid.expect("pid")), "pid {pid:?} still alive");
     }
 

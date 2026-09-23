@@ -514,6 +514,8 @@ impl Plugin {
                         &data,
                     )
                     .await?;
+                    // P2 决策缓存失效：新文件出现在其父目录列表里。
+                    self.list_cache.invalidate_around(&request.connection_id, &remote);
                     Ok(json!({ "success": true }))
                 }
             }
@@ -626,8 +628,17 @@ impl Plugin {
                     }
                 }
                 // P2 决策缓存失效：目录内条目增删改变父目录（及自身子树）
-                // 的列表计数。
-                self.list_cache.invalidate_around(&request.connection_id, &request.path);
+                // 的列表计数。键必须与 record 侧一致（gate 后的
+                // root-relative 形式）——原始 UI 路径带前导斜杠，恒不命中
+                // （M2 评审修复）。
+                if let Ok(relative) = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    &request.path,
+                    crate::policy::PathPolicy::check_read,
+                ) {
+                    self.list_cache.invalidate_around(&request.connection_id, &relative);
+                }
                 Ok(json!({ "success": true }))
             }
             "files/copy" | "files/move" => {
@@ -679,8 +690,22 @@ impl Plugin {
                 }
                 self.audit_id(&request.connection_id, method, &request.source_path, "ok")?;
                 // P2 决策缓存失效：目标父目录 +1 条目；move 的源父目录 -1。
-                self.list_cache.invalidate_around(&source_connection_id, &request.source_path);
-                self.list_cache.invalidate_around(&target_connection_id, &request.target_path);
+                if let Ok(relative) = rclone_gate(
+                    &source_binding.root,
+                    source_binding.lock_to_root,
+                    &request.source_path,
+                    crate::policy::PathPolicy::check_read,
+                ) {
+                    self.list_cache.invalidate_around(&source_connection_id, &relative);
+                }
+                if let Ok(relative) = rclone_gate(
+                    &target_binding.root,
+                    target_binding.lock_to_root,
+                    &request.target_path,
+                    crate::policy::PathPolicy::check_read,
+                ) {
+                    self.list_cache.invalidate_around(&target_connection_id, &relative);
+                }
                 // rc operations/copyfile|movefile answer synchronously — no
                 // degraded job, so `transport` is always "native".
                 Ok(json!({
@@ -752,8 +777,22 @@ impl Plugin {
                     .await?;
                     // P2 决策缓存失效（目录 job 异步完成，先失效靠 TTL 兜
                     // 底竞态窗口；两端父目录 + 自身子树都受影响）。
-                    self.list_cache.invalidate_around(&rename_conn, &rename_from);
-                    self.list_cache.invalidate_around(&rename_conn, &rename_to);
+                    if let Ok(relative) = rclone_gate(
+                        &binding.root,
+                        binding.lock_to_root,
+                        &rename_from,
+                        crate::policy::PathPolicy::check_read,
+                    ) {
+                        self.list_cache.invalidate_around(&rename_conn, &relative);
+                    }
+                    if let Ok(relative) = rclone_gate(
+                        &binding.root,
+                        binding.lock_to_root,
+                        &rename_to,
+                        crate::policy::PathPolicy::check_read,
+                    ) {
+                        self.list_cache.invalidate_around(&rename_conn, &relative);
+                    }
                     return Ok(json!({ "success": true, "transport": "dirJob", "jobId": job_id }));
                 }
                 rclone::ops::rename(
@@ -766,8 +805,22 @@ impl Plugin {
                 )
                 .await?;
                 self.audit_id(&request.connection_id, method, &request.path, "ok")?;
-                self.list_cache.invalidate_around(&request.connection_id, &request.path);
-                self.list_cache.invalidate_around(&request.connection_id, &request.new_path);
+                if let Ok(relative) = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    &request.path,
+                    crate::policy::PathPolicy::check_read,
+                ) {
+                    self.list_cache.invalidate_around(&request.connection_id, &relative);
+                }
+                if let Ok(relative) = rclone_gate(
+                    &binding.root,
+                    binding.lock_to_root,
+                    &request.new_path,
+                    crate::policy::PathPolicy::check_read,
+                ) {
+                    self.list_cache.invalidate_around(&request.connection_id, &relative);
+                }
                 Ok(json!({ "success": true, "transport": "native", "jobId": Option::<String>::None }))
             }
             "files/publicLink" => {
