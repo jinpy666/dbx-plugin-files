@@ -4,7 +4,7 @@ import { nextTick } from "vue";
 import { mount } from "@vue/test-utils";
 import FileTable from "./FileTable.vue";
 import type { FileEntry } from "../lib/api";
-import { loadUiPrefs, UI_PREFS_KEY } from "../lib/prefs";
+import { loadUiPrefs, prefsStore, UI_PREFS_KEY } from "../lib/prefs";
 
 const entries: FileEntry[] = [
   { name: "a.txt", path: "/a.txt", kind: "file", size: 1 },
@@ -32,7 +32,8 @@ function pressKeydown(wrapper: ReturnType<typeof mountTable>, key: string) {
 }
 
 beforeEach(() => {
-  window.localStorage.clear();
+  // 默认持久化后端是 prefsStore（宿主 storage 适配），播种/清理须走同一实例。
+  prefsStore.removeItem(UI_PREFS_KEY);
 });
 
 describe("FileTable keyboard selection (P2-9 Space 首按回归)", () => {
@@ -314,7 +315,7 @@ function pointerEvent(type: string, clientX: number): Event {
 }
 
 function storedColumns(): Record<string, unknown> | undefined {
-  const raw = window.localStorage.getItem(UI_PREFS_KEY);
+  const raw = prefsStore.getItem(UI_PREFS_KEY);
   return raw ? (JSON.parse(raw).columns as Record<string, unknown>) : undefined;
 }
 
@@ -356,13 +357,13 @@ describe("FileTable 列宽拖拽（对标 WinSCP）", () => {
   });
 
   it("落盘为读-改-写：保留存储内其他键（sort 等）", () => {
-    window.localStorage.setItem(
+    prefsStore.setItem(
       UI_PREFS_KEY,
       JSON.stringify({ sort: { column: "size", direction: "desc" }, auditActionFilter: "delete" }),
     );
     const wrapper = mountTable();
     dragGrip(wrapper, "size", 100, 150);
-    const raw = JSON.parse(window.localStorage.getItem(UI_PREFS_KEY)!);
+    const raw = JSON.parse(prefsStore.getItem(UI_PREFS_KEY)!);
     expect(raw.sort).toEqual({ column: "size", direction: "desc" });
     expect(raw.auditActionFilter).toBe("delete");
     expect(raw.columns.sizeWidth).toBe(140);

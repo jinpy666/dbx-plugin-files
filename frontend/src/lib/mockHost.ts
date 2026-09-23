@@ -1286,6 +1286,23 @@ export function installMockHost() {
     decodeBase64: b64decode,
     encodeBase64: b64encode,
     clipboard: { readText: async () => "", writeText: async () => undefined },
+    // 宿主 host.storage mock（Host API 1.2，pluginHostBridge storage 命名空间同形）：
+    // 值为任意 JSON，get 未命中返回 null，set(undefined) 归一化为 null。
+    capabilities: { storage: true },
+    storage: (() => {
+      const map = new Map<string, unknown>();
+      return {
+        get: async (key: string) => (map.has(key) ? structuredClone(map.get(key)) : null),
+        set: async (key: string, value: unknown) => {
+          map.set(key, value === undefined ? null : structuredClone(value));
+          return null;
+        },
+        delete: async (key: string) => {
+          map.delete(key);
+          return null;
+        },
+      };
+    })(),
   };
 
   // 测试驱动器只作为安装结果返回，不向真实 dbxPlugin API 添加方法。
