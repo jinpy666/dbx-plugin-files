@@ -849,6 +849,48 @@ def run_s3_section(client: SidecarClient) -> None:
         scenario_namespace_cross_bucket(runner, bucket, bucket2, endpoint, access, secret)
     scenario_qiniu_alias(runner, bucket, endpoint, access, secret)
 
+    # Issue #53 regression: a bucket-set connection must be SCOPED to that
+    # bucket. Before the engine folded `bucket` into the fs root the field was
+    # silently dropped, so a bucket-set connection behaved exactly like the
+    # bucket-NAMESPACE one: the root listed every bucket and `mkdir <name>`
+    # even created new ones — the configured bucket was never exercised. That
+    # is why the container smoke stayed green while real connections broke
+    # (`connection/test` then died with rc 404 "directory not found" whenever
+    # the root's first segment was not an existing bucket). Assert the scope:
+    # the sibling bucket must never surface as a directory at the root.
+    if bucket2:
+        def _bucket_scoped_root():
+            entries = runner.call(
+                "files/list",
+                {"connectionId": runner.connection_id, "path": "/"},
+            )
+            names = {entry["name"] for entry in entries.get("entries", [])}
+            assert bucket2 not in names, (
+                f"bucket-set connection is not scoped to {bucket!r}: the bucket "
+                f"namespace leaked at the root (saw {sorted(names)})"
+            )
+        runner.step("bucket-scoped-root", _bucket_scoped_root)
+
+    # Issue #53's actual failure surface: `connection/test` stats the engine
+    # root. A bucket-set connection must answer it (the report was a 404 here).
+    def _connection_test():
+        client.request("connection/test", lifecycle_params({
+            "id": "smoke-s3-test",
+            "name": "smoke-s3-test",
+            "db_type": "storage",
+            "host": "",
+            "port": 0,
+            "external_config": {
+                "protocol": "s3",
+                "bucket": bucket,
+                "endpoint": endpoint,
+                "region": os.environ.get("DBX_FILES_S3_REGION", "us-east-1"),
+                "access_key_id": access,
+            },
+            "connection_secrets": {"secret_access_key": secret},
+        }))
+    runner.step("connection-test-root-stat", _connection_test)
+
 
 def scenario_namespace_cross_bucket(runner: Runner, bucket: str, bucket2: str, endpoint: str, access: str, secret: str) -> None:
     """Bucket-namespace 连接（bucket 留空）的直传覆盖：namespace 根列出桶伪

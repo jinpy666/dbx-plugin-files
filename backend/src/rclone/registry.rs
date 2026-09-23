@@ -19,7 +19,9 @@
 //! - `operations/stat`'s `remote` argument is *relative to the fs root*, so
 //!   connection roots travel inside the fs string (`name:root`, remote `""`).
 //!   The `fs` argument must carry the trailing colon or rclone silently
-//!   treats it as a local path.
+//!   treats it as a local path. For bucket-based backends the bucket field
+//!   folds in front of the root (`/{bucket}{root}`, issue #53) — rclone has
+//!   no bucket parameter, the first path segment IS the bucket.
 //! - `config/delete` on an absent remote name answers `Ok({})` (idempotent).
 //!
 //! Known limitation: remote names keep only the first 10 alnum characters of
@@ -38,7 +40,7 @@ use base64::engine::general_purpose::STANDARD_NO_PAD as BASE64_STANDARD_NO_PAD;
 use base64::Engine as _;
 use serde_json::{Map, Value};
 
-use super::rc::RcClient;
+use super::rc::{RcClient, RcError};
 use crate::model::{ProxyConfig, ProxyKind, StoredConnection};
 
 /// Protocol support lives in [`crate::model::PROTOCOLS`]: the quick
@@ -600,6 +602,34 @@ pub fn params_for(connection: &StoredConnection) -> Result<(String, Value, bool)
     Ok((backend_type, parameters, obscure))
 }
 
+/// Bucket-field composition (issue #53). The retired OpenDAL engine kept
+/// `bucket` (azblob: `container`) and `root` as separate builder options —
+/// bucket name plus an in-bucket prefix. rclone has no bucket parameter for
+/// bucket-based backends: the bucket IS the first path segment of the fs
+/// string. A non-empty bucket field therefore folds in front of the
+/// connection root, reproducing the OpenDAL shape (`/{bucket}{root}`); an
+/// empty one keeps the bucket-namespace behavior (an empty root lists
+/// buckets, the first browsed segment selects one). Silently dropping the
+/// field made rclone read the in-bucket prefix as the bucket name and the
+/// connection test die with rc 404 "directory not found" (TencentCOS).
+fn composed_root(connection: &StoredConnection) -> String {
+    let bucket_field = match connection.protocol.as_str() {
+        "s3" | "cos" | "oss" | "obs" | "qiniu" | "gcs" => &connection.bucket,
+        "azblob" => &connection.container,
+        _ => return connection.root.clone(),
+    };
+    let bucket = bucket_field.trim().trim_matches('/');
+    if bucket.is_empty() {
+        return connection.root.clone();
+    }
+    let root = connection.root.trim().trim_matches('/');
+    if root.is_empty() {
+        format!("/{bucket}")
+    } else {
+        format!("/{bucket}/{root}")
+    }
+}
+
 /// Builds the ops-layer [`RemoteBinding`] view (no registration).
 pub fn binding_for(connection: &StoredConnection) -> Result<RemoteBinding, String> {
     let backend_type = params_for(connection)?.0; // also validates protocol/shape
@@ -620,7 +650,7 @@ pub fn binding_for(connection: &StoredConnection) -> Result<RemoteBinding, Strin
     // unchanged. An empty share
     // (server-level discovery) stays unscoped — rclone cannot enumerate
     // shares, so that scenario degrades at the ops layer.
-    let mut root = connection.root.clone();
+    let mut root = composed_root(connection);
     if connection.protocol == "smb" && !connection.share.trim().is_empty() {
         let share = format!("/{}", connection.share.trim().trim_matches('/'));
         root = format!("{share}{root}");
@@ -644,7 +674,10 @@ pub fn binding_for(connection: &StoredConnection) -> Result<RemoteBinding, Strin
 /// surfaces as a failed test in both rclone shapes (verified on a live rcd):
 /// local-like backends fail fs creation with rc 404 "directory not found",
 /// object-rooted backends answer `Ok(item: null)` — caught by the explicit
-/// check below. Bucket-less empty roots skip that check.
+/// check below. Bucket-less empty roots skip that check. For bucket-based
+/// backends a 404 gains a diagnostic hint: the first path segment of the
+/// root is the bucket name, so the usual cause is a wrong bucket/endpoint,
+/// not a missing directory (issue #53).
 pub async fn test_connection(
     client: &RcClient,
     connection: &StoredConnection,
@@ -654,11 +687,16 @@ pub async fn test_connection(
     // connection registered under the same connection id.
     let name = format!("{}_test", remote_name(&connection.id));
     // roots travel inside the fs string (see module docs); empty fs roots
-    // must still be absolute for the local backend.
-    let root_in_fs = if connection.protocol == "fs" && connection.root.is_empty() {
-        "/".to_string()
+    // must still be absolute for the local backend. Bucket-based protocols
+    // get the bucket field folded in front of the root (issue #53).
+    let root_in_fs = if connection.protocol == "fs" {
+        if connection.root.is_empty() {
+            "/".to_string()
+        } else {
+            connection.root.clone()
+        }
     } else {
-        connection.root.clone()
+        composed_root(connection)
     };
     let fs_string = format!("{}:{}", name, root_in_fs);
 
@@ -674,7 +712,24 @@ pub async fn test_connection(
     }
     let stat = client.operations_stat(&fs_string, "").await;
     let cleanup = client.config_delete(&name).await;
-    let stat = stat.map_err(|error| error.to_string())?;
+    let stat = stat.map_err(|error| {
+        // Bucket-based backends address the bucket as the first fs path
+        // segment (composed_root); a not-found there almost always means the
+        // bucket name or endpoint, not a missing directory (issue #53: a
+        // TencentCOS bucket must carry its APPID suffix).
+        match &error {
+            RcError::Http { status: 404, .. }
+                if super::is_bucket_rooted(&backend_type) =>
+            {
+                format!(
+                    "{error} (bucket-based backend: the first path segment of the root \
+                     is the bucket name — verify it exists at this endpoint, including \
+                     the APPID suffix for Tencent COS buckets)"
+                )
+            }
+            _ => error.to_string(),
+        }
+    })?;
     cleanup.map_err(|error| format!("connection test passed but cleanup failed: {error}"))?;
 
     let check_root = !(connection.root.is_empty() && connection.protocol != "fs");
@@ -2232,6 +2287,72 @@ mod tests {
         assert!(binding.lock_to_root && binding.read_only && !binding.allow_delete);
     }
 
+    /// Issue #53 regression: the bucket/container field must fold in front
+    /// of the connection root for bucket-based protocols (rclone carries the
+    /// bucket as the first fs path segment; OpenDAL kept both as separate
+    /// options). An empty bucket keeps the bucket-namespace behavior; non-
+    /// bucket protocols and smb's share fold are untouched.
+    #[test]
+    fn composed_root_folds_bucket_field_in_front_of_root() {
+        // cos: OpenDAL-era shape — bucket name + in-bucket prefix.
+        let mut connection = fixture("cos");
+        connection.bucket = "sip-1250000000".into();
+        connection.root = "/sip-mac-nl-sit/".into();
+        assert_eq!(composed_root(&connection), "/sip-1250000000/sip-mac-nl-sit");
+
+        // bucket only → the bucket becomes the root; root only (bucket-
+        // namespace browsing) → unchanged; slashes on either value trimmed.
+        connection.root = String::new();
+        assert_eq!(composed_root(&connection), "/sip-1250000000");
+        connection.bucket = "/sip-1250000000/".into();
+        assert_eq!(composed_root(&connection), "/sip-1250000000");
+        connection.bucket = String::new();
+        connection.root = "/prefix/".into();
+        assert_eq!(composed_root(&connection), "/prefix/");
+        connection.root = String::new();
+        assert_eq!(composed_root(&connection), "");
+
+        // The whole s3 family shares the shape, azblob folds its container.
+        for (protocol, field, value) in [
+            ("s3", "bucket", "bkt"),
+            ("oss", "bucket", "bkt"),
+            ("obs", "bucket", "bkt"),
+            ("qiniu", "bucket", "bkt"),
+            ("gcs", "bucket", "bkt"),
+            ("azblob", "container", "cont"),
+        ] {
+            let mut generic = fixture(protocol);
+            if protocol == "gcs" {
+                generic.credential = BASE64_STANDARD.encode("{}");
+            }
+            match field {
+                "bucket" => generic.bucket = value.into(),
+                _ => generic.container = value.into(),
+            }
+            generic.root = "dir".into();
+            assert_eq!(
+                composed_root(&generic),
+                format!("/{value}/dir"),
+                "{protocol} must fold its bucket field"
+            );
+        }
+
+        // smb folds the SHARE, not a bucket — composed_root stays out.
+        let mut smb = fixture("smb");
+        smb.endpoint = "srv".into();
+        smb.share = "media".into();
+        smb.root = "/data".into();
+        assert_eq!(composed_root(&smb), "/data");
+        let binding = binding_for(&smb).expect("smb binding");
+        assert_eq!(binding.root, "/media/data", "smb share fold unchanged");
+
+        // fs/webdav never fold.
+        let mut webdav = fixture("webdav");
+        webdav.endpoint = "https://dav.example".into();
+        webdav.root = "/dav".into();
+        assert_eq!(composed_root(&webdav), "/dav");
+    }
+
     #[test]
     fn binding_for_remote_uses_named_fs() {
         let mut connection = fixture("s3");
@@ -2240,7 +2361,10 @@ mod tests {
         let binding = binding_for(&connection).expect("binding");
         assert_eq!(binding.remote_fs, "dbxAb12Cd34:");
         assert_eq!(binding.backend_type, "s3");
-        assert_eq!(binding.root, "prefix", "root not merged into remote_fs");
+        assert_eq!(
+            binding.root, "/demo/prefix",
+            "bucket field folds in front of the root (issue #53)"
+        );
 
         // Every supported remote protocol produces a named fs binding; the
         // type string is the rclone backend (custom = the user's service).

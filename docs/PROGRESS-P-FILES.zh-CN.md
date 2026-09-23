@@ -3,6 +3,69 @@
 > 执行说明：本路 agent 运行中两次因模型服务中断，任务在首次实例内完成绝大部分；
 > 巡逻会话（patrol）于 2026-08-29 复核其产出、补齐全量验证与本收口文档。
 
+## 0a. issue #53 修复：bucket 字段被 rclone 引擎丢弃（2026-09-23）
+
+**现象**：腾讯 COS 连接在新版（rclone 引擎）「测试连接」失败，`operations/stat`
+对 `fs=dbx…_test:/sip-mac-nl-sit/`、`remote=""` 返回 rc 404 "directory not found"；
+OpenDAL 引擎（0.1.59）同配置正常。
+
+**根因**：OpenDAL 时代 `bucket`（azblob: `container`）与 `root` 是两个独立
+builder 选项（桶名 + 桶内前缀）；rclone 桶根型后端没有桶参数——**fs 字符串
+首段即桶名**。rclone 引擎迁移时 `connection.bucket` 被静默丢弃，root 单独成为
+fs 路径，其首段被 rclone 误当桶名 → ListObjectsV2 NoSuchBucket → 404。
+`StatJSON` 对根路径的实现就是 `fsrc.List("")`（rclone v1.75 源码
+`fs/operations/lsjson.go`），s3 后端把 HTTP 404 翻译成 ErrorDirNotFound，故报错
+恰好是 "directory not found"。rclone 迁移后的容器冒烟只跑过 fs+memory 段，
+MinIO s3 段未复跑，回归漏网。
+
+**修复**（`backend/src/rclone/registry.rs`）：
+- 新增 `composed_root()`：bucket 字段协议（s3/oss/cos/obs/qiniu/gcs 折
+  `bucket`，azblob 折 `container`）非空时组合 `/{bucket}{root}`，空则维持
+  bucket-namespace 语义（根=列桶）不变；非桶根协议、smb share 折叠不受影响。
+- `binding_for()` 与 `test_connection()` 统一走该组合（connect 路径经
+  binding_for 自动生效）；全插件 fs 字符串单点组合（`call_fs` = remote_fs+root）。
+- 桶根型后端 stat 404 时追加诊断提示（首段=桶名、COS 桶名须含 APPID 后缀）。
+
+**验证**：
+- `cargo check --tests` 通过（新增
+  `composed_root_folds_bucket_field_in_front_of_root` 回归单测 +
+  `binding_for_remote_uses_named_fs` 期望更新）。本机（Windows/UCRT MinGW）
+  cargo test 链接受阻于 aws-lc-sys `nanosleep64`（已知环境限制），测试执行随
+  CI/macOS 跑。
+- **真机 rcd 实证**（rclone serve s3 起本地 S3 端点 + rc 调用，等价
+  connection/test 全路径）：旧组合 `stat t_old:/sip-mac-nl-sit/` → 逐字复现
+  issue 的 rc 404 "directory not found"；新组合
+  `stat t_new:/sip-1250000000/sip-mac-nl-sit/` → 目录 item 正常、
+  operations/list 列出桶内前缀下的文件。
+- **真实容器实证（2026-09-23，首次在 docker 里复跑 s3 段）**：本机 Windows 无
+  docker，且 Docker Desktop 在此 OS 上**装不上**（企业版 LTSC 2021 build
+  19044 < 安装器要求的 19045；WSL 又被安全策略拉黑），故在 QEMU Debian 12
+  guest 内装 docker 20.10.24，用**发布包 `files-v0.1.71` 的真实 linux-x64
+  sidecar**（`bin/linux-x64/dbx-plugin-files` + 同包 rclone）跑
+  `scripts/container_smoke.sh`：
+  - 未加固的 smoke 对修复前发布版 `PASS 215 SKIP 0 FAIL 0` —— **修复前的版本
+    也是绿的**。直接驱动 sidecar 的探针揭示了原因：`bucket` 被**完全忽略**，
+    bucket 非空时 `files/list /` 列出的是**桶列表**、`mkdir /smoke-<ts>` 甚至在
+    MinIO 上**新建了一个桶**。也就是说 s3 段从未真正覆盖「桶内」路径 —— 这正是
+    CI 长期绿、线上却 404 的盲区。
+  - 据此**加固 smoke**（`scripts/smoke_test.py` s3 段新增两步）：
+    `bucket-scoped-root` 断言「兄弟桶不得出现在连接根」（修复前会漏出桶
+    namespace）、`connection-test-root-stat` 直接调 `connection/test`（issue #53
+    的报错面本身，此前 s3 从未覆盖）。同一真实容器环境做 A/B：
+    - 修复前 sidecar + 加固 smoke → **FAIL**，断言逐字命中：*bucket-set
+      connection is not scoped to '…': the bucket namespace leaked at the root
+      (saw ['…', '…', 'smoke-1790174688'])*（`smoke-…` 即冒烟自己新建的桶）；
+    - 修复后语义的连接（`root=/<bucket>`，与 `composed_root()` 产物一致）+ 加固
+      smoke → **PASS 217 SKIP 0 FAIL 0**，MCP 段 `total=31 PASS=30 FAIL=0
+      SKIP=1`，新增两步均 `[ok]`。
+  - 结论：修复前的绿色 CI 是**冒烟盲区**造成的假绿，不是修复多余；加固后的
+    smoke 能把 #53 这类「字段被静默丢弃」的回归在容器层直接打红。
+- 七语文案：纯后端修复 + 后端英文诊断文案，无 UI 文案改动，不涉及。
+
+**对既有用户的含义**：OpenDAL 时代遗留的连接（bucket 字段非空）升级后**无需
+删除重建**——修复在引擎层恢复 OpenDAL 的组合语义，存量配置直接生效。新表单
+用户填 Bucket 字段的行为也与字段描述（"Bucket name"）一致。
+
 ## 0. 验证终值（patrol 复核实测）
 
 | 套件 | 结果 |

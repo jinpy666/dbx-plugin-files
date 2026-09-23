@@ -58,12 +58,12 @@ DBX 宿主 ⇄ stdio 帧协议（不变） ⇄ Rust sidecar
 | manifest protocol | rclone type | 参数映射要点 | 备注 |
 |---|---|---|---|
 | `fs` | （免注册） | rc 调用 `fs` 参数直接用本地路径；`root` 为空时用 `/` | 与 OpenDAL root 语义对齐；内置 `__local__` 连接（双栏左侧本地栏，root `/`）由 `RcloneEngine::binding()` 在引擎层折入——不注册、不经 connect（connect 拒绝 reserved），工作台与 MCP 路由共用，rcd 重生不会孤儿化 |
-| `s3` | `s3` | `provider`（自定义 endpoint→`Minio`/`Other`，否则 AWS）、`access_key_id`、`secret_access_key`(obscure)、`region`(缺省 us-east-1)、`endpoint`、`force_path_style`（virtual-host 关闭时 true） | 桶留空 → 根目录 `operations/list` 原生列桶（退役 bucket_ns） |
-| `oss` | `s3` | `provider=Alibaba` + endpoint/access_key_id/secret_access_key | |
-| `cos` | `s3` | `provider=TencentCOS`；`secret_id`/`secret_key` → `access_key_id`/`secret_access_key`；`security_token` → s3 STS 参数（键名以 `rclone config providers s3` 实测为准） | |
-| `obs` | `s3` | `provider=HuaweiOBS` | |
-| `gcs` | `gcs` | `service_account_credentials` = base64 解码后的凭据 JSON（secret）；`bucket` 留空列桶待实测验证 | |
-| `azblob` | `azureblob` | `account`、`key`(obscure)、`endpoint` 可选、`container` 留空列容器 | |
+| `s3` | `s3` | `provider`（自定义 endpoint→`Minio`/`Other`，否则 AWS）、`access_key_id`、`secret_access_key`(obscure)、`region`(缺省 us-east-1)、`endpoint`、`force_path_style`（virtual-host 关闭时 true） | **bucket/root 组合（issue #53，2026-09-23）**：`bucket` 非空时折进 fs 路径根（`/{bucket}{root}`）——OpenDAL 把 bucket 与 root 当两个独立选项（桶名+桶内前缀），rclone 没有桶参数、fs 首段即桶名；丢字段会把桶内前缀误当桶名，`connection/test` 报 rc 404 "directory not found"。bucket 留空 → 根目录 `operations/list` 原生列桶（退役 bucket_ns），语义不变 |
+| `oss` | `s3` | `provider=Alibaba` + endpoint/access_key_id/secret_access_key | 同 `s3` 行的 bucket/root 组合 |
+| `cos` | `s3` | `provider=TencentCOS`；`secret_id`/`secret_key` → `access_key_id`/`secret_access_key`；`security_token` → s3 STS 参数（键名以 `rclone config providers s3` 实测为准） | 同 `s3` 行的 bucket/root 组合；COS 桶名须含 APPID 后缀（`name-125xxxxxxx`） |
+| `obs` | `s3` | `provider=HuaweiOBS` | 同 `s3` 行的 bucket/root 组合 |
+| `gcs` | `gcs` | `service_account_credentials` = base64 解码后的凭据 JSON（secret）；`bucket` 留空列桶待实测验证 | 同 `s3` 行的 bucket/root 组合 |
+| `azblob` | `azureblob` | `account`、`key`(obscure)、`endpoint` 可选 | **container/root 组合同 `s3` 行**（`container` 非空折进路径根）；container 留空列容器 |
 | `webdav` | `webdav` | `url=endpoint`、`vendor=other`、`user`、`pass`(obscure) | |
 | `ftp` | `ftp` | endpoint 剥 scheme 取 host(:port)、`user`（空=anonymous）、`pass`(obscure)、ftps→`tls=true` | |
 | `sftp` | `sftp` | endpoint `ssh://user@host:port` 拆解、`pass`(obscure) **或** `key_file`/`key_pem`；known_hosts 策略映射键名实测确认 | 密码认证原生支持——`sftp` 与 `sftp-native` 两个 manifest 值映射同一后端，`sftp-native` 保留为别名（表单兼容），退役 russh 适配器 |
