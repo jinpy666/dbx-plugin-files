@@ -22,10 +22,61 @@ pub enum RcError {
     Malformed(String),
 }
 
+impl RcError {
+    /// Deepest-cause annotation for a transport failure (issue #46): reqwest's
+    /// own Display stops at "error sending request for url (...)" — the source
+    /// chain is what separates "rcd died (connection refused)" from "rcd alive
+    /// but wedged (timed out)", which is the difference an actionable report
+    /// needs. The flags are checked before the walk so a wrapped timeout whose
+    /// deepest source is generic still reads as a timeout.
+    pub fn transport_detail(error: &reqwest::Error) -> String {
+        let mut detail = String::new();
+        if error.is_timeout() {
+            detail.push_str("timed out");
+        }
+        if error.is_connect() {
+            if !detail.is_empty() {
+                detail.push_str(", ");
+            }
+            detail.push_str("could not connect");
+        }
+        let deepest = deepest_source(error);
+        if !deepest.is_empty() {
+            if !detail.is_empty() {
+                detail.push_str(" — ");
+            }
+            detail.push_str(&deepest);
+        }
+        detail
+    }
+}
+
+/// Text of the last error in the source chain (the actual OS/failure cause).
+fn deepest_source(error: &dyn std::error::Error) -> String {
+    let mut deepest = String::new();
+    let mut current = Some(error);
+    while let Some(err) = current {
+        let text = err.to_string();
+        // Skip the wrapper layers we already show verbatim in Display.
+        if !text.starts_with("error sending request") {
+            deepest = text;
+        }
+        current = err.source();
+    }
+    deepest
+}
+
 impl std::fmt::Display for RcError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RcError::Transport(error) => write!(f, "rc transport error: {error}"),
+            RcError::Transport(error) => {
+                write!(f, "rc transport error: {error}")?;
+                let detail = Self::transport_detail(error);
+                if !detail.is_empty() {
+                    write!(f, " [{detail}]")?;
+                }
+                Ok(())
+            }
             RcError::Http { status, body } => write!(f, "rc http {status}: {}", truncate(body)),
             RcError::Rclone { message } => write!(f, "{message}"),
             RcError::Malformed(body) => write!(f, "rc returned malformed JSON: {}", truncate(body)),
@@ -576,5 +627,43 @@ impl RcClient {
             });
         }
         Ok(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Issue #46: the source-chain walker must surface the deepest cause and
+    /// skip the generic reqwest wrapper text it already shows in Display.
+    #[test]
+    fn deepest_source_walks_to_the_leaf() {
+        #[derive(Debug)]
+        struct Leaf;
+        impl std::fmt::Display for Leaf {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "connection refused (os error 111)")
+            }
+        }
+        impl std::error::Error for Leaf {}
+
+        #[derive(Debug)]
+        struct Wrapper;
+        impl std::fmt::Display for Wrapper {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "error sending request for url (http://127.0.0.1:1/x)")
+            }
+        }
+        impl std::error::Error for Wrapper {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&Leaf)
+            }
+        }
+
+        assert_eq!(
+            deepest_source(&Wrapper),
+            "connection refused (os error 111)"
+        );
+        assert_eq!(deepest_source(&Leaf), "connection refused (os error 111)");
     }
 }

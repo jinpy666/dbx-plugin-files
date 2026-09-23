@@ -263,6 +263,65 @@ impl RcloneEngine {
         self.client_for_binding(&binding).await
     }
 
+    /// `connection/test` with the issue #46 self-heal: the spawn health check
+    /// (`rc/noopauth`) passing proves loopback HTTP worked at spawn time, so a
+    /// transport failure on the very next rc call almost always means the rcd
+    /// died in between — memory pressure killing the freshly spawned Go
+    /// process is the classic shape on shared hosts, and without a heal the
+    /// failure then repeats on every UI action (each attempt spawns on a fresh
+    /// port and dies the same way). Policy: retry once when (and only when)
+    /// the group's rcd actually exited; a live rcd returns the annotated error.
+    pub async fn test_connection(
+        &self,
+        connection: &crate::model::StoredConnection,
+    ) -> Result<(), String> {
+        for attempt in 0..2 {
+            let client = self.client_for(connection).await?;
+            match registry::test_connection(&client, connection).await {
+                Ok(()) => return Ok(()),
+                Err(error) if attempt == 0 && self.rcd_died_after_spawn(connection).await => {
+                    eprintln!(
+                        "[io.dbx.files] rcd died after its spawn health check; \
+                         respawning and retrying connection/test once (first error: {error})"
+                    );
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!("two-iteration loop always returns")
+    }
+
+    /// `connection/connect` with the same issue #46 self-heal as
+    /// [`Self::test_connection`].
+    pub async fn connect_connection(
+        &self,
+        connection: &crate::model::StoredConnection,
+    ) -> Result<registry::RemoteBinding, String> {
+        for attempt in 0..2 {
+            let client = self.client_for(connection).await?;
+            match registry::connect(&self.registry, &client, connection).await {
+                Ok(binding) => return Ok(binding),
+                Err(error) if attempt == 0 && self.rcd_died_after_spawn(connection).await => {
+                    eprintln!(
+                        "[io.dbx.files] rcd died after its spawn health check; \
+                         respawning and retrying connection/connect once (first error: {error})"
+                    );
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!("two-iteration loop always returns")
+    }
+
+    /// True when the connection's proxy group has an rcd handle whose child
+    /// has exited (`None` = never spawned — nothing to heal, the error came
+    /// from elsewhere). Reading the state reaps the exited child so the next
+    /// `client_for` respawns into a fresh process.
+    async fn rcd_died_after_spawn(&self, connection: &crate::model::StoredConnection) -> bool {
+        let (key, _) = proxy_route(connection.proxy.as_ref());
+        matches!(self.supervisor.lock().await.group_alive(&key), Some(false))
+    }
+
     /// 流式列表（`files/listStream`）的会话前置：确保连接所在代理组的 rcd
     /// 存活（必要时 respawn + replay 注册），并返回该组的子进程规格——升级
     /// 路径的短命 `lsjson` 子进程必须复用同一 binary、同一 0600 私有 config
