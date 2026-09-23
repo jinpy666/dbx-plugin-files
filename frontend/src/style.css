@@ -397,9 +397,12 @@ body.wb-col-resizing { cursor: col-resize; user-select: none; -webkit-user-selec
 @keyframes wb-pop-in { from { opacity: 0; transform: translateY(4px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @keyframes wb-progress-stripe { to { background-position: 20px 0; } }
 .wb-drop-overlay { position: absolute; inset: 0; z-index: 20; display: grid; place-items: center; border: 2px dashed var(--primary); border-radius: var(--radius); background: color-mix(in srgb, var(--primary) 12%, var(--background)); color: var(--primary); pointer-events: none; }
+/* 宿主级拖拽提示（fileTransfer.onDragState）：铺满 wb-content，子 pane 的
+   点位 overlay（z-20）已亮时让位（v-if 互斥），z 序略高保证盖住 pane 边框。 */
+.wb-host-drop-overlay { z-index: 30; border-radius: 0; }
 
 /* ---- dual pane（A-FILES ①） -------------------------------------------------------- */
-.wb-content { display: flex; flex: 1 1 auto; min-height: 0; }
+.wb-content { position: relative; display: flex; flex: 1 1 auto; min-height: 0; }
 .wb-pane { position: relative; display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; flex-direction: column; }
 .wb-pane-target { flex: 0 1 46%; min-width: 260px; border-left: 1px solid var(--border); }
 .wb-pane-bridge { display: flex; flex: 0 0 26px; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border-left: 1px solid var(--border); border-right: 1px solid var(--border); background: color-mix(in srgb, var(--muted) 55%, var(--background)); }

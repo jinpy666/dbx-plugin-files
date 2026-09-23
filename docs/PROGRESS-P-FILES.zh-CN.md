@@ -1913,3 +1913,36 @@ cargo-zigbuild 低 glibc 基线 + `CGO_ENABLED=0`；`validate_artifact_set.py`
 - 内嵌 providers 表与捆绑 rclone 版本钉死：`fetch-rclone.sh` 升版本时必须
   重新生成 `providers_v1.75.1.json`（文件名含版本号，漏改会在 include_str!
   编译期暴露缺文件，但内容过期无守卫）。
+
+## 前端持久化迁移 host.storage（2026-09-24）
+
+- **背景**：工作台 iframe 是 sandbox opaque origin，直接读 `localStorage` 抛
+  SecurityError（ssh `App.vue` 下载偏好注释已实证过），本插件前端此前全部
+  UI 状态持久化（`prefs.ts` 的 ui/downloadDir/openApp/favorites 四键）在
+  真机桌面端静默失效。宿主 Host API 1.2 提供 `window.dbxPlugin.storage`
+  （get/set/delete + 能力位 `capabilities.storage`，manifest 需声明
+  `host.storage` 权限）：桌面端落 `plugin-data/<id>/ui-storage.json`，
+  web 宿主落顶层文档 localStorage。本插件作为四插件迁移试点先行接入
+  `shared/frontend/pluginStorage.ts` 适配器（files 是该公共层的权威维护点）。
+- **接入点**：`lib/prefs.ts` 创建 `prefsStore`（键集合显式声明，宿主 storage
+  无列键方法），读存函数保留 `storage?: KvBacking` 测试注入面、默认后端从
+  `window.localStorage` 换为 `prefsStore`，调用点 `getItem/setItem/removeItem`
+  语义不变、零 async 改造；`main.ts` 挂载前 `await prefsStore.ready` 完成
+  启动水合（含 localStorage 旧键一次性惰性搬家）。`env.d.ts` 的 DbxPluginApi
+  内联补 `capabilities`/`storage` 声明；`manifest.json` permissions 增加
+  `host.storage`（版本号不动）。
+- **mock**：`mockHost.ts` 补 storage mock + `capabilities.storage=true`；
+  收尾统一改为 localStorage 兜底（键名不变；字符串值原样、对象 JSON 编码；
+  opaque origin 不可用时退化内存），与真实 web 宿主同形，刷新/重开不丢。
+- **spec**：新增 `lib/pluginStorage.spec.ts`（适配器 8 用例：宿主档水合/写穿/
+  旧键搬家/水合不覆盖先写/桥失败告警、localStorage 档同步、内存档、本插件
+  接线断言）；FileTable/AuditPanel/App.favorites 三个 happy-dom spec 的
+  播种/断言从全局 localStorage 改走 `prefsStore` 实例（模块导入时已完成水合，
+  之后直改 localStorage 读不到缓存值）；prefs.spec 注入式用例不受影响。
+- **验证**：`vue-tsc --noEmit` 0 错；`vitest run` 68 文件 555 用例全绿；
+  `scripts/test.sh` 全链路 all green（单测 → 前端三件套 → 构建 → 打包 → smoke）。
+- **边界与注意点**：只涉及非敏感 UI 状态，凭据仍走连接表单 `binding:"secret"`，
+  大数据（审计/传输历史）归 sidecar `DBX_PLUGIN_DATA_DIR`，均不迁；配额由
+  宿主端强制（单值 256 KiB / 总量 1 MiB / 1024 键），超限仅 console.warn；
+  老宿主（Host API < 1.2）自动降级 guarded localStorage，行为等同迁移前。
+  真机复验建议随下一次 .dbxp 出包一起做（改排序/侧栏/收藏 → 重启确认恢复）。
