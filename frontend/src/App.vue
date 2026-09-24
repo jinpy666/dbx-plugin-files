@@ -84,7 +84,7 @@ import {
 } from "./lib/api";
 import { createTransferTracker, isActive, isRetryableKind, type TransferJob, type TransferKind } from "./lib/transfers";
 import { filesFromClipboard } from "./lib/clipboardFiles";
-import { resolveUploadNames, type ConflictPolicy, type UploadQueueItem } from "./lib/conflictPolicy";
+import { groupByRemoteDir, resolveUploadNames, type ConflictPolicy, type UploadQueueItem } from "./lib/conflictPolicy";
 import { inspect, type DangerousHit } from "./lib/dangerousPaths";
 import { errorBannerOf, i18nTextOf, workbenchMessage, type ErrorBannerState, type I18nInput, type I18nText } from "./lib/i18n";
 import { isArchivePath } from "./lib/archive";
@@ -2379,28 +2379,46 @@ function onConflictPolicySave(policy: ConflictPolicy) {
   showNotice(t("conflictPolicySaved"));
 }
 
+/** 目标目录 + 队列项相对目录段 + 文件名 → 远端落点（文件夹上传的结构还原：
+ * remoteDir 为 POSIX 相对路径，逐段 join 规避手写斜杠拼接）。 */
+function uploadRemotePath(base: string, item: Pick<UploadQueueItem, "name" | "remoteDir">): string {
+  let path = base;
+  for (const segment of (item.remoteDir ?? "").split("/")) {
+    if (segment) path = joinPath(path, segment);
+  }
+  return joinPath(path, item.name);
+}
+
 /** 上传预检：目标目录已有同名时按策略放行/改名/询问；列表失败不阻断
- * （与跨栏 copy/move 预检同策略，交由后端执行时兜底）。undefined = 取消。 */
+ * （与跨栏 copy/move 预检同策略，交由后端执行时兜底）。undefined = 取消。
+ * 文件夹上传按 remoteDir 分组，各子目录各自对目标清单查撞名。 */
 async function planUpload<T extends UploadQueueItem>(items: readonly T[], target: UploadTarget): Promise<readonly T[] | undefined> {
   if (!items.length || conflictPolicy.value === "overwrite") return items;
-  let existing: Set<string>;
+  const groups = groupByRemoteDir(items);
+  const existing = new Map<string, Set<string>>();
   try {
-    const listing = await fetchListing(target.path, target.connectionId ?? connectionId.value);
-    existing = new Set(listing.entries.map((entry) => entry.name));
+    await Promise.all(
+      [...groups.keys()].map(async (dir) => {
+        const listing = await fetchListing(dir ? uploadRemotePath(target.path, { name: "", remoteDir: dir }) : target.path, target.connectionId ?? connectionId.value);
+        existing.set(dir, new Set(listing.entries.map((entry) => entry.name)));
+      }),
+    );
   } catch {
     return items;
   }
-  const conflicts = items.filter((item) => existing.has(item.name));
+  const conflicts = items.filter((item) => existing.get(item.remoteDir ?? "")?.has(item.name));
   if (!conflicts.length) return items;
   let mode: "rename" | "overwrite";
   if (conflictPolicy.value === "rename") {
     mode = "rename";
   } else {
-    const chosen = await askFileConflict(conflicts.map((item) => item.name));
+    // 文件夹上传的撞名带相对目录前缀，弹窗里能区分是哪个子目录下的文件。
+    const chosen = await askFileConflict(conflicts.map((item) => (item.remoteDir ? `${item.remoteDir}/${item.name}` : item.name)));
     if (!chosen) return undefined;
     mode = chosen;
   }
-  return resolveUploadNames(items, existing, mode);
+  // 改名在各目录组内独立进行（不跨目录让位）。
+  return [...groups.entries()].flatMap(([dir, group]) => resolveUploadNames(group, existing.get(dir) ?? new Set(), mode));
 }
 
 // ---- transfers ---------------------------------------------------------------
@@ -2427,13 +2445,13 @@ function uploadTarget(): UploadTarget {
   return { ...target, connectionId: target.connectionId ?? connectionId.value };
 }
 
-async function uploadSource(name: string, size: number, readChunk: (offset: number, length: number) => Promise<Uint8Array>, target: UploadTarget) {
+async function uploadSource(item: UploadQueueItem, target: UploadTarget) {
   // P1-5 上传方向语义：上传=传向远端（对标 FileZilla/tiny-rdm）。双栏时固定
   // 落到目标栏（右栏连接面恒为远端，不含本地 __local__）；单栏时落到当前
   // 连接的当前目录（原行为）。不再固定写左栏——双栏默认左栏是本地面板，
   // 把「上传」写进本地盘与直觉相反。
-  const remotePath = joinPath(target.path, name);
-  const startParams: Record<string, unknown> = { remotePath, size };
+  const remotePath = uploadRemotePath(target.path, item);
+  const startParams: Record<string, unknown> = { remotePath, size: item.size };
   if (target.connectionId) startParams.connectionId = target.connectionId;
   const start = await call<{ taskId: string; chunkSize?: number }>("files/upload/start", startParams);
   const taskId = start.taskId;
@@ -2447,19 +2465,19 @@ async function uploadSource(name: string, size: number, readChunk: (offset: numb
     kind: "upload",
     remotePath,
     state: "running",
-    size,
+    size: item.size,
     transferred: 0,
     updatedAt: Date.now(),
   });
   try {
     let offset = 0;
-    while (offset < size) {
+    while (offset < item.size) {
       // R5-P2-4：泵级取消检查点——置 canceled 终态并终止循环，不再读/发后续分片。
       if (cancelFlag.canceled) {
         tracker.onProgress({ jobId: taskId, taskId, state: "canceled", transferred: offset });
         throw new TransferCanceled();
       }
-      const chunk = await readChunk(offset, chunkSize);
+      const chunk = await item.readChunk(offset, chunkSize);
       if (!chunk.byteLength) throw new Error("local file ended before its declared size");
       const payload = new Uint8Array(8 + chunk.byteLength);
       writeU64(payload, offset);
@@ -2472,7 +2490,7 @@ async function uploadSource(name: string, size: number, readChunk: (offset: numb
       // 写入远未完成，进度条严重失真。
     }
     await window.dbxPlugin.invoke("files/upload/finish", { taskId }, { timeoutMs: 30 * 60 * 1000 });
-    tracker.onProgress({ jobId: taskId, taskId, state: "completed", transferred: size });
+    tracker.onProgress({ jobId: taskId, taskId, state: "completed", transferred: item.size });
   } catch (cause) {
     // 已取消：终态已置，不再重复报错/请 sidecar 取消（cancelTransfer 已处理）。
     if (cause instanceof TransferCanceled) return;
@@ -2525,7 +2543,7 @@ async function uploadItems(items: readonly UploadQueueItem[], target: UploadTarg
   let hadFailure = false;
   for (const item of items) {
     try {
-      await uploadSource(item.name, item.size, item.readChunk, target);
+      await uploadSource(item, target);
       uploaded += 1;
     } catch (cause) {
       // R5-P2-4：用户取消当前文件后不再继续上传剩余文件（也不补「已上传 N 个」）。
@@ -2539,6 +2557,45 @@ async function uploadItems(items: readonly UploadQueueItem[], target: UploadTarg
 
 async function uploadLocalFiles(files: readonly File[], target: UploadTarget) {
   await uploadItems(files.map(localFileItem), target);
+}
+
+/** 文件夹上传：按层级先建远端目录树（rclone mkdir 缺目录才创建，已存在 =
+ * 目录合并语义），父先于子；目标根不建（正在浏览，必然已存在）。 */
+async function ensureRemoteDirs(dirs: readonly string[], target: UploadTarget) {
+  for (const dir of dirs) {
+    if (!dir) continue;
+    await call("files/mkdir", { path: uploadRemotePath(target.path, { name: "", remoteDir: dir }), connectionId: target.connectionId }).catch((cause) => {
+      // exists 类报错按合并语义放行；其余抛出终止整批并给出明确错误。
+      if (!/exist|already/i.test(errorMessage(cause))) throw cause;
+    });
+  }
+}
+
+/** 文件夹上传（webkitdirectory 原生选择器，web 与桌面宿主同路径）：按
+ * webkitRelativePath 还原目录结构——首段是所选文件夹名，最终落到
+ * target/<folder>/…；建树后逐文件走统一上传泵，冲突策略与平面上传一致
+ * （planUpload 按 remoteDir 分组预检）。 */
+async function onUploadFolder(files: readonly File[]) {
+  if (!canWrite.value || !files.length) return;
+  const target = uploadTarget();
+  const items: UploadQueueItem[] = [];
+  const dirs = new Set<string>();
+  for (const file of files) {
+    const relative = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+    const segments = relative.split("/").filter(Boolean);
+    const name = segments.pop();
+    if (!name) continue;
+    const remoteDir = segments.join("/");
+    dirs.add(remoteDir);
+    items.push({ ...localFileItem(file), name, remoteDir });
+  }
+  try {
+    await ensureRemoteDirs([...dirs].sort((a, b) => a.split("/").length - b.split("/").length || a.localeCompare(b)), target);
+    const planned = await planUpload(items, target);
+    if (planned) await uploadItems(planned, target);
+  } catch (cause) {
+    showError(cause);
+  }
 }
 
 /** 宿主文件桥读盘失败判定（对标 ssh 仓库 PR #92，issue #83/#79：宿主句柄
@@ -2565,7 +2622,7 @@ async function uploadHostFiles(items: ReadonlyArray<UploadQueueItem & { handleId
   for (const item of items) {
     const handleId = item.handleId;
     try {
-      await uploadSource(item.name, item.size, item.readChunk, target);
+      await uploadSource(item, target);
       uploaded += 1;
     } catch (cause) {
       // R5-P2-4：同 uploadLocalFiles——取消即终止整个批量上传（handle 释放由
@@ -4053,6 +4110,7 @@ onBeforeUnmount(() => {
       :t="t"
       @new-folder="startNewFolder(toolbarTarget.side)"
       @upload="onUpload"
+      @upload-folder="onUploadFolder"
       @download="downloadSelection(toolbarTarget.side)"
       @delete="startDelete(toolbarSelectionEntries(toolbarTarget.side), toolbarTarget.side)"
       @toggle-dual-pane="dualPane = !dualPane"

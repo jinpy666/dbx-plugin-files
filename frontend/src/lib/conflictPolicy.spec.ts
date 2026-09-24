@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { nextAvailableName, resolveUploadNames, sanitizeConflictPolicy, type UploadQueueItem } from "./conflictPolicy";
+import { groupByRemoteDir, nextAvailableName, resolveUploadNames, sanitizeConflictPolicy, type UploadQueueItem } from "./conflictPolicy";
 
 describe("sanitizeConflictPolicy", () => {
   it("keeps known policies and defaults everything else to ask", () => {
@@ -51,5 +51,26 @@ describe("resolveUploadNames", () => {
     const items = [item("x.txt")];
     const resolved = resolveUploadNames(items, new Set(["a.txt"]), "rename");
     expect(resolved.map((entry) => entry.name)).toEqual(["x.txt"]);
+  });
+});
+
+describe("groupByRemoteDir", () => {
+  const item = (name: string, remoteDir?: string): UploadQueueItem => ({ name, remoteDir, size: 1, readChunk: async () => new Uint8Array() });
+
+  it("groups by remoteDir with the flat upload batch under the root key", () => {
+    const groups = groupByRemoteDir([item("a.txt"), item("b.txt")]);
+    expect([...groups.keys()]).toEqual([""]);
+    expect(groups.get("")!.map((entry) => entry.name)).toEqual(["a.txt", "b.txt"]);
+  });
+
+  it("keeps folder-upload subdirectories in separate conflict groups", () => {
+    const groups = groupByRemoteDir([
+      item("a.txt", "docs"),
+      item("b.txt", "docs/sub"),
+      item("c.txt", "docs"),
+    ]);
+    expect([...groups.keys()].sort()).toEqual(["docs", "docs/sub"]);
+    expect(groups.get("docs")!.map((entry) => entry.name)).toEqual(["a.txt", "c.txt"]);
+    expect(groups.get("docs/sub")!.map((entry) => entry.name)).toEqual(["b.txt"]);
   });
 });

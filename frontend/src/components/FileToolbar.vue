@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { Activity, CircleGauge, Columns2, Download, FolderPlus, Gauge, HardDrive, ScrollText, Settings, Star, Trash2, Upload, Plug } from "@lucide/vue";
+import { Activity, CircleGauge, Columns2, Download, FolderPlus, FolderUp, Gauge, HardDrive, ScrollText, Settings, Star, Trash2, Upload, Plug } from "@lucide/vue";
 
 // 全局动作栏：路径/面包屑/过滤等栏内控件已下沉到各栏 wb-pane-header
 // （双栏对称性修复），这里只承载跨栏的全局操作。
@@ -31,6 +31,8 @@ const emit = defineEmits<{
   (event: "new-folder"): void;
   /** files 为 null 表示走宿主 fileTransfer picker。 */
   (event: "upload", files: File[] | null): void;
+  /** 文件夹上传（webkitdirectory 选择器，File 携带 webkitRelativePath）。 */
+  (event: "upload-folder", files: File[]): void;
   (event: "download"): void;
   (event: "delete"): void;
   /** 审计#17：工具栏只保留一个 dock 开关。tab 省略即切换「当前页签」的
@@ -86,6 +88,22 @@ function onPicked(event: Event) {
   const input = event.target as HTMLInputElement;
   const files = Array.from(input.files ?? []);
   if (files.length) emit("upload", files);
+  input.value = "";
+}
+
+// 文件夹上传（webkitdirectory）：File 自带 webkitRelativePath（含所选文件夹
+// 名作首段），App 侧据此还原目录树。不区分宿主桥有无——文件夹选择直接走
+// webview 原生对话框，web/docker 与桌面宿主同一路径。
+const folderInput = ref<HTMLInputElement>();
+
+function pickFolder() {
+  folderInput.value?.click();
+}
+
+function onFolderPicked(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  if (files.length) emit("upload-folder", files);
   input.value = "";
 }
 
@@ -160,6 +178,8 @@ const statsDockOpen = computed(() => props.dockOpen && props.dockTab === "stats"
       <button class="wb-toolbar-button" v-tip="t('newFolder')" :disabled="!canWrite || busy" @click="emit('new-folder')"><FolderPlus /> {{ t("newFolder") }}</button>
       <button class="wb-toolbar-button" v-tip="t('uploadPasteHint')" :disabled="!canWrite || busy" @click="pickFiles"><Upload /> {{ t("upload") }}</button>
       <input ref="fileInput" type="file" multiple class="hidden" @change="onPicked" />
+      <button class="wb-toolbar-button" v-tip="t('uploadFolderHint')" :disabled="!canWrite || busy" @click="pickFolder"><FolderUp /> {{ t("uploadFolder") }}</button>
+      <input ref="folderInput" type="file" webkitdirectory multiple class="hidden" @change="onFolderPicked" />
       <button class="wb-toolbar-button" v-tip="t('download')" :disabled="!hasSelection || busy" @click="emit('download')"><Download /> {{ t("download") }}</button>
       <button class="wb-toolbar-button" v-tip="t('deleteSelected')" :disabled="!hasSelection || !canWrite || busy" @click="emit('delete')"><Trash2 /> {{ t("deleteSelected") }}</button>
       <span class="wb-toolbar-separator" aria-hidden="true" />
