@@ -18,7 +18,7 @@
   "source": "https://github.com/jinpy666/dbx-plugin-files",
   "homepage": "https://github.com/jinpy666/dbx-plugin-files",
   "license": "MIT",
-  "releaseNotes": "新增剪贴板粘贴上传（Finder/资源管理器复制文件 → Ctrl/Cmd+V 直传）与桌面端宿主级拖拽上传（全局放置提示 + 宿主文件桥读盘）；传输同名冲突策略三档可选（询问我 / 自动重命名 / 覆盖），上传与下载落盘统一生效，默认询问。Add clipboard paste upload (copy in Finder/Explorer, paste with Ctrl/Cmd+V) and host-level drag & drop upload with a global drop hint; a three-way transfer conflict policy (ask / auto-rename / overwrite) now covers both uploads and local download saves, asking by default.",
+  "releaseNotes": "修复下载保存链路：沙箱工作台 iframe 内的程序化 <a download> 会被浏览器静默丢弃，此前在无宿主文件传输桥的环境（web/docker 或旧版 DBX 宿主）下载会「提示成功但本机没有文件」。现改为经宿主 host.saveFile 单次落盘桥（Host API 1.1）：桌面端弹原生保存对话框，取消不再假报成功，超过宿主 512 MiB 上限时明确报错；新增七语提示文案。Fixed the download save path: sandboxed workbench iframes silently drop programmatic <a download> clicks, so on hosts without the fileTransfer bridge (web/docker or older DBX hosts) downloads reported success without writing a file. Downloads now persist through the host host.saveFile bridge (Host API 1.1) with a native save dialog on desktop; cancelling no longer reports success, and payloads above the 512 MiB host cap fail with a clear error.",
   "localizations": {
     "zh-CN": {
       "name": "Files Studio",
