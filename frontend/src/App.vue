@@ -2622,7 +2622,8 @@ async function downloadEntry(entry: FileEntry, side: PaneSide = "left", id = sid
   let channel: string | undefined;
   // 桌面端优先 sidecar 本机落盘：完成的下载保留经过校验的 localPath，
   // 传输面板才能提供「定位/打开」，历史重开也能恢复。本地落盘不可用
-  // （web/docker）时回退宿主 fileTransfer 保存对话框，再退浏览器下载。
+  // （web/docker）时回退宿主 fileTransfer 保存对话框，再退宿主 host.saveFile
+  // 单次落盘（沙箱 iframe 内 <a download> 会被静默丢弃，禁止该兜底）。
   const local = await probeLocalCapabilities();
   const saveToLocal = !!local?.canSaveLocal;
   const hostTransfer = saveToLocal ? undefined : fileTransfer;
@@ -2679,8 +2680,16 @@ async function downloadEntry(entry: FileEntry, side: PaneSide = "left", id = sid
     // 泵式下载：sidecar 在 start 后自行按 offset 顺序推送
     // files/download/{taskId} 帧（8 字节 BE offset + <=256KiB），前端只收帧。
     // saveToLocal 时字节由 sidecar 写盘（前端纯跟进度）；否则宿主 beginSave
-    // 或浏览器 blob 兜底，语义与此前一致。
-    const target = hostTransfer ? await hostTransfer.beginSave({ name: info.fileName ?? entry.name, size }) : undefined;
+    // 分块写，或无 fileTransfer 宿主退 host.saveFile 单次落盘。
+    // 契约（对标 ssh）：用户取消原生保存对话框时 beginSave 返回 null——必须
+    // 立刻终止整次下载并释放 sidecar 任务；否则 target=null 会滑进兜底分支，
+    // 最终提示成功却没有任何文件落盘。
+    const target = hostTransfer ? (await hostTransfer.beginSave({ name: info.fileName ?? entry.name, size })) ?? undefined : undefined;
+    if (hostTransfer && !target) {
+      cancelFlag.canceled = true;
+      await call("files/transfer/cancel", { taskId }).catch(() => undefined);
+      throw new TransferCanceled();
+    }
     const chunks = saveToLocal ? undefined : target ? undefined : ([] as Uint8Array[]);
     let offset = 0;
     while (offset < size) {
@@ -2705,7 +2714,7 @@ async function downloadEntry(entry: FileEntry, side: PaneSide = "left", id = sid
     if (target) {
       await hostTransfer!.finish(target.handleId);
     } else if (chunks) {
-      saveBrowserDownload(chunks, info.fileName ?? entry.name);
+      await saveHostFile(chunks, info.fileName ?? entry.name);
     }
     const finishResult = await call<{ localPath?: string }>("files/download/finish", { taskId });
     localPath = finishResult?.localPath;
@@ -2727,14 +2736,33 @@ async function downloadEntry(entry: FileEntry, side: PaneSide = "left", id = sid
   }
 }
 
-function saveBrowserDownload(chunks: Uint8Array[], fileName: string) {
-  const blob = new Blob(chunks as unknown as BlobPart[]);
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = fileName;
-  anchor.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+// 宿主单次落盘上限（宿主 pluginHostBridge MAX_BRIDGE_SAVE_BYTES）：超出时明确
+// 报错，绝不回退 iframe 内 <a download>——sandbox="allow-scripts" 下该动作被
+// 浏览器静默丢弃（无报错、无下载事件），正是「提示下载成功但本机没有文件」
+// 的根因（对标 ssh 插件 issue #93）。
+const HOST_SAVE_MAX_BYTES = 512 * 1024 * 1024;
+
+/**
+ * 无 fileTransfer 宿主（旧 DBX 与 web/docker 宿主）的下载落盘路径：整包字节
+ * 交宿主顶层页面（host.saveFile，Host API 1.1）保存。宿主顶层文档不受插件
+ * iframe 的 sandbox 约束；桌面端同时弹原生保存对话框，用户取消返回 null
+ * （按取消语义终止，不提示成功）。
+ */
+async function saveHostFile(chunks: Uint8Array[], fileName: string): Promise<void> {
+  if (!window.dbxPlugin.saveFile) throw new Error(t("localSaveUnavailable"));
+  const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  if (total > HOST_SAVE_MAX_BYTES) {
+    throw new Error(t("localSaveTooLarge", { size: formatBytes(total), limit: formatBytes(HOST_SAVE_MAX_BYTES) }));
+  }
+  // host.saveFile 是单次整包桥：先把分块按序合并成一块再交付。
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const saved = await window.dbxPlugin.saveFile({ fileName, contentType: "application/octet-stream" }, merged);
+  if (!saved) throw new TransferCanceled();
 }
 
 async function downloadSelection(side: PaneSide = "left") {
