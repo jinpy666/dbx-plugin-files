@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { FolderOpen, Plus, RotateCcw, X } from "@lucide/vue";
 import type { OpenAppMapping, OpenAppPrefs } from "../lib/prefs";
+import { CONFLICT_POLICIES, type ConflictPolicy } from "../lib/conflictPolicy";
 import DesktopOnlyCard from "./DesktopOnlyCard.vue";
 import DirectoryBrowser from "./DirectoryBrowser.vue";
 import { persistDownloadDir } from "../lib/prefs";
@@ -31,12 +32,15 @@ const props = defineProps<{
   /** 传输带宽限速（files/bwlimit 持久化值；空 = 不限）。 */
   bwlimit?: string;
   bwlimitError?: string;
+  /** 传输同名冲突策略（上传预检 + 下载落盘；缺省 ask）。 */
+  conflictPolicy?: ConflictPolicy;
 }>();
 
 const emit = defineEmits<{
   (event: "save-dir", dir: string): void;
   (event: "save-open-app", prefs: OpenAppPrefs): void;
   (event: "save-bwlimit", rate: string): void;
+  (event: "save-conflict-policy", policy: ConflictPolicy): void;
   /** 任一草稿与持久化值不一致时上抛，父层据此启用统一的「保存更改」。 */
   (event: "dirty", dirty: boolean): void;
 }>();
@@ -82,6 +86,13 @@ function saveBwlimit() {
   const number = String(bwlimitNumber.value ?? "").trim();
   emit("save-bwlimit", number ? `${number}${bwlimitUnit.value}` : "");
 }
+
+// 同名冲突策略：radio 三档（ask/rename/overwrite），统一「保存更改」时持久化。
+const CONFLICT_LABEL_KEYS: Record<ConflictPolicy, string> = { ask: "conflictAsk", rename: "conflictRename", overwrite: "conflictOverwrite" };
+const conflictDraft = ref<ConflictPolicy>(props.conflictPolicy ?? "ask");
+watch(() => props.conflictPolicy, (value) => {
+  conflictDraft.value = value ?? "ask";
+});
 
 const draft = ref(props.saveDir);
 watch(() => props.saveDir, (value) => {
@@ -172,7 +183,9 @@ const composedBwlimit = computed(() => {
 });
 
 const dirty = computed(() => {
-  if (props.section === "transfer") return composedBwlimit.value !== (props.bwlimit ?? "");
+  if (props.section === "transfer") {
+    return composedBwlimit.value !== (props.bwlimit ?? "") || conflictDraft.value !== (props.conflictPolicy ?? "ask");
+  }
   if (props.section === "downloads") return draft.value !== (props.saveDir ?? "");
   if (props.section === "openWith") return !sameOpenApp(normalizeOpenApp(), props.openApp);
   return false;
@@ -185,6 +198,7 @@ watch(dirty, (value) => emit("dirty", value), { immediate: true });
 async function save() {
   if (props.section === "transfer") {
     emit("save-bwlimit", composedBwlimit.value);
+    emit("save-conflict-policy", conflictDraft.value);
     return;
   }
   if (props.section === "downloads") {
@@ -228,6 +242,19 @@ defineExpose({ save });
       </div>
       <p v-if="bwlimitError" class="wb-settings-error" role="alert">{{ bwlimitError }}</p>
       <p v-else-if="bwlimitSplit" class="wb-settings-hint">{{ t("bwlimitSplitHint") }}</p>
+
+      <!-- 传输同名冲突策略（对标 ssh 插件 downloadConflictPolicy）：上传预检与
+           下载落盘共用同一档位。 -->
+      <div class="wb-settings-heading">
+        <strong>{{ t("conflictPolicyTitle") }}</strong>
+      </div>
+      <div class="wb-conflict-options" role="radiogroup" :aria-label="t('conflictPolicyTitle')">
+        <label v-for="policy in CONFLICT_POLICIES" :key="policy" class="wb-conflict-option">
+          <input v-model="conflictDraft" type="radio" name="files-conflict-policy" :value="policy" />
+          <span>{{ t(CONFLICT_LABEL_KEYS[policy]) }}</span>
+        </label>
+      </div>
+      <p class="wb-settings-hint">{{ t("conflictPolicyHint") }}</p>
     </div>
     <div v-if="!props.section || props.section === 'downloads'" class="wb-settings-section">
       <div class="wb-settings-heading">

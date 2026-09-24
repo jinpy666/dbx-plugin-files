@@ -9,6 +9,7 @@
 import { createPluginKvStore, type KvBacking } from "../../../shared/frontend/pluginStorage";
 import type { SortState } from "./sorting";
 import { DEFAULT_SORT } from "./sorting";
+import { sanitizeConflictPolicy, type ConflictPolicy } from "./conflictPolicy";
 
 /** 侧栏 tab（tree=目录树，quick=快捷目录，fav=收藏夹）；默认 tree。 */
 export type SideTab = "tree" | "quick" | "fav";
@@ -239,6 +240,32 @@ export function persistDownloadDir(value: string, storage?: KvBacking): void {
   }
 }
 
+// —— 传输同名冲突策略（对标 ssh 插件 downloadConflictPolicy 三档）———————
+// 同时作用于上传（前端预检：一次 list 目标目录）与下载落盘（conflict 参数
+// 透传 sidecar）：ask（默认，弹「覆盖/自动重命名/取消」）/ rename / overwrite。
+
+export const CONFLICT_POLICY_KEY = "dbx-files.conflictPolicy";
+
+/** 读取冲突策略；未设置/非法值回退默认 ask。storage 可注入。 */
+export function loadConflictPolicy(storage?: KvBacking): ConflictPolicy {
+  let raw: string | null = null;
+  try {
+    raw = (storage ?? prefsStore).getItem(CONFLICT_POLICY_KEY);
+  } catch {
+    raw = null;
+  }
+  return sanitizeConflictPolicy(raw ?? undefined);
+}
+
+/** 保存冲突策略。 */
+export function persistConflictPolicy(value: ConflictPolicy, storage?: KvBacking): void {
+  try {
+    (storage ?? prefsStore).setItem(CONFLICT_POLICY_KEY, value);
+  } catch {
+    /* 偏好仅对当前会话生效 */
+  }
+}
+
 // —— 外部打开应用（issue #11，补齐「默认应用打开」的自定义能力）—————————
 // 用户可为下载产物指定外部应用（如 notepad++）打开，覆盖系统默认应用：
 // defaultApp 是全局默认可执行文件路径，mappings 按扩展名覆盖（如 ini）。
@@ -385,6 +412,6 @@ function safeParse(raw: string): unknown {
 // 之后读写全同步。键常量集中在此声明后统一建 store。
 
 /** 本插件全部 UI 状态键（宿主 storage 无列键方法，水合需显式声明）。 */
-export const PREFS_STORE_KEYS = [UI_PREFS_KEY, DOWNLOAD_DIR_KEY, OPEN_APP_KEY, FAVORITES_KEY];
+export const PREFS_STORE_KEYS = [UI_PREFS_KEY, DOWNLOAD_DIR_KEY, OPEN_APP_KEY, FAVORITES_KEY, CONFLICT_POLICY_KEY];
 
 export const prefsStore = createPluginKvStore(PREFS_STORE_KEYS);

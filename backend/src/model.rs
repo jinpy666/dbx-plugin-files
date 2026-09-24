@@ -669,6 +669,21 @@ pub struct DownloadStartRequest {
     /// 工作台「保存到」偏好的目录覆盖；空/缺省用系统下载目录。
     #[serde(default)]
     pub download_dir: Option<String>,
+    /// 同名冲突策略（前端设置项）：rename（默认，`name (n).ext`）/ overwrite
+    ///（直接替换）。ask 由前端在 start 前经 `files/local/exists` 解析成这两档。
+    #[serde(default)]
+    pub conflict: Option<String>,
+}
+
+/// `files/local/exists`：探测下载目录里是否已有同名文件（ask 策略的前端
+/// 预检）。dir 空/缺省时按下载偏好同款解析（显式目录 > 环境覆盖 > 系统下载
+/// 目录），保证探测目标与落盘目标一致。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalExistsRequest {
+    #[serde(default)]
+    pub dir: Option<String>,
+    pub name: String,
 }
 
 /// `files/archiveDownload`：把一个远端目录打包成单个 `<dirname>.zip`

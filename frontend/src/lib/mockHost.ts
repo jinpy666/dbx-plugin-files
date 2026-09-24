@@ -57,6 +57,15 @@ function concatBytes(chunks: Uint8Array[]): Uint8Array {
 // 最近一次安装实例的 emit 挂钩（installMockHost 内赋值；emitUiIntent 使用）。
 let emitEventRef: ((method: string, payload: Record<string, unknown>) => void) | null = null;
 
+// 模拟本机下载目录里已存在的文件（绝对路径）：files/local/exists 命中依据，
+// 集成测试经 seedMockLocalDownload 预置（mock 不读真实 Downloads）。
+const localDownloadFiles = new Set<string>();
+
+/** 预置 mock 下载目录同名文件（files/local/exists 探测命中），测试专用。 */
+export function seedMockLocalDownload(path: string): void {
+  localDownloadFiles.add(path);
+}
+
 export function installMockHost() {
   if (window.dbxPlugin) return;
   const params = new URLSearchParams(window.location.search);
@@ -1158,6 +1167,14 @@ export function installMockHost() {
         uploads.delete(str("taskId"));
         return { success: true };
       }
+      case "files/local/exists": {
+        // 同名预检（ask 策略）：mock 不碰真实文件系统，命中集合由
+        // seedMockLocalDownload 注入（集成测试用）。
+        const name = str("name");
+        const dir = typeof p.dir === "string" && p.dir.trim() ? p.dir.trim() : "/Users/demo/Downloads";
+        const path = `${dir.replace(/\/+$/, "")}/${name}`;
+        return { exists: localDownloadFiles.has(path), path };
+      }
       case "files/download/start": {
         const path = str("remotePath");
         assertOk(path);
@@ -1167,6 +1184,8 @@ export function installMockHost() {
         if (!entry || entry.kind !== "file") throw new Error(`NotFound: ${path}`);
         const taskId = `mock-download-${++jobSeq}`;
         const size = entry.size;
+        // conflict（overwrite）参数在 mock 落盘语义里无操作：mock 不写真实
+        // 文件系统，仅校验链路放行。
         const slot = { path, size, received: 0, connectionId: p.connectionId, timer: 0, canceled: false };
         downloads.set(taskId, slot);
         jobs.set(taskId, { taskId, kind: "download", connectionId: connectionIdOf(p.connectionId), remotePath: path, status: "running", totalBytes: size, transferredBytes: 0 });

@@ -64,6 +64,9 @@ pub(crate) struct DownloadTask {
     pub cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub pump_done: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub staging: Option<std::path::PathBuf>,
+    /// save_to_local 同名冲突策略（前端设置项）：true = finish 落盘直接替换
+    /// 同名文件；false = `name (n).ext` 自动让位（promote 时才定名）。
+    pub overwrite: bool,
     /// In-flight marker for the connection's proxy group: dropped with the
     /// slot on pump exit, releasing the idle-group teardown hold.
     pub(crate) _work: WorkGuard,
