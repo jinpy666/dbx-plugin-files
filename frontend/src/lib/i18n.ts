@@ -226,6 +226,10 @@ export const messages = {
     openDownloadedFile: "Open downloaded file",
     deleteRecord: "Delete this record",
     downloadedTo: "Downloaded {name} to {path}",
+    // 下载落盘兜底（对标 ssh issue #93：宿主 host.saveFile 桥替代 iframe 内
+    // <a download>——沙箱 iframe 会静默丢弃该动作，表现为提示成功但无文件）。
+    localSaveUnavailable: "This host offers no save bridge (host.saveFile), so the file cannot be saved",
+    localSaveTooLarge: "The file is {size}, above the host save limit of {limit}. Upgrade the DBX host or use local saving instead",
     recordDeleted: "Transfer record deleted",
     active: "Active",
     transferStatus: {
@@ -709,6 +713,8 @@ export const messages = {
     openDownloadedFile: "Abrir archivo descargado",
     deleteRecord: "Eliminar este registro",
     downloadedTo: "{name} descargado en {path}",
+    localSaveUnavailable: "Este host no ofrece puente de guardado (host.saveFile); no se puede guardar el archivo",
+    localSaveTooLarge: "El archivo pesa {size}, por encima del límite de guardado del host ({limit}). Actualice el host de DBX o use el guardado local",
     recordDeleted: "Registro de transferencia eliminado",
     active: "Activas",
     transferStatus: {
@@ -1185,6 +1191,8 @@ export const messages = {
     openDownloadedFile: "Apri il file scaricato",
     deleteRecord: "Elimina questa voce",
     downloadedTo: "{name} scaricato in {path}",
+    localSaveUnavailable: "Questo host non offre un bridge di salvataggio (host.saveFile): impossibile salvare il file",
+    localSaveTooLarge: "Il file è {size}, oltre il limite di salvataggio dell'host ({limit}). Aggiorna l'host DBX o usa il salvataggio locale",
     recordDeleted: "Voce di trasferimento eliminata",
     active: "Attivi",
     transferStatus: {
@@ -1661,6 +1669,8 @@ export const messages = {
     openDownloadedFile: "ダウンロードしたファイルを開く",
     deleteRecord: "この記録を削除",
     downloadedTo: "{name} を {path} にダウンロードしました",
+    localSaveUnavailable: "このホストには保存ブリッジ（host.saveFile）がないため、ファイルを保存できません",
+    localSaveTooLarge: "ファイルサイズ {size} はホストの保存上限 {limit} を超えています。DBX ホストを更新するかローカル保存をご利用ください",
     recordDeleted: "転送記録を削除しました",
     active: "進行中",
     transferStatus: {
@@ -2137,6 +2147,8 @@ export const messages = {
     openDownloadedFile: "Abrir arquivo baixado",
     deleteRecord: "Excluir este registro",
     downloadedTo: "{name} baixado em {path}",
+    localSaveUnavailable: "Este host não oferece ponte de salvamento (host.saveFile); não é possível salvar o arquivo",
+    localSaveTooLarge: "O arquivo tem {size}, acima do limite de salvamento do host ({limit}). Atualize o host DBX ou use o salvamento local",
     recordDeleted: "Registro de transferência excluído",
     active: "Ativas",
     transferStatus: {
@@ -2614,6 +2626,8 @@ export const messages = {
     openDownloadedFile: "打开已下载文件",
     deleteRecord: "删除这条记录",
     downloadedTo: "已下载 {name} 到 {path}",
+    localSaveUnavailable: "当前宿主没有可用的落盘通道（host.saveFile），无法保存文件",
+    localSaveTooLarge: "文件大小 {size} 超出宿主落盘上限 {limit}，请升级 DBX 宿主或改用本机落盘",
     recordDeleted: "已删除传输记录",
     active: "进行中",
     transferStatus: {
@@ -3091,6 +3105,8 @@ export const messages = {
     openDownloadedFile: "開啟已下載檔案",
     deleteRecord: "刪除這條記錄",
     downloadedTo: "已下載 {name} 到 {path}",
+    localSaveUnavailable: "目前宿主沒有可用的落盤通道（host.saveFile），無法儲存檔案",
+    localSaveTooLarge: "檔案大小 {size} 超出宿主落盤上限 {limit}，請升級 DBX 宿主或改用本機落盤",
     recordDeleted: "已刪除傳輸記錄",
     active: "進行中",
     transferStatus: {
