@@ -17,8 +17,23 @@ export function sanitizeConflictPolicy(value: unknown): ConflictPolicy {
 /** 上传队列项：名字与内容源解耦（rename 时改 name 不动内容源）。 */
 export interface UploadQueueItem {
   name: string;
+  /** 上传目标内的相对目录（POSIX 风格，无首尾斜杠；缺省 = 目标根）。
+   * 文件夹上传按 webkitRelativePath 还原，普通上传不设。 */
+  remoteDir?: string;
   size: number;
   readChunk: (offset: number, length: number) => Promise<Uint8Array>;
+}
+
+/** 按 `remoteDir` 分组（预检每个子目录各自对目标清单查撞名；改名不跨目录）。 */
+export function groupByRemoteDir<T extends UploadQueueItem>(items: readonly T[]): Map<string, T[]> {
+  const groups = new Map<string, T[]>();
+  for (const item of items) {
+    const key = item.remoteDir ?? "";
+    const group = groups.get(key);
+    if (group) group.push(item);
+    else groups.set(key, [item]);
+  }
+  return groups;
 }
 
 /**
