@@ -12,12 +12,13 @@
     "host.workbench",
     "host.events",
     "host.binary",
-    "host.filesystem"
+    "host.filesystem",
+    "host.storage"
   ],
   "source": "https://github.com/jinpy666/dbx-plugin-files",
   "homepage": "https://github.com/jinpy666/dbx-plugin-files",
   "license": "MIT",
-  "releaseNotes": "新增 Google Cloud Storage、Azure Blob、华为 OBS，以及阿里云盘、Dropbox、Google Drive、Koofr、OneDrive、pCloud、Seafile、Yandex Disk 等 OpenDAL 云存储服务，并同步扩充连接表单契约与协议矩阵测试。Adds Google Cloud Storage, Azure Blob, Huawei OBS, plus Alibaba Drive, Dropbox, Google Drive, Koofr, OneDrive, pCloud, Seafile, and Yandex Disk, with expanded connection-form and protocol-matrix coverage.",
+  "releaseNotes": "新增剪贴板粘贴上传（Finder/资源管理器复制文件 → Ctrl/Cmd+V 直传）与桌面端宿主级拖拽上传（全局放置提示 + 宿主文件桥读盘）；传输同名冲突策略三档可选（询问我 / 自动重命名 / 覆盖），上传与下载落盘统一生效，默认询问。Add clipboard paste upload (copy in Finder/Explorer, paste with Ctrl/Cmd+V) and host-level drag & drop upload with a global drop hint; a three-way transfer conflict policy (ask / auto-rename / overwrite) now covers both uploads and local download saves, asking by default.",
   "localizations": {
     "zh-CN": {
       "name": "Files Studio",
