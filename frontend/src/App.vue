@@ -57,6 +57,7 @@ import OpenWithDialog from "./components/OpenWithDialog.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
 import PathBrowseField from "./components/PathBrowseField.vue";
 import DropActionDialog from "./components/DropActionDialog.vue";
+import FileConflictDialog from "./components/FileConflictDialog.vue";
 import AuditPanel from "./components/AuditPanel.vue";
 import PreviewPane from "./components/PreviewPane.vue";
 import BatchRenameDrawer from "./components/BatchRenameDrawer.vue";
@@ -83,10 +84,11 @@ import {
 } from "./lib/api";
 import { createTransferTracker, isActive, isRetryableKind, type TransferJob, type TransferKind } from "./lib/transfers";
 import { filesFromClipboard } from "./lib/clipboardFiles";
+import { resolveUploadNames, type ConflictPolicy, type UploadQueueItem } from "./lib/conflictPolicy";
 import { inspect, type DangerousHit } from "./lib/dangerousPaths";
 import { errorBannerOf, i18nTextOf, workbenchMessage, type ErrorBannerState, type I18nInput, type I18nText } from "./lib/i18n";
 import { isArchivePath } from "./lib/archive";
-import { PREVIEW_MIN, loadDownloadDir, loadFavorites, loadOpenAppPrefs, loadUiPrefs, persistDownloadDir, persistFavorites, persistOpenAppPrefs, saveUiPrefs, resolveOpenApp, type FavoriteMap, type OpenAppPrefs, type PreviewWin } from "./lib/prefs";
+import { PREVIEW_MIN, loadConflictPolicy, loadDownloadDir, loadFavorites, loadOpenAppPrefs, loadUiPrefs, persistConflictPolicy, persistDownloadDir, persistFavorites, persistOpenAppPrefs, saveUiPrefs, resolveOpenApp, type FavoriteMap, type OpenAppPrefs, type PreviewWin } from "./lib/prefs";
 import { sortEntries, toggleSortState, type SortColumn, type SortState } from "./lib/sorting";
 import { withDisplayName } from "./lib/charset";
 import { filterEntries } from "./lib/searchFilter";
@@ -2330,7 +2332,75 @@ function onHostFileDrop(files: Array<{ handleId: string; name: string; size: num
     showNotice(t("readOnly"));
     return;
   }
-  void uploadHostFiles(files, uploadTarget());
+  const fileTransfer = window.dbxPlugin.fileTransfer;
+  if (!fileTransfer) return;
+  void (async () => {
+    const items = await planUpload(files.map((file) => hostFileItem(fileTransfer, file)), uploadTarget());
+    if (items) await uploadHostFiles(items, uploadTarget());
+  })().catch(showError);
+}
+
+// ---- 传输同名冲突策略（对标 ssh 插件 downloadConflictPolicy 三档）--------------
+// 一份设置同时管两个方向：上传在进入上传泵前预检（一次 list 目标目录），
+// ask 档弹「覆盖/自动重命名/取消」；下载落盘把 overwrite 透传 sidecar，
+// ask 档经 files/local/exists 探测后再询问；rename 是双方默认行为。
+
+const conflictPolicy = ref<ConflictPolicy>(loadConflictPolicy());
+
+const fileConflictOpen = ref(false);
+const fileConflictMessage = ref("");
+let fileConflictResolve: ((mode: "overwrite" | "rename" | undefined) => void) | undefined;
+
+/** 三键冲突询问：resolve 值 undefined = 用户取消（整批/整次放弃）。 */
+function askFileConflict(names: readonly string[]): Promise<"overwrite" | "rename" | undefined> {
+  fileConflictMessage.value = t("conflictAskBody", { count: names.length, names: names.slice(0, 5).join(", ") });
+  fileConflictOpen.value = true;
+  return new Promise((resolve) => {
+    fileConflictResolve = resolve;
+  });
+}
+
+function onFileConflictChoose(mode: "overwrite" | "rename") {
+  fileConflictOpen.value = false;
+  fileConflictResolve?.(mode);
+  fileConflictResolve = undefined;
+}
+
+function onFileConflictCancel() {
+  fileConflictOpen.value = false;
+  fileConflictResolve?.(undefined);
+  fileConflictResolve = undefined;
+}
+
+/** 设置页保存链路（SettingsPanel transfer 页签统一「保存更改」触发）。 */
+function onConflictPolicySave(policy: ConflictPolicy) {
+  conflictPolicy.value = policy;
+  persistConflictPolicy(policy);
+  showNotice(t("conflictPolicySaved"));
+}
+
+/** 上传预检：目标目录已有同名时按策略放行/改名/询问；列表失败不阻断
+ * （与跨栏 copy/move 预检同策略，交由后端执行时兜底）。undefined = 取消。 */
+async function planUpload<T extends UploadQueueItem>(items: readonly T[], target: UploadTarget): Promise<readonly T[] | undefined> {
+  if (!items.length || conflictPolicy.value === "overwrite") return items;
+  let existing: Set<string>;
+  try {
+    const listing = await fetchListing(target.path, target.connectionId ?? connectionId.value);
+    existing = new Set(listing.entries.map((entry) => entry.name));
+  } catch {
+    return items;
+  }
+  const conflicts = items.filter((item) => existing.has(item.name));
+  if (!conflicts.length) return items;
+  let mode: "rename" | "overwrite";
+  if (conflictPolicy.value === "rename") {
+    mode = "rename";
+  } else {
+    const chosen = await askFileConflict(conflicts.map((item) => item.name));
+    if (!chosen) return undefined;
+    mode = chosen;
+  }
+  return resolveUploadNames(items, existing, mode);
 }
 
 // ---- transfers ---------------------------------------------------------------
@@ -2426,17 +2496,36 @@ async function afterUpload(count: number, target: UploadTarget, hadFailure = fal
   if (count && !hadFailure) showNotice(t("uploaded", { count, path: target.path }));
 }
 
-async function uploadLocalFiles(files: readonly File[], target: UploadTarget) {
-  // issue#6-3：只统计真正成功的文件数。此前无条件按 files.length 提示
-  // 「已上传 N 个」，目标目录不可写时逐文件报错后仍被成功提示覆盖（假成功）。
+/** 本地 File → 上传队列项：名字与内容源解耦，冲突改名只动 name。 */
+function localFileItem(file: File): UploadQueueItem {
+  return {
+    name: file.name,
+    size: file.size,
+    readChunk: async (offset, length) => new Uint8Array(await file.slice(offset, offset + length).arrayBuffer()),
+  };
+}
+
+/** 宿主句柄 → 上传队列项（保留 handleId 供 finally 释放）。 */
+function hostFileItem(fileTransfer: NonNullable<typeof window.dbxPlugin.fileTransfer>, file: { handleId: string; name: string; size: number }): UploadQueueItem & { handleId: string } {
+  return {
+    handleId: file.handleId,
+    name: file.name,
+    size: file.size,
+    readChunk: async (offset, length) => {
+      const result = await fileTransfer.read(file.handleId, offset, length);
+      return window.dbxPlugin.decodeBase64(result.dataBase64);
+    },
+  };
+}
+
+/** 上传泵（冲突解析后的统一执行段）：逐文件 uploadSource。
+ * issue#6-3：只统计真正成功的文件数，取消即终止整批。 */
+async function uploadItems(items: readonly UploadQueueItem[], target: UploadTarget) {
   let uploaded = 0;
   let hadFailure = false;
-  for (const file of files) {
+  for (const item of items) {
     try {
-      await uploadSource(file.name, file.size, async (offset, length) =>
-        new Uint8Array(await file.slice(offset, offset + length).arrayBuffer()),
-        target,
-      );
+      await uploadSource(item.name, item.size, item.readChunk, target);
       uploaded += 1;
     } catch (cause) {
       // R5-P2-4：用户取消当前文件后不再继续上传剩余文件（也不补「已上传 N 个」）。
@@ -2446,6 +2535,10 @@ async function uploadLocalFiles(files: readonly File[], target: UploadTarget) {
     }
   }
   await afterUpload(uploaded, target, hadFailure);
+}
+
+async function uploadLocalFiles(files: readonly File[], target: UploadTarget) {
+  await uploadItems(files.map(localFileItem), target);
 }
 
 /** 宿主文件桥读盘失败判定（对标 ssh 仓库 PR #92，issue #83/#79：宿主句柄
@@ -2463,18 +2556,16 @@ function fallbackToNativeUploadPicker() {
   fileToolbarRef.value?.openNativePicker();
 }
 
-async function uploadHostFiles(files: Array<{ handleId: string; name: string; size: number }>, target: UploadTarget) {
+async function uploadHostFiles(items: ReadonlyArray<UploadQueueItem & { handleId: string }>, target: UploadTarget) {
   const fileTransfer = window.dbxPlugin.fileTransfer;
   if (!fileTransfer) return;
   // issue#6-3：同 uploadLocalFiles——成功计数替代「按总数报成功」。
   let uploaded = 0;
   let hadFailure = false;
-  for (const file of files) {
+  for (const item of items) {
+    const handleId = item.handleId;
     try {
-      await uploadSource(file.name, file.size, async (offset, length) => {
-        const result = await fileTransfer.read(file.handleId, offset, length);
-        return window.dbxPlugin.decodeBase64(result.dataBase64);
-      }, target);
+      await uploadSource(item.name, item.size, item.readChunk, target);
       uploaded += 1;
     } catch (cause) {
       // R5-P2-4：同 uploadLocalFiles——取消即终止整个批量上传（handle 释放由
@@ -2485,14 +2576,14 @@ async function uploadHostFiles(files: Array<{ handleId: string; name: string; si
       // 文件名的可读提示，剩余文件改由原生选择器重新挑（原 code 保留）。
       if (isHostBridgeReadFailure(cause)) {
         const code = (cause as Error & { code?: unknown }).code;
-        showError(Object.assign(new Error(t("uploadBridgeReadFailed", { name: file.name })), { code, cause }));
+        showError(Object.assign(new Error(t("uploadBridgeReadFailed", { name: item.name })), { code, cause }));
         await afterUpload(uploaded, target, true);
         fallbackToNativeUploadPicker();
         return;
       }
       showError(cause);
     } finally {
-      await fileTransfer.cancel(file.handleId).catch(() => undefined);
+      await fileTransfer.cancel(handleId).catch(() => undefined);
     }
   }
   await afterUpload(uploaded, target, hadFailure);
@@ -2506,7 +2597,9 @@ async function onUpload(files: File[] | null) {
     if (!fileTransfer) return;
     try {
       const picked = await fileTransfer.pick({ multiple: true });
-      await uploadHostFiles(picked.files, target);
+      // 同名冲突预检（planUpload）在 pick 之后、进入上传泵之前执行。
+      const items = await planUpload(picked.files.map((file) => hostFileItem(fileTransfer, file)), target);
+      if (items) await uploadHostFiles(items, target);
     } catch (cause) {
       // pick 就失败（同一宿主桥故障）同样回退原生选择器，而非弹原始错误。
       if (isHostBridgeReadFailure(cause)) {
@@ -2517,7 +2610,8 @@ async function onUpload(files: File[] | null) {
     }
     return;
   }
-  await uploadLocalFiles(files, target);
+  const items = await planUpload(files.map(localFileItem), target);
+  if (items) await uploadItems(items, target);
 }
 
 async function downloadEntry(entry: FileEntry, side: PaneSide = "left", id = sideConnectionId(side) ?? connectionId.value) {
@@ -2532,12 +2626,38 @@ async function downloadEntry(entry: FileEntry, side: PaneSide = "left", id = sid
   const local = await probeLocalCapabilities();
   const saveToLocal = !!local?.canSaveLocal;
   const hostTransfer = saveToLocal ? undefined : fileTransfer;
+  // 同名冲突（下载落盘方向，对标 ssh 插件三档）：overwrite 直接透传 sidecar；
+  // ask 先本地探测（files/local/exists，dir 语义与落盘一致），撞名才询问；
+  // rename（默认）走 sidecar 的 `name (n).ext` 让位命名。用户取消 = 整次下载
+  // 不发生（对标 ssh downloadEntry 的取消语义）。
+  let downloadConflict: string | undefined;
+  if (saveToLocal && conflictPolicy.value !== "rename") {
+    const downloadDir = saveDirDraft.value.trim();
+    if (conflictPolicy.value === "overwrite") {
+      downloadConflict = "overwrite";
+    } else {
+      try {
+        const probe = await call<{ exists: boolean }>("files/local/exists", {
+          dir: downloadDir || undefined,
+          name: entry.name,
+        });
+        if (probe.exists) {
+          const chosen = await askFileConflict([entry.name]);
+          if (!chosen) return;
+          if (chosen === "overwrite") downloadConflict = "overwrite";
+        }
+      } catch {
+        // 探测失败不阻断：交由 sidecar 默认让位命名兜底。
+      }
+    }
+  }
   try {
     const startParams: Record<string, unknown> = { remotePath: entry.path, connectionId: id };
     if (saveToLocal) {
       startParams.saveToLocal = true;
       const downloadDir = saveDirDraft.value.trim();
       if (downloadDir) startParams.downloadDir = downloadDir;
+      if (downloadConflict) startParams.conflict = downloadConflict;
     }
     const info = await call<{ taskId: string; size: number; fileName?: string; chunkSize?: number }>("files/download/start", startParams);
     taskId = info.taskId;
@@ -4260,7 +4380,9 @@ onBeforeUnmount(() => {
               :presets="appPresets"
               :bwlimit="bwlimitDraft"
               :bwlimit-error="bwlimitError"
+              :conflict-policy="conflictPolicy"
               @save-dir="onSaveDirChange"
+              @save-conflict-policy="onConflictPolicySave"
               @save-open-app="onOpenAppPrefsChange"
               @save-bwlimit="onBwlimitSave"
             />
@@ -4473,6 +4595,18 @@ onBeforeUnmount(() => {
       :t="t"
       @choose="onDropActionChoose"
       @cancel="onDropActionCancel"
+    />
+
+    <!-- 传输同名冲突三键弹窗（上传预检与下载落盘共用）：覆盖/自动重命名/取消。 -->
+    <FileConflictDialog
+      :open="fileConflictOpen"
+      :title="t('conflictAskTitle')"
+      :message="fileConflictMessage"
+      :overwrite-label="t('conflictOverwrite')"
+      :rename-label="t('conflictRename')"
+      :cancel-label="t('cancel')"
+      @choose="onFileConflictChoose"
+      @cancel="onFileConflictCancel"
     />
 
     <!-- 审计中#15：清空传输历史二次确认（危险度低于删文件，无需 danger 态）。 -->

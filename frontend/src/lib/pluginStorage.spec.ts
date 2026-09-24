@@ -124,7 +124,7 @@ describe("pluginStorage degraded channels", () => {
 
 describe("files prefsStore wiring", () => {
   it("declares every persisted prefs key and resolves to memory in node tests", async () => {
-    expect(new Set(PREFS_STORE_KEYS)).toEqual(new Set([UI_PREFS_KEY, "dbx-files.downloadDir", "dbx-files.openApp", "dbx-files.favorites"]));
+    expect(new Set(PREFS_STORE_KEYS)).toEqual(new Set([UI_PREFS_KEY, "dbx-files.downloadDir", "dbx-files.openApp", "dbx-files.favorites", "dbx-files.conflictPolicy"]));
     // node 环境无 window：默认解析应落到内存档而不是抛错。
     expect(prefsStore.channel).toBe("memory");
     await prefsStore.ready;

@@ -269,6 +269,19 @@ pub fn pick_download_path(base: &Path, file_name: &str) -> PathBuf {
     base.join(format!("{stem}-{stamp}{ext}"))
 }
 
+/// Resolves the final local path for a finished download. `overwrite`
+/// replaces an existing file in place (the caller removes it before the
+/// rename; std::fs::rename fails on Windows when the target exists);
+/// otherwise [`pick_download_path`] appends " (n)" like browsers do. The
+/// name is decided at finalize time so a failed transfer never reserves it.
+pub fn finalize_download_path(base: &Path, file_name: &str, overwrite: bool) -> PathBuf {
+    if overwrite {
+        base.join(sanitize_file_name(file_name))
+    } else {
+        pick_download_path(base, file_name)
+    }
+}
+
 /// Opens the platform file manager with `path` selected (or its parent folder
 /// selected when the file was already moved away). Spawn failures surface as
 /// errors; explorer's nonzero exit codes are famously meaningless and ignored.
@@ -477,6 +490,19 @@ mod tests {
         // A dotfile ("stem" is the whole name) must not become ".hidden (1)."
         let dot = pick_download_path(base.path(), ".hidden");
         assert_eq!(dot.file_name().unwrap(), ".hidden");
+    }
+
+    #[test]
+    fn finalize_download_path_overwrite_replaces_existing_file() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let target = base.path().join("log.txt");
+        std::fs::write(&target, b"old").expect("write");
+        // overwrite 档：final 名固定为原名（替换语义由调用方 remove+rename 完成）。
+        let path = finalize_download_path(base.path(), "log.txt", true);
+        assert_eq!(path, target);
+        // rename 档（默认）：撞名让位。
+        let renamed = finalize_download_path(base.path(), "log.txt", false);
+        assert_eq!(renamed.file_name().unwrap(), "log (1).txt");
     }
 
     #[test]

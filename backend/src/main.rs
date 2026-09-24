@@ -1104,6 +1104,9 @@ impl Plugin {
                 } else {
                     None
                 };
+                // 同名冲突策略：只认 "overwrite"；rename 是默认，ask 由前端经
+                // files/local/exists 预检后解析成这两档再下发。
+                let overwrite = request.conflict.as_deref() == Some("overwrite");
                 let task_id = uuid::Uuid::new_v4().to_string();
                 let cancel = Arc::new(AtomicBool::new(false));
                 let pump_done = Arc::new(AtomicBool::new(false));
@@ -1129,6 +1132,7 @@ impl Plugin {
                             cancel: cancel.clone(),
                             pump_done: pump_done.clone(),
                             staging: staging.clone(),
+                            overwrite,
                             _work: self
                                 .rclone
                                 .start_work(&rclone::registry::group_key_of(
@@ -1235,6 +1239,8 @@ impl Plugin {
                             cancel: cancel.clone(),
                             pump_done: pump_done.clone(),
                             staging: None,
+                            // archiveDownload 不落本地盘，冲突策略不适用。
+                            overwrite: false,
                             _work: self
                                 .rclone
                                 .start_work(&rclone::registry::group_key_of(
@@ -2159,6 +2165,23 @@ impl Plugin {
                 let path = local_downloads::validate_download_dir(path)?;
                 Ok(json!({ "valid": true, "path": path.to_string_lossy() }))
             }
+            // 同名预检（ask 策略）：探测下载目录是否已有同名文件。dir 语义与
+            // files/download/start 完全一致（显式目录 > 环境覆盖 > 系统下载
+            // 目录），保证探测目标就是落盘目标；只读，不创建/修改任何文件。
+            "files/local/exists" => {
+                let request: model::LocalExistsRequest = parse(params)?;
+                let dir = local_downloads::downloads_base_dir(
+                    request.dir.as_deref(),
+                    |key| std::env::var_os(key),
+                    &Store::default_dir(),
+                );
+                let candidate =
+                    dir.join(local_downloads::sanitize_file_name(&request.name));
+                Ok(json!({
+                    "exists": candidate.is_file(),
+                    "path": candidate.to_string_lossy(),
+                }))
+            }
             // 在文件管理器中定位已完成的下载。只允许 reveal 传输历史里记录过
             // 的 localPath，不能成为任意路径打开原语。
             "files/local/reveal" => {
@@ -2600,7 +2623,7 @@ impl Plugin {
         }
         let mut local_path = None;
         if let Some(staging) = &slot.staging {
-            match promote_rclone_staging(staging, slot.size) {
+            match promote_rclone_staging(staging, slot.size, slot.overwrite) {
                 Ok(path) => {
                     if let Some(job) = rclone_lock(&self.rclone.jobs).get_mut(task_id) {
                         job.local_path = Some(path.clone());
@@ -4046,7 +4069,7 @@ fn remote_file_name(remote_path: &str) -> &str {
 /// Renames the finished `.part` staging file to its final collision-free
 /// name after verifying the staged byte count matches `size` — byte-for-byte
 /// the `JobTable::promote_staging` semantics.
-fn promote_rclone_staging(staging: &std::path::Path, size: u64) -> Result<String, String> {
+fn promote_rclone_staging(staging: &std::path::Path, size: u64, overwrite: bool) -> Result<String, String> {
     let staged = std::fs::metadata(staging)
         .map_err(|error| format!("Failed to stat staging file: {error}"))?
         .len();
@@ -4061,7 +4084,12 @@ fn promote_rclone_staging(staging: &std::path::Path, size: u64) -> Result<String
         .and_then(|name| name.to_str())
         .and_then(|name| name.strip_suffix(".part"))
         .unwrap_or("download");
-    let final_path = local_downloads::pick_download_path(base, name);
+    let final_path = local_downloads::finalize_download_path(base, name, overwrite);
+    // overwrite 档：Windows 的 rename 在目标存在时失败，先移除旧文件（短窗口
+    // 由下载器语义接受，与 ssh 插件 commit 路径同款）；rename 档无需处理。
+    if overwrite {
+        let _ = std::fs::remove_file(&final_path);
+    }
     std::fs::rename(staging, &final_path)
         .map_err(|error| format!("Failed to finalize download: {error}"))?;
     Ok(final_path.to_string_lossy().to_string())
