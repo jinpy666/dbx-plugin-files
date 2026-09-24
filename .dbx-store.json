@@ -18,7 +18,7 @@
   "source": "https://github.com/jinpy666/dbx-plugin-files",
   "homepage": "https://github.com/jinpy666/dbx-plugin-files",
   "license": "MIT",
-  "releaseNotes": "修复下载保存链路：沙箱工作台 iframe 内的程序化 <a download> 会被浏览器静默丢弃，此前在无宿主文件传输桥的环境（web/docker 或旧版 DBX 宿主）下载会「提示成功但本机没有文件」。现改为经宿主 host.saveFile 单次落盘桥（Host API 1.1）：桌面端弹原生保存对话框，取消不再假报成功，超过宿主 512 MiB 上限时明确报错；新增七语提示文案。Fixed the download save path: sandboxed workbench iframes silently drop programmatic <a download> clicks, so on hosts without the fileTransfer bridge (web/docker or older DBX hosts) downloads reported success without writing a file. Downloads now persist through the host host.saveFile bridge (Host API 1.1) with a native save dialog on desktop; cancelling no longer reports success, and payloads above the 512 MiB host cap fail with a clear error.",
+  "releaseNotes": "新增工具栏「上传文件夹」：走 webview 原生 webkitdirectory 选择器（web/docker 与桌面宿主同一路径），按相对路径还原目录结构落到 目标/<文件夹名>/；先建远端目录树（目录已存在=合并），再逐文件走统一上传泵；同名冲突策略按子目录分组生效（询问档带目录前缀、自动重命名在目录内让位）。目录结构与落盘内容均有集成测试覆盖。New toolbar action \"Upload folder\": a webview-native webkitdirectory picker (same path on web/docker and desktop hosts) that restores the directory structure under target/<folder>/, creates the remote directory tree first (existing dirs merge), then streams every file through the unified upload pump; the conflict policy applies per subdirectory (ask shows dir-prefixed names, rename de-dupes within each directory).",
   "localizations": {
     "zh-CN": {
       "name": "Files Studio",
