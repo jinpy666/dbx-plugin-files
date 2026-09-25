@@ -145,7 +145,7 @@ const ENDPOINT_PROTOCOLS = [
   "oracleobjectstorage", "qingstor", "quatrix", "sia",
 ];
 const ENDPOINT_REQUIRED = [
-  "gcs", "azblob", "obs", "oss", "cos", "qiniu", "r2", "wasabi", "spaces",
+  "azblob", "obs", "oss", "cos", "qiniu", "r2", "wasabi", "spaces",
   "scaleway", "idrive", "us3", "ecloud", "nos", "bos", "tos", "ks3",
   "webdav", "ftp", "sftp", "smb",
   "sftp-native", "koofr", "pcloud", "seafile",
@@ -218,6 +218,8 @@ for (const protocol of options("protocol")) {
     current.required("account_name", protocol === "azblob");
     current.visible("account_key", protocol === "azblob");
     current.required("account_key", protocol === "azblob");
+    current.visible("gcs_auth_mode", protocol === "gcs");
+    current.required("gcs_auth_mode", false);
     current.visible("credential", protocol === "gcs");
     current.required("credential", protocol === "gcs");
     current.visible("scope", protocol === "gcs");
@@ -279,6 +281,23 @@ for (const protocol of options("protocol")) {
     // Read-only hides (never removes) the delete toggle.
     current.visible("allow_delete", !read_only);
   }
+}
+
+{
+  const service_account = state({ protocol: "gcs", gcs_auth_mode: "service_account" });
+  service_account.visible("gcs_auth_mode", true);
+  service_account.visible("credential", true);
+  service_account.required("credential", true);
+
+  const adc = state({ protocol: "gcs", gcs_auth_mode: "adc" });
+  adc.visible("gcs_auth_mode", true);
+  adc.visible("credential", false);
+  adc.required("credential", false);
+
+  const non_gcs = state({ protocol: "s3" });
+  non_gcs.visible("gcs_auth_mode", false);
+  non_gcs.visible("credential", false);
+  non_gcs.required("credential", false);
 }
 
 // Proxy and SSH tunnel fields are banned from the form, not merely hidden:

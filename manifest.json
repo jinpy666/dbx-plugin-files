@@ -400,6 +400,30 @@
           "description": "Pick a storage backend: popular backends get a dedicated form; generic backends reuse the common fields and take extra options as JSON."
         },
         {
+          "key": "gcs_auth_mode",
+          "label": "Auth Method",
+          "type": "select",
+          "binding": "config",
+          "default": "service_account",
+          "options": [
+            {
+              "label": "Service Account JSON",
+              "value": "service_account"
+            },
+            {
+              "label": "Application Default Credentials (ADC)",
+              "value": "adc"
+            }
+          ],
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "gcs"
+            ]
+          },
+          "description": "Choose how Google Cloud Storage credentials are obtained."
+        },
+        {
           "key": "endpoint",
           "label": "Endpoint",
           "type": "text",
@@ -450,7 +474,6 @@
             "field": "protocol",
             "one_of": [
               "oss",
-              "gcs",
               "azblob",
               "obs",
               "cos",
@@ -482,7 +505,7 @@
               "quatrix"
             ]
           },
-          "description": "Service address. Object storage/WebDAV: https://host; FTP: ftp(s)://host[:21]; SFTP: ssh://user@host[:22]; SMB: host[:445]; http: full URL; hdfs: namenode:8020; netstorage/quatrix: host name; azurefiles: optional service URL. S3-compatible vendors take their vendor S3 endpoint: R2 https://<accountid>.r2.cloudflarestorage.com; Wasabi https://s3.<region>.wasabisys.com; Spaces https://<region>.digitaloceanspaces.com; Scaleway https://s3.<region>.scw.cloud; IDrive e2 account endpoint; US3 https://s3-<region>.ufileos.com; China Mobile EOS https://eos-<region>-1.cmecloud.cn; Netease NOS https://s3.netease.com; BOS https://s3.<region>.bcebos.com; TOS https://tos-s3-<region>.volces.com; KS3 https://s3.<region>.ksyuncs.com."
+          "description": "Service address. GCS: leave empty for Google's default endpoint; custom GCS endpoints use host[:port]. Object storage/WebDAV: https://host; FTP: ftp(s)://host[:21]; SFTP: ssh://user@host[:22]; SMB: host[:445]; http: full URL; hdfs: namenode:8020; netstorage/quatrix: host name; azurefiles: optional service URL. S3-compatible vendors take their vendor S3 endpoint: R2 https://<accountid>.r2.cloudflarestorage.com; Wasabi https://s3.<region>.wasabisys.com; Spaces https://s3.<region>.digitaloceanspaces.com; Scaleway https://s3.<region>.scw.cloud; IDrive e2 account endpoint; US3 https://s3-<region>.ufileos.com; China Mobile EOS https://eos-<region>-1.cmecloud.cn; Netease NOS https://s3.netease.com; BOS https://s3.<region>.bcebos.com; TOS https://tos-s3-<region>.volces.com; KS3 https://s3.<region>.ksyuncs.com."
         },
         {
           "key": "config",
@@ -726,7 +749,7 @@
           "binding": "config",
           "default": "",
           "placeholder": "my-bucket",
-          "description": "Bucket name. Leave empty to list all buckets at the connection root.",
+          "description": "Bucket name. Required for Google Cloud Storage. For supported S3-compatible protocols, leave empty to list all buckets at the connection root.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
@@ -819,17 +842,17 @@
           "binding": "secret",
           "default": "",
           "placeholder": "base64-encoded service account JSON",
-          "description": "Google service-account or external-account credential, kept in the host secret binding.",
+          "description": "Google service-account credential for Service Account JSON mode, kept in the host secret binding.",
           "visible_when": {
-            "field": "protocol",
+            "field": "gcs_auth_mode",
             "one_of": [
-              "gcs"
+              "service_account"
             ]
           },
           "required_when": {
-            "field": "protocol",
+            "field": "gcs_auth_mode",
             "one_of": [
-              "gcs"
+              "service_account"
             ]
           }
         },
@@ -1514,10 +1537,18 @@
               "label": "账户密钥",
               "description": "Azure Storage 账户密钥由宿主 secret binding 保管。"
             },
+            "gcs_auth_mode": {
+              "label": "认证方式",
+              "description": "选择 Google Cloud Storage 获取凭据的方式。",
+              "options": {
+                "service_account": "服务账户 JSON",
+                "adc": "Application Default Credentials（ADC）"
+              }
+            },
             "credential": {
               "label": "凭据 JSON（Base64）",
               "placeholder": "Base64 编码的服务账户 JSON",
-              "description": "Google 服务账户或外部账户凭据，由宿主 secret binding 保管。"
+              "description": "服务账户 JSON 模式使用的 Google 服务账户凭据，由宿主 secret binding 保管。"
             },
             "scope": {
               "label": "OAuth 作用域",
@@ -1527,7 +1558,7 @@
             "bucket": {
               "label": "存储桶",
               "placeholder": "my-bucket",
-              "description": "存储桶名称；留空则在连接根目录列出全部存储桶。"
+              "description": "存储桶名称；Google Cloud Storage 必填。支持的 S3 兼容协议留空则在连接根目录列出全部存储桶。"
             },
             "endpoint": {
               "label": "端点",
@@ -1801,10 +1832,18 @@
               "label": "帳戶金鑰",
               "description": "Azure Storage 帳戶金鑰由宿主 secret binding 保管。"
             },
+            "gcs_auth_mode": {
+              "label": "驗證方式",
+              "description": "選擇 Google Cloud Storage 取得憑證的方式。",
+              "options": {
+                "service_account": "服務帳戶 JSON",
+                "adc": "Application Default Credentials（ADC）"
+              }
+            },
             "credential": {
               "label": "憑證 JSON（Base64）",
               "placeholder": "Base64 編碼的服務帳戶 JSON",
-              "description": "Google 服務帳戶或外部帳戶憑證，由宿主 secret binding 保管。"
+              "description": "服務帳戶 JSON 模式使用的 Google 服務帳戶憑證，由宿主 secret binding 保管。"
             },
             "scope": {
               "label": "OAuth 範圍",
@@ -1814,7 +1853,7 @@
             "bucket": {
               "label": "儲存桶",
               "placeholder": "my-bucket",
-              "description": "儲存桶名稱；留空則在連線根目錄列出全部儲存桶。"
+              "description": "儲存桶名稱；Google Cloud Storage 必填。支援的 S3 相容協定留空則在連線根目錄列出全部儲存桶。"
             },
             "endpoint": {
               "label": "端點",
@@ -2088,10 +2127,18 @@
               "label": "Account key",
               "description": "Azure Storage account key kept in the host secret binding."
             },
+            "gcs_auth_mode": {
+              "label": "Auth Method",
+              "description": "Choose how Google Cloud Storage credentials are obtained.",
+              "options": {
+                "service_account": "Service Account JSON",
+                "adc": "Application Default Credentials (ADC)"
+              }
+            },
             "credential": {
               "label": "Credential JSON (base64)",
               "placeholder": "base64-encoded service account JSON",
-              "description": "Google service-account or external-account credential, kept in the host secret binding."
+              "description": "Google service-account credential for Service Account JSON mode, kept in the host secret binding."
             },
             "scope": {
               "label": "OAuth scope",
@@ -2101,7 +2148,7 @@
             "bucket": {
               "label": "Bucket",
               "placeholder": "my-bucket",
-              "description": "Bucket name. Leave empty to list all buckets at the connection root."
+              "description": "Bucket name. Required for Google Cloud Storage. For supported S3-compatible protocols, leave empty to list all buckets at the connection root."
             },
             "endpoint": {
               "label": "Endpoint",
@@ -2375,10 +2422,18 @@
               "label": "Clave de cuenta",
               "description": "La clave de Azure Storage se guarda en el binding secreto del host."
             },
+            "gcs_auth_mode": {
+              "label": "Autenticación",
+              "description": "Elija cómo se obtienen las credenciales de Google Cloud Storage.",
+              "options": {
+                "service_account": "JSON de cuenta de servicio",
+                "adc": "Application Default Credentials (ADC)"
+              }
+            },
             "credential": {
               "label": "Credencial JSON (Base64)",
               "placeholder": "JSON de cuenta de servicio codificado en Base64",
-              "description": "Credencial de cuenta de servicio o cuenta externa de Google, guardada en el binding secreto del host."
+              "description": "Credencial de cuenta de servicio de Google para el modo JSON de cuenta de servicio, guardada en el binding secreto del host."
             },
             "scope": {
               "label": "Ámbito OAuth",
@@ -2388,7 +2443,7 @@
             "bucket": {
               "label": "Bucket",
               "placeholder": "my-bucket",
-              "description": "Nombre del bucket; déjelo vacío para listar todos los buckets en la raíz de la conexión."
+              "description": "Nombre del bucket; es obligatorio para Google Cloud Storage. En protocolos S3 compatibles admitidos, déjelo vacío para listar todos los buckets en la raíz de la conexión."
             },
             "endpoint": {
               "label": "Endpoint",
@@ -2662,10 +2717,18 @@
               "label": "Chiave account",
               "description": "La chiave Azure Storage viene conservata nel binding segreto dell'host."
             },
+            "gcs_auth_mode": {
+              "label": "Autenticazione",
+              "description": "Scegli come ottenere le credenziali di Google Cloud Storage.",
+              "options": {
+                "service_account": "JSON dell'account di servizio",
+                "adc": "Application Default Credentials (ADC)"
+              }
+            },
             "credential": {
               "label": "Credenziale JSON (Base64)",
               "placeholder": "JSON dell'account di servizio codificato in Base64",
-              "description": "Credenziale dell'account di servizio o esterno Google, conservata nel binding segreto dell'host."
+              "description": "Credenziale dell'account di servizio Google per la modalità JSON dell'account di servizio, conservata nel binding segreto dell'host."
             },
             "scope": {
               "label": "Ambito OAuth",
@@ -2675,7 +2738,7 @@
             "bucket": {
               "label": "Bucket",
               "placeholder": "my-bucket",
-              "description": "Nome del bucket; vuoto per elencare tutti i bucket nella radice della connessione."
+              "description": "Nome del bucket; obbligatorio per Google Cloud Storage. Nei protocolli S3 compatibili supportati, lascialo vuoto per elencare tutti i bucket nella radice della connessione."
             },
             "endpoint": {
               "label": "Endpoint",
@@ -2949,10 +3012,18 @@
               "label": "アカウントキー",
               "description": "Azure Storage アカウントキーはホストの secret binding に保存されます。"
             },
+            "gcs_auth_mode": {
+              "label": "認証方式",
+              "description": "Google Cloud Storage の認証情報の取得方法を選択します。",
+              "options": {
+                "service_account": "サービスアカウント JSON",
+                "adc": "Application Default Credentials (ADC)"
+              }
+            },
             "credential": {
               "label": "認証情報 JSON（Base64）",
               "placeholder": "Base64 エンコードしたサービスアカウント JSON",
-              "description": "Google サービスアカウントまたは外部アカウントの認証情報。ホストの secret binding に保存されます。"
+              "description": "サービスアカウント JSON 方式で使う Google サービスアカウントの認証情報。ホストの secret binding に保存されます。"
             },
             "scope": {
               "label": "OAuth スコープ",
@@ -2962,7 +3033,7 @@
             "bucket": {
               "label": "バケット",
               "placeholder": "my-bucket",
-              "description": "バケット名。空欄で接続ルートに全バケットを一覧します。"
+              "description": "バケット名。Google Cloud Storage では必須です。対応する S3 互換プロトコルでは空欄にすると接続ルートにすべてのバケットを一覧します。"
             },
             "endpoint": {
               "label": "エンドポイント",
@@ -3236,10 +3307,18 @@
               "label": "Chave da conta",
               "description": "A chave do Azure Storage fica no binding secreto do host."
             },
+            "gcs_auth_mode": {
+              "label": "Método de autenticação",
+              "description": "Escolha como as credenciais do Google Cloud Storage serão obtidas.",
+              "options": {
+                "service_account": "JSON da conta de serviço",
+                "adc": "Application Default Credentials (ADC)"
+              }
+            },
             "credential": {
               "label": "Credencial JSON (Base64)",
               "placeholder": "JSON da conta de serviço codificado em Base64",
-              "description": "Credencial de conta de serviço ou conta externa do Google, armazenada no binding secreto do host."
+              "description": "Credencial de conta de serviço do Google para o modo JSON da conta de serviço, armazenada no binding secreto do host."
             },
             "scope": {
               "label": "Escopo OAuth",
@@ -3249,7 +3328,7 @@
             "bucket": {
               "label": "Bucket",
               "placeholder": "my-bucket",
-              "description": "Nome do bucket; deixe vazio para listar todos os buckets na raiz da conexão."
+              "description": "Nome do bucket; obrigatório para o Google Cloud Storage. Nos protocolos S3 compatíveis suportados, deixe vazio para listar todos os buckets na raiz da conexão."
             },
             "endpoint": {
               "label": "Endpoint",

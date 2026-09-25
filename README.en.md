@@ -80,6 +80,15 @@ fields plus JSON options (unknown options are rejected alongside the list of val
 - Simplified Chinese, Traditional Chinese, English, Spanish, Italian, Japanese,
   and Portuguese UI, with light/dark theme following the host.
 
+### Google Cloud Storage authentication
+
+GCS connections support Service Account JSON and Application Default Credentials
+(ADC). Service Account JSON remains the default for compatibility with existing
+connections and keeps the Base64 credential in the host secret binding. Select
+ADC to let rclone use the host's standard ADC environment, such as credentials
+created by `gcloud auth application-default login`; the plugin does not read the
+ADC file directly.
+
 See [Feature comparison](docs/COMPARISON.en.md) for the full positioning and
 [Product media](docs/MEDIA.en.md) for promotional material.
 

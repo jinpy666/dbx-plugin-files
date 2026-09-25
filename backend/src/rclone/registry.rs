@@ -1252,16 +1252,33 @@ fn s3_family_parameters(connection: &StoredConnection) -> Result<Value, String> 
     Ok(Value::Object(params))
 }
 
-/// gcs: the manifest credential is base64-encoded service-account JSON;
-/// rclone's inline key is the hidden `service_account_credentials` option
-/// (Hide=3, Sensitive) which wants the decoded JSON (verified on v1.75.1).
+/// Returns the supported GCS authentication mode, defaulting blank legacy
+/// connections to service-account JSON.
+fn normalize_gcs_auth_mode(value: &str) -> Result<&str, String> {
+    match value.trim() {
+        "" | "service_account" => Ok("service_account"),
+        "adc" => Ok("adc"),
+        other => Err(format!("unsupported GCS authentication mode '{other}'")),
+    }
+}
+
+/// Builds GCS parameters for either the legacy inline service-account JSON or
+/// rclone's ambient Application Default Credentials mode.
 fn gcs_parameters(connection: &StoredConnection) -> Result<Value, String> {
     let mut params = Map::new();
-    let decoded = decode_base64_credential(&connection.credential)?;
-    params.insert(
-        "service_account_credentials".to_string(),
-        Value::String(decoded),
-    );
+    match normalize_gcs_auth_mode(&connection.gcs_auth_mode)? {
+        "service_account" => {
+            let decoded = decode_base64_credential(&connection.credential)?;
+            params.insert(
+                "service_account_credentials".to_string(),
+                Value::String(decoded),
+            );
+        }
+        "adc" => {
+            params.insert("env_auth".to_string(), Value::Bool(true));
+        }
+        _ => unreachable!(),
+    }
     insert_str(&mut params, "endpoint", connection.endpoint.trim());
     Ok(Value::Object(params))
 }
@@ -1536,6 +1553,7 @@ mod tests {
             service: String::new(),
             custom_config: Value::Object(Map::new()),
             bucket: String::new(),
+            gcs_auth_mode: "service_account".to_string(),
             credential: String::new(),
             container: String::new(),
             account_name: String::new(),
@@ -1959,6 +1977,61 @@ mod tests {
 
         connection.credential = String::new();
         assert!(params_for(&connection).is_err(), "empty credential rejected");
+    }
+
+    #[test]
+    fn params_for_gcs_adc_uses_env_auth() {
+        let mut connection = fixture("gcs");
+        connection.gcs_auth_mode = "adc".into();
+
+        let params = param_map(&connection);
+
+        assert_eq!(params["env_auth"], true);
+        assert!(!params.contains_key("service_account_credentials"));
+        assert!(!params_for(&connection).expect("tuple").2);
+    }
+
+    #[test]
+    fn params_for_gcs_adc_ignores_stale_service_account_credential() {
+        let mut connection = fixture("gcs");
+        connection.gcs_auth_mode = "adc".into();
+        connection.credential = BASE64_STANDARD.encode("{}");
+
+        let params = param_map(&connection);
+
+        assert_eq!(params["env_auth"], true);
+        assert!(!params.contains_key("service_account_credentials"));
+    }
+
+    #[test]
+    fn params_for_gcs_adc_accepts_empty_credential() {
+        let mut connection = fixture("gcs");
+        connection.gcs_auth_mode = "adc".into();
+        connection.credential.clear();
+
+        assert!(params_for(&connection).is_ok());
+    }
+
+    #[test]
+    fn params_for_gcs_empty_auth_mode_defaults_to_service_account() {
+        let mut connection = fixture("gcs");
+        connection.gcs_auth_mode.clear();
+        connection.credential = BASE64_STANDARD.encode("{}");
+
+        let params = param_map(&connection);
+
+        assert!(params.contains_key("service_account_credentials"));
+        assert!(!params.contains_key("env_auth"));
+    }
+
+    #[test]
+    fn params_for_gcs_rejects_unknown_auth_mode() {
+        let mut connection = fixture("gcs");
+        connection.gcs_auth_mode = "invalid".into();
+
+        let error = params_for(&connection).expect_err("invalid auth mode must fail");
+
+        assert!(error.contains("authentication mode"), "{error}");
     }
 
     #[test]
@@ -3187,6 +3260,7 @@ mod manifest_matrix {
             "container" => json!("demo-container"),
             "account_name" => json!("account"),
             "account_key" => json!(secret("azkey")),
+            "gcs_auth_mode" => json!("service_account"),
             "credential" => json!(BASE64_STANDARD.encode(r#"{"project_id":"matrix"}"#)),
             "scope" => json!("https://www.googleapis.com/auth/devstorage.read_write"),
             "region" => json!("us-east-1"),
@@ -3338,7 +3412,7 @@ mod manifest_matrix {
             "cos" => vec![
                 "provider", "access_key_id", "secret_access_key", "session_token", "endpoint",
             ],
-            "gcs" => vec!["service_account_credentials", "endpoint"],
+            "gcs" => vec!["service_account_credentials", "env_auth", "endpoint"],
             "azblob" => vec!["account", "key", "endpoint"],
             "webdav" => vec!["url", "vendor", "user", "pass"],
             "ftp" => vec!["host", "port", "user", "pass"],

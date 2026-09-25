@@ -71,6 +71,13 @@ zip 归档和 MCP 自动化共用一套体验——换存储，不换操作习�
 - 界面支持简体中文、繁体中文、英语、西班牙语、意大利语、日语和葡萄牙语，
   明暗主题跟随宿主。
 
+### Google Cloud Storage 认证
+
+GCS 连接支持服务账户 JSON 和 Application Default Credentials（ADC）。为
+兼容已有连接，服务账户 JSON 仍是默认方式，Base64 凭据由宿主 secret binding
+保管。选择 ADC 后，rclone 使用宿主环境中的标准 ADC，例如通过
+`gcloud auth application-default login` 创建的凭据；插件不会直接读取 ADC 文件。
+
 完整的定位对比见 [特性与竞品对比](docs/COMPARISON.zh-CN.md)，更多宣传素材见
 [产品宣传页](docs/MEDIA.zh-CN.md)。
 

@@ -106,6 +106,7 @@ pub(crate) fn stored_connection_from_inline(connection: &Value) -> Result<Stored
         ("region", "region"),
         ("container", "container"),
         ("accountName", "account_name"),
+        ("gcsAuthMode", "gcs_auth_mode"),
         ("scope", "scope"),
         ("accessKeyId", "access_key_id"),
         ("enableVirtualHostStyle", "enable_virtual_host_style"),
@@ -196,6 +197,7 @@ pub(crate) fn inline_connection_properties() -> Value {
     "bucket": { "type": "string", "description": "Bucket (s3/gcs/obs/oss/cos/qiniu and the S3-compatible vendor protocols r2/wasabi/spaces/scaleway/idrive/us3/ecloud/nos/bos/tos/ks3); optional except gcs — leave empty to list all buckets at the connection root" },
     "container": { "type": "string", "description": "Azure Blob container (azblob)" },
     "accountName": { "type": "string", "description": "Azure Storage account name (azblob)" },
+    "gcsAuthMode": { "type": "string", "description": "GCS authentication mode: service_account or adc" },
     "credential": { "type": "string", "description": "Base64 Google credential JSON (gcs; stays in process memory only)" },
     "accountKey": { "type": "string", "description": "Azure Storage account key (stays in process memory only)" },
     "scope": { "type": "string", "description": "Google OAuth scope (gcs)" },
@@ -750,4 +752,3 @@ fn unknown_connection_guidance(connection_id: &str, bridge_reason: Option<&str>)
          the DBX app so its saved connections resolve through the bridge."
     )
 }
-

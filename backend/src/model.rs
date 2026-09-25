@@ -269,7 +269,10 @@ pub struct StoredConnection {
     // --- s3 ---
     pub bucket: String,
     // --- gcs / azblob ---
-    /// GCS service-account or external-account JSON, normally base64 encoded.
+    /// GCS authentication mode (`service_account` or `adc`). Empty keeps the
+    /// legacy service-account behavior.
+    pub gcs_auth_mode: String,
+    /// GCS service-account JSON, normally base64 encoded.
     /// Secret (`connection_secrets.credential`).
     pub credential: String,
     /// Azure Blob container name (`external_config.container`).
@@ -444,6 +447,7 @@ impl StoredConnection {
             service: optional_string(external_config, "service"),
             custom_config,
             bucket: optional_string(external_config, "bucket"),
+            gcs_auth_mode: optional_string(external_config, "gcs_auth_mode"),
             credential: secret_string(connection_secrets, "credential"),
             container: optional_string(external_config, "container"),
             account_name: optional_string(external_config, "account_name"),
@@ -2607,7 +2611,7 @@ mod tests {
             ("container", &["azblob"]),
             ("account_name", &["azblob"]),
             ("account_key", &["azblob"]),
-            ("credential", &["gcs"]),
+            ("gcs_auth_mode", &["gcs"]),
             ("scope", &["gcs"]),
             ("region", &["s3", "oracleobjectstorage"]),
             ("access_key_id", &key_protocols),
@@ -2685,6 +2689,14 @@ mod tests {
         assert_eq!(
             field("allow_delete")["visible_when"],
             json!({"field":"read_only", "one_of":["false"]})
+        );
+        assert_eq!(
+            field("credential")["visible_when"],
+            json!({"field":"gcs_auth_mode", "one_of":["service_account"]})
+        );
+        assert_eq!(
+            field("credential")["required_when"],
+            json!({"field":"gcs_auth_mode", "one_of":["service_account"]})
         );
         assert_eq!(field("key")["binding"], "secret");
         assert!(!keys.contains(&"connection_mode"));
