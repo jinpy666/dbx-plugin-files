@@ -1471,6 +1471,15 @@ fn inline_connection_maps_camel_case_form_fields() {
     assert_eq!(cos.secret_key, fixture("throwaway-secret-key"));
     assert_eq!(cos.security_token, fixture("throwaway-security-token"));
 
+    let gcs = stored_connection_from_inline(&json!({
+        "protocol": "gcs",
+        "gcsAuthMode": "adc",
+        "bucket": "demo-bucket",
+    }))
+    .unwrap();
+    assert_eq!(gcs.gcs_auth_mode, "adc");
+    assert!(gcs.credential.is_empty());
+
     let missing = stored_connection_from_inline(&json!({ "root": "/data" })).unwrap_err();
     assert!(missing.contains("protocol"), "{missing}");
     let unknown = stored_connection_from_inline(&json!({ "protocol": "gopher" })).unwrap_err();
@@ -1496,6 +1505,7 @@ fn inline_connection_schema_covers_every_mapped_key() {
         "region",
         "container",
         "accountName",
+        "gcsAuthMode",
         "scope",
         "accessKeyId",
         "enableVirtualHostStyle",
@@ -1598,6 +1608,7 @@ fn manifest_fields_are_fully_covered_by_inline_mapping() {
         ("region", "region"),
         ("container", "container"),
         ("account_name", "accountName"),
+        ("gcs_auth_mode", "gcsAuthMode"),
         ("scope", "scope"),
         ("access_key_id", "accessKeyId"),
         ("enable_virtual_host_style", "enableVirtualHostStyle"),
