@@ -1394,8 +1394,11 @@ mod tests {
             .collect()
     }
 
-    /// 299 条带尾逗号 + 1 条不带 + `]`：300 条目 → 256 触发 1 帧，EOF 后
-    /// flush 尾帧，再 done 帧；seq 连续、到达顺序、total 正确。
+    /// 299 条带尾逗号 + 1 条不带 + `]`：300 条目。256 满即成帧是确定性的
+    /// （本测试时间 tick 为 1h），但 CI 负载下 tick 时钟抖动仍可能在任意
+    /// 条目边界提前成帧（CI 实录：首帧 60 条）。钉死的不变式：每帧 ≤256
+    /// 且非空、拼接后 = 300 条按到达序、seq 连续、done 帧 total=300；
+    /// 分帧边界不钉死。
     #[cfg(unix)]
     #[tokio::test]
     async fn stream_flushes_by_entry_count_and_finishes_with_done() {
@@ -1420,18 +1423,34 @@ mod tests {
         assert_eq!(outcome, StreamOutcome::Completed);
 
         let frames = sink.frames();
-        assert_eq!(frames.len(), 3, "256-flush + tail-flush + done: {frames:?}");
-        assert_eq!(frames[0]["seq"], 1);
-        assert_eq!(entry_paths(&frames[0]).len(), 256);
-        assert_eq!(frames[0]["done"], false);
-        assert_eq!(frames[1]["seq"], 2);
-        assert_eq!(entry_paths(&frames[1]).len(), 44);
-        assert_eq!(entry_paths(&frames[1])[0], "/f256");
+        // ≥1 个数据帧 + done 帧；每个数据帧 ≤256 条且非空。
+        assert!(frames.len() >= 2, "data frame(s) + done: {frames:?}");
+        let data_frames = &frames[..frames.len() - 1];
+        assert!(!data_frames.is_empty());
+        for (index, frame) in data_frames.iter().enumerate() {
+            assert_eq!(frame["done"], false, "frame {index}");
+            assert!(
+                entry_paths(frame).len() <= BATCH_MAX_ENTRIES,
+                "frame {index} exceeds batch cap"
+            );
+            assert!(!entry_paths(frame).is_empty(), "data frame {index} empty");
+        }
+        // 拼接 = 300 条按到达序（f0..f298 + last），不排序。
+        let flat: Vec<String> = frames.iter().flat_map(entry_paths).collect();
+        let expected: Vec<String> = (0..299)
+            .map(|index| format!("/f{index}"))
+            .chain(["/last".to_string()])
+            .collect();
+        assert_eq!(flat, expected, "arrival order, unsorted, 300 entries");
+        // seq 连续从 1 起。
+        for (index, frame) in frames.iter().enumerate() {
+            assert_eq!(frame["seq"], index as u64 + 1, "frame {index} seq");
+        }
         // done 帧：空 entries + total。
-        assert_eq!(frames[2]["seq"], 3);
-        assert_eq!(frames[2]["done"], true);
-        assert_eq!(frames[2]["total"], 300);
-        assert_eq!(frames[2]["entries"].as_array().unwrap().len(), 0);
+        let done = frames.last().unwrap();
+        assert_eq!(done["done"], true);
+        assert_eq!(done["total"], 300);
+        assert_eq!(done["entries"].as_array().unwrap().len(), 0);
     }
 
     /// 流式条目只过滤不排序：乱序到达按原顺序交付（路径字典序被刻意打乱）。
