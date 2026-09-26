@@ -251,41 +251,96 @@ const rightQuickPaths = ref<QuickPath[]>([]);
 const leftTree = ref<DirTreeNode>(createTreeRoot("/", "/"));
 const rightTree = ref<DirTreeNode>(createTreeRoot("/", "/"));
 
+function refreshTree(side: PaneSide) {
+  const tree = side === "left" ? leftTree.value : rightTree.value;
+  markTreeStale(tree);
+  tree.expanded = false;
+  // 单次 followTreePath 收敛重拉与定位（issue #66 审查 I-1）：follow 对
+  // loaded=false 的根会自行重拉并展开；token 递增使旧的在途 follow 链路全部
+  // 失效，避免旧链路回灌已刷新的树，也避免根加载失败时双重报错。
+  void followTreePath(side, paneDirPath(side));
+}
+
+// ---- 树跟随定位（issue #66）----------------------------------------------------
+// tree tab 可见时，本栏当前目录变化沿路径链自动展开祖先并定位（is-current 高亮
+// 由 DirTree 的 currentPath prop 承担）。每栏 token：新一轮跟随作废旧链路；
+// 任何 await 后校验 token 与树引用，失效即退出；已加载节点只置 expanded=true
+// （绝不折叠任何节点），child 缺失或加载失败静默停止。
+const treeFollowTokens: Record<PaneSide, number> = { left: 0, right: 0 };
+// 树代数（审查 M-2）：每次整树重建（updateHostContext 重连/上下文切换）递增；
+// loadTreeChildren 在 await 前快照、await 后比对，过期结果整包丢弃。
+const treeGenerations: Record<PaneSide, number> = { left: 0, right: 0 };
+// 在途加载去重（审查 M-1）：同节点并发加载复用同一 promise，消除显式展开与
+// 跟随定位的双拉与双错误横幅。键为响应式节点对象（同源代理身份稳定）。
+const treeLoadInflight = new WeakMap<DirTreeNode, Promise<boolean>>();
+
+/**
+ * 拉取并挂载节点子目录（applyTreeChildren 已置 expanded=true）；成功 true。
+ * 返回 false 的情形：树被重建（引用比对 + 代数快照不一致，结果丢弃）、
+ * 加载失败。isStale 谓词由调用方声明过期（follow 传其 token/根引用判断，
+ * 显式展开不传）：过期时不弹 showError，仅静默返回 false。并发调用同一节点
+ * 复用在途 promise（去重以首个调用方的 isStale 为准）。
+ */
+async function loadTreeChildren(side: PaneSide, node: DirTreeNode, isStale?: () => boolean): Promise<boolean> {
+  const pending = treeLoadInflight.get(node);
+  if (pending) return pending;
+  const promise = (async () => {
+    const generation = treeGenerations[side];
+    node.loading = true;
+    const tree = side === "left" ? leftTree.value : rightTree.value;
+    try {
+      const list = await fetchListing(node.path, sideConnectionId(side));
+      if (tree !== (side === "left" ? leftTree.value : rightTree.value) || treeGenerations[side] !== generation) return false;
+      return applyTreeChildren(tree, node.path, list.entries) !== null;
+    } catch (cause) {
+      const rebuilt = tree !== (side === "left" ? leftTree.value : rightTree.value) || treeGenerations[side] !== generation;
+      if (!rebuilt && !isStale?.()) showError(cause);
+      return false;
+    } finally {
+      node.loading = false;
+      treeLoadInflight.delete(node);
+    }
+  })();
+  treeLoadInflight.set(node, promise);
+  return promise;
+}
+
 async function expandTreeNode(side: PaneSide, node: DirTreeNode) {
   if (node.expanded) {
     node.expanded = false;
     return;
   }
   if (!node.loaded) {
-    node.loading = true;
-    const tree = side === "left" ? leftTree.value : rightTree.value;
-    try {
-      const list = await fetchListing(node.path, sideConnectionId(side));
-      if (tree !== (side === "left" ? leftTree.value : rightTree.value)) return;
-      applyTreeChildren(tree, node.path, list.entries);
-    } catch (cause) {
-      if (tree === (side === "left" ? leftTree.value : rightTree.value)) showError(cause);
-    } finally {
-      node.loading = false;
-    }
+    await loadTreeChildren(side, node);
     return;
   }
   node.expanded = true;
 }
 
-/** tree tab 可见时确保根已展开（两侧各拉一次；quick tab 下不预取）。 */
-function ensureTreeRoots() {
-  for (const side of ["left", "right"] as const) {
-    const tree = side === "left" ? leftTree.value : rightTree.value;
-    if (!tree.loaded && !tree.loading) void expandTreeNode(side, tree);
+async function followTreePath(side: PaneSide, targetPath: string): Promise<void> {
+  const token = ++treeFollowTokens[side];
+  const treeOf = () => (side === "left" ? leftTree.value : rightTree.value);
+  // 树引用失效指整棵树被重建（重连/刷新）：快照根节点比对，而不是拿沿树下行
+  // 的当前节点比对（那样第一步之后永远“失效”）。
+  const root = treeOf();
+  const stale = () => token !== treeFollowTokens[side] || treeOf() !== root;
+  let node = root;
+  let prefix = "";
+  for (const segment of targetPath.split("/").filter(Boolean)) {
+    if (stale()) return;
+    if (!node.loaded && !(await loadTreeChildren(side, node, stale))) return;
+    if (stale()) return;
+    node.expanded = true;
+    prefix += `/${segment}`;
+    const child = node.children.find((candidate) => candidate.path === prefix);
+    if (!child) return;
+    node = child;
   }
-}
-
-function refreshTree(side: PaneSide) {
-  const tree = side === "left" ? leftTree.value : rightTree.value;
-  markTreeStale(tree);
-  tree.expanded = false;
-  void expandTreeNode(side, tree);
+  // 目标节点自身（目标即根时链为空，同样只确保根已加载展开）。
+  if (stale()) return;
+  if (!node.loaded && !(await loadTreeChildren(side, node, stale))) return;
+  if (stale()) return;
+  node.expanded = true;
 }
 
 /** 该栏显式使用的连接 id；undefined = 当前连接（由 api 层默认注入）。 */
@@ -803,12 +858,13 @@ watch([sort, leftSideTab, rightSideTab, leftSideCollapsed, rightSideCollapsed], 
   saveUiPrefs({ ...prefs });
 }, { deep: true });
 
-// 任一侧切到 tree tab 时懒加载对应根目录。
-watch(leftSideTab, (tab) => {
-  if (tab === "tree") void expandTreeNode("left", leftTree.value);
+// tree tab 可见时目录树跟随本栏目录（issue #66）：目录变化沿路径链自动展开
+// 定位；切到 tree tab / 从收起展开时同样立即定位。收起或非 tree tab 不跟随。
+watch([path, leftSideTab, leftSideCollapsed], () => {
+  if (leftSideTab.value === "tree" && !leftSideCollapsed.value) void followTreePath("left", path.value);
 });
-watch(rightSideTab, (tab) => {
-  if (tab === "tree") void expandTreeNode("right", rightTree.value);
+watch([rightPath, rightSideTab, rightSideCollapsed], () => {
+  if (rightSideTab.value === "tree" && !rightSideCollapsed.value) void followTreePath("right", rightPath.value);
 });
 
 // 双栏切换：开启时左栏默认本地（quickPaths 到位后若仍在根目录则落到主目录，
@@ -3847,6 +3903,8 @@ function updateHostContext(context: Record<string, unknown>) {
     activePath.value = "";
     searchQuery.value = "";
     leftQuickPaths.value = [];
+    // 整树重建：递增代数，使该栏在途 listing 结果在 await 后被整包丢弃（M-2）。
+    treeGenerations.left += 1;
     leftTree.value = createTreeRoot("/", "/");
     void loadDirectory("/").catch(() => undefined);
     void loadQuickPaths("left");
@@ -3859,6 +3917,8 @@ function updateHostContext(context: Record<string, unknown>) {
     rightActivePath.value = "";
     rightSearchQuery.value = "";
     rightQuickPaths.value = [];
+    // 整树重建：递增代数，使该栏在途 listing 结果在 await 后被整包丢弃（M-2）。
+    treeGenerations.right += 1;
     rightTree.value = createTreeRoot("/", "/");
     if (dualPane.value) {
       void loadRightDirectory("/").catch(() => undefined);
