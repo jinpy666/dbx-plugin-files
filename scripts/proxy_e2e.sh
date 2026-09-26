@@ -13,7 +13,7 @@
 # - 无任何硬编码凭据：全部凭据运行时 openssl rand -hex 随机生成，仅存在于
 #   进程环境与 600 权限的状态文件（--keep 调试时保留，默认删除）；
 #   隧道私钥运行时生成于临时目录，公钥经 PUBLIC_KEY 环境变量注入。
-# - 不拼接 shell 字符串：mc 用原生 MC_HOST_ 环境变量；可变值全部走 env/参数。
+# - 不拼接 shell 字符串：建桶用 :s3, 连接字符串（URL 引号包裹）；可变值全部走 env/参数。
 # - 镜像选型 arm64 优先（minio、rclone、linuxserver/openssh-server、
 #   curlimages/curl 均多架构）；gost 优先 go-gost/gost，拉取失败依次尝试
 #   --platform linux/amd64（Apple Silicon Rosetta）与 ginuerzh/gost（v2，
@@ -311,25 +311,28 @@ docker network inspect "$NET" >/dev/null 2>&1 || docker network create "$NET" >/
 docker rm -f "$C_MINIO" "$C_WEBDAV" "$C_GOST" "$C_SQUID" "$C_SSHD" "$C_SFTP" >/dev/null 2>&1 || true
 
 log "==> starting MinIO (${C_MINIO}; direct 127.0.0.1:${PORT_MINIO}, in-net :9000)"
-ensure_image minio/minio "quay.io/minio/minio" "mirror.gcr.io/minio/minio"
-ensure_image minio/mc "quay.io/minio/mc" "mirror.gcr.io/minio/mc"
-# /data 走 tmpfs（XMinioStorageFull 百分比保护对宿主 sparse 虚拟盘误报，
-# 同 container_smoke）；O_DIRECT 在 tmpfs 上必须关。
+# MinIO 社区版镜像已下架（docker.io/quay.io 均 401，见 container_smoke.sh 注释）：
+# server 用 bitnamilegacy/minio:2025.7.23，建桶用 rclone/rclone 连接字符串。
+ensure_image "bitnamilegacy/minio:2025.7.23"
+ensure_image "rclone/rclone:latest" "ghcr.io/rclone/rclone" "mirror.gcr.io/rclone/rclone"
+# Bitnami 镜像数据目录为 /bitnami/minio/data（entrypoint 自建 + chown 降权），
+# 显式 "server /data" 反而 file access denied；去掉 tmpfs 与显式命令。
 docker run -d --rm --name "$C_MINIO" --network "$NET" \
   -p "127.0.0.1:${PORT_MINIO}:9000" \
-  --tmpfs /data:size=4g \
   -e "MINIO_ROOT_USER=${MINIO_ROOT_USER}" \
   -e "MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}" \
   -e "MINIO_API_ODIRECT=off" \
-  minio/minio server /data >/dev/null
+  bitnamilegacy/minio:2025.7.23 >/dev/null
 retry "MinIO direct health" 30 curl -fsS --max-time 3 "http://127.0.0.1:${PORT_MINIO}/minio/health/live"
 
-log "==> creating buckets ${MINIO_BUCKET} + ${MINIO_BUCKET2} (one-shot mc, in-net endpoint)"
-# minio/mc 镜像默认 entrypoint 会吞参数，必须 --entrypoint mc（container_smoke 实测）
+log "==> creating buckets ${MINIO_BUCKET} + ${MINIO_BUCKET2} (rclone mkdir 连接字符串, in-net endpoint)"
+# minio/mc 镜像同步下架；RCLONE_CONFIG_* env 在 v1.75 容器内静默不生效
+# （假成功回退 Local），连接字符串 + 引号包 URL 是 container_smoke 实测形态。
+MINIO_CS=":s3,provider=Minio,access_key_id=${MINIO_ROOT_USER},secret_access_key=${MINIO_ROOT_PASSWORD},endpoint='http://${C_MINIO}:9000'"
 docker run --rm --network "$NET" \
-  -e "MC_HOST_x=http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@${C_MINIO}:9000" \
-  --entrypoint mc \
-  minio/mc mb "x/${MINIO_BUCKET}" "x/${MINIO_BUCKET2}" >/dev/null
+  rclone/rclone:latest mkdir "${MINIO_CS}:${MINIO_BUCKET}" >/dev/null
+docker run --rm --network "$NET" \
+  rclone/rclone:latest mkdir "${MINIO_CS}:${MINIO_BUCKET2}" >/dev/null
 
 log "==> starting WebDAV (${C_WEBDAV}; in-net :8899 only, NO published port)"
 ensure_image rclone/rclone "ghcr.io/rclone/rclone" "mirror.gcr.io/rclone/rclone"
