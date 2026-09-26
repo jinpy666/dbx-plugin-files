@@ -117,6 +117,12 @@ export function installMockHost() {
   put("/downloads", "dir");
   put("/documents", "dir");
   put("/pictures", "dir");
+  // 嵌套目录样例（issue #66 目录树跟随定位）：/pictures → /pictures/2024，
+  // 供「本栏目录变化时目录树沿路径链自动展开定位」验证；/media/clips 作为
+  // 跟随链之外的可展开无关节点（「不折叠其他节点」回归用）。只加深一层，
+  // 不改根层条目数（root 仍 11 项）与 /docs 计数等既有断言锚点。
+  put("/pictures/2024", "dir");
+  put("/media/clips", "dir");
   putText("/docs/readme.md", "# Files Studio\n\n双栏文件浏览（A-FILES）验证样例。\n\n- 左栏：源（当前连接）\n- 右栏：目标面板 / 预览\n\n编辑此文件并保存会走 files/write。\n");
   putText("/docs/notes.txt", "line 1\nline 2\nline 3\n");
   putText("/docs/data.csv", "name,value\nalpha,1\nbeta,2\n");
