@@ -8,11 +8,11 @@
 #   密码全部运行时随机生成，仅存在于进程环境与临时 env 文件，跑完删除；
 #   SFTP 私钥运行时生成于临时目录，公钥经容器创建时的 PUBLIC_KEY 环境变量
 #   注入（P-FILES §3 合规复现路径，不做运行时 authorized_keys 写入）。
-# - 不拼接 shell 字符串：mc 用原生 MC_HOST_ 环境变量；WebDAV htpasswd 经
+# - 不拼接 shell 字符串：建桶用 :s3, 连接字符串（URL 引号包裹）；WebDAV htpasswd 经
 #   容器内 env 变量生成；所有可变值走 env/参数。
 # - 镜像选型均需 arm64 可用（本仓开发机 Apple Silicon）：httpd:2.4-alpine、
 #   python:3-alpine（pyftpdlib 运行时安装）、ghcr.io/servercontainers/samba、
-#   linuxserver/openssh-server、minio/minio 全部多架构。
+#   linuxserver/openssh-server、bitnamilegacy/minio、rclone/rclone 全部多架构。
 # - 一切容器 --rm + 脚本退出时 docker rm -f 兜底；已有同名测试容器会被替换
 #   （本脚本历史运行创建的专用测试容器）。
 # - docker 不可用时整体退出码 3（调用方按 SKIP 语义处理），不伪造通过。
@@ -96,22 +96,24 @@ ensure_image() {
 ssh-keygen -t ed25519 -N "" -f "$TMPDIR_SMOKE/smoke_key" -C dbx-files-smoke >/dev/null
 
 echo "==> starting MinIO (:${MINIO_PORT})"
-# MinIO 官方在 quay.io 维护同名组织镜像；mirror.gcr.io 对非 library 镜像
-# 只有按需缓存、命中率不稳（2026-09-15 CI 实测 miss），故两路都留。
-ensure_image minio/minio "quay.io/minio/minio" "mirror.gcr.io/minio/minio"
-ensure_image minio/mc "quay.io/minio/mc" "mirror.gcr.io/minio/mc"
+# MinIO 社区版 2025-09-07 后停止发布预编译镜像：docker.io/minio/minio 与
+# quay.io/minio/minio 均已 401（2026-09-26 CI 实测，重试无效）。Bitnami 在
+# bitnamilegacy/minio 保留社区版镜像归档（多架构，2025.7.23 为下架前最后
+# 日期型 tag），容器启动约定与官方镜像兼容（MINIO_ROOT_* + server /data）。
+ensure_image "bitnamilegacy/minio:2025.7.23"
+ensure_image "rclone/rclone:latest" "mirror.gcr.io/rclone/rclone"
 docker rm -f dbx-files-minio-test >/dev/null 2>&1 || true
-# /data 走 tmpfs：MinIO 按剩余空间百分比拒绝写入（XMinioStorageFull，新版不可
-# 配置关闭）；宿主盘富余度低时 sparse Docker 虚拟盘会误触发该保护。测试容器
-# 数据量仅数 MB 且 --rm 即焚，tmpfs 完全够用且不落盘。O_DIRECT 需关（tmpfs
-# 不支持），env 形式 MINIO_API_ODIRECT 对应 api/odirect 配置键。
+# Bitnami 镜像数据目录是 /bitnami/minio/data（entrypoint 自动建并 chown 到非
+# root 运行用户），默认 Cmd 已带 server 启动——显式追加 "server /data" 反而
+# file access denied（entrypoint su 后 /data 属 root）。测试数据量仅数 MB 且
+# --rm 即焚，容器层即焚不落盘。O_DIRECT 需关（tmpfs/容器层不支持），env 形式
+# MINIO_API_ODIRECT 对应 api/odirect 配置键。
 docker run -d --rm --name dbx-files-minio-test \
   -p "${MINIO_PORT}:9000" \
-  --tmpfs /data:size=4g \
   -e "MINIO_ROOT_USER=${MINIO_USER}" \
   -e "MINIO_ROOT_PASSWORD=${MINIO_PASSWORD}" \
   -e "MINIO_API_ODIRECT=off" \
-  minio/minio server /data >/dev/null
+  bitnamilegacy/minio:2025.7.23 >/dev/null
 
 echo "==> waiting for MinIO health"
 for _ in $(seq 1 30); do
@@ -121,15 +123,23 @@ done
 curl -fsS "http://127.0.0.1:${MINIO_PORT}/minio/health/live" >/dev/null || {
   echo "FAIL: MinIO did not become healthy" >&2; exit 1; }
 
-echo "==> creating buckets ${MINIO_BUCKET} + ${MINIO_BUCKET2} (minio/mc, MC_HOST_ 原生配置，无 shell 拼接)"
-MC_URL="$(printf 'http://%s:%s@minio:9000' "$MINIO_USER" "$MINIO_PASSWORD")"
-# 注意：minio/mc 镜像默认 entrypoint 会吞掉参数（静默 no-op），必须显式
-# --entrypoint mc；否则 mc mb "成功"退出但 bucket 并不存在。
+echo "==> creating buckets ${MINIO_BUCKET} + ${MINIO_BUCKET2} (rclone mkdir 连接字符串，凭据经 :backend 参数，无 shell 拼接)"
+# minio/mc 镜像与 minio/minio 一同下架（docker.io/quay.io 均 401）；建桶改用
+# rclone 官方镜像（本插件核心引擎的镜像，可用性由插件自身长期依赖背书）。
+# 用 :s3, 连接字符串而非 RCLONE_CONFIG_* env：v1.75 起容器内 env remote
+# 定义未生效（实测静默回退 Local backend，mkdir 假成功——mc mb 吞参 no-op
+# 的翻版），连接字符串 + 引号包 URL 是实测可行的形态。
 # 第二个桶：bucket-namespace 连接的跨桶直传覆盖（同账号 CopyObject/流式）。
+MINIO_CS=":s3,provider=Minio,access_key_id=${MINIO_USER},secret_access_key=${MINIO_PASSWORD},endpoint='http://minio:9000'"
 docker run --rm --link dbx-files-minio-test:minio \
-  -e "MC_HOST_local=${MC_URL}" \
-  --entrypoint mc \
-  minio/mc mb "local/${MINIO_BUCKET}" "local/${MINIO_BUCKET2}" >/dev/null
+  rclone/rclone:latest mkdir "${MINIO_CS}:${MINIO_BUCKET}" >/dev/null
+docker run --rm --link dbx-files-minio-test:minio \
+  rclone/rclone:latest mkdir "${MINIO_CS}:${MINIO_BUCKET2}" >/dev/null
+# 建桶成功性校验：mc mb 假成功坑（entrypoint 吞参静默 no-op）的历史教训，
+# rclone mkdir 失败会带非零退出，但成功后仍显式列举一遍。
+docker run --rm --link dbx-files-minio-test:minio \
+  rclone/rclone:latest lsd "${MINIO_CS}:" | grep -q "${MINIO_BUCKET}" || {
+  echo "FAIL: bucket ${MINIO_BUCKET} not created" >&2; exit 1; }
 
 echo "==> starting OpenSSH test server (:${SFTP_PORT}, 密码+密钥双认证)"
 ensure_image "linuxserver/openssh-server" "ghcr.io/linuxserver/openssh-server" "mirror.gcr.io/linuxserver/openssh-server"

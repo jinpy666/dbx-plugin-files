@@ -412,7 +412,17 @@ def scenario_audit(runner: Runner) -> None:
                 assert key in entry, f"audit entry missing {key!r}: {entry!r}"
             assert "password" not in json.dumps(entry).lower(), f"secret-shaped key in audit entry: {entry!r}"
         assert len(entries) <= 10, "limit not honoured"
-        assert entries[0]["action"] == "files/purge", f"newest-first violated: {entries[0]!r}"
+        # fs/memory/s3/sftp 段直接 structure→audit（末操作是 purge）；
+        # webdav/smb/ftp 段先跑 scenario_smb_stat_rmdir 再 audit，M5 起
+        # files/rmdir 也记审计，末操作是 rmdir。两条路径都满足的不变式：
+        # newest-first 属性成立，且 purge 与（若执行过）rmdir 在最近记录里。
+        first_action = entries[0]["action"]
+        actions = [entry["action"] for entry in entries]
+        if "files/rmdir" in actions:
+            assert first_action == "files/rmdir", f"newest-first violated: {entries[0]!r}"
+        else:
+            assert first_action == "files/purge", f"newest-first violated: {entries[0]!r}"
+        assert "files/purge" in actions, f"purge entry missing from recent audit: {actions}"
     runner.step("audit-list", _list)
 
     def _limit_guard():
