@@ -12,9 +12,11 @@ import PathField from "./components/PathField.vue";
 import { installMockHost } from "./lib/mockHost";
 import { messages, workbenchMessage, type WorkbenchLocale } from "./lib/i18n";
 import { vTip } from "./lib/tooltip";
-import { FAVORITES_KEY, prefsStore, saveUiPrefs, UI_PREFS_KEY } from "./lib/prefs";
+import { createPluginKvStore, type DbxPluginStorageBridge } from "../../shared/frontend/pluginStorage";
+import { FAVORITES_KEY, loadFavorites, persistFavorites, prefsStore, saveUiPrefs, UI_PREFS_KEY } from "./lib/prefs";
 
 let wrapper: VueWrapper | undefined;
+let mockHost: NonNullable<ReturnType<typeof installMockHost>>;
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -30,7 +32,7 @@ beforeEach(() => {
   });
   Reflect.deleteProperty(window, "dbxPlugin");
   window.history.replaceState(null, "", "/?mock=1&locale=en&delay=0&local=1");
-  installMockHost();
+  mockHost = installMockHost()!;
 });
 
 afterEach(() => {
@@ -101,27 +103,45 @@ describe("toolbar favorite star (rclone-ui parity 收藏当前目录)", () => {
     expect(storedFavorites()).toEqual({});
   });
 
-  it("keys favorites per connection across the dual-pane local/remote sides", async () => {
+  it("keeps favorites for two non-local host connection IDs isolated", async () => {
     mountWorkbench();
     await settle();
-    await openDualPane();
-    // 双栏左栏起点可能是本机主目录（enterLocalPaneIfAtRoot），动态取当前路径。
-    const leftPath = () => wrapper!.findAllComponents(PathField)[0].props("path") as string;
-    const rightPath = () => wrapper!.findAllComponents(PathField)[1].props("path") as string;
-    // 左栏（__local__ 本地面）当前目录收藏。
     await starButton().trigger("click");
     await settle();
-    expect(storedFavorites()).toEqual({ __local__: [leftPath()] });
-    // 激活右栏（mock-conn）后收藏当前目录：按连接分键，互不覆盖。
-    paneTable("right").vm.$emit("update:selection", ["/docs"]);
+    expect(storedFavorites()).toEqual({ "mock-conn": ["/"] });
+
+    mockHost.setContext({
+      connectionId: "second-conn",
+      connection: { name: "Second Storage", host: "second.mock", protocol: "fs" },
+    });
     await settle();
     await starButton().trigger("click");
     await settle();
-    expect(storedFavorites()).toEqual({ __local__: [leftPath()], "mock-conn": [rightPath()] });
-    // 取消右栏收藏：__local__ 键不受影响。
-    await starButton().trigger("click");
-    await settle();
-    expect(storedFavorites()).toEqual({ __local__: [leftPath()] });
+
+    expect(storedFavorites()).toEqual({ "mock-conn": ["/"], "second-conn": ["/"] });
+  });
+
+  it("persists two non-local connection IDs across a fresh store hydration", async () => {
+    const values = new Map<string, unknown>();
+    const bridge: DbxPluginStorageBridge = {
+      get: async (key) => values.get(key) ?? null,
+      set: async (key, value) => {
+        values.set(key, value);
+        return null;
+      },
+      delete: async (key) => {
+        values.delete(key);
+        return null;
+      },
+    };
+    const firstStore = createPluginKvStore([FAVORITES_KEY], { bridge, localStorage: null });
+    await firstStore.ready;
+    persistFavorites({ "mock-conn": ["/"], "second-conn": ["/docs"] }, firstStore);
+    await Promise.resolve();
+
+    const rebuiltStore = createPluginKvStore([FAVORITES_KEY], { bridge, localStorage: null });
+    await rebuiltStore.ready;
+    expect(loadFavorites(rebuiltStore)).toEqual({ "mock-conn": ["/"], "second-conn": ["/docs"] });
   });
 });
 
