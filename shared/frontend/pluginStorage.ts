@@ -50,13 +50,24 @@ interface ResolvedChannels {
   fallback: KvBacking | null;
 }
 
-function resolveBridge(): DbxPluginStorageBridge | null {
+interface DbxPluginApi {
+  ready?: Promise<unknown>;
+  capabilities?: { storage?: boolean };
+  storage?: DbxPluginStorageBridge;
+}
+
+function resolveHostApi(): DbxPluginApi | null {
   try {
-    const api = (window as unknown as { dbxPlugin?: { capabilities?: { storage?: boolean }; storage?: DbxPluginStorageBridge } }).dbxPlugin;
-    if (api?.capabilities?.storage && api.storage) return api.storage;
+    return (window as unknown as { dbxPlugin?: DbxPluginApi }).dbxPlugin ?? null;
   } catch {
     /* 无 window（单测 node 环境）：无宿主桥 */
+    return null;
   }
+}
+
+function resolveBridge(): DbxPluginStorageBridge | null {
+  const api = resolveHostApi();
+  if (api?.capabilities?.storage && api.storage) return api.storage;
   return null;
 }
 
@@ -95,27 +106,56 @@ function resolveFallback(): KvBacking | null {
 
 export function createPluginKvStore(keys: string[], options: PluginKvStoreOptions = {}): PluginKvStore {
   const cache = new Map<string, string>();
+  // ready 前的同步写入先留在缓存；通道确定后统一写穿，避免宿主 ready 较晚时
+  // 误写入 localStorage/memory 并丢失持久化。
+  const pendingWrites = new Map<string, { value: string | null; legacyMutationVersion?: number }>();
+  // localStorage 只是后备通道；仅显式 bridge 才覆盖宿主生命周期探测。
+  const hostReady = options.bridge === undefined ? resolveHostApi()?.ready : undefined;
+  let implicitHostFailed = false;
+  const mutationVersions = new Map<string, number>();
+  let nextMutationVersion = 0;
+  let readySettled = false;
   let resolved: ResolvedChannels | null = null;
 
   const ensure = (): ResolvedChannels => {
     if (!resolved) {
       resolved = {
-        bridge: options.bridge !== undefined ? options.bridge : resolveBridge(),
+        bridge: options.bridge !== undefined ? options.bridge : implicitHostFailed ? null : resolveBridge(),
         fallback: options.localStorage !== undefined ? options.localStorage : resolveFallback(),
       };
     }
     return resolved;
   };
 
+  const resolveAfterHostReady = async (): Promise<void> => {
+    // 显式注入是测试/调用方明确选择，不等待全局宿主生命周期。
+    if (!hostReady) return;
+    try {
+      await hostReady;
+    } catch {
+      // 隐式宿主初始化失败时，残留 capability/storage 不是可用性证明；永久降级。
+      implicitHostFailed = true;
+    }
+  };
+
   /** 通道在首次操作时惰性判定：mock=1 注入 mock 宿主后创建的 store 也能命中桥。 */
   const channel = (): PluginKvChannel => {
+    // 宿主仍在初始化时不得缓存降级结论；ready 后再给出最终通道。
+    if (!readySettled && hostReady) {
+      if (!implicitHostFailed && resolveBridge()) return "host";
+      return resolveFallback() ? "localStorage" : "memory";
+    }
     const { bridge, fallback } = ensure();
     if (bridge) return "host";
     return fallback ? "localStorage" : "memory";
   };
 
   /** 写穿：host 桥异步投递（配额超限等失败仅告警，不阻断 UI）；localStorage 档同步。 */
-  const persist = (key: string, value: string | null): void => {
+  const persist = (key: string, value: string | null, legacyMutationVersion?: number): void => {
+    if (!readySettled && hostReady) {
+      pendingWrites.set(key, { value, legacyMutationVersion });
+      return;
+    }
     const { bridge, fallback } = ensure();
     if (bridge) {
       const action = value === null ? bridge.delete(key) : bridge.set(key, value);
@@ -129,39 +169,49 @@ export function createPluginKvStore(keys: string[], options: PluginKvStoreOption
   };
 
   const ready = (async () => {
+    await resolveAfterHostReady();
+    readySettled = true;
     const mode = channel();
     if (mode === "localStorage") {
       // 直接 localStorage 档：同步水合（读取已在 ensure() 时验证可用）。
       const { fallback } = ensure();
       for (const key of keys) {
         const raw = fallback!.getItem(key);
-        if (raw !== null) cache.set(key, raw);
+        if (raw !== null && !cache.has(key)) cache.set(key, raw);
       }
-      return;
+    } else if (mode === "host") {
+      const { bridge, fallback } = ensure();
+      await Promise.all(
+        keys.map(async (key) => {
+          try {
+            const value = await bridge!.get(key);
+            if (value !== null && value !== undefined) {
+              // 水合不覆盖水合前的写入（组件可能先渲染先写）。
+              if (!cache.has(key)) cache.set(key, typeof value === "string" ? value : JSON.stringify(value));
+              return;
+            }
+            // 宿主未命中：惰性搬家 localStorage 旧值（搬家只发生一次，写穿后旧档仍在，
+            // 不删除——老宿主回退时数据可用）。
+            const legacy = fallback?.getItem(key) ?? null;
+            if (legacy !== null) {
+              const mutationVersion = mutationVersions.get(key) ?? 0;
+              // 同键在水合期间被用户改写（含 remove）时，不得恢复旧档值。
+              if (!cache.has(key) && mutationVersion === 0) {
+                cache.set(key, legacy);
+                pendingWrites.set(key, { value: legacy, legacyMutationVersion: mutationVersion });
+              }
+            }
+          } catch (error) {
+            console.warn(`[pluginStorage] hydrate "${key}" failed`, error);
+          }
+        }),
+      );
     }
-    if (mode !== "host") return;
-    const { bridge, fallback } = ensure();
-    await Promise.all(
-      keys.map(async (key) => {
-        try {
-          const value = await bridge!.get(key);
-          if (value !== null && value !== undefined) {
-            // 水合不覆盖水合前的写入（组件可能先渲染先写）。
-            if (!cache.has(key)) cache.set(key, typeof value === "string" ? value : JSON.stringify(value));
-            return;
-          }
-          // 宿主未命中：惰性搬家 localStorage 旧值（搬家只发生一次，写穿后旧档仍在，
-          // 不删除——老宿主回退时数据可用）。
-          const legacy = fallback?.getItem(key) ?? null;
-          if (legacy !== null) {
-            if (!cache.has(key)) cache.set(key, legacy);
-            if (cache.get(key) === legacy) persist(key, legacy);
-          }
-        } catch (error) {
-          console.warn(`[pluginStorage] hydrate "${key}" failed`, error);
-        }
-      }),
-    );
+    for (const [key, pending] of pendingWrites) {
+      if (pending.legacyMutationVersion !== undefined && pending.legacyMutationVersion !== (mutationVersions.get(key) ?? 0)) continue;
+      persist(key, pending.value);
+    }
+    pendingWrites.clear();
   })();
 
   return {
@@ -173,11 +223,14 @@ export function createPluginKvStore(keys: string[], options: PluginKvStoreOption
       return cache.get(key) ?? null;
     },
     setItem(key: string, value: string): void {
-      cache.set(key, String(value));
-      persist(key, String(value));
+      const normalized = String(value);
+      cache.set(key, normalized);
+      mutationVersions.set(key, ++nextMutationVersion);
+      persist(key, normalized);
     },
     removeItem(key: string): void {
       cache.delete(key);
+      mutationVersions.set(key, ++nextMutationVersion);
       persist(key, null);
     },
   };
