@@ -285,6 +285,24 @@ describe("advanced ops UI", () => {
     expect(wrapper!.find(".wb-notice").text()).toContain("http://127.0.0.1:41234");
   });
 
+  it("reports an operation failure instead of a copied share URL when clipboard writing is rejected", async () => {
+    const clipboard = window.dbxPlugin!.clipboard as unknown as { writeText: (value: string) => Promise<void> };
+    clipboard.writeText = vi.fn().mockRejectedValue(new Error("clipboard denied"));
+    mountWorkbench();
+    await settle();
+    stubInvoke((method) =>
+      method === "files/serve/start"
+        ? { serveId: "http-abc123", url: "http://127.0.0.1:41234", serveType: "http" }
+        : undefined,
+    );
+    await openEntryMenu(dirEntry);
+    await menuItem(workbenchMessage("en", "shareHttpMenu"))!.trigger("click");
+    await settle();
+    expect(wrapper!.get(".wb-notice").text()).toBe(
+      workbenchMessage("en", "operationFailed", { error: "clipboard denied" }),
+    );
+  });
+
   it("renders the local shares block in the mounts settings category", async () => {
     // 挂载分类仅桌面端可见：测试内重装 mock（?local=1），再挂载 workbench。
     Reflect.deleteProperty(window, "dbxPlugin");

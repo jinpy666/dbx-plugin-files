@@ -119,6 +119,53 @@ describe("dashboard parity: directory size & public link", () => {
     wrapper!.unmount();
     wrapper = undefined;
   });
+
+  it("copies a file path and name only after each clipboard write succeeds", async () => {
+    const writeText = vi.fn(async () => undefined);
+    const clipboard = window.dbxPlugin!.clipboard as unknown as { writeText: (value: string) => Promise<void> };
+    clipboard.writeText = writeText;
+    mountWorkbench();
+    await settle();
+    const entry = { name: "readme.md", path: "/docs/readme.md", kind: "file", size: 10, modifiedAt: new Date().toISOString() } satisfies FileEntry;
+
+    await openEntryMenu(entry);
+    await menuItem(workbenchMessage("en", "copyPath"))!.trigger("click");
+    await settle();
+    expect(writeText).toHaveBeenLastCalledWith("/docs/readme.md");
+    expect(wrapper!.get(".wb-notice").text()).toBe(workbenchMessage("en", "copiedPath"));
+
+    await openEntryMenu(entry);
+    await menuItem(workbenchMessage("en", "copyName"))!.trigger("click");
+    await settle();
+    expect(writeText).toHaveBeenLastCalledWith("readme.md");
+    expect(wrapper!.get(".wb-notice").text()).toBe(workbenchMessage("en", "copiedName"));
+  });
+
+  it("reports an operation failure instead of a copied public link when the clipboard bridge is missing", async () => {
+    installHost("/?mock=1&locale=en&delay=0&presign=1");
+    Reflect.deleteProperty(window.dbxPlugin as object, "clipboard");
+    mountWorkbench();
+    await settle();
+    await openEntryMenu({ name: "readme.md", path: "/docs/readme.md", kind: "file", size: 10, modifiedAt: new Date().toISOString() });
+    await menuItem(workbenchMessage("en", "copyPublicLink"))!.trigger("click");
+    await settle();
+    expect(wrapper!.get(".wb-notice").text()).toBe(
+      workbenchMessage("en", "operationFailed", { error: workbenchMessage("en", "featureMissing") }),
+    );
+  });
+
+  it("reports an operation failure when copying a path is rejected by the clipboard bridge", async () => {
+    const clipboard = window.dbxPlugin!.clipboard as unknown as { writeText: (value: string) => Promise<void> };
+    clipboard.writeText = vi.fn().mockRejectedValue(new Error("clipboard denied"));
+    mountWorkbench();
+    await settle();
+    await openEntryMenu({ name: "readme.md", path: "/docs/readme.md", kind: "file", size: 10, modifiedAt: new Date().toISOString() });
+    await menuItem(workbenchMessage("en", "copyPath"))!.trigger("click");
+    await settle();
+    expect(wrapper!.get(".wb-notice").text()).toBe(
+      workbenchMessage("en", "operationFailed", { error: "clipboard denied" }),
+    );
+  });
 });
 
 describe("dashboard parity: preview minimize pill", () => {

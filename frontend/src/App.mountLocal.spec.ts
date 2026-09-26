@@ -226,6 +226,53 @@ describe("mount to local UI", () => {
     expect(wrapper!.get(".wb-notice").text()).toContain("No FUSE driver on this machine");
   });
 
+  it("reports an operation failure instead of gateway copied when the webdav fallback has no clipboard bridge", async () => {
+    Reflect.deleteProperty(window.dbxPlugin as object, "clipboard");
+    mountWorkbench();
+    await settle();
+    stubInvoke((method) =>
+      method === "files/mount"
+        ? {
+            mountId: "m2",
+            strategy: "webdav",
+            gatewayUrl: "http://127.0.0.1:54321/tok/conn/",
+            fallbackReason: "macFUSE not detected",
+          }
+        : undefined,
+    );
+    await openEntryMenu(dirEntry);
+    await menuItem(workbenchMessage("en", "mountToLocal"))!.trigger("click");
+    await settle();
+    await confirmMountDialog();
+    expect(wrapper!.get(".wb-notice").text()).toBe(
+      workbenchMessage("en", "operationFailed", { error: workbenchMessage("en", "featureMissing") }),
+    );
+  });
+
+  it("reports an operation failure instead of gateway copied when the webdav fallback clipboard write is rejected", async () => {
+    const clipboard = window.dbxPlugin!.clipboard as unknown as { writeText: (value: string) => Promise<void> };
+    clipboard.writeText = vi.fn().mockRejectedValue(new Error("clipboard denied"));
+    mountWorkbench();
+    await settle();
+    stubInvoke((method) =>
+      method === "files/mount"
+        ? {
+            mountId: "m2",
+            strategy: "webdav",
+            gatewayUrl: "http://127.0.0.1:54321/tok/conn/",
+            fallbackReason: "macFUSE not detected",
+          }
+        : undefined,
+    );
+    await openEntryMenu(dirEntry);
+    await menuItem(workbenchMessage("en", "mountToLocal"))!.trigger("click");
+    await settle();
+    await confirmMountDialog();
+    expect(wrapper!.get(".wb-notice").text()).toBe(
+      workbenchMessage("en", "operationFailed", { error: "clipboard denied" }),
+    );
+  });
+
   it("surfaces mount failures in the error banner", async () => {
     mountWorkbench();
     await settle();
