@@ -878,9 +878,9 @@ async function enterLocalPaneIfAtRoot() {
 watch(dualPane, async (on) => {
   if (on) {
     // 两栏独立首载，远端不等待本地 quick paths 探测；右栏默认 tree
-    // 不会触发 rightSideTab watcher（值没有发生变化），所以这里显式首展开。
+    // 不会触发 rightSideTab watcher（值没有发生变化），所以这里显式跟随定位。
     void loadRightDirectory().catch(() => undefined);
-    if (rightSideTab.value === "tree") void expandTreeNode("right", rightTree.value);
+    if (rightSideTab.value === "tree") void followTreePath("right", paneDirPath("right"));
     await loadDirectory("/").catch(() => undefined);
     await loadQuickPaths("left");
     await enterLocalPaneIfAtRoot();
@@ -921,8 +921,10 @@ function showNotice(message: I18nInput) {
   noticeTimer = window.setTimeout(() => (notice.value = ""), 4000);
 }
 
-/** 将文本写入宿主剪贴板；宿主桥缺失和写入失败都不能冒充复制成功。 */
-async function writeClipboardText(text: string, successNotice: I18nInput): Promise<boolean> {
+/** 将文本写入宿主剪贴板；宿主桥缺失和写入失败都不能冒充复制成功。
+ * failureNotice：复制子步骤失败但操作本体已生效时的兜底文案（如 serve URL、
+ * 挂载网关地址——它们只存在于剪贴板里，失败提示必须把内容保留下来）。 */
+async function writeClipboardText(text: string, successNotice: I18nInput, failureNotice?: I18nInput): Promise<boolean> {
   try {
     const clipboard = window.dbxPlugin?.clipboard;
     if (!clipboard) throw new Error(t("featureMissing"));
@@ -930,7 +932,7 @@ async function writeClipboardText(text: string, successNotice: I18nInput): Promi
     showNotice(successNotice);
     return true;
   } catch (cause) {
-    showNotice(t("operationFailed", { error: errorMessage(cause) }));
+    showNotice(failureNotice ?? t("operationFailed", { error: errorMessage(cause) }));
     return false;
   }
 }
@@ -3586,7 +3588,9 @@ async function startServe(entry: FileEntry, side: PaneSide, serveType: "http" | 
       path: entry.path,
       serveType,
     });
-    await writeClipboardText(result.url, t("shareStarted", { url: result.url }));
+    // 复制失败不冒充成功（issue #62），但服务已启动：URL 只存在于剪贴板，
+    // 失败提示必须把它保留下来，不能随剪贴板一起消失。
+    await writeClipboardText(result.url, t("shareStarted", { url: result.url }), t("shareStartedNoCopy", { url: result.url }));
   } catch (cause) {
     showNotice(t("operationFailed", { error: errorMessage(cause) }));
   }
@@ -3729,7 +3733,12 @@ async function handleMountResult(result: MountResult) {
     return;
   }
   if (result.strategy === "webdav" && result.gatewayUrl) {
-    await writeClipboardText(result.gatewayUrl, t("mountGatewayFallback", { reason: result.fallbackReason ?? "" }));
+    // 网关 URL（内含 token 路径）是该形态唯一的挂载入口，复制失败也必须展示。
+    await writeClipboardText(
+      result.gatewayUrl,
+      t("mountGatewayFallback", { reason: result.fallbackReason ?? "" }),
+      t("mountGatewayNoCopy", { url: result.gatewayUrl, reason: result.fallbackReason ?? "" }),
+    );
     return;
   }
   showNotice(t("mountRcloneOk", { point: result.mountPoint ?? "" }));
@@ -3937,14 +3946,10 @@ function updateHostContext(context: Record<string, unknown>) {
     }
   }
   void loadCapabilities();
-  if (leftSideTab.value === "tree") {
-    const tree = leftTree.value;
-    if (!tree.loaded && !tree.loading) void expandTreeNode("left", tree);
-  }
-  if (rightSideTab.value === "tree") {
-    const tree = rightTree.value;
-    if (!tree.loaded && !tree.loading) void expandTreeNode("right", tree);
-  }
+  // 整树重建后统一走跟随定位（与 refreshTree 同法）：follow 自行重拉未加载
+  // 根并沿路径链展开定位，不再与 expandTreeNode 双轨并存。
+  if (leftSideTab.value === "tree") void followTreePath("left", paneDirPath("left"));
+  if (rightSideTab.value === "tree") void followTreePath("right", paneDirPath("right"));
   void probeConnections();
   refreshAuditPanel();
 }
@@ -3998,15 +4003,9 @@ async function initialize() {
     if (version === hostContextVersion) {
       if (dualPane.value) await loadRightDirectory("/").catch(() => undefined);
       await loadQuickPaths("left");
-      if (leftSideTab.value === "tree") {
-        const tree = leftTree.value;
-        if (!tree.loaded && !tree.loading) void expandTreeNode("left", tree);
-      }
+      if (leftSideTab.value === "tree") void followTreePath("left", paneDirPath("left"));
       if (dualPane.value) {
-        if (rightSideTab.value === "tree") {
-          const tree = rightTree.value;
-          if (!tree.loaded && !tree.loading) void expandTreeNode("right", tree);
-        }
+        if (rightSideTab.value === "tree") void followTreePath("right", paneDirPath("right"));
 
         await enterLocalPaneIfAtRoot();
         void loadQuickPaths("right");

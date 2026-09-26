@@ -36,6 +36,12 @@ export interface PluginKvStoreOptions {
   bridge?: DbxPluginStorageBridge | null;
   /** 注入 localStorage 档；null 强制跳过，undefined 按 guarded window.localStorage 解析。 */
   localStorage?: KvBacking | null;
+  /**
+   * 隐式模式等待宿主桥出现及其 ready 结算的上限（毫秒）。桥晚于模块求值注入时
+   * 限时轮询 window.dbxPlugin；ready 永不结算时超时降级，避免 main.ts 的启动
+   * await 无限阻塞。默认与 App.waitForHostApi 同款 8s；显式注入不受影响。
+   */
+  hostReadyTimeoutMs?: number;
 }
 
 export interface PluginKvStore extends KvBacking {
@@ -64,6 +70,24 @@ function resolveHostApi(): DbxPluginApi | null {
     return null;
   }
 }
+
+/** 是否存在 window（node 单测环境无 window，无需轮询宿主注入）。 */
+function hasWindow(): boolean {
+  try {
+    return typeof window !== "undefined" && window !== null;
+  } catch {
+    return false;
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** 隐式宿主 ready 等待上限：与 App.waitForHostApi 的 deadline 语义对齐。 */
+const IMPLICIT_HOST_READY_TIMEOUT_MS = 8000;
+/** 隐式宿主桥出现轮询间隔：与 App.waitForHostApi 同款节拍。 */
+const HOST_POLL_INTERVAL_MS = 50;
 
 function resolveBridge(): DbxPluginStorageBridge | null {
   const api = resolveHostApi();
@@ -106,12 +130,18 @@ function resolveFallback(): KvBacking | null {
 
 export function createPluginKvStore(keys: string[], options: PluginKvStoreOptions = {}): PluginKvStore {
   const cache = new Map<string, string>();
-  // ready 前的同步写入先留在缓存；通道确定后统一写穿，避免宿主 ready 较晚时
-  // 误写入 localStorage/memory 并丢失持久化。
-  const pendingWrites = new Map<string, { value: string | null; legacyMutationVersion?: number }>();
-  // localStorage 只是后备通道；仅显式 bridge 才覆盖宿主生命周期探测。
-  const hostReady = options.bridge === undefined ? resolveHostApi()?.ready : undefined;
+  // ready 结算前的同步写入先留在缓存；通道确定后统一写穿。每条记录入队时的
+  // mutationVersion：flush 时被更新写入取代的 pending 不再重放，否则水合期间
+  // 的直写会被旧值覆盖，持久层丢失更新。
+  const pendingWrites = new Map<string, { value: string | null; mutationVersion: number }>();
+  // 隐式模式在创建时快照宿主桥；桥可能晚于模块求值注入，ready 解析阶段会限时
+  // 轮询 window.dbxPlugin（见 resolveAfterHostReady）。
+  const explicitBridge = options.bridge !== undefined;
+  const hostApi = explicitBridge ? null : resolveHostApi();
   let implicitHostFailed = false;
+  // 隐式 ready 超时不是失败（宿主只是没就绪），但未就绪的 capability/storage
+  // 同样不可信：超时后也不得把降级结论改判回 host。
+  let hostExcluded = false;
   const mutationVersions = new Map<string, number>();
   let nextMutationVersion = 0;
   let readySettled = false;
@@ -120,7 +150,7 @@ export function createPluginKvStore(keys: string[], options: PluginKvStoreOption
   const ensure = (): ResolvedChannels => {
     if (!resolved) {
       resolved = {
-        bridge: options.bridge !== undefined ? options.bridge : implicitHostFailed ? null : resolveBridge(),
+        bridge: options.bridge !== undefined ? options.bridge : implicitHostFailed || hostExcluded ? null : resolveBridge(),
         fallback: options.localStorage !== undefined ? options.localStorage : resolveFallback(),
       };
     }
@@ -129,20 +159,50 @@ export function createPluginKvStore(keys: string[], options: PluginKvStoreOption
 
   const resolveAfterHostReady = async (): Promise<void> => {
     // 显式注入是测试/调用方明确选择，不等待全局宿主生命周期。
-    if (!hostReady) return;
-    try {
-      await hostReady;
-    } catch {
-      // 隐式宿主初始化失败时，残留 capability/storage 不是可用性证明；永久降级。
-      implicitHostFailed = true;
+    if (explicitBridge) return;
+    const deadline = Date.now() + (options.hostReadyTimeoutMs ?? IMPLICIT_HOST_READY_TIMEOUT_MS);
+    // 桥可能晚于模块求值注入：限时轮询 dbxPlugin 出现再等 ready，而不是把
+    // 创建时"暂无宿主"的一次性结论永久锁死（否则收藏会静默退化为会话内存储）。
+    let api = hostApi;
+    while (!api && hasWindow() && Date.now() < deadline) {
+      await delay(HOST_POLL_INTERVAL_MS);
+      api = resolveHostApi();
     }
+    const hostReady = api?.ready;
+    if (!hostReady) return;
+    // ready 永不结算时 main.ts 的启动 await 会无限白屏：限时对冲，超时按
+    // "暂无可用宿主存储"降级（与 App.initialize 的 Promise.any 策略同向）；
+    // 拒绝仍是宿主初始化失败——残留 capability/storage 不是可用性证明，永久降级。
+    let timedOut = false;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          timedOut = true;
+          resolve();
+        }, Math.max(0, deadline - Date.now()));
+        Promise.resolve(hostReady).then(
+          () => {
+            clearTimeout(timer);
+            resolve();
+          },
+          (cause) => {
+            clearTimeout(timer);
+            reject(cause);
+          },
+        );
+      });
+    } catch {
+      implicitHostFailed = true;
+      return;
+    }
+    if (timedOut) hostExcluded = true;
   };
 
   /** 通道在首次操作时惰性判定：mock=1 注入 mock 宿主后创建的 store 也能命中桥。 */
   const channel = (): PluginKvChannel => {
     // 宿主仍在初始化时不得缓存降级结论；ready 后再给出最终通道。
-    if (!readySettled && hostReady) {
-      if (!implicitHostFailed && resolveBridge()) return "host";
+    if (!readySettled && !explicitBridge) {
+      if (!implicitHostFailed && !hostExcluded && resolveBridge()) return "host";
       return resolveFallback() ? "localStorage" : "memory";
     }
     const { bridge, fallback } = ensure();
@@ -151,9 +211,10 @@ export function createPluginKvStore(keys: string[], options: PluginKvStoreOption
   };
 
   /** 写穿：host 桥异步投递（配额超限等失败仅告警，不阻断 UI）；localStorage 档同步。 */
-  const persist = (key: string, value: string | null, legacyMutationVersion?: number): void => {
-    if (!readySettled && hostReady) {
-      pendingWrites.set(key, { value, legacyMutationVersion });
+  const persist = (key: string, value: string | null): void => {
+    // ready 结算（含隐式轮询）前一律入队，避免误写入降级通道丢持久化。
+    if (!readySettled) {
+      pendingWrites.set(key, { value, mutationVersion: mutationVersions.get(key) ?? 0 });
       return;
     }
     const { bridge, fallback } = ensure();
@@ -186,8 +247,9 @@ export function createPluginKvStore(keys: string[], options: PluginKvStoreOption
           try {
             const value = await bridge!.get(key);
             if (value !== null && value !== undefined) {
-              // 水合不覆盖水合前的写入（组件可能先渲染先写）。
-              if (!cache.has(key)) cache.set(key, typeof value === "string" ? value : JSON.stringify(value));
+              // 水合不覆盖水合前的写入（组件可能先渲染先写；pending 在队
+              // 含 ready 前的 removeItem——宿主旧值不得复活）。
+              if (!cache.has(key) && !pendingWrites.has(key)) cache.set(key, typeof value === "string" ? value : JSON.stringify(value));
               return;
             }
             // 宿主未命中：惰性搬家 localStorage 旧值（搬家只发生一次，写穿后旧档仍在，
@@ -198,7 +260,7 @@ export function createPluginKvStore(keys: string[], options: PluginKvStoreOption
               // 同键在水合期间被用户改写（含 remove）时，不得恢复旧档值。
               if (!cache.has(key) && mutationVersion === 0) {
                 cache.set(key, legacy);
-                pendingWrites.set(key, { value: legacy, legacyMutationVersion: mutationVersion });
+                pendingWrites.set(key, { value: legacy, mutationVersion });
               }
             }
           } catch (error) {
@@ -208,7 +270,8 @@ export function createPluginKvStore(keys: string[], options: PluginKvStoreOption
       );
     }
     for (const [key, pending] of pendingWrites) {
-      if (pending.legacyMutationVersion !== undefined && pending.legacyMutationVersion !== (mutationVersions.get(key) ?? 0)) continue;
+      // 入队后被更新写入取代的 pending 不重放：直写已生效，重放旧值会覆盖新值。
+      if (pending.mutationVersion !== (mutationVersions.get(key) ?? 0)) continue;
       persist(key, pending.value);
     }
     pendingWrites.clear();

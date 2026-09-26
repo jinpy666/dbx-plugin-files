@@ -1,6 +1,8 @@
 /backend/target/
 /bin/
+/node_modules/
 /frontend/node_modules/
+/.worktrees/
 /frontend/dist/
 /scripts/__pycache__/
 /dist/
