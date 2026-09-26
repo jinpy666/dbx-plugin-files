@@ -285,7 +285,7 @@ describe("advanced ops UI", () => {
     expect(wrapper!.find(".wb-notice").text()).toContain("http://127.0.0.1:41234");
   });
 
-  it("reports an operation failure instead of a copied share URL when clipboard writing is rejected", async () => {
+  it("keeps the share URL visible with a copy-failed hint when clipboard writing is rejected", async () => {
     const clipboard = window.dbxPlugin!.clipboard as unknown as { writeText: (value: string) => Promise<void> };
     clipboard.writeText = vi.fn().mockRejectedValue(new Error("clipboard denied"));
     mountWorkbench();
@@ -298,8 +298,9 @@ describe("advanced ops UI", () => {
     await openEntryMenu(dirEntry);
     await menuItem(workbenchMessage("en", "shareHttpMenu"))!.trigger("click");
     await settle();
+    // 服务已启动、只有复制子步骤失败：URL 必须留在提示里，不能随剪贴板一起消失。
     expect(wrapper!.get(".wb-notice").text()).toBe(
-      workbenchMessage("en", "operationFailed", { error: "clipboard denied" }),
+      workbenchMessage("en", "shareStartedNoCopy", { url: "http://127.0.0.1:41234" }),
     );
   });
 

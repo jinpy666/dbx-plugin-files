@@ -51,6 +51,10 @@ fi
 
 log() { echo "$*" >&2; }
 
+# rclone 工具镜像钉扎：与插件自带引擎同版本（scripts/fetch-rclone.sh 的
+# v1.75.1-dbx.1），工具链不使用浮动 :latest（含 webdav server、obscure、
+# 探针容器）；升级改为有意的 bump。
+RCLONE_IMAGE="rclone/rclone:1.75.1"
 NET="dbx-proxy-net"
 C_MINIO="dbx-proxy-minio-test"
 C_WEBDAV="dbx-proxy-webdav-test"
@@ -300,7 +304,7 @@ sftp_list() {
     -e "RCLONE_CONFIG_CHK_PASS=${SFTP_OBSCURED_PASS}" \
     -e "RCLONE_CONFIG_CHK_SET_MODTIME=false" \
     -e "RCLONE_CONFIG_CHK_KNOWN_HOSTS_FILE=none" \
-    --entrypoint rclone rclone/rclone \
+    --entrypoint rclone "$RCLONE_IMAGE" \
     lsf --contimeout 10s --timeout 10s --retries 1 --low-level-retries 1 chk:
 }
 
@@ -314,7 +318,7 @@ log "==> starting MinIO (${C_MINIO}; direct 127.0.0.1:${PORT_MINIO}, in-net :900
 # MinIO 社区版镜像已下架（docker.io/quay.io 均 401，见 container_smoke.sh 注释）：
 # server 用 bitnamilegacy/minio:2025.7.23，建桶用 rclone/rclone 连接字符串。
 ensure_image "bitnamilegacy/minio:2025.7.23"
-ensure_image "rclone/rclone:latest" "ghcr.io/rclone/rclone" "mirror.gcr.io/rclone/rclone"
+ensure_image "$RCLONE_IMAGE" "ghcr.io/rclone/rclone:1.75.1" "mirror.gcr.io/rclone/rclone:1.75.1"
 # Bitnami 镜像数据目录为 /bitnami/minio/data（entrypoint 自建 + chown 降权），
 # 显式 "server /data" 反而 file access denied；去掉 tmpfs 与显式命令。
 docker run -d --rm --name "$C_MINIO" --network "$NET" \
@@ -330,18 +334,22 @@ log "==> creating buckets ${MINIO_BUCKET} + ${MINIO_BUCKET2} (rclone mkdir 连�
 # （假成功回退 Local），连接字符串 + 引号包 URL 是 container_smoke 实测形态。
 MINIO_CS=":s3,provider=Minio,access_key_id=${MINIO_ROOT_USER},secret_access_key=${MINIO_ROOT_PASSWORD},endpoint='http://${C_MINIO}:9000'"
 docker run --rm --network "$NET" \
-  rclone/rclone:latest mkdir "${MINIO_CS}:${MINIO_BUCKET}" >/dev/null
+  "$RCLONE_IMAGE" mkdir "${MINIO_CS}:${MINIO_BUCKET}" >/dev/null
 docker run --rm --network "$NET" \
-  rclone/rclone:latest mkdir "${MINIO_CS}:${MINIO_BUCKET2}" >/dev/null
+  "$RCLONE_IMAGE" mkdir "${MINIO_CS}:${MINIO_BUCKET2}" >/dev/null
+# 建桶成功性校验（移植 container_smoke：mc mb 吞参假成功的历史教训）。
+docker run --rm --network "$NET" \
+  "$RCLONE_IMAGE" lsd "${MINIO_CS}:" | grep -q "${MINIO_BUCKET}" || {
+  log "FAIL: bucket ${MINIO_BUCKET} not created"; exit 1; }
 
 log "==> starting WebDAV (${C_WEBDAV}; in-net :8899 only, NO published port)"
-ensure_image rclone/rclone "ghcr.io/rclone/rclone" "mirror.gcr.io/rclone/rclone"
+ensure_image "$RCLONE_IMAGE" "ghcr.io/rclone/rclone:1.75.1" "mirror.gcr.io/rclone/rclone:1.75.1"
 chmod 777 "$WEBDAV_DATA_DIR"  # rclone 容器默认 uid 需要对挂载卷可写
 # 新版 rclone（v1.75+）移除了 serve webdav 的 --auth 旗标，用 --user/--pass
 # （明文，仅存在于临时测试容器的进程参数，随容器销毁）
 docker run -d --rm --name "$C_WEBDAV" --network "$NET" \
   -v "${WEBDAV_DATA_DIR}:/data" \
-  rclone/rclone serve webdav /data --addr :8899 \
+  "$RCLONE_IMAGE" serve webdav /data --addr :8899 \
   --user "${WEBDAV_USER}" --pass "${WEBDAV_PASSWORD}" >/dev/null
 
 log "==> starting gost (${C_GOST}; SOCKS5 127.0.0.1:${PORT_SOCKS_PROXY}, 认证代理)。HTTP 代理由 squid 提供（gost v2 的 http 代理转发部分 S3 请求——CreateBucket/CompleteMultipartUpload——会挂起，实测复现；SOCKS5 通道无此问题）"
@@ -426,7 +434,7 @@ docker run --rm --network "$NET" \
   -e "RCLONE_CONFIG_CB_REGION=us-east-1" \
   -e "HTTP_PROXY=http://${SQUID_PROXY_USER}:${SQUID_PROXY_PASS}@${C_SQUID}:3128" \
   -e "HTTPS_PROXY=http://${SQUID_PROXY_USER}:${SQUID_PROXY_PASS}@${C_SQUID}:3128" \
-  --entrypoint rclone rclone/rclone \
+  --entrypoint rclone "$RCLONE_IMAGE" \
   mkdir "cb:${S3_PROBE_BUCKET}" \
   || { docker logs "$C_SQUID" >&2 2>/dev/null || true; exit 1; }
 log "PASS: CreateBucket (rclone mkdir) via HTTP proxy created ${S3_PROBE_BUCKET}"
@@ -488,7 +496,7 @@ retry "ssh -N -L local forward" 5 tunnel_forward_check \
 log "PASS: ssh -N -L 127.0.0.1:${PORT_TUNNEL_FWD}->${C_MINIO}:9000 served MinIO health (sidecar tunnel semantics)"
 
 log "  [5/6] SFTP password auth (published port + in-net :22 via rclone)"
-SFTP_OBSCURED_PASS="$(docker run --rm --entrypoint rclone rclone/rclone obscure "$SFTP_PASSWORD")"
+SFTP_OBSCURED_PASS="$(docker run --rm --entrypoint rclone "$RCLONE_IMAGE" obscure "$SFTP_PASSWORD")"
 retry "sftp password list" 30 sftp_list \
   || { docker logs "$C_SFTP" >&2 2>/dev/null || true; exit 1; }
 log "PASS: sftp sftpuser@${C_SFTP}:22 (in-net) + 127.0.0.1:${PORT_SFTP} (published) listed home with password auth"

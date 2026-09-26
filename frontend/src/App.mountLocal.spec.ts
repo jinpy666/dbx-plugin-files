@@ -226,7 +226,7 @@ describe("mount to local UI", () => {
     expect(wrapper!.get(".wb-notice").text()).toContain("No FUSE driver on this machine");
   });
 
-  it("reports an operation failure instead of gateway copied when the webdav fallback has no clipboard bridge", async () => {
+  it("keeps the gateway URL visible when the webdav fallback has no clipboard bridge", async () => {
     Reflect.deleteProperty(window.dbxPlugin as object, "clipboard");
     mountWorkbench();
     await settle();
@@ -244,12 +244,13 @@ describe("mount to local UI", () => {
     await menuItem(workbenchMessage("en", "mountToLocal"))!.trigger("click");
     await settle();
     await confirmMountDialog();
+    // 网关 URL 是该形态下唯一的挂载入口：复制失败也必须展示出来。
     expect(wrapper!.get(".wb-notice").text()).toBe(
-      workbenchMessage("en", "operationFailed", { error: workbenchMessage("en", "featureMissing") }),
+      workbenchMessage("en", "mountGatewayNoCopy", { url: "http://127.0.0.1:54321/tok/conn/", reason: "macFUSE not detected" }),
     );
   });
 
-  it("reports an operation failure instead of gateway copied when the webdav fallback clipboard write is rejected", async () => {
+  it("keeps the gateway URL visible when the webdav fallback clipboard write is rejected", async () => {
     const clipboard = window.dbxPlugin!.clipboard as unknown as { writeText: (value: string) => Promise<void> };
     clipboard.writeText = vi.fn().mockRejectedValue(new Error("clipboard denied"));
     mountWorkbench();
@@ -269,7 +270,7 @@ describe("mount to local UI", () => {
     await settle();
     await confirmMountDialog();
     expect(wrapper!.get(".wb-notice").text()).toBe(
-      workbenchMessage("en", "operationFailed", { error: "clipboard denied" }),
+      workbenchMessage("en", "mountGatewayNoCopy", { url: "http://127.0.0.1:54321/tok/conn/", reason: "macFUSE not detected" }),
     );
   });
 

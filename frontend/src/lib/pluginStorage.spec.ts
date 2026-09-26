@@ -219,6 +219,113 @@ describe("pluginStorage hydration write ordering", () => {
   });
 });
 
+describe("pluginStorage host injection robustness", () => {
+  function hydrationBarrier() {
+    // ready 结算后进入水合、bridge.get 尚未返回的屏障：此刻的写入直写桥，
+    // 用于构造「pending 重放 vs 水合期间新写入」的竞态窗口。
+    const map = new Map<string, unknown>();
+    const hydrating = deferred<void>();
+    const releaseGet = deferred<unknown>();
+    const bridge: DbxPluginStorageBridge = {
+      get: async (key) => {
+        if (key !== "k") return null;
+        hydrating.resolve();
+        return releaseGet.promise;
+      },
+      set: async (key, value) => {
+        map.set(key, value);
+        return null;
+      },
+      delete: async (key) => {
+        map.delete(key);
+        return null;
+      },
+    };
+    return { map, hydrating, releaseGet, bridge };
+  }
+
+  it("does not replay a stale pre-ready write over a newer write made during hydration", async () => {
+    let resolveReady!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      resolveReady = resolve;
+    });
+    const { map, hydrating, releaseGet, bridge } = hydrationBarrier();
+    vi.stubGlobal("window", {
+      dbxPlugin: { ready, capabilities: {} },
+    });
+
+    const store = createPluginKvStore(["k"]);
+    store.setItem("k", "v1");
+    (window as unknown as { dbxPlugin: { capabilities: { storage: boolean }; storage: DbxPluginStorageBridge } }).dbxPlugin.capabilities.storage = true;
+    (window as unknown as { dbxPlugin: { storage: DbxPluginStorageBridge } }).dbxPlugin.storage = bridge;
+    resolveReady();
+    await hydrating.promise;
+    // 水合挂起期间的写入直写桥（v2）；flush 不得再重放 v1 盖掉它。
+    store.setItem("k", "v2");
+    releaseGet.resolve(null);
+
+    await store.ready;
+    expect(store.getItem("k")).toBe("v2");
+    expect(map.get("k")).toBe("v2");
+  });
+
+  it("does not resurrect a removed key from host hydration when removal happened before ready", async () => {
+    let resolveReady!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      resolveReady = resolve;
+    });
+    const { map, hydrating, releaseGet, bridge } = hydrationBarrier();
+    vi.stubGlobal("window", {
+      dbxPlugin: { ready, capabilities: {} },
+    });
+
+    const store = createPluginKvStore(["k"]);
+    store.removeItem("k");
+    (window as unknown as { dbxPlugin: { capabilities: { storage: boolean }; storage: DbxPluginStorageBridge } }).dbxPlugin.capabilities.storage = true;
+    (window as unknown as { dbxPlugin: { storage: DbxPluginStorageBridge } }).dbxPlugin.storage = bridge;
+    map.set("k", "host-value");
+    resolveReady();
+    await hydrating.promise;
+    releaseGet.resolve("host-value");
+
+    await store.ready;
+    expect(store.getItem("k")).toBeNull();
+    await Promise.resolve();
+    expect(map.has("k")).toBe(false);
+  });
+
+  it("adopts a host bridge injected after store creation within the ready deadline", async () => {
+    const bridge = bridgeBacking({ fav: '["late"]' });
+    vi.stubGlobal("window", {} as unknown as Window & { dbxPlugin?: unknown });
+
+    const store = createPluginKvStore(["fav"], { localStorage: null, hostReadyTimeoutMs: 2000 });
+    setTimeout(() => {
+      (window as unknown as { dbxPlugin: unknown }).dbxPlugin = {
+        ready: Promise.resolve(),
+        capabilities: { storage: true },
+        storage: bridge,
+      };
+    }, 20);
+
+    await store.ready;
+    expect(store.channel).toBe("host");
+    expect(store.getItem("fav")).toBe('["late"]');
+  });
+
+  it("settles ready to the fallback channel when the implicit host ready never resolves", async () => {
+    const fallback = memoryBacking();
+    vi.stubGlobal("window", {
+      dbxPlugin: { ready: new Promise<void>(() => undefined), capabilities: {} },
+    });
+
+    const store = createPluginKvStore(["k"], { localStorage: fallback, hostReadyTimeoutMs: 40 });
+    await expect(store.ready).resolves.toBeUndefined();
+    store.setItem("k", "after-timeout");
+    expect(store.channel).toBe("localStorage");
+    expect(fallback.getItem("k")).toBe("after-timeout");
+  });
+});
+
 describe("pluginStorage degraded channels", () => {
   it("uses localStorage synchronously when no bridge exists", async () => {
     const ls = memoryBacking({ a: "1" });
@@ -292,7 +399,7 @@ describe("pluginStorage degraded channels", () => {
     const fallback = memoryBacking({ k: "legacy" });
     vi.stubGlobal("window", {});
 
-    const store = createPluginKvStore(["k"], { localStorage: fallback });
+    const store = createPluginKvStore(["k"], { localStorage: fallback, hostReadyTimeoutMs: 30 });
     await store.ready;
 
     expect(store.channel).toBe("localStorage");

@@ -10,6 +10,7 @@ import { nextTick } from "vue";
 import App from "./App.vue";
 import FileTable from "./components/FileTable.vue";
 import SideNavPanel from "./components/SideNavPanel.vue";
+import PathField from "./components/PathField.vue";
 import { installMockHost } from "./lib/mockHost";
 import { vTip } from "./lib/tooltip";
 import { saveUiPrefs } from "./lib/prefs";
@@ -71,6 +72,10 @@ function leftPanel() {
   return wrapper!.findAllComponents(SideNavPanel).find((panel) => panel.props("side") === "left")!;
 }
 
+function PathFieldComponent() {
+  return wrapper!.getComponent(PathField);
+}
+
 function treeRow(path: string) {
   return leftPanel().findAll(".wb-tree-row").find((row) => row.attributes("title") === path);
 }
@@ -129,6 +134,27 @@ describe("side tree follows the pane directory (issue #66)", () => {
     const row = treeRow("/pictures/2024");
     expect(row).toBeDefined();
     expect(row!.classes()).toContain("is-current");
+  });
+
+  it("stays error-free and relocates when navigating after a tree refresh", async () => {
+    mountWorkbench();
+    await settle();
+    const pictures = table().props("entries").find((entry: FileEntry) => entry.path === "/pictures")!;
+    await openDirectory(pictures);
+    // 侧栏刷新：整树重建 + 在途跟随链作废（pane 停在 /pictures 不受影响）。
+    await leftPanel().findAll(".wb-side-tabs button")[3]!.trigger("click");
+    await settle();
+    // 回根后改航 /media：新跟随链定位新目录、无错误横幅，且先前展开的
+    // /pictures 链不被折叠（只展开策略）。
+    PathFieldComponent().vm.$emit("navigate", "/");
+    await settle();
+    const media = table().props("entries").find((entry: FileEntry) => entry.path === "/media")!;
+    await openDirectory(media);
+    expect(wrapper!.find(".wb-error-banner").exists()).toBe(false);
+    const row = treeRow("/media");
+    expect(row).toBeDefined();
+    expect(row!.classes()).toContain("is-current");
+    expect(treeRow("/pictures/2024")).toBeDefined();
   });
 
   it("expands and locates the current directory when switching back to the tree tab", async () => {

@@ -86,7 +86,7 @@ async function openDualPane() {
 }
 
 describe("toolbar favorite star (rclone-ui parity 收藏当前目录)", () => {
-  it("stars the current directory and persists it under the connection id", async () => {
+  it("stars the current directory, writes through to the host bridge, and unpins on toggle", async () => {
     mountWorkbench();
     await settle();
     const star = starButton();
@@ -97,6 +97,17 @@ describe("toolbar favorite star (rclone-ui parity 收藏当前目录)", () => {
     // 单栏左栏即当前连接 mock-conn，当前目录 "/"。
     expect(storedFavorites()).toEqual({ "mock-conn": ["/"] });
     expect(starButton().attributes("aria-pressed")).toBe("true");
+    // App 级写穿契约（issue #64）：直接读 mock 宿主桥的 storage 面（而非
+    // prefsStore 内存缓存），证明收藏真正落到宿主持久层。mock 桥晚于单例
+    // 创建，宿主注入轮询首个 tick 用真实时钟——waitFor 等待采纳 + flush。
+    // 本断言必须在本文件首个测试内完成：store 采纳的桥引用随首次解析缓存，
+    // 后续测试重装 mock 后读新桥会得到旧引用。
+    await vi.waitFor(async () => {
+      const persisted = (await (window.dbxPlugin!.storage as unknown as DbxPluginStorageBridge).get(FAVORITES_KEY)) as Record<string, string[]> | string | null;
+      // setItem 是 Web Storage 字符串语义：桥上为字符串原样存储。
+      const normalized = typeof persisted === "string" ? JSON.parse(persisted) : persisted;
+      expect(normalized).toEqual({ "mock-conn": ["/"] });
+    });
     // 再点取消：连接键从收藏表中移除。
     await starButton().trigger("click");
     await settle();

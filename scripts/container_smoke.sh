@@ -5,7 +5,9 @@
 #
 # 设计（合规要点）：
 # - 无任何硬编码凭据：MinIO root 凭据、Samba/WebDAV/FTP 测试账号密码、SFTP
-#   密码全部运行时随机生成，仅存在于进程环境与临时 env 文件，跑完删除；
+#   密码全部运行时随机生成，仅存在于进程环境与临时 env 文件，跑完删除
+#   （例外：MinIO 随机凭据以 rclone 连接字符串进入一次性建桶容器的 argv，
+#   一次性随机值、容器 --rm 即焚，宿主 ps 可见性可接受）；
 #   SFTP 私钥运行时生成于临时目录，公钥经容器创建时的 PUBLIC_KEY 环境变量
 #   注入（P-FILES §3 合规复现路径，不做运行时 authorized_keys 写入）。
 # - 不拼接 shell 字符串：建桶用 :s3, 连接字符串（URL 引号包裹）；WebDAV htpasswd 经
@@ -43,6 +45,10 @@ MINIO_USER="dbxsmoke"
 MINIO_PASSWORD="$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 MINIO_BUCKET="dbx-files-smoke-$(date +%s)"
 MINIO_BUCKET2="dbx-files-smoke2-$(date +%s)"
+# rclone 工具镜像钉扎：与插件自带引擎同版本（scripts/fetch-rclone.sh 的
+# v1.75.1-dbx.1），升级改为有意的 bump——本脚本修的正是上游 tag 漂移事故
+# （minio 401），工具链不再使用浮动 :latest。
+RCLONE_IMAGE="rclone/rclone:1.75.1"
 SFTP_USER="sftpuser"
 SFTP_PASSWORD="$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 SMB_USER="smoketest"
@@ -101,7 +107,7 @@ echo "==> starting MinIO (:${MINIO_PORT})"
 # bitnamilegacy/minio 保留社区版镜像归档（多架构，2025.7.23 为下架前最后
 # 日期型 tag），容器启动约定与官方镜像兼容（MINIO_ROOT_* + server /data）。
 ensure_image "bitnamilegacy/minio:2025.7.23"
-ensure_image "rclone/rclone:latest" "mirror.gcr.io/rclone/rclone"
+ensure_image "$RCLONE_IMAGE" "mirror.gcr.io/rclone/rclone:1.75.1"
 docker rm -f dbx-files-minio-test >/dev/null 2>&1 || true
 # Bitnami 镜像数据目录是 /bitnami/minio/data（entrypoint 自动建并 chown 到非
 # root 运行用户），默认 Cmd 已带 server 启动——显式追加 "server /data" 反而
@@ -132,13 +138,13 @@ echo "==> creating buckets ${MINIO_BUCKET} + ${MINIO_BUCKET2} (rclone mkdir 连�
 # 第二个桶：bucket-namespace 连接的跨桶直传覆盖（同账号 CopyObject/流式）。
 MINIO_CS=":s3,provider=Minio,access_key_id=${MINIO_USER},secret_access_key=${MINIO_PASSWORD},endpoint='http://minio:9000'"
 docker run --rm --link dbx-files-minio-test:minio \
-  rclone/rclone:latest mkdir "${MINIO_CS}:${MINIO_BUCKET}" >/dev/null
+  "$RCLONE_IMAGE" mkdir "${MINIO_CS}:${MINIO_BUCKET}" >/dev/null
 docker run --rm --link dbx-files-minio-test:minio \
-  rclone/rclone:latest mkdir "${MINIO_CS}:${MINIO_BUCKET2}" >/dev/null
+  "$RCLONE_IMAGE" mkdir "${MINIO_CS}:${MINIO_BUCKET2}" >/dev/null
 # 建桶成功性校验：mc mb 假成功坑（entrypoint 吞参静默 no-op）的历史教训，
 # rclone mkdir 失败会带非零退出，但成功后仍显式列举一遍。
 docker run --rm --link dbx-files-minio-test:minio \
-  rclone/rclone:latest lsd "${MINIO_CS}:" | grep -q "${MINIO_BUCKET}" || {
+  "$RCLONE_IMAGE" lsd "${MINIO_CS}:" | grep -q "${MINIO_BUCKET}" || {
   echo "FAIL: bucket ${MINIO_BUCKET} not created" >&2; exit 1; }
 
 echo "==> starting OpenSSH test server (:${SFTP_PORT}, 密码+密钥双认证)"
