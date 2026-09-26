@@ -168,16 +168,26 @@ impl RcdHandle {
         if let Some(env) = env {
             env.apply_to(&mut std_command);
         }
+        // The rcd keeps logging for its whole life; a piped stderr nobody
+        // drains fills at 64 KiB and rclone's log mutex then takes the whole
+        // rc server down (field hang: one walk over a directory full of
+        // non-file entries alone emits hundreds of KB of NOTICE lines). Land
+        // the log in the handle-owned temp dir instead — no pipe to drain,
+        // and the file dies with the handle. `open_0600` keeps credentials
+        // rclone may echo out of other local users' sight.
+        let log_path = temp_dir.join("rcd.log");
+        let log_file = open_0600(&log_path)?;
+        std_command.stderr(std::process::Stdio::from(log_file));
         let mut child = Command::from(std_command)
             .kill_on_drop(true)
             .spawn()
             .map_err(|error| format!("Failed to spawn {}: {error}", binary.display()))?;
 
         if let Err(error) = wait_healthy(&endpoint).await {
-            // Surface rcd's own stderr — port clashes and bad flags show up
+            // Surface rcd's own log — port clashes and bad flags show up
             // there, not in our health loop's generic timeout.
-            let stderr = drain_stderr(&mut child).await;
             let _ = child.start_kill();
+            let stderr = rcd_log_tail(&log_path);
             let _ = std::fs::remove_dir_all(&temp_dir);
             return Err(format!("rclone rcd failed to become healthy: {error}{stderr}"));
         }
@@ -583,7 +593,7 @@ fn free_loopback_port() -> Result<u16, String> {
     Ok(port)
 }
 
-fn open_0600(path: &Path) -> Result<std::fs::File, String> {
+pub(crate) fn open_0600(path: &Path) -> Result<std::fs::File, String> {
     let mut options = std::fs::OpenOptions::new();
     options.create(true).write(true).truncate(true);
     #[cfg(unix)]
@@ -622,18 +632,19 @@ async fn wait_healthy(endpoint: &RcdEndpoint) -> Result<(), String> {
     }
 }
 
-async fn drain_stderr(child: &mut Child) -> String {
-    let mut stderr = String::new();
-    if let Some(pipe) = child.stderr.take() {
-        use tokio::io::AsyncReadExt;
-        let mut pipe = pipe;
-        let _ = tokio::time::timeout(Duration::from_millis(500), pipe.read_to_string(&mut stderr))
-            .await;
-    }
-    if stderr.trim().is_empty() {
+/// Tail of the rcd log file (startup failures put the actionable line
+/// last). Same diagnostics shape the old pipe-drain produced.
+fn rcd_log_tail(log_path: &Path) -> String {
+    use std::io::Read;
+    let Ok(mut file) = std::fs::File::open(log_path) else {
+        return String::new();
+    };
+    let mut text = String::new();
+    let _ = file.read_to_string(&mut text);
+    if text.trim().is_empty() {
         String::new()
     } else {
-        format!("\nrcd stderr: {}", stderr.trim())
+        format!("\nrcd stderr: {}", text.trim())
     }
 }
 
@@ -796,6 +807,58 @@ mod tests {
             "unknown remote must surface an error, got {unknown_remote:?}"
         );
         assert!(!handle.version().await.expect("version").is_empty());
+    }
+
+    /// Field-hang regression (2026-09-27): rcd logs to a stderr pipe for its
+    /// whole life. If nobody drains it, one walk over a directory with many
+    /// non-file entries (one NOTICE line each) fills the 64 KiB pipe buffer,
+    /// rclone's log mutex blocks and the rc server goes silent for EVERYONE —
+    /// the sidecar's MCP calls then hang out their full client timeout. The
+    /// handle must pump stderr for as long as the child lives, so a walk that
+    /// floods stderr must still complete.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rcd_stays_responsive_when_a_walk_floods_stderr() {
+        let Some(binary) = resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        // 2000 walker NOTICEs at ~90 B each ≈ 180 KB: several pipe buffers'
+        // worth, so an unpumped rcd wedges mid-walk long before answering.
+        // rclone excludes non-file/dir entries from operations/list output,
+        // so one regular marker file proves the response came from this walk.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("marker.txt"), b"marker").expect("marker");
+        for i in 0..2000 {
+            let created = std::process::Command::new("mkfifo")
+                .arg(dir.path().join(format!("pipe-{i}")))
+                .status()
+                .expect("mkfifo binary");
+            assert!(created.success(), "mkfifo pipe-{i}");
+        }
+        let handle = RcdHandle::start(&binary, None)
+            .await
+            .expect("rcd should spawn");
+        let client = handle.client();
+        let list = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            client.operations_list(
+                dir.path().to_str().expect("utf8 temp path"),
+                "",
+                serde_json::json!({ "recurse": true }),
+            ),
+        )
+        .await
+        .expect("operations/list must not hang on a stderr-flooding walk")
+        .expect("operations/list must succeed");
+        let entries = list
+            .get("list")
+            .and_then(serde_json::Value::as_array)
+            .expect("list payload");
+        let marker = entries.iter().any(|entry| {
+            entry.get("Path").and_then(serde_json::Value::as_str) == Some("marker.txt")
+        });
+        assert!(marker, "marker file must be listed among the flood");
     }
 
     #[tokio::test]

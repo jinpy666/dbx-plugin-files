@@ -183,6 +183,9 @@ struct TunnelHandle {
     child: std::sync::Mutex<Child>,
     local_port: u16,
     binary: PathBuf,
+    /// Per-tunnel log dir (the forwarder's stderr lands in `ssh.log`);
+    /// removed when the handle dies. May contain host names in the log.
+    temp_dir: PathBuf,
 }
 
 impl TunnelHandle {
@@ -202,6 +205,7 @@ impl TunnelHandle {
             Err(poisoned) => poisoned.into_inner(),
         };
         let _ = child.start_kill();
+        let _ = std::fs::remove_dir_all(&self.temp_dir);
     }
 }
 
@@ -282,10 +286,25 @@ impl TunnelSupervisor {
             .clone()
             .unwrap_or_else(|| PathBuf::from(DEFAULT_SSH_BINARY));
         let mut std_command = ssh_command(&binary, spec, local_port);
+        // The forwarder may log banners and retry diagnostics for its whole
+        // life; a piped stderr nobody drains fills at 64 KiB and ssh then
+        // blocks on its next write, stalling the tunnel with it. Land the
+        // log in a handle-owned temp dir instead — no pipe to drain, and
+        // the file dies with the handle.
+        let temp_dir = std::env::temp_dir().join(format!(
+            "dbx-files-tunnel-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&temp_dir)
+            .map_err(|error| format!("cannot create tunnel log dir: {error}"))?;
+        let log_path = temp_dir.join("ssh.log");
+        let log_file = super::proc::open_0600(&log_path)
+            .map_err(|error| format!("cannot create tunnel log file: {error}"))?;
         std_command
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped());
+            .stderr(std::process::Stdio::from(log_file));
         let mut child = Command::from(std_command)
             .kill_on_drop(true)
             .spawn()
@@ -294,7 +313,7 @@ impl TunnelSupervisor {
         let deadline = tokio::time::Instant::now() + SPAWN_HEALTH_TIMEOUT;
         let outcome = loop {
             if let Ok(Some(_)) = child.try_wait() {
-                break Err(drain_stderr_tail(&mut child).await);
+                break Err(tunnel_log_tail(&log_path));
             }
             if tokio::net::TcpStream::connect(("127.0.0.1", local_port))
                 .await
@@ -306,7 +325,7 @@ impl TunnelSupervisor {
                 if matches!(child.try_wait(), Ok(None)) {
                     break Ok(());
                 }
-                break Err(drain_stderr_tail(&mut child).await);
+                break Err(tunnel_log_tail(&log_path));
             }
             sleep(SPAWN_HEALTH_INTERVAL).await;
         };
@@ -314,6 +333,7 @@ impl TunnelSupervisor {
         match outcome {
             Err(stderr_tail) => {
                 let _ = child.start_kill();
+                let _ = std::fs::remove_dir_all(&temp_dir);
                 Err(format!(
                     "ssh tunnel exited while establishing 127.0.0.1:{local_port}{stderr_tail}"
                 ))
@@ -325,6 +345,7 @@ impl TunnelSupervisor {
                         child: std::sync::Mutex::new(child),
                         local_port,
                         binary: binary.clone(),
+                        temp_dir,
                     },
                 );
                 Ok(local_port)
@@ -372,17 +393,25 @@ fn free_loopback_port() -> Result<u16, String> {
     Ok(port)
 }
 
-/// Reads the child's remaining stderr and keeps only the tail — ssh banners
-/// and diagnostics can be long, and the actionable lines (auth refusals,
-/// DNS failures) are usually last. May contain host names, never credentials.
-async fn drain_stderr_tail(child: &mut Child) -> String {
-    let mut text = String::new();
-    if let Some(pipe) = child.stderr.take() {
-        use tokio::io::AsyncReadExt;
-        let mut pipe = pipe;
-        let _ =
-            tokio::time::timeout(Duration::from_millis(500), pipe.read_to_string(&mut text)).await;
+/// Tail of the forwarder's log file — ssh banners and diagnostics can be
+/// long, and the actionable lines (auth refusals, DNS failures) are usually
+/// last. May contain host names, never credentials.
+fn tunnel_log_tail(log_path: &Path) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(log_path) else {
+        return String::new();
+    };
+    // Bound the read: only the tail can carry the actionable line.
+    let start = file
+        .metadata()
+        .map(|meta| meta.len().saturating_sub(8192))
+        .unwrap_or(0);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return String::new();
     }
+    let mut bytes = Vec::new();
+    let _ = file.read_to_end(&mut bytes);
+    let text = String::from_utf8_lossy(&bytes);
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return String::new();
