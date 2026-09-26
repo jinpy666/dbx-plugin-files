@@ -45,11 +45,12 @@ export interface ColumnPrefs {
   hidden: string[];
 }
 
-/** 列宽下限：名称 120、大小/时间 90（与交互规范一致）。 */
+/** 列宽下限：名称 120、大小 90、时间 110（"YYYY-MM-DD HH:mm" @11px 约 100px，
+ *  90px 会换行溢出 28px 行高，浏览器实测后收紧到 110）。 */
 export const COLUMN_MIN_WIDTH: Record<"name" | "size" | "modified", number> = {
   name: 120,
   size: 90,
-  modified: 90,
+  modified: 110,
 };
 export const COLUMN_MAX_WIDTH = 1200;
 

@@ -232,11 +232,14 @@ function isColumnHidden(key: ColumnKey) {
   return columns.value.hidden.includes(key);
 }
 
-/** 表头/行单元格共用同一套宽度：显式宽 + 允许窄视口收缩，下限对齐列最小宽。 */
+/** 表头/行单元格共用同一套宽度：显式宽 + 允许窄视口收缩，下限对齐列最小宽。
+ *  名称列是内容锚点，flex-grow 吸收宽面板剩余空间（对标 WinSCP/Finder：名称
+ *  撑满、大小/时间固定宽靠右），避免宽屏下表格右侧大片空白；窄视口仍按
+ *  basis 收缩到最小宽，双栏行为不变。 */
 function cellStyle(key: ColumnKey) {
   return {
     width: `${columnWidths.value[key]}px`,
-    flex: "0 1 auto",
+    flex: key === "name" ? `1 1 ${columnWidths.value[key]}px` : "0 1 auto",
     minWidth: `${COLUMN_MIN_WIDTH[key]}px`,
   };
 }
@@ -426,7 +429,7 @@ function onResizeEnd() {
           <span :title="entry.path">{{ entry.displayName ?? entry.name }}</span>
         </span>
         <span v-if="!isColumnHidden('size')" class="wb-numeric" :style="cellStyle('size')">{{ entry.kind === "directory" ? "" : formatBytes(entry.size) }}</span>
-        <span v-if="!isColumnHidden('modified')" class="wb-muted" :style="{ ...cellStyle('modified'), fontSize: '11px' }">{{ formatTime(entry.modifiedAt) }}</span>
+        <span v-if="!isColumnHidden('modified')" class="wb-muted" :style="{ ...cellStyle('modified'), fontSize: '11px', whiteSpace: 'nowrap', overflow: 'hidden' }">{{ formatTime(entry.modifiedAt) }}</span>
       </div>
       <!-- 加载骨架屏（A-FILES ④d）：与行同高的 shimmer 占位 -->
       <template v-if="loading">

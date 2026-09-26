@@ -111,7 +111,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-file-pane { position: relative; display: flex; flex: 1 1 auto; min-height: 0; flex-direction: column; }
 .wb-file-header { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); padding: 3px 10px; color: var(--muted-foreground); font-size: 11px; }
 .wb-file-header .wb-col-name { flex: 1 1 auto; min-width: 0; }
-.wb-file-header button { border: 0; background: transparent; cursor: pointer; color: inherit; padding: 0; }
+.wb-file-header button { border: 0; background: transparent; cursor: pointer; color: inherit; padding: 0; text-align: inherit; }
 .wb-file-scroll { position: relative; flex: 1 1 auto; overflow-y: auto; min-height: 0; }
 .wb-file-spacer { width: 100%; pointer-events: none; }
 /* pointer-events 为继承属性：spacer 关掉命中是为了让空白区域落到 scroll 上，
