@@ -224,7 +224,7 @@ connectionId 时全量列出（调用时仍有只读门拒绝，纵深防御）�
 | `files_cursor_next` | `cursorId` 必填；`n?`（≤20，缺省 20）、`offset?`（缺省续读） | digest 会话翻页：只取 `{path}` 定位行，条件不重发、远端不重扫。会话 TTL 10 分钟、LRU ≤8、物化上限 1 万行；过期报错建议重发 digest（报文携带实际生效 TTL） |
 | `files_write` | `connectionId`、`path`、`dataBase64` 必填 | 单阶段直执行；硬上限 4 MiB（沿用 inline 写上限），**MCP 侧建议 ≤1 MiB**，超出返回 hint 引导走工作台/传输通道；`dataBase64` 允许空串（建空文件，与工作台写路径同语义），非标准 base64 报错并点名 RFC 4648 格式；审计 `source:"mcp"` |
 | `files_mkdir` | `connectionId`、`path` 必填 | 单阶段直执行（mkdir -p 语义）；审计 `source:"mcp"` |
-| `files_rename` | `connectionId`、`path`、`newPath` 必填 | 单阶段直执行；目录 rename 降级异步 copy+delete job（返回 jobId）；审计 `source:"mcp"` |
+| `files_rename` | `connectionId`、`path`、`newPath` 必填 | 单阶段直执行（rclone movefile 原生执行）；**不支持目录 rename**——rclone 直接回自身错误，目录改名请走工作台 dir-rename 或 `files_sync`（描述与实现漂移已按 2026-09-26 审查修正，偏差记录见 tools.rs）；审计 `source:"mcp"` |
 | `files_delete` | `connectionId`、`path` 必填；`confirmToken?` | 强制两阶段，见下节 |
 | `files_purge` | `connectionId`、`path` 必填；`confirmToken?` | 强制两阶段；**拒绝连接根与 `/`**（§8.2 红线，与工作台同源判定） |
 | `files_sync` | `sourceConnectionId`、`sourcePath`、`targetConnectionId`、`targetPath` 必填；`sync?`（缺省 false）、`dryRun?`（缺省 false）、`maxDelete?` | 跨连接目录同步/复制（§8.4，委托 `files/syncDir|copyDir` 入队，增量 size+mtime 对比跳过未变文件）。`sync:true` 镜像删除——**目标上源里没有的文件会被删除**（rclone sync 语义；目标须 `allow_delete`，dryRun 也不例外）。`dryRun:true` 只规划对比：不复制不删除，产出一次摘要事件，**建议任何 `sync:true` 前先跑一次**。`maxDelete` 限制镜像删除数量，超出即熔断中止。返回 `{jobId}`，轮询 `files/transfer/status`。异步 job 走 DBX 事件通道：仅工作台/桥可用，**stdio 模式显式拒绝**。双连接工具不受单一连接只读清单过滤影响（只读/删除门在调用时按目标连接执行，与工作台同源） |

@@ -10,6 +10,14 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+/// M2 (review FILES-M2): per-read idle timeout for transfer bodies (staged
+/// uploads, pumped downloads). It bounds "no bytes moving" only — a
+/// multi-GB transfer keeps flowing as long as chunks keep arriving, so
+/// large files still have no total wall-clock cap. Without it a wedged rcd
+/// hung the job forever and a cancel could not interrupt the pending
+/// read/write.
+pub const TRANSFER_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+
 #[derive(Debug)]
 pub enum RcError {
     /// Transport-level failure (connection refused, timeout, body read).
@@ -20,6 +28,12 @@ pub enum RcError {
     Rclone { message: String },
     /// 200 with an unparsable body.
     Malformed(String),
+    /// The peer stopped moving bytes for [`TRANSFER_IDLE_TIMEOUT`] (rcd
+    /// wedged or connection dead). Kept distinct so callers can recognize
+    /// an idle timeout without string matching; the download pump's cancel
+    /// check still runs on the error path, so a cancel racing the stall is
+    /// classified as Canceled, not Failed.
+    Stalled(String),
 }
 
 impl RcError {
@@ -80,6 +94,7 @@ impl std::fmt::Display for RcError {
             RcError::Http { status, body } => write!(f, "rc http {status}: {}", truncate(body)),
             RcError::Rclone { message } => write!(f, "{message}"),
             RcError::Malformed(body) => write!(f, "rc returned malformed JSON: {}", truncate(body)),
+            RcError::Stalled(message) => write!(f, "{message}"),
         }
     }
 }
@@ -412,12 +427,16 @@ impl RcClient {
     /// and report it back — the answer is `{"addr": "127.0.0.1:<port>",
     /// "id": "http-<suffix>"}`. `serve_type` is a bare serve family name
     /// ("http" / "webdav"); the full fs path (named remote included) goes
-    /// into `fs` verbatim.
+    /// into `fs` verbatim. `baseurl` (review FILES-H1) prefixes every served
+    /// URL with a random `/<token>/` path segment — requests without it are
+    /// answered 404, so the anonymous serve instance is gated exactly like
+    /// the local-mount WebDAV gateway (webdav_gateway.rs).
     pub async fn serve_start(
         &self,
         fs: &str,
         serve_type: &str,
         addr: &str,
+        baseurl: &str,
     ) -> Result<Value, RcError> {
         self.call(
             "serve/start",
@@ -425,6 +444,7 @@ impl RcClient {
                 "type": serve_type,
                 "fs": fs,
                 "addr": addr,
+                "baseurl": baseurl,
             }),
         )
         .await
@@ -603,14 +623,26 @@ impl RcClient {
             encode_query_component(fs),
             encode_query_component(remote)
         );
-        let response = self
-            .http
-            .post(url)
-            .basic_auth(&self.user, Some(&self.pass))
-            .multipart(form)
-            .send()
-            .await
-            .map_err(RcError::Transport)?;
+        // M2 (review FILES-M2): the streaming send rides the idle timeout —
+        // rcd wedged mid-body used to hang the upload job forever. The
+        // timeout spans "no bytes moved", not the whole upload, so large
+        // files keep their unbounded total.
+        let response = tokio::time::timeout(
+            TRANSFER_IDLE_TIMEOUT,
+            self.http
+                .post(url)
+                .basic_auth(&self.user, Some(&self.pass))
+                .multipart(form)
+                .send(),
+        )
+        .await
+        .map_err(|_| {
+            RcError::Stalled(format!(
+                "upload to '{remote}' stalled: no bytes moved for {TRANSFER_IDLE_TIMEOUT:?} \
+                 (rcd wedged or connection dead)"
+            ))
+        })?
+        .map_err(RcError::Transport)?;
         let status = response.status();
         let body = response.text().await.map_err(RcError::Transport)?;
         if !status.is_success() {
@@ -633,6 +665,70 @@ impl RcClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review FILES-H1 live regression: `serve/start` with
+    /// `baseurl=/<token>` must 404 every request that skips the token
+    /// prefix (the anonymous instance must not even reveal itself) and
+    /// serve exact bytes under `/{token}/...`. Skips silently when no
+    /// rclone binary is available.
+    #[tokio::test]
+    async fn live_serve_start_token_gates_anonymous_downloads() {
+        let Some(binary) = super::super::proc::resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        // Same ownership discipline as the bytes_channel tests: dropping the
+        // handle kills rcd and its serve instances.
+        let rcd = super::super::proc::RcdHandle::start(&binary, None)
+            .await
+            .expect("rcd should spawn");
+        let client = rcd.client();
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("token-gate.txt"), b"payload").expect("fixture");
+
+        let token = "tok1234567890";
+        let answer = client
+            .serve_start(
+                &dir.path().to_string_lossy(),
+                "http",
+                "127.0.0.1:0",
+                &format!("/{token}"),
+            )
+            .await
+            .expect("serve/start with baseurl");
+        let addr = answer
+            .get("addr")
+            .and_then(Value::as_str)
+            .expect("serve addr")
+            .to_string();
+
+        // No redirects: a redirect-to-token answer would defeat the gate.
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("static client options");
+        let bare = http
+            .get(format!("http://{addr}/token-gate.txt"))
+            .send()
+            .await
+            .expect("bare request reaches the loopback listener");
+        assert_eq!(
+            bare.status(),
+            reqwest::StatusCode::NOT_FOUND,
+            "path without token must not serve"
+        );
+        let gated = http
+            .get(format!("http://{addr}/{token}/token-gate.txt"))
+            .send()
+            .await
+            .expect("tokened request");
+        assert_eq!(gated.status(), reqwest::StatusCode::OK, "{:?}", gated.status());
+        assert_eq!(
+            gated.bytes().await.expect("body").as_ref(),
+            b"payload",
+            "tokened URL serves exact bytes"
+        );
+    }
 
     /// Issue #46: the source-chain walker must surface the deepest cause and
     /// skip the generic reqwest wrapper text it already shows in Display.

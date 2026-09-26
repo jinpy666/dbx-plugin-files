@@ -262,9 +262,26 @@ impl PathPolicy {
 }
 
 /// Normalizes a configured root into canonical absolute form.
+///
+/// Windows drive-letter roots (`C:\data`, `C:\`) use `\` as separator —
+/// `sanitize` rejects backslashes everywhere else, so without the drive-form
+/// pre-normalization such roots silently fell back to `/` and `lock_to_root`
+/// became a no-op (`C:\data` and `C:/data` behaved differently with no
+/// warning; review FILES-M3). Drive-form input is backslash-normalized to
+/// `/` first, so both spellings canonicalize identically and the lock
+/// applies.
 fn canonical_root(root: &str) -> String {
     let trimmed = root.trim_end_matches('/');
-    let canonical = sanitize(trimmed).unwrap_or_else(|_| "/".to_string());
+    let is_drive_form = {
+        let bytes = trimmed.as_bytes();
+        bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+    };
+    let normalized = if is_drive_form {
+        trimmed.replace('\\', "/")
+    } else {
+        trimmed.to_string()
+    };
+    let canonical = sanitize(&normalized).unwrap_or_else(|_| "/".to_string());
     if canonical.is_empty() {
         "/".to_string()
     } else {
@@ -794,6 +811,36 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Review FILES-M3 regression: a Windows drive-letter root written with
+    /// backslashes (`C:\data`) used to be rejected by sanitize and silently
+    /// fall back to `/`, making `lock_to_root` a no-op. Drive-form input
+    /// must backslash-normalize to the exact same canonical root as its
+    /// forward-slash spelling, and the lock must actually lock.
+    #[test]
+    fn windows_drive_root_normalizes_and_lock_to_root_applies() {
+        let backslash = PathPolicy::from_parts("C:\\data", true, false, true);
+        let forward = PathPolicy::from_parts("C:/data", true, false, true);
+        // Both spellings canonicalize identically (`/C:/data`)...
+        assert_eq!(backslash.root, forward.root, "{:?} vs {:?}", backslash.root, forward.root);
+        assert_eq!(backslash.root, "/C:/data");
+        // ...and the lock holds: under-root paths pass, outside paths fail
+        // (before the fix every absolute path passed because root fell
+        // back to "/").
+        assert!(backslash.resolve("sub/f").is_ok());
+        assert!(backslash.resolve("/C:/data/sub/f").is_ok());
+        assert!(backslash.resolve("/C:/elsewhere").is_err());
+        assert!(backslash.resolve("/C:/datax").is_err());
+        assert_eq!(forward, backslash);
+        // Bare drive root (`C:\` == `C:/`): also normalized, still locked —
+        // the bare drive root scopes the whole drive, so anything under
+        // `C:/` passes while other drives are refused.
+        let bare = PathPolicy::from_parts("C:\\", true, false, true);
+        assert_eq!(bare.root, "/C:");
+        assert!(bare.resolve("f").is_ok());
+        assert!(bare.resolve("/C:/other/f").is_ok());
+        assert!(bare.resolve("/D:/elsewhere").is_err());
     }
 
     #[test]

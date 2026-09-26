@@ -96,6 +96,42 @@ impl std::fmt::Debug for RcdHandle {
     }
 }
 
+/// Builds the raw `rclone rcd` command for [`RcdHandle::start`]. Split out
+/// so tests can pin the security-relevant argv/env shape.
+///
+/// M1 (review FILES-M1): rc credentials ride the rclone environment-variable
+/// spelling of the flags (`--rc-user` → `RCLONE_RC_USER`, read back by rclone
+/// case-insensitively) instead of argv — same-host users can `ps` argv, the
+/// child env is not exposed that way. Both spellings are set (same value)
+/// following the [`RcdEnv`] convention. Only `--rc-addr`/`--config` and
+/// behavioral flags stay in argv.
+fn build_rcd_command(
+    binary: &Path,
+    endpoint: &RcdEndpoint,
+    port: u16,
+    config_path: &Path,
+) -> std::process::Command {
+    let mut command = std::process::Command::new(binary);
+    command
+        .arg("rcd")
+        .arg(format!("--rc-addr=127.0.0.1:{port}"))
+        // Byte streaming for downloads (GET /{remote:}/{path}).
+        .arg("--rc-serve")
+        .arg(format!("--config={}", config_path.display()))
+        .arg("--log-level=INFO")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    for (upper, lower, value) in [
+        ("RCLONE_RC_USER", "rclone_rc_user", endpoint.user.as_str()),
+        ("RCLONE_RC_PASS", "rclone_rc_pass", endpoint.pass.as_str()),
+    ] {
+        command.env(upper, value);
+        command.env(lower, value);
+    }
+    command
+}
+
 impl RcdHandle {
     /// Spawns rcd and waits until `rc/noopauth` answers.
     ///
@@ -128,19 +164,7 @@ impl RcdHandle {
             pass: Uuid::new_v4().simple().to_string(),
         };
 
-        let mut std_command = std::process::Command::new(binary);
-        std_command
-            .arg("rcd")
-            .arg(format!("--rc-addr=127.0.0.1:{port}"))
-            .arg(format!("--rc-user={}", endpoint.user))
-            .arg(format!("--rc-pass={}", endpoint.pass))
-            // Byte streaming for downloads (GET /{remote:}/{path}).
-            .arg("--rc-serve")
-            .arg(format!("--config={}", config_path.display()))
-            .arg("--log-level=INFO")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped());
+        let mut std_command = build_rcd_command(binary, &endpoint, port, &config_path);
         if let Some(env) = env {
             env.apply_to(&mut std_command);
         }
@@ -793,6 +817,44 @@ mod tests {
             assert!(error.contains("older than the required"), "{error}");
         }
         let _ = &dir;
+    }
+
+    /// Review FILES-M1 regression: rc credentials must ride the child env
+    /// (both spellings, rclone reads flag env vars case-insensitively) and
+    /// never appear in argv — a same-host `ps` would otherwise expose the
+    /// rc basic-auth pair that guards `config/dump`.
+    #[test]
+    fn rcd_command_keeps_credentials_out_of_argv() {
+        let endpoint = RcdEndpoint {
+            base_url: "http://127.0.0.1:12345".to_string(),
+            user: "user123".to_string(),
+            pass: "pass456".to_string(),
+        };
+        let command = build_rcd_command(Path::new("/usr/bin/rclone"), &endpoint, 12345, Path::new("/tmp/rclone.conf"));
+        let joined = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            !joined.contains("rc-user") && !joined.contains("rc-pass"),
+            "credentials leaked into argv: {joined}"
+        );
+        assert!(joined.contains("--rc-addr=127.0.0.1:12345"), "{joined}");
+        let mut envs: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for (key, value) in command.get_envs() {
+            if let Some(value) = value {
+                envs.insert(
+                    key.to_string_lossy().to_ascii_uppercase(),
+                    value.to_string_lossy().into_owned(),
+                );
+            }
+        }
+        // Uppercase projection collapses the two spellings on Windows and
+        // proves both were set on Unix.
+        assert_eq!(envs.get("RCLONE_RC_USER").map(String::as_str), Some("user123"));
+        assert_eq!(envs.get("RCLONE_RC_PASS").map(String::as_str), Some("pass456"));
     }
 
     #[test]

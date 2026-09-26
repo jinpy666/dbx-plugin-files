@@ -1675,7 +1675,8 @@ mod tests {
 
     /// 本机共享 live 冒烟（serve/start → 回环 GET → serve/list → serve/stop，
     /// 实测锚点 rclone v1.75.1）：端口 0 让 rcd 自动挑空闲回环端口并回传
-    /// 实际地址；用 std TcpStream 直取文件内容证明分享真的可用。
+    /// 实际地址；用 std TcpStream 直取文件内容证明分享真的可用。审查
+    /// FILES-H1 后 serve 挂 baseurl token：GET 必须带 `/{token}/` 前缀。
     #[tokio::test]
     async fn serve_start_fetch_and_stop_roundtrip() {
         let Some(binary) = resolve_binary() else {
@@ -1686,9 +1687,15 @@ mod tests {
         let dir = tempfile::tempdir().expect("serve tempdir");
         write_file(&dir.path().join("hello.txt"), "serve-sentinel");
 
+        let serve_token = "tok-roundtrip";
         let answer = rcd
             .client()
-            .serve_start(&dir.path().to_string_lossy(), "http", "127.0.0.1:0")
+            .serve_start(
+                &dir.path().to_string_lossy(),
+                "http",
+                "127.0.0.1:0",
+                &format!("/{serve_token}"),
+            )
             .await
             .expect("serve/start");
         let serve_id = answer
@@ -1704,7 +1711,7 @@ mod tests {
         assert!(serve_id.starts_with("http-"), "unexpected id {serve_id}");
         assert!(addr.starts_with("127.0.0.1:"), "unexpected addr {addr}");
 
-        let body = http_get(&addr, "/hello.txt");
+        let body = http_get(&addr, &format!("/{serve_token}/hello.txt"));
         assert_eq!(body, "serve-sentinel");
 
         let list = rcd.client().serve_list().await.expect("serve/list");

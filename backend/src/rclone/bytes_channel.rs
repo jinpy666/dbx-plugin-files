@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
-use super::rc::{RcClient, RcError};
+use super::rc::{RcClient, RcError, TRANSFER_IDLE_TIMEOUT};
 use crate::model::TRANSFER_CHUNK_SIZE;
 
 // ---------------------------------------------------------------------------
@@ -85,12 +85,16 @@ impl UploadStaging {
                 cleaned_task,
                 uuid::Uuid::new_v4().simple()
             ));
-            match std::fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&path)
+            // 0600（审查 FILES-L2，与 ops::stage_bytes 同一线）：上传暂存
+            // 文件持有远端写入载荷，不允许落成 0644 的 umask 默认权限。
+            let mut options = std::fs::OpenOptions::new();
+            options.create(true).write(true).truncate(true);
+            #[cfg(unix)]
             {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            match options.open(&path) {
                 Ok(file) => {
                     return Ok(Self {
                         task_id: task_id.to_string(),
@@ -316,6 +320,26 @@ fn split_remote(remote: &str) -> (&str, &str) {
 // Download pump
 // ---------------------------------------------------------------------------
 
+/// One `Response::chunk` read under a read-idle timeout (M2, review
+/// FILES-M2): a wedged rcd used to hang the pump on `chunk().await`
+/// forever — the job stayed running, and the cooperative cancel flag could
+/// not interrupt a pending read. `timeout` is [`TRANSFER_IDLE_TIMEOUT`] in
+/// production; tests pass a short value. Only "no bytes moving" is
+/// bounded, never the total (large files keep streaming).
+async fn read_chunk_with_idle_timeout<T>(
+    timeout: std::time::Duration,
+    wait: impl std::future::Future<Output = reqwest::Result<T>>,
+    remote: &str,
+) -> Result<T, String> {
+    match tokio::time::timeout(timeout, wait).await {
+        Ok(result) => result.map_err(|error| format!("Failed to read '{remote}': {error}")),
+        Err(_) => Err(format!(
+            "download of '{remote}' stalled: no bytes received for {timeout:?} \
+             (rcd wedged or connection dead)"
+        )),
+    }
+}
+
 /// Streams `fs:remote` through rcd's rc-serve GET and hands the body to
 /// `on_chunk` in slices of at most [`TRANSFER_CHUNK_SIZE`] bytes (network
 /// chunks are variable-sized, so they are re-aggregated). Returns the total
@@ -331,10 +355,11 @@ pub async fn download_pump(
     let mut buffer: Vec<u8> = Vec::with_capacity(TRANSFER_CHUNK_SIZE);
     let mut total: u64 = 0;
     loop {
-        let chunk = response
-            .chunk()
-            .await
-            .map_err(|error| format!("Failed to read '{remote}': {error}"))?;
+        // M2 idle timeout: if rcd stops sending, the pump errors out and the
+        // wiring layer's cancel flag gets its turn on the error path (a
+        // cancel racing the stall is classified Canceled, not Failed).
+        let chunk =
+            read_chunk_with_idle_timeout(TRANSFER_IDLE_TIMEOUT, response.chunk(), remote).await?;
         let Some(chunk) = chunk else { break };
         total += chunk.len() as u64;
         buffer.extend_from_slice(&chunk);
@@ -540,6 +565,54 @@ mod tests {
         assert_eq!(split_remote("dir/sub/file.bin"), ("dir/sub", "file.bin"));
         assert_eq!(split_remote("file.bin"), ("", "file.bin"));
         assert_eq!(split_remote("dir/"), ("dir", ""));
+    }
+
+    /// Review FILES-M2: a pending body read must abort at the idle timeout
+    /// with the stall error (production uses TRANSFER_IDLE_TIMEOUT = 90s;
+    /// the test passes 20ms). The wiring layer re-checks its cancel flag on
+    /// this error path, so a cancel racing the stall wins the Canceled
+    /// classification.
+    #[tokio::test]
+    async fn idle_timeout_aborts_a_pending_chunk_read() {
+        let error = read_chunk_with_idle_timeout(
+            std::time::Duration::from_millis(20),
+            std::future::pending::<reqwest::Result<()>>(),
+            "'stalled.bin'",
+        )
+        .await
+        .expect_err("pending read must hit the idle timeout");
+        assert!(error.contains("stalled"), "{error}");
+        assert!(error.contains("stalled.bin"), "{error}");
+    }
+
+    /// A completed read passes through unchanged (the timeout only bounds
+    /// inactivity, it must not corrupt successful transfers).
+    #[tokio::test]
+    async fn idle_timeout_passes_through_completed_reads() {
+        let value = read_chunk_with_idle_timeout(
+            std::time::Duration::from_secs(5),
+            std::future::ready::<reqwest::Result<()>>(Ok(())),
+            "'ok.bin'",
+        )
+        .await
+        .expect("completed read must pass through");
+        assert_eq!(value, ());
+    }
+
+    /// Review FILES-L2: upload staging files are created 0600 (same red
+    /// line as ops::stage_bytes), not the umask default 0644.
+    #[cfg(unix)]
+    #[test]
+    fn staging_file_is_created_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let staging = UploadStaging::start("unit-0600", 0).expect("start");
+        let meta = std::fs::metadata(staging.staging_path()).expect("metadata");
+        assert_eq!(
+            meta.permissions().mode() & 0o777,
+            0o600,
+            "staging file permissions"
+        );
+        staging.abort();
     }
 
     // -- live tests (real rcd) -------------------------------------------

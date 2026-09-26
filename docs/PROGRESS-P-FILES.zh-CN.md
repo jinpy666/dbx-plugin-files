@@ -1946,3 +1946,54 @@ cargo-zigbuild 低 glibc 基线 + `CGO_ENABLED=0`；`validate_artifact_set.py`
   宿主端强制（单值 256 KiB / 总量 1 MiB / 1024 键），超限仅 console.warn；
   老宿主（Host API < 1.2）自动降级 guarded localStorage，行为等同迁移前。
   真机复验建议随下一次 .dbxp 出包一起做（改排序/侧栏/收藏 → 重启确认恢复）。
+
+## 2026-09-26 审查修复（族审查报告 FILES-H1/M1–M5/L2/L5）
+
+对应 `shared/REVIEW-FAMILY-2026-09-26.zh-CN.md` files 部分，全部在
+`backend/src/`（另同步协议文档 `docs/MCP.zh-CN.md` 的 files_rename 行）：
+
+- **FILES-H1（serve 无鉴权）**：`files/serve/start` 每次生成 256-bit 随机
+  token（复用 `mount::random_token`，与 WebDAV 网关同构），经 rc
+  `serve/start` 的 `baseurl` 挂到 URL 路径前缀（`http://127.0.0.1:p/<token>/`）；
+  rclone baseurl 中间层对不带 token 的路径一律 404（实测 v1.75.1：bare 404 /
+  错 token 404 / 带 token 200）。`serves` 登记表改为 `ServeEntry`
+  （connection_id/serve_type/token），serve/start、serve/list 返回的 URL 均
+  经单点 `serve_url()` 拼接；token 不进审计、不进日志。
+- **FILES-M1（rcd 凭据走 argv）**：抽 `build_rcd_command()`，`--rc-user/
+  --rc-pass` 从 argv 移除，改注 `RCLONE_RC_USER/RCLONE_RC_PASS` 环境变量
+  （双拼写，沿用 RcdEnv 惯例）；实测正确凭据 200、错误/缺失凭据 401，认证
+  真实生效。
+- **FILES-M2（传输零超时）**：新增 `rc::TRANSFER_IDLE_TIMEOUT`（90s 读空闲）
+  + `RcError::Stalled` 变体；下载 pump 的 `response.chunk().await` 与流式
+  上传 `send()` 均包空闲超时，rcd 卡死不再永久悬挂、超时后错误路径重读取消
+  标志（取消竞速归 Canceled 而非 Failed），大文件无总时长上限语义保留。
+- **FILES-M3（Windows 反斜杠根路径）**：`canonical_root` 识别盘符形态
+  （`C:\data`/`C:\`）先归一 `\`→`/` 再 sanitize，`C:\data` 与 `C:/data`
+  规范化为同一 `/C:/data`，lock_to_root 真正生效（修复前静默回落 `/`）。
+- **FILES-M4（files_rename 描述漂移）**：MCP 工具描述改为实际行为（目录
+  rename 不降级 job，rclone movefile 直回错误；目录改名走工作台/
+  files_sync），与 tools.rs 偏差注释一致；`docs/MCP.zh-CN.md` 同步。
+- **FILES-M5（审计盲区）**：补 `files/write` 内联写、`files/mkdir`、
+  `files/rmdir`、`finish_rclone_upload` 成功分支（按 task.remote，action
+  `files/upload`）、remote_edit 回传成功（store 穿透 open_task→watch_loop→
+  sync_back，action `files/remote-edit`）；形状与既有 delete/purge 审计一致，
+  审计投影测试（无凭据字样断言）保持通过。
+- **FILES-L2**：`UploadStaging::start` 暂存文件补 `#[cfg(unix)] mode(0o600)`
+  （与 ops::stage_bytes 同线）。
+- **FILES-L5**：`files/serve/stop` 登记表未命中直接幂等成功返回（含审计），
+  不再转发 rc 调用——表外 id 可能归属其他连接；命中但归属不符仍显式报错。
+
+**测试**：`cargo test` 469 全绿（含 live rcd 用例；新增
+`rcd_command_keeps_credentials_out_of_argv`、
+`live_serve_start_token_gates_anonymous_downloads`、
+`serve_url_carries_random_token_prefix`、`windows_drive_root_normalizes_and_
+lock_to_root_applies`、`idle_timeout_aborts_a_pending_chunk_read`、
+`idle_timeout_passes_through_completed_reads`、`staging_file_is_created_0600`；
+既有 `serve_start_fetch_and_stop_roundtrip` 按 token 行为更新）；
+release sidecar framed smoke `PASS 78 / SKIP 6 / FAIL 0`，MCP smoke
+`total=31 PASS=24 FAIL=0 SKIP=7`（SKIP 均为容器节，环境无容器凭据）。
+
+**遗留风险**：serve token 只在进程内存，rcd 重启后 serve 实例消失、登记表
+由 serve/list 自清，token 生命周期与实例一致；`baseurl` 为 rclone serve
+http/webdav 官方参数（live 验证 v1.75.1），rclone 未来若改 baseurl 匹配
+语义（如 404→重定向）需回归 live 用例。

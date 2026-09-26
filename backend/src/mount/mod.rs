@@ -326,7 +326,10 @@ fn mount_hint(strategy: &str, mount_point: &Path) -> String {
     }
 }
 
-fn random_token() -> String {
+/// 256-bit URL path token（两个 v4 uuid）。WebDAV 网关与 `files/serve/*`
+/// 共用同一构造（审查 FILES-H1：serve 的 URL 前缀 token 与网关同构）——
+/// 只活在进程内存，绝不落盘或进日志。
+pub(crate) fn random_token() -> String {
     // Two v4 uuids = 256 bits of path token; it never leaves process memory
     // (docs/MOUNT.zh-CN.md §2.5).
     format!(

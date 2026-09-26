@@ -46,6 +46,25 @@ use tokio::runtime::Runtime;
 use model::StoredConnection;
 use store::Store;
 
+/// One `files/serve/*` registration row (serveId → entry): owning connection,
+/// serve family, and the random URL token that gates the anonymous rcd serve
+/// instance (review FILES-H1 — same shape as the mount WebDAV gateway's
+/// 256-bit path token; it never leaves process memory, so it is not logged
+/// and never lands in audit records).
+#[derive(Debug, Clone)]
+struct ServeEntry {
+    connection_id: String,
+    serve_type: String,
+    token: String,
+}
+
+/// Serve URL assembly, single choke point (both `serve/start` and
+/// `serve/list` answers must carry the `/{token}/` prefix; requests without
+/// it are 404'd by rclone's baseurl handling).
+fn serve_url(addr: &str, token: &str) -> String {
+    format!("http://{addr}/{token}/")
+}
+
 struct Plugin {
     runtime: Runtime,
     rclone: Arc<rclone::RcloneEngine>,
@@ -63,11 +82,12 @@ struct Plugin {
     /// `files/about` usage cache keyed by connectionId (60s TTL) — the
     /// sidebar renders it on every pane load and rc about is not free.
     about_cache: std::sync::Mutex<HashMap<String, (std::time::Instant, Value)>>,
-    /// 本机共享（files/serve/*）：serveId → (connectionId, serveType) 登记表。
-    /// serve 实例本身活在 rcd 进程里（rcd 死掉即随之消失），此表只做归属
-    /// 记账；serve/list 以 rc 的活跃 id 集合清理陈旧条目。同一 std-Mutex
-    /// 短临界区纪律（不持锁 await）。
-    serves: std::sync::Mutex<HashMap<String, (String, String)>>,
+    /// 本机共享（files/serve/*）：serveId → ServeEntry 登记表。serve 实例
+    /// 本身活在 rcd 进程里（rcd 死掉即随之消失），此表只做归属记账 +
+    /// 保存 URL token 前缀（serve/list 重新拼 URL 需要）。serve/list 以
+    /// rc 的活跃 id 集合清理陈旧条目。同一 std-Mutex 短临界区纪律（不持
+    /// 锁 await）。
+    serves: std::sync::Mutex<HashMap<String, ServeEntry>>,
     /// Remote-edit sessions (`files/remote-edit/*`, 打开方式): session key →
     /// live edit session. Same std-Mutex discipline — the watcher loops and
     /// the RPC arms only flip short bookkeeping fields under the lock.
@@ -126,7 +146,7 @@ impl Plugin {
         let mounts: mount::MountTable = Arc::new(std::sync::Mutex::new(HashMap::new()));
         let about_cache: std::sync::Mutex<HashMap<String, (std::time::Instant, Value)>> =
             std::sync::Mutex::new(HashMap::new());
-        let serves: std::sync::Mutex<HashMap<String, (String, String)>> =
+        let serves: std::sync::Mutex<HashMap<String, ServeEntry>> =
             std::sync::Mutex::new(HashMap::new());
         let mut mcp = mcp::Mcp::new(data_dir);
         // The rclone engine is the only engine: the MCP storage tools route
@@ -518,6 +538,9 @@ impl Plugin {
                     .await?;
                     // P2 决策缓存失效：新文件出现在其父目录列表里。
                     self.list_cache.invalidate_around(&request.connection_id, &remote);
+                    // 审查 FILES-M5：写副作用必落审计（与 MCP files_write
+                    // 同 action；读路径不需要）。
+                    self.audit_id(&request.connection_id, "files/write", &request.path, "ok")?;
                     Ok(json!({ "success": true }))
                 }
             }
@@ -570,6 +593,9 @@ impl Plugin {
                             binding.lock_to_root,
                         )
                         .await?;
+                        // 审查 FILES-M5：mkdir 副作用落审计（与 MCP
+                        // files_mkdir 同 action）。
+                        self.audit_id(&request.connection_id, "files/mkdir", &request.path, "ok")?;
                     }
                     "files/rmdir" => {
                         // Double gate (write + delete: read_only rejects,
@@ -584,6 +610,9 @@ impl Plugin {
                             binding.lock_to_root,
                         )
                         .await?;
+                        // 审查 FILES-M5：rmdir 副作用落审计（delete/purge
+                        // 同源）。
+                        self.audit_id(&request.connection_id, "files/rmdir", &request.path, "ok")?;
                     }
                     "files/delete" => {
                         ensure_binding_deletable(&binding)?;
@@ -1654,9 +1683,11 @@ impl Plugin {
             }
             // ------------------------------------------------------------------
             // 本机共享（对标 rclone serve 家族）：把远端目录经 rcd 的 serve/start
-            // 以 HTTP/WebDAV 暴露给本机应用。serve 端点无鉴权，因此两条硬边界：
-            // 只绑 127.0.0.1 回环、只开放 http/webdav 两类（ftp/sftp/nfs 等
-            // 暴露面更大，一律拒绝）。
+            // 以 HTTP/WebDAV 暴露给本机应用。serve 实例本身匿名（无 HTTP 认证），
+            // 鉴权靠随机 URL token 前缀（审查 FILES-H1，与 mount WebDAV 网关
+            // 的 256-bit token 同构：baseurl=/token，路径不带 token 一律 404）。
+            // 在此之外仍有两条硬边界：只绑 127.0.0.1 回环、只开放 http/webdav
+            // 两类（ftp/sftp/nfs 等暴露面更大，一律拒绝）。
             // ------------------------------------------------------------------
             "files/serve/start" => {
                 let request: model::ServeStartRequest = parse(params)?;
@@ -1679,11 +1710,15 @@ impl Plugin {
                     crate::policy::PathPolicy::check_read,
                 )?;
                 let fs = rclone::sync::compose_fs(&rclone::call_fs(&binding), &remote);
-                // 安全：serve 无鉴权，绝不绑 0.0.0.0——回环绑定 + 端口 0 让
-                // rcd 自动挑选空闲端口并回传实际地址（实测 v1.75.1）。
+                // 安全：serve 绝不绑 0.0.0.0——回环绑定 + 端口 0 让 rcd 自动
+                // 挑选空闲端口并回传实际地址（实测 v1.75.1）。
                 const SERVE_ADDR: &str = "127.0.0.1:0";
+                // 256-bit 随机 token 挂到 baseurl（`/{token}`）：不携带它的
+                // 请求在 rclone baseurl 中间层就被 404，浏览器 DNS rebinding
+                // 或同机进程枚举端口都拿不到内容。
+                let serve_token = mount::random_token();
                 let answer = client
-                    .serve_start(&fs, serve_type, SERVE_ADDR)
+                    .serve_start(&fs, serve_type, SERVE_ADDR, &format!("/{serve_token}"))
                     .await
                     .map_err(|error| error.to_string())?;
                 let serve_id = answer
@@ -1702,27 +1737,38 @@ impl Plugin {
                     let mut serves = rclone_lock(&self.serves);
                     serves.insert(
                         serve_id.clone(),
-                        (request.connection_id.clone(), serve_type.to_string()),
+                        ServeEntry {
+                            connection_id: request.connection_id.clone(),
+                            serve_type: serve_type.to_string(),
+                            token: serve_token.clone(),
+                        },
                     );
                 }
                 self.audit_id(&request.connection_id, "files/serve/start", &request.path, "ok")?;
                 Ok(json!({
                     "serveId": serve_id,
-                    "url": format!("http://{addr}"),
+                    "url": serve_url(&addr, &serve_token),
                     "serveType": serve_type,
                 }))
             }
             "files/serve/stop" => {
                 let request: model::ServeStopRequest = parse(params)?;
-                // 归属校验：只能停本连接名下的实例（登记表无此 id = 实例已随
-                // rcd 消失，走幂等成功，不再泄露归属信息）。
-                if let Some((owner, _)) = rclone_lock(&self.serves).get(&request.serve_id) {
-                    if *owner != request.connection_id {
-                        return Err(format!(
-                            "serve '{}' does not belong to this connection",
-                            request.serve_id
-                        ));
-                    }
+                // 归属校验：只能停本连接名下的实例。登记表无此 id 时一律幂等
+                // 成功返回、不再转发 rc 调用（审查 FILES-L5：表外 id 可能归属
+                // 其他连接，转发等于跨连接停 serve；目标状态"不存在"已达成，
+                // 也不会泄露归属信息）。命中但归属不符仍显式报错。
+                let entry = rclone_lock(&self.serves).remove(&request.serve_id);
+                if !entry
+                    .map(|entry| entry.connection_id == request.connection_id)
+                    .unwrap_or(false)
+                {
+                    self.audit_id(
+                        &request.connection_id,
+                        "files/serve/stop",
+                        &request.serve_id,
+                        "ok",
+                    )?;
+                    return Ok(json!({ "success": true }));
                 }
                 let binding = self.rclone.binding(&request.connection_id)?;
                 let client = self.rclone.client_for_binding(&binding).await?;
@@ -1730,7 +1776,6 @@ impl Plugin {
                 if let Err(error) = client.serve_stop(&request.serve_id).await {
                     eprintln!("[io.dbx.files] files/serve/stop idempotent ignore: {error}");
                 }
-                rclone_lock(&self.serves).remove(&request.serve_id);
                 self.audit_id(&request.connection_id, "files/serve/stop", &request.serve_id, "ok")?;
                 Ok(json!({ "success": true }))
             }
@@ -1774,13 +1819,13 @@ impl Plugin {
                     serves.retain(|serve_id, _| active.contains(serve_id.as_str()));
                     serves
                         .iter()
-                        .filter(|(_, (owner, _))| owner == &request.connection_id)
-                        .filter_map(|(serve_id, (_, serve_type))| {
+                        .filter(|(_, entry)| entry.connection_id == request.connection_id)
+                        .filter_map(|(serve_id, entry)| {
                             addr_of(serve_id).map(|addr| {
                                 json!({
                                     "serveId": serve_id,
-                                    "url": format!("http://{addr}"),
-                                    "serveType": serve_type,
+                                    "url": serve_url(&addr, &entry.token),
+                                    "serveType": entry.serve_type,
                                 })
                             })
                         })
@@ -2364,6 +2409,7 @@ impl Plugin {
                 let emitter = emitter.clone();
                 tokio::spawn(remote_edit_open_task(
                     Arc::clone(&self.rclone),
+                    Arc::clone(&self.store),
                     self.remote_edits.clone(),
                     key.clone(),
                     request.connection_id.clone(),
@@ -2490,9 +2536,14 @@ impl Plugin {
             .map(|job| job.connection_id.clone())
             .ok_or("Upload task was not found")?;
         let client = self.rclone.client_for_id(&connection_id).await?.transfer_client();
+        // 审查 FILES-M5：上传落远端是写副作用，按目标路径在成功分支收口
+        // 审计（一次 finish 一条，追加帧/暂存路径不记）。target 与 copyurl
+        // 一致取 gate 后的 remote 形式。
+        let remote_path = task.remote.clone();
         let outcome = task.staging.finish(&client, &task.fs, &task.remote, None).await;
         match outcome {
             Ok(_uploaded) => {
+                self.audit_id(&connection_id, "files/upload", &remote_path, "ok")?;
                 rclone_complete_job(
                     &self.rclone,
                     task_id,
@@ -4256,6 +4307,7 @@ fn remote_edit_close_session(
 #[allow(clippy::too_many_arguments)]
 async fn remote_edit_open_task(
     rclone: Arc<rclone::RcloneEngine>,
+    store: Arc<Store>,
     edits: remote_edit::EditEngine,
     key: String,
     connection_id: String,
@@ -4346,7 +4398,8 @@ async fn remote_edit_open_task(
             } else {
                 remote_edit_emit_state(&edits, &emitter, &key, "opened", None);
             }
-            remote_edit_watch_loop(rclone, edits, client, fs, remote, local, key, emitter).await;
+            remote_edit_watch_loop(rclone, store, edits, client, fs, remote, local, key, emitter)
+                .await;
         }
         Err(error) => {
             edits.update(&key, |session| {
@@ -4451,6 +4504,7 @@ async fn remote_edit_refresh_task(
 #[allow(clippy::too_many_arguments)]
 async fn remote_edit_watch_loop(
     rclone: Arc<rclone::RcloneEngine>,
+    store: Arc<Store>,
     edits: remote_edit::EditEngine,
     client: rclone::rc::RcClient,
     fs: String,
@@ -4476,6 +4530,7 @@ async fn remote_edit_watch_loop(
             remote_edit::WatchDecision::Sync => {
                 remote_edit_sync_back(
                     &rclone,
+                    &store,
                     &edits,
                     &client,
                     &fs,
@@ -4499,6 +4554,7 @@ async fn remote_edit_watch_loop(
 #[allow(clippy::too_many_arguments)]
 async fn remote_edit_sync_back(
     rclone: &rclone::RcloneEngine,
+    store: &Store,
     edits: &remote_edit::EditEngine,
     client: &rclone::rc::RcClient,
     fs: &str,
@@ -4552,6 +4608,18 @@ async fn remote_edit_sync_back(
                 session.last_sync_at = Some(store::unix_millis_now());
             }) {
                 return;
+            }
+            // 审查 FILES-M5：编辑器回传成功是远端写副作用，落一条审计
+            //（形状与 Plugin::audit_id 一致，工作台来源无 source 标记）。
+            if let Err(error) = store.append_audit(store::AuditRecord {
+                time: store::format_rfc3339(store::unix_millis_now() as i64),
+                connection_id: session.connection_id.clone(),
+                action: "files/remote-edit".to_string(),
+                target: remote.to_string(),
+                result: "ok".to_string(),
+                source: None,
+            }) {
+                eprintln!("[io.dbx.files] audit write failed: {error}");
             }
             if let Some(job) = rclone_lock(&rclone.jobs).get_mut(&task_id) {
                 job.transferred_bytes = size;
@@ -5242,6 +5310,21 @@ mod tests {
     fn connection_id_param_validates() {
         assert!(connection_id_param(&json!({ "connectionId": "x" })).is_ok());
         assert!(connection_id_param(&json!({})).is_err());
+    }
+
+    // -- files/serve/* ---------------------------------------------------------
+
+    /// 审查 FILES-H1 回归：serve URL 必须以 `/{token}/` 结尾挂上鉴权前缀
+    /// （rclone baseurl 中间层对不带 token 的路径一律 404），token 不进
+    /// 审计、不进日志，只活在登记表与返回给工作台的 URL 里。
+    #[test]
+    fn serve_url_carries_random_token_prefix() {
+        let url = serve_url("127.0.0.1:45123", "a1b2c3d4e5f6");
+        assert_eq!(url, "http://127.0.0.1:45123/a1b2c3d4e5f6/");
+        // 与 mount 网关同构：token 是两枚 v4 uuid 的 256-bit 十六进制串。
+        let token = mount::random_token();
+        assert_eq!(token.len(), 64, "256-bit hex token");
+        assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     // -- files/audit/list ----------------------------------------------------

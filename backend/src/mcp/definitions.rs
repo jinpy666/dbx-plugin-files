@@ -187,7 +187,7 @@ impl Mcp {
                     },
                     {
                         "name": "files_rename",
-                        "description": "Rename/move within one connection (a file executes natively; a directory rename degrades to an async copy+delete job whose jobId is returned). Audited with source 'mcp'.",
+                        "description": "Rename/move within one connection (executes natively via rclone movefile; a directory rename is NOT supported here — rclone answers its own error, so use the workbench dir-rename or files_sync for directories). Audited with source 'mcp'.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
