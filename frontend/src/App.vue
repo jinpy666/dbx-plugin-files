@@ -865,6 +865,20 @@ function showNotice(message: I18nInput) {
   noticeTimer = window.setTimeout(() => (notice.value = ""), 4000);
 }
 
+/** 将文本写入宿主剪贴板；宿主桥缺失和写入失败都不能冒充复制成功。 */
+async function writeClipboardText(text: string, successNotice: I18nInput): Promise<boolean> {
+  try {
+    const clipboard = window.dbxPlugin?.clipboard;
+    if (!clipboard) throw new Error(t("featureMissing"));
+    await clipboard.writeText(text);
+    showNotice(successNotice);
+    return true;
+  } catch (cause) {
+    showNotice(t("operationFailed", { error: errorMessage(cause) }));
+    return false;
+  }
+}
+
 function showError(cause: unknown, side: PaneSide | "global" = "global") {
   errorSide.value = side;
   notice.value = "";
@@ -3328,10 +3342,10 @@ function menuAction(action: MenuAction) {
       startDelete([entry], side);
       break;
     case "copyPath":
-      void window.dbxPlugin.clipboard?.writeText(entry.path).then(() => showNotice(t("copiedPath")));
+      void writeClipboardText(entry.path, t("copiedPath"));
       break;
     case "copyName":
-      void window.dbxPlugin.clipboard?.writeText(baseName(entry.path)).then(() => showNotice(t("copiedName")));
+      void writeClipboardText(baseName(entry.path), t("copiedName"));
       break;
     case "hashsum":
       void runHashsum(entry, side);
@@ -3500,8 +3514,7 @@ async function copyPublicLink(entry: FileEntry, side: PaneSide) {
       path: entry.path,
       connectionId: sideConnectionId(side) ?? connectionId.value,
     });
-    await window.dbxPlugin.clipboard?.writeText(result.url);
-    showNotice(t("copiedPublicLink"));
+    await writeClipboardText(result.url, t("copiedPublicLink"));
   } catch (cause) {
     showNotice(t("operationFailed", { error: errorMessage(cause) }));
   }
@@ -3517,8 +3530,7 @@ async function startServe(entry: FileEntry, side: PaneSide, serveType: "http" | 
       path: entry.path,
       serveType,
     });
-    await window.dbxPlugin.clipboard?.writeText(result.url).catch(() => undefined);
-    showNotice(t("shareStarted", { url: result.url }));
+    await writeClipboardText(result.url, t("shareStarted", { url: result.url }));
   } catch (cause) {
     showNotice(t("operationFailed", { error: errorMessage(cause) }));
   }
@@ -3590,7 +3602,7 @@ function sideMenuAction(action: "open" | "openOther" | "toggleFav" | "copyPath" 
     return;
   }
   const value = action === "copyPath" ? target : name;
-  void window.dbxPlugin.clipboard?.writeText(value).then(() => showNotice(t(action === "copyPath" ? "copiedPath" : "copiedName")));
+  void writeClipboardText(value, t(action === "copyPath" ? "copiedPath" : "copiedName"));
 }
 
 // ---- 本地挂载（docs/MOUNT.zh-CN.md M1）：策略由 sidecar 决定 ---------------------
@@ -3661,8 +3673,7 @@ async function handleMountResult(result: MountResult) {
     return;
   }
   if (result.strategy === "webdav" && result.gatewayUrl) {
-    await window.dbxPlugin.clipboard?.writeText(result.gatewayUrl);
-    showNotice(t("mountGatewayFallback", { reason: result.fallbackReason ?? "" }));
+    await writeClipboardText(result.gatewayUrl, t("mountGatewayFallback", { reason: result.fallbackReason ?? "" }));
     return;
   }
   showNotice(t("mountRcloneOk", { point: result.mountPoint ?? "" }));
