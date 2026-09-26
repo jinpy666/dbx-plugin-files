@@ -2014,6 +2014,8 @@ async function onConfirm() {
   // transport=job 的 copy/move/rename/syncDir/copyDir：job 已登记、终态后
   // 由事件驱动刷新（handleEvent），跳过立即刷新。
   let jobStarted = false;
+  // 批量删除的部分失败：延迟到 switch 外目录收尾完成后再上抛（见 delete case）。
+  let deleteBatchError: unknown = null;
   try {
     switch (kind) {
       case "newFolder": {
@@ -2107,12 +2109,20 @@ async function onConfirm() {
         closeConfirm();
         // P2-7：批量删除并发分批执行，进度实时落传输面板（单项目为 1 批同语义）。
         // R3-P2-9：取消真实中断剩余分批；已取消时不再补「已删除」通知。
-        const batch = await runBatch("delete", paneDirPath(side), targets.length, async (index) => {
-          const target = targets[index];
-          if (target.kind === "directory") await invokeConfirmed("files/purge", { path: target.path });
-          else await invokeConfirmed("files/delete", { path: target.path });
-        });
-        if (!batch.canceled) showNotice(t("deleted"));
+        // 部分失败不吞成功：runBatchTasks 遇错仍跑完全部目标，错误先记录、
+        // 不在此 break——switch 外的审计/目录收尾照常执行（已删条目立即从
+        // 列表消失），收尾后再统一上抛进错误横幅。否则列表停在删除前状态，
+        // 用户会误读为「删除未生效」。
+        try {
+          const batch = await runBatch("delete", paneDirPath(side), targets.length, async (index) => {
+            const target = targets[index];
+            if (target.kind === "directory") await invokeConfirmed("files/purge", { path: target.path });
+            else await invokeConfirmed("files/delete", { path: target.path });
+          });
+          if (!batch.canceled) showNotice(t("deleted"));
+        } catch (cause) {
+          deleteBatchError = cause;
+        }
         break;
       }
       case "purge": {
@@ -2196,6 +2206,7 @@ async function onConfirm() {
       await loadDirectory().catch(() => undefined);
       if (side === "right" && dualPane.value) await loadRightDirectory().catch(() => undefined);
     }
+    if (deleteBatchError) throw deleteBatchError;
   } catch (cause) {
     showError(cause);
     closeConfirm();
