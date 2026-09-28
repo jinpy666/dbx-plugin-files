@@ -49,9 +49,13 @@ async function startFromHome() {
   }
 }
 
+/** 请求序号：快速连续导航时旧目录的慢响应不得把浏览拉回旧位置（0.1.81 扫描）。 */
+let browseSeq = 0;
+
 async function browse(target: string, silent = false) {
   const clean = target.trim();
   if (!clean) return;
+  const seq = ++browseSeq;
   browsing.value = true;
   browseError.value = "";
   notFound.value = false;
@@ -60,6 +64,7 @@ async function browse(target: string, silent = false) {
       "files/list",
       { connectionId: props.connectionId ?? "__local__", path: clean },
     );
+    if (seq !== browseSeq) return;
     // 隐藏目录（. 开头）不进列表——home 下几十个 dot 目录会淹没浏览体验。
     dirs.value = normalizeEntries(result.entries ?? [])
       .filter((entry) => entry.kind === "directory" && !entry.name.startsWith("."))
@@ -69,6 +74,7 @@ async function browse(target: string, silent = false) {
     // 初始定位（home）不回抛：父层「留空 = 默认位置」的契约不能被启动加载打破。
     if (!silent) emit("navigate", clean);
   } catch (cause) {
+    if (seq !== browseSeq) return;
     if (isNotFoundMessage(cause instanceof Error ? cause.message : String(cause))) {
       notFound.value = true;
       browsePath.value = clean;
@@ -77,7 +83,8 @@ async function browse(target: string, silent = false) {
       browseError.value = cause instanceof Error ? cause.message : String(cause);
     }
   } finally {
-    browsing.value = false;
+    // 只有最新一次浏览才能收 loading。
+    if (seq === browseSeq) browsing.value = false;
   }
 }
 
