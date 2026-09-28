@@ -64,6 +64,7 @@ import BatchRenameDrawer from "./components/BatchRenameDrawer.vue";
 import ShortcutsHelp from "./components/ShortcutsHelp.vue";
 import CustomConfigEditor from "./components/CustomConfigEditor.vue";
 import PathField from "./components/PathField.vue";
+import ConnectionSelect from "./components/ConnectionSelect.vue";
 import SideNavPanel from "./components/SideNavPanel.vue";
 import { isDbxPluginTheme, onHostThemeChange, themeToAppearance } from "./lib/hostTheme";
 import { DBX_POPOVER, resolveAppearance, type DbxPluginAppearanceInput } from "./lib/appearance";
@@ -75,6 +76,7 @@ import {
   call,
   errorMessage,
   formatBytes,
+  isHostMethodMissing,
   isMethodMissing,
   joinPath,
   normalizeEntries,
@@ -238,6 +240,8 @@ const leftConnections = computed(() => [
   { id: "", name: t("sameConnection") },
   ...targetConnections.value,
 ]);
+/** 右栏连接面：""=与左栏同连接（跟随宿主当前连接）+ 宿主其它连接。 */
+const rightConnections = computed(() => [{ id: "", name: t("sameConnection") }, ...targetConnections.value]);
 
 // ---- 快速目录（tiny-rdm quick paths 对标）------------------------------------
 // §8.1：后端按协议/根约束/stat 过滤后返回候选（根目录 + fs 协议的用户目录族）；
@@ -995,11 +999,28 @@ async function waitForHostApi(timeoutMs = 8000) {
 // 组件消费（与 ssh sftp 编辑器同方案，ssh/lib/appearance 对齐）。
 const appearance = ref(resolveAppearance());
 
+// 颜色变量 → 宿主令牌名（X-P4，与 kafka 同策略）：宿主在插件根节点维护了令牌
+// 的字段交给 themeSync 桥（var(--color-*) 动态跟随宿主令牌更新）；inline 写入
+// 会以更高优先级永久冻结桥的引用，appearance 事件后停止跟随宿主主题（issue #25
+// 同根因）。令牌缺失（Host API 1.0 / mock 缺省）才 inline 写规范色板。
+const APPEARANCE_COLOR_VARS = [
+  ["--background", "--color-background", "background"],
+  ["--foreground", "--color-foreground", "foreground"],
+  ["--muted", "--color-muted", "muted"],
+  ["--muted-foreground", "--color-muted-foreground", "mutedForeground"],
+  ["--accent", "--color-accent", "accent"],
+  ["--accent-foreground", "--color-accent-foreground", "accentForeground"],
+  ["--border", "--color-border", "border"],
+  ["--destructive", "--color-destructive", "destructive"],
+] as const;
+
 function applyAppearance(root: HTMLElement, next: DbxPluginAppearanceInput | null) {
   const resolved = resolveAppearance(next);
   appearance.value = resolved;
-  for (const [key, value] of Object.entries(resolved.colors)) {
-    root.style.setProperty(`--${key.replace(/([A-Z])/g, "-$1").toLowerCase()}`, value);
+  const tokens = getComputedStyle(root);
+  for (const [name, token, key] of APPEARANCE_COLOR_VARS) {
+    if (tokens.getPropertyValue(token).trim()) root.style.removeProperty(name);
+    else root.style.setProperty(name, resolved.colors[key]);
   }
   if (next?.colorScheme) root.dataset.theme = next.colorScheme;
   // 弹层背景按 DBX --popover 规范值（与 ldap/kafka/ssh 一致），Host API 1.0
@@ -1170,9 +1191,13 @@ interface FrameWaiter {
 
 const frameQueue = new Map<string, DownloadChunk[]>();
 const frameWaiters = new Map<string, FrameWaiter[]>();
+/** 已释放（取消/完成）的下载通道：sidecar 在处理 cancel 前仍在推的帧
+ * 直接丢弃——无 waiter 的迟到帧会逐帧重建 queue 且永远无人消费。 */
+const releasedChannels = new Set<string>();
 
 function handleBinary(event: DbxPluginBinaryEvent) {
   if (!event.channel.startsWith("files/download/")) return;
+  if (releasedChannels.has(event.channel)) return;
   const data = bridgeBinaryBytes(event, window.dbxPlugin.decodeBase64);
   if (data.byteLength < 8) return;
   const offset = Number(new DataView(data.buffer, data.byteOffset, 8).getBigUint64(0, false));
@@ -1220,6 +1245,7 @@ function waitForFrame(channel: string, offset: number, timeoutMs = 30_000): Prom
 }
 
 function releaseFrames(channel: string) {
+  releasedChannels.add(channel);
   frameQueue.delete(channel);
   const waiters = frameWaiters.get(channel);
   if (waiters) {
@@ -1669,50 +1695,97 @@ async function revertPaneConnection(side: PaneSide, previous: string, cause: unk
   showError(cause, side);
 }
 
+/**
+ * 请宿主为其持有的连接跑完整 connect 流程（host.reopenConnection，
+ * Host API：凭据在宿主侧、归属校验后走 ensureConnected，可能弹密码框）。
+ * 成功后 sidecar registry 即注册该连接，files/* 可用。旧宿主缺方法时
+ * 静默返回 false（由调用方回退兜底）；宿主 connect 失败弹横幅。
+ */
+async function requestHostConnectionReopen(id: string): Promise<boolean> {
+  const resolved = !id || id === LOCAL_CONNECTION_ID ? connectionId.value : id;
+  if (!resolved || resolved === LOCAL_CONNECTION_ID) return false;
+  try {
+    await window.dbxPlugin?.request?.("host.reopenConnection", { connectionId: resolved });
+    return true;
+  } catch (cause) {
+    if (!isHostMethodMissing(cause)) showError(cause);
+    return false;
+  }
+}
+
+/**
+ * 栏连接切换公共体：新连接根目录首拉 → 失败若属「连接未注册」类，先请
+ * 宿主 connect 后重试一次 → 仍失败（或宿主无法补连）回退原连接。其余
+ * 失败保留新连接面（横幅由 load 弹出，原行为）。
+ */
+async function beginPaneConnectionSwitch(side: PaneSide, previous: string, reload: () => Promise<void>, finalize: () => Promise<void>) {
+  const attempt = async () => {
+    await reload();
+    await finalize();
+    // 首拉失败的横幅已被自愈重试化解：成功后清掉（左栏 load 自带清横幅，
+    // 右栏成功路径不清，这里统一收口）。
+    error.value = "";
+  };
+  try {
+    await attempt();
+    return;
+  } catch (cause) {
+    if (!isConnectionNotReadyMessage(errorMessage(cause))) return;
+    const target = side === "left" ? leftConnectionId.value : targetConnectionId.value;
+    if (!(await requestHostConnectionReopen(target))) {
+      await revertPaneConnection(side, previous, cause);
+      return;
+    }
+    try {
+      await attempt();
+    } catch (retryCause) {
+      await revertPaneConnection(side, previous, retryCause);
+    }
+  }
+}
+
+/**
+ * 宿主切换激活连接的 context 事件可能先于其 connection/connect 完成
+ * （F-5 时序竞态）：重置栏首拉报「连接未注册」时请宿主 connect 后重试
+ * 一次；其余错误不扰动（updateHostContext 原为静默吞错）。
+ */
+async function recoverPaneListing(side: PaneSide, cause: unknown) {
+  if (!isConnectionNotReadyMessage(errorMessage(cause))) return;
+  const id = sideConnectionId(side) ?? connectionId.value;
+  if (!(await requestHostConnectionReopen(id))) return;
+  void (side === "left" ? loadDirectory("/") : loadRightDirectory("/")).catch(() => undefined);
+}
+
 /** 左栏切换连接（双栏）：新连接回到根目录，quickPaths 随连接面刷新。 */
-async function onLeftConnectionChange(event: Event) {
+function onLeftConnectionChange(value: string) {
   const previous = leftConnectionId.value;
-  leftConnectionId.value = (event.target as HTMLSelectElement).value;
+  leftConnectionId.value = value;
   markActiveSide("left");
   // 0.1.81 扫描：切换连接必须整树重建——旧连接的缓存子树（loaded=true 的
   // 节点）不会自动重拉，tree tab 会继续展示上一棵连接的目录结构。代数递增
   // 使该栏在途 listing 结果整包丢弃（与 updateHostContext 同法）。
   treeGenerations.left += 1;
   leftTree.value = createTreeRoot("/", "/");
-  try {
-    await loadDirectory("/");
-  } catch (cause) {
-    if (isConnectionNotReadyMessage(errorMessage(cause))) {
-      await revertPaneConnection("left", previous, cause);
-      return;
-    }
-    return; // 其余失败由 loadDirectory 弹横幅，保留新连接面（原行为）。
-  }
-  await loadQuickPaths("left");
-  await enterLocalPaneIfAtRoot();
-  if (leftSideTab.value === "tree") void followTreePath("left", paneDirPath("left"));
+  void beginPaneConnectionSwitch("left", previous, () => loadDirectory("/"), async () => {
+    await loadQuickPaths("left");
+    await enterLocalPaneIfAtRoot();
+    if (leftSideTab.value === "tree") void followTreePath("left", paneDirPath("left"));
+  });
 }
 
 /** 右栏切换连接（双栏）：旧连接的当前路径不带入新连接（大概率 NotFound），
  *  quickPaths/目录树随连接面刷新（与左栏 onLeftConnectionChange 同法）。 */
-async function onRightConnectionChange(event: Event) {
+function onRightConnectionChange(value: string) {
   const previous = targetConnectionId.value;
-  targetConnectionId.value = (event.target as HTMLSelectElement).value;
+  targetConnectionId.value = value;
   markActiveSide("right");
   rightPath.value = "/";
   treeGenerations.right += 1;
   rightTree.value = createTreeRoot("/", "/");
-  try {
-    await loadRightDirectory("/");
-  } catch (cause) {
-    if (isConnectionNotReadyMessage(errorMessage(cause))) {
-      await revertPaneConnection("right", previous, cause);
-      return;
-    }
-    return;
-  }
-  await loadQuickPaths("right");
-  if (rightSideTab.value === "tree") void followTreePath("right", paneDirPath("right"));
+  void beginPaneConnectionSwitch("right", previous, () => loadRightDirectory("/"), async () => {
+    await loadQuickPaths("right");
+    if (rightSideTab.value === "tree") void followTreePath("right", paneDirPath("right"));
+  });
 }
 
 // ---- dialogs ---------------------------------------------------------------
@@ -2296,8 +2369,13 @@ function pickSideEntries(side: PaneSide, paths: string[]): FileEntry[] {
  * R3-P2-1：copy 与 move 的写都发生在目标栏，同受 canWrite 门禁。
  * R3-P2-5：目标冲突预检——命中同名即挂起整批，弹覆盖确认后原样执行。
  */
+/** 跨栏传输防重入：预检（目标目录 list）是慢 await，期间四个桥接按钮无
+ * busy 态，双击/连点会并发跑两个串行执行循环——同选集复制出双份文件，
+ * move 第二轮逐项 NotFound 混进同一横幅。 */
+const paneTransferBusy = ref(false);
+
 async function transferBetween(from: PaneSide, move: boolean, dragged?: FileEntry[]) {
-  if (!canWrite.value) return;
+  if (!canWrite.value || paneTransferBusy.value) return;
   const to: PaneSide = from === "left" ? "right" : "left";
   const version = hostContextVersion;
   const sourceId = sideConnectionId(from) ?? connectionId.value;
@@ -2305,22 +2383,27 @@ async function transferBetween(from: PaneSide, move: boolean, dragged?: FileEntr
   const paths = dragged ? dragged.map((entry) => entry.path) : from === "left" ? selection.value : rightSelection.value;
   const list = dragged ?? pickSideEntries(from, paths);
   if (!list.length) return;
-  const destPath = to === "left" ? path.value : rightPath.value;
-  // 目标冲突预检（R3-P2-5）：一次 list 目标目录取同名集合（避免逐条 stat），
-  // 命中即整批挂起等覆盖确认；目标不可列（不存在/失败）交后端兜底。
-  const conflicts = await findTargetConflicts(to, destPath, list);
-  if (version !== hostContextVersion || sourceId !== (sideConnectionId(from) ?? connectionId.value) || targetId !== (sideConnectionId(to) ?? connectionId.value)) return;
-  if (conflicts.length) {
-    pendingPaneTransfer.value = { from, move, list, destPath };
-    openConfirm("overwrite", {
-      title: move ? { key: "moveTitle" } : { key: "copyTitle" },
-      body: { key: "overwriteBatch", values: { count: conflicts.length } },
-      danger: true,
-      side: from,
-    });
-    return;
+  paneTransferBusy.value = true;
+  try {
+    const destPath = to === "left" ? path.value : rightPath.value;
+    // 目标冲突预检（R3-P2-5）：一次 list 目标目录取同名集合（避免逐条 stat），
+    // 命中即整批挂起等覆盖确认；目标不可列（不存在/失败）交后端兜底。
+    const conflicts = await findTargetConflicts(to, destPath, list);
+    if (version !== hostContextVersion || sourceId !== (sideConnectionId(from) ?? connectionId.value) || targetId !== (sideConnectionId(to) ?? connectionId.value)) return;
+    if (conflicts.length) {
+      pendingPaneTransfer.value = { from, move, list, destPath };
+      openConfirm("overwrite", {
+        title: move ? { key: "moveTitle" } : { key: "copyTitle" },
+        body: { key: "overwriteBatch", values: { count: conflicts.length } },
+        danger: true,
+        side: from,
+      });
+      return;
+    }
+    await executePaneTransfer(from, move, list, destPath);
+  } finally {
+    paneTransferBusy.value = false;
   }
-  await executePaneTransfer(from, move, list, destPath);
 }
 
 /** R3-P2-5：目标目录一次性拉取，返回与传入列表同名的冲突条目。 */
@@ -3500,6 +3583,9 @@ function openBatchRename(side: PaneSide) {
 }
 
 function closeBatchRename() {
+  // applying 中不关（与 Esc 链同语义）：串行 rename 还在跑，关抽屉会让
+  // 剩余行继续后台改名而用户以为已取消（遮罩点击同走这里兜底）。
+  if (batchRenameApplying.value) return;
   batchRenameOpen.value = false;
 }
 
@@ -3657,7 +3743,7 @@ async function computeEntrySize(entry: FileEntry, side: PaneSide) {
     });
     showNotice(t("sizeResult", { count: result.count, size: formatBytes(result.bytes) }));
   } catch (cause) {
-    showNotice(t("operationFailed", { error: errorMessage(cause) }));
+    showError(cause);
   }
 }
 
@@ -3672,7 +3758,7 @@ async function runHashsum(entry: FileEntry, side: PaneSide) {
     });
     showNotice(t("hashsumDone", { path: result.path, files: result.files }));
   } catch (cause) {
-    showNotice(t("operationFailed", { error: errorMessage(cause) }));
+    showError(cause);
   }
 }
 
@@ -3698,7 +3784,7 @@ async function runVerifySum(entry: FileEntry, side: PaneSide) {
     }
     showNotice(t("verifySumStarted"));
   } catch (cause) {
-    showNotice(t("operationFailed", { error: errorMessage(cause) }));
+    showError(cause);
   }
 }
 
@@ -3711,7 +3797,7 @@ async function runRmdirs(entry: FileEntry, side: PaneSide) {
     await loadDirectory().catch(() => undefined);
     if (side === "right" && dualPane.value) await loadRightDirectory().catch(() => undefined);
   } catch (cause) {
-    showNotice(t("operationFailed", { error: errorMessage(cause) }));
+    showError(cause);
   }
 }
 
@@ -3724,7 +3810,7 @@ async function copyPublicLink(entry: FileEntry, side: PaneSide) {
     });
     await writeClipboardText(result.url, t("copiedPublicLink"));
   } catch (cause) {
-    showNotice(t("operationFailed", { error: errorMessage(cause) }));
+    showError(cause);
   }
 }
 
@@ -3742,7 +3828,7 @@ async function startServe(entry: FileEntry, side: PaneSide, serveType: "http" | 
     // 失败提示必须把它保留下来，不能随剪贴板一起消失。
     await writeClipboardText(result.url, t("shareStarted", { url: result.url }), t("shareStartedNoCopy", { url: result.url }));
   } catch (cause) {
-    showNotice(t("operationFailed", { error: errorMessage(cause) }));
+    showError(cause);
   }
 }
 
@@ -4076,7 +4162,7 @@ function updateHostContext(context: Record<string, unknown>) {
     // 整树重建：递增代数，使该栏在途 listing 结果在 await 后被整包丢弃（M-2）。
     treeGenerations.left += 1;
     leftTree.value = createTreeRoot("/", "/");
-    void loadDirectory("/").catch(() => undefined);
+    void loadDirectory("/").catch((cause) => recoverPaneListing("left", cause));
     void loadQuickPaths("left");
   }
   if (!sideConnectionId("right")) {
@@ -4091,7 +4177,7 @@ function updateHostContext(context: Record<string, unknown>) {
     treeGenerations.right += 1;
     rightTree.value = createTreeRoot("/", "/");
     if (dualPane.value) {
-      void loadRightDirectory("/").catch(() => undefined);
+      void loadRightDirectory("/").catch((cause) => recoverPaneListing("right", cause));
       void loadQuickPaths("right");
     }
   }
@@ -4211,6 +4297,15 @@ function onDocumentKeydown(event: KeyboardEvent) {
     onDropActionCancel();
     return;
   }
+  // 同名冲突询问是阻塞上传/下载管线的模态（resolver 挂起），Esc = 取消该批。
+  if (fileConflictOpen.value) {
+    onFileConflictCancel();
+    return;
+  }
+  if (openWithState.value) {
+    closeOpenWithDialog();
+    return;
+  }
   if (previewPath.value) {
     closePreview();
     return;
@@ -4229,6 +4324,11 @@ function onDocumentKeydown(event: KeyboardEvent) {
   }
   if (settingsOpen.value) {
     closeSettings();
+    return;
+  }
+  // 深度搜索面板是非模态浮层，位于各模态弹窗之下——最后收。
+  if (deepSearchOpen.value) {
+    closeDeepSearch();
     return;
   }
   closeMenusRestoreFocus();
@@ -4359,9 +4459,7 @@ onBeforeUnmount(() => {
       <section class="wb-pane wb-pane-source" @dragover.prevent @dragenter="dragOverSide = 'left'" @dragleave="dragOverSide = dragOverSide === 'left' ? null : dragOverSide" @drop.prevent="onDropTo('left', $event)">
         <!-- pane 顶条：双栏时放左栏连接选择（与右栏顶条等高对齐）；单栏时整行隐藏 -->
         <div v-if="dualPane" class="wb-pane-topbar">
-          <select :value="leftConnectionId" class="wb-target-connection" :aria-label="t('sourceConnection')" @change="onLeftConnectionChange($event)">
-            <option v-for="item in leftConnections" :key="item.id" :value="item.id">{{ item.name }}</option>
-          </select>
+          <ConnectionSelect :model-value="leftConnectionId" :options="leftConnections" :label="t('sourceConnection')" :t="t" @change="onLeftConnectionChange" />
         </div>
         <div class="wb-pane-body">
           <!-- 侧栏导航：tree（目录树，默认）/ quick（快捷目录）双 tab，可收起 -->
@@ -4415,6 +4513,7 @@ onBeforeUnmount(() => {
               :loading="loading"
               :failed="listingFailed"
               :truncated="entriesTruncated"
+              :streaming="leftStreaming"
               :can-write="canWrite && !confirmOpen && !previewPath"
               :filtered="Boolean(searchQuery.trim())"
               :t="t"
@@ -4437,11 +4536,11 @@ onBeforeUnmount(() => {
       <!-- 双栏桥：跨栏 copy/move 按钮（A-FILES ①）。R3-P2-1：copy 与 move 的写
            都发生在目标栏，同受 canWrite 门禁（只读态「复制到目标/源栏」禁用）。 -->
       <div v-if="dualPane" class="wb-pane-bridge">
-        <button class="wb-icon-button wb-icon-neutral" v-tip="t('copyToTarget')" :disabled="!selection.length || !canWrite" @click="transferBetween('left', false)"><Copy /></button>
-        <button class="wb-icon-button wb-icon-neutral" v-tip="t('moveToTarget')" :disabled="!selection.length || !canWrite" @click="transferBetween('left', true)"><ArrowRight /></button>
+        <button class="wb-icon-button wb-icon-neutral" v-tip="t('copyToTarget')" :disabled="!selection.length || !canWrite || paneTransferBusy" @click="transferBetween('left', false)"><Copy /></button>
+        <button class="wb-icon-button wb-icon-neutral" v-tip="t('moveToTarget')" :disabled="!selection.length || !canWrite || paneTransferBusy" @click="transferBetween('left', true)"><ArrowRight /></button>
         <span class="wb-toolbar-separator" />
-        <button class="wb-icon-button wb-icon-neutral" v-tip="t('copyToSource')" :disabled="!rightSelection.length || !canWrite" @click="transferBetween('right', false)"><Copy class="wb-flip-h" /></button>
-        <button class="wb-icon-button wb-icon-neutral" v-tip="t('moveToSource')" :disabled="!rightSelection.length || !canWrite" @click="transferBetween('right', true)"><ArrowLeft /></button>
+        <button class="wb-icon-button wb-icon-neutral" v-tip="t('copyToSource')" :disabled="!rightSelection.length || !canWrite || paneTransferBusy" @click="transferBetween('right', false)"><Copy class="wb-flip-h" /></button>
+        <button class="wb-icon-button wb-icon-neutral" v-tip="t('moveToSource')" :disabled="!rightSelection.length || !canWrite || paneTransferBusy" @click="transferBetween('right', true)"><ArrowLeft /></button>
       </div>
 
       <!-- 目标栏（右栏）：目标连接浏览（文件概览已改为弹窗，不占右栏 Tab） -->
@@ -4455,10 +4554,7 @@ onBeforeUnmount(() => {
       >
         <!-- P2-11：无可切换连接时整个 topbar 不渲染（v-if 提到容器级），不再留 28px 空条 -->
         <div v-if="targetConnections.length" class="wb-pane-topbar">
-          <select :value="targetConnectionId" class="wb-target-connection" :aria-label="t('targetConnection')" @change="onRightConnectionChange($event)">
-            <option value="">{{ t("sameConnection") }}</option>
-            <option v-for="item in targetConnections" :key="item.id" :value="item.id">{{ item.name }}</option>
-          </select>
+          <ConnectionSelect :model-value="targetConnectionId" :options="rightConnections" :label="t('targetConnection')" :t="t" @change="onRightConnectionChange" />
         </div>
         <div class="wb-pane-body">
           <SideNavPanel
@@ -4511,6 +4607,7 @@ onBeforeUnmount(() => {
               :loading="rightLoading"
               :failed="rightListingFailed"
               :truncated="rightEntriesTruncated"
+              :streaming="rightStreaming"
               :can-write="canWrite && !confirmOpen && !previewPath"
               :filtered="Boolean(rightSearchQuery.trim())"
               :t="t"

@@ -55,6 +55,17 @@ export function isMethodMissing(error: unknown): boolean {
   return /method not found/i.test(error instanceof Error ? error.message : String(error));
 }
 
+/**
+ * 宿主桥（window.dbxPlugin.request）缺方法：旧宿主桥对未知 host 方法报
+ * "Unsupported plugin host method '<method>'"，桥在但回调缺席时报
+ * "… is unavailable"。用于 host.* 能力探测（如 host.reopenConnection）
+ * 的旧宿主降级判定；sidecar 方法的同类判定见 isMethodMissing。
+ */
+export function isHostMethodMissing(error: unknown): boolean {
+  const message = errorMessage(error);
+  return /unsupported plugin host method|connection reopen is unavailable/i.test(message) || isMethodMissing(error);
+}
+
 export function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);

@@ -1268,6 +1268,10 @@ export function installMockHost() {
         // 由工作台自己注入左栏（这里再列一次会让左栏下拉出现两个「本地文件」）。
         return [{ id: "mock-conn", name: "Mock Storage" }] as T;
       }
+      // 与真实宿主对齐（Host API host.reopenConnection）：插件请宿主为其
+      // 持有的连接跑完整 connect（真实宿主可能弹密码框）；mock 无凭据概念，
+      // 直接应答成功，使双栏连接切换的自愈重试路径可在夹具下走通。
+      if (method === "host.reopenConnection") return { ok: true } as T;
       throw new Error(`Unsupported plugin host method '${method}'`);
     },
     invoke: async <T>(method: string, payload?: Record<string, unknown>) => invoke(method, payload ?? {}) as Promise<T>,
