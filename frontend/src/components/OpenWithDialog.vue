@@ -4,7 +4,7 @@
 // 把文件拉到本机临时副本并启动所选应用；本地保存由后台监视循环自动回传
 // 远端原路径（FinalShell 式远程编辑）。非空路径先经 files/validate-open-app
 // 同一套校验（存在 + 单一可执行文件），失败就地报错、不打断输入。
-import { ref } from "vue";
+import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { ExternalLink } from "@lucide/vue";
 
 const props = defineProps<{
@@ -26,6 +26,48 @@ const t = (key: string, values?: Record<string, string | number>) => props.t(key
 const appDraft = ref(props.initialApp ?? "");
 const validating = ref(false);
 const error = ref("");
+
+// 焦点管理与 ConfirmDialog 同款（父层 v-if 挂载，故走生命周期钩子）：
+// 打开即聚焦输入框；Tab 循环困在弹层内；关闭归还触发元素焦点。
+const dialogEl = ref<HTMLElement>();
+let returnFocusTo: HTMLElement | null = null;
+const FOCUSABLE_SELECTOR = "button:not([disabled]), input:not([disabled]), a[href]";
+
+onMounted(async () => {
+  returnFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  await nextTick();
+  const input = dialogEl.value?.querySelector<HTMLInputElement>("input");
+  input?.focus();
+  input?.select();
+});
+
+onBeforeUnmount(() => {
+  returnFocusTo?.focus();
+  returnFocusTo = null;
+});
+
+function onTabKeydown(event: KeyboardEvent) {
+  if (event.key !== "Tab") return;
+  const root = dialogEl.value;
+  if (!root) return;
+  const focusables = [...root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)];
+  if (!focusables.length) return;
+  const first = focusables[0]!;
+  const last = focusables[focusables.length - 1]!;
+  const current = document.activeElement;
+  const inside = current instanceof HTMLElement && root.contains(current);
+  if (event.shiftKey) {
+    if (!inside || current === first) {
+      event.preventDefault();
+      last.focus();
+    }
+    return;
+  }
+  if (!inside || current === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
 
 async function confirm() {
   if (validating.value) return;
@@ -49,7 +91,7 @@ async function confirm() {
 
 <template>
   <div class="wb-dialog-backdrop" @click.self="emit('close')">
-    <div class="wb-dialog" role="dialog" aria-modal="true" :aria-label="t('openWithTitle')">
+    <div ref="dialogEl" class="wb-dialog" role="dialog" aria-modal="true" :aria-label="t('openWithTitle')" @keydown="onTabKeydown">
       <header>{{ t("openWithTitle") }}</header>
       <div class="wb-dialog-body">
         <p style="margin: 0 0 6px">{{ t("openWithHint") }}</p>

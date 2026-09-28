@@ -69,6 +69,7 @@ import SideNavPanel from "./components/SideNavPanel.vue";
 import { isDbxPluginTheme, onHostThemeChange, themeToAppearance } from "./lib/hostTheme";
 import { DBX_POPOVER, resolveAppearance, type DbxPluginAppearanceInput } from "./lib/appearance";
 import { bridgeBinaryBytes } from "../../shared/frontend/binaryEvent";
+import { applyAppearanceColorVars, subscribeHostEnvironment } from "../../shared/frontend/hostThemeRuntime";
 import { useUiIntent, type UiIntentOutcome, type UiIntentSummary } from "../../shared/frontend/uiIntent";
 import {
   bindApi,
@@ -911,9 +912,9 @@ let pollTimer = 0;
 let pollingDisabled = false;
 let unsubscribeEvent: (() => void) | undefined;
 let unsubscribeBinary: (() => void) | undefined;
-let unsubscribeContext: (() => void) | undefined;
+// X-P2/P3/P4 收敛：宿主环境订阅聚合句柄（shared/frontend/hostThemeRuntime）。
+let unsubscribeEnvironment: (() => void) | undefined;
 let unsubscribeInit: (() => void) | undefined;
-let unsubscribeTheme: (() => void) | undefined;
 let unsubscribeFileDrag: (() => void) | undefined;
 let unsubscribeFileDrop: (() => void) | undefined;
 
@@ -999,29 +1000,11 @@ async function waitForHostApi(timeoutMs = 8000) {
 // 组件消费（与 ssh sftp 编辑器同方案，ssh/lib/appearance 对齐）。
 const appearance = ref(resolveAppearance());
 
-// 颜色变量 → 宿主令牌名（X-P4，与 kafka 同策略）：宿主在插件根节点维护了令牌
-// 的字段交给 themeSync 桥（var(--color-*) 动态跟随宿主令牌更新）；inline 写入
-// 会以更高优先级永久冻结桥的引用，appearance 事件后停止跟随宿主主题（issue #25
-// 同根因）。令牌缺失（Host API 1.0 / mock 缺省）才 inline 写规范色板。
-const APPEARANCE_COLOR_VARS = [
-  ["--background", "--color-background", "background"],
-  ["--foreground", "--color-foreground", "foreground"],
-  ["--muted", "--color-muted", "muted"],
-  ["--muted-foreground", "--color-muted-foreground", "mutedForeground"],
-  ["--accent", "--color-accent", "accent"],
-  ["--accent-foreground", "--color-accent-foreground", "accentForeground"],
-  ["--border", "--color-border", "border"],
-  ["--destructive", "--color-destructive", "destructive"],
-] as const;
-
+// 颜色变量 → 宿主令牌名探测/回退循环收敛到 shared 单点（X-P4，kafka 策略为准）。
 function applyAppearance(root: HTMLElement, next: DbxPluginAppearanceInput | null) {
   const resolved = resolveAppearance(next);
   appearance.value = resolved;
-  const tokens = getComputedStyle(root);
-  for (const [name, token, key] of APPEARANCE_COLOR_VARS) {
-    if (tokens.getPropertyValue(token).trim()) root.style.removeProperty(name);
-    else root.style.setProperty(name, resolved.colors[key]);
-  }
+  applyAppearanceColorVars(root, resolved.colors);
   if (next?.colorScheme) root.dataset.theme = next.colorScheme;
   // 弹层背景按 DBX --popover 规范值（与 ldap/kafka/ssh 一致），Host API 1.0
   // 无 --color-popover 令牌时兜底；真实宿主由主题令牌桥直接下发。
@@ -1029,11 +1012,9 @@ function applyAppearance(root: HTMLElement, next: DbxPluginAppearanceInput | nul
 }
 
 function handleEvent(event: DbxPluginEvent) {
-  // 当前 SDK 先更新 api.locale，再经 onEvent 投递 env；这里只更新 Files 的状态。
-  if (event.type === "env") {
-    locale.value = window.dbxPlugin.locale || "zh-CN";
-    return;
-  }
+  // env（locale/theme）由 shared/frontend/hostThemeRuntime 的订阅分发；
+  // 此处只做窄化排除，后端事件走下方 method 分派。
+  if (event.type === "env") return;
   if (event.method === "files/remote-edit/state") {
     // 打开方式（远程编辑）会话状态：opened/synced 顶部提示，error 错误条。
     const state = event.params as { remotePath?: string; state?: string; error?: string };
@@ -2989,7 +2970,6 @@ async function downloadEntry(entry: FileEntry, side: PaneSide = "left", id = sid
       await call("files/transfer/cancel", { taskId }).catch(() => undefined);
       throw new Error(t("localSaveTooLarge", { size: formatBytes(size), limit: formatBytes(HOST_SAVE_MAX_BYTES) }));
     }
-    releaseFrames(channel);
     registerJob({
       jobId: taskId,
       taskId,
@@ -4220,9 +4200,17 @@ async function initialize() {
     else if (isDbxPluginTheme(api.theme)) applyAppearance(document.documentElement, themeToAppearance(api.theme));
   };
   applyHostEnvironment();
-  // appearance 契约缺失（当前 1.1 桥只推 theme）时订阅 env 主题推送，两套不同时挂。
-  if (!api.onAppearanceChange) unsubscribeTheme = onHostThemeChange((theme) => applyAppearance(document.documentElement, themeToAppearance(theme)));
-  unsubscribeContext = api.onContext?.(updateHostContext);
+  // X-P2/P3/P4 收敛：env（locale/theme）+ context + appearance 订阅统一走
+  // shared/frontend/hostThemeRuntime 单点（onEnv 保留 files 的"以 api.locale
+  // 为权威源"语义；appearance 契约缺失时经 theme 通道兜底，两套不同时挂）。
+  unsubscribeEnvironment = subscribeHostEnvironment<DbxPluginAppearance, DbxPluginTheme>(api, {
+    onEnv: () => {
+      locale.value = window.dbxPlugin.locale || "zh-CN";
+    },
+    onContext: updateHostContext,
+    onAppearance: (appearance) => applyAppearance(document.documentElement, appearance),
+    onTheme: (theme) => applyAppearance(document.documentElement, themeToAppearance(theme)),
+  }, { themeChannel: onHostThemeChange });
   // host.getContext 可能先于 ready 完成；迟到的 init 仍需接住 locale/theme/context。
   unsubscribeInit = api.onInit?.((context) => {
     updateHostContext(context);
@@ -4403,9 +4391,8 @@ onBeforeUnmount(() => {
   uiIntent.stop();
   unsubscribeEvent?.();
   unsubscribeBinary?.();
-  unsubscribeContext?.();
+  unsubscribeEnvironment?.();
   unsubscribeInit?.();
-  unsubscribeTheme?.();
   unsubscribeFileDrag?.();
   unsubscribeFileDrop?.();
 });

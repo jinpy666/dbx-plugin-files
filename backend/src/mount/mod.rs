@@ -167,15 +167,14 @@ fn mount_surface(binding: &RemoteBinding, subpath: Option<&str>) -> Result<(Stri
         sub.trim_start_matches('/')
     );
     let resolved = policy.check_read(&joined)?;
-    let fs = if binding.backend_type == "local" {
-        format!("{}{}", base.trim_end_matches('/'), resolved.absolute)
+    // fs 协议连接的 remote_fs 就是 root 本身（registry.rs "免注册"），absolute
+    // 会把 root 再前缀一遍（/srv/data + /srv/data/sub）；统一用 operator-
+    // relative 拼 fs，local 与远端分支行为一致。
+    let relative = resolved.relative.trim_matches('/');
+    let fs = if relative.is_empty() {
+        base
     } else {
-        let relative = resolved.relative.trim_matches('/');
-        if relative.is_empty() {
-            base
-        } else {
-            format!("{}/{}", base.trim_end_matches('/'), relative)
-        }
+        format!("{}/{}", base.trim_end_matches('/'), relative)
     };
     Ok((fs, resolved.absolute))
 }
@@ -217,6 +216,14 @@ fn webdav_volume_name(url: &str) -> Option<&str> {
         .find(|segment| !segment.is_empty())
 }
 
+/// AppleScript 字符串字面量转义：先反斜杠后引号。`mount volume "<url>"`
+/// 的 URL 内嵌宿主下发的 connection id，字符集未约束——id 里的 `"` 会
+/// 闭合字面量并向 osascript 注入任意脚本（含 do shell script）。
+#[cfg(target_os = "macos")]
+fn apple_script_quote(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 /// Ask macOS to mount the gateway URL right away: `mount volume` drives the
 /// same WebDAVFS stack as Finder's "Connect to Server", so the read-only
 /// volume appears in /Volumes and the Finder sidebar without user steps.
@@ -226,7 +233,7 @@ fn webdav_volume_name(url: &str) -> Option<&str> {
 #[cfg(target_os = "macos")]
 async fn mount_webdav_volume(url: &str) -> Option<PathBuf> {
     let wanted = webdav_volume_name(url)?.to_string();
-    let script = format!("mount volume \"{}\"", url);
+    let script = format!("mount volume \"{}\"", apple_script_quote(url));
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(20),
         tokio::process::Command::new("osascript").arg("-e").arg(&script).output(),
@@ -1010,6 +1017,19 @@ pub async fn mount_vfs_stats(
 mod tests {
     use super::*;
 
+    // -- AppleScript quoting -------------------------------------------------
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn apple_script_quote_neutralizes_injection() {
+        assert_eq!(
+            apple_script_quote("webdav://127.0.0.1/tok/ok\" & do shell script \"id & mount volume \"x"),
+            "webdav://127.0.0.1/tok/ok\\\" & do shell script \\\"id & mount volume \\\"x"
+        );
+        // 反斜杠必须先转义，否则第二次替换会把转义符再翻转。
+        assert_eq!(apple_script_quote("a\\b\"c"), "a\\\\b\\\"c");
+    }
+
     // -- mount-point reveal allowlist ---------------------------------------
 
     fn table() -> MountTable {
@@ -1273,6 +1293,25 @@ mod tests {
             (
                 "/srv/data/sub/dir".to_string(),
                 "/sub/dir".to_string()
+            )
+        );
+        // Rooted fs connection（remote_fs == root，registry "免注册"）：
+        // 子路径只拼一次 root，不得双重前缀。
+        binding.root = "/srv/data".to_string();
+        binding.lock_to_root = true;
+        assert_eq!(
+            mount_surface(&binding, Some("sub")).unwrap(),
+            (
+                "/srv/data/sub".to_string(),
+                "/srv/data/sub".to_string()
+            )
+        );
+        // Sub-path equal to the whole root: fs stays bare, no trailing join.
+        assert_eq!(
+            mount_surface(&binding, Some("/")).unwrap(),
+            (
+                "/srv/data".to_string(),
+                "/srv/data".to_string()
             )
         );
     }

@@ -421,6 +421,11 @@ impl RcClient {
 
     /// SUM lines for every object under `fs`/`remote`
     /// (`{hashType, hashsum: ["<hash>  <rel path>", ...]}`).
+    ///
+    /// Unbounded total timeout（与 operations/list/size 同理）：rclone 在
+    /// 内部逐对象取完 hash 前不吐响应体，云后端大目录常超 30s 控制面
+    /// 超时——files/hashsum 允许最多 2 万文件，预检（operations/size）
+    /// 已通过却死在 Transport，错误不可理解。
     pub async fn operations_hashsum(
         &self,
         fs: &str,
@@ -428,7 +433,7 @@ impl RcClient {
         hash_type: &str,
         download: bool,
     ) -> Result<Value, RcError> {
-        self.call(
+        self.call_unbounded(
             "operations/hashsum",
             &serde_json::json!({
                 "fs": fs,

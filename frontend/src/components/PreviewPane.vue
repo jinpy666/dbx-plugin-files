@@ -254,9 +254,15 @@ function concatParts(chunks: Uint8Array[]): Uint8Array {
 }
 
 async function loadChunked(resolution: PreviewResolution) {
+  // token 在本函数入口捕获并贯穿整个分块链路：stat 是第一个 await，
+  // 旧一次 load 的 stat 迟到时会用旧文件的大小覆盖新一轮状态、并带着
+  // 旧计划进入 runChunkLoop（在循环内重读 loadToken 会恒等于新 token，
+  // 守卫失效、两个循环并发 push 同一个 parts 拼出交错字节）。
+  const token = loadToken;
   const stat = await call<{ entry?: { size?: number }; size?: number }>("files/stat", withConnection({
     path: props.path,
   }));
+  if (token !== loadToken) return;
   const total = Number(stat.entry?.size ?? stat.size ?? 0);
   size.value = total;
   totalBytes.value = total;
@@ -267,12 +273,11 @@ async function loadChunked(resolution: PreviewResolution) {
   chunkActive.value = true;
   parts = [];
   loadedBytes.value = 0;
-  await runChunkLoop(resolution, 0);
+  await runChunkLoop(resolution, 0, token);
 }
 
 /** 分片循环：顺序（并发 1）拉取；token/取消在每个 await 后检查。 */
-async function runChunkLoop(resolution: PreviewResolution, fromOffset: number) {
-  const token = loadToken;
+async function runChunkLoop(resolution: PreviewResolution, fromOffset: number, token: number) {
   try {
     let offset = fromOffset;
     const total = () => totalBytes.value;
@@ -362,7 +367,7 @@ async function resumeChunkLoad() {
   chunkActive.value = true;
   loading.value = true;
   try {
-    await runChunkLoop(resolution.value, Math.min(loadedBytes.value, totalBytes.value));
+    await runChunkLoop(resolution.value, Math.min(loadedBytes.value, totalBytes.value), loadToken);
   } finally {
     loading.value = false;
   }

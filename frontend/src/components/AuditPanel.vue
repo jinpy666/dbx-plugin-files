@@ -3,7 +3,7 @@
 // 方法未就绪时展示不可用态而非报错。
 import { computed, onMounted, ref, watch } from "vue";
 import { RefreshCw } from "@lucide/vue";
-import { formatTime } from "../lib/api";
+import { errorMessage, formatTime, isMethodMissing } from "../lib/api";
 import { loadUiPrefs, saveUiPrefs } from "../lib/prefs";
 
 export interface AuditEntry {
@@ -43,16 +43,21 @@ const filteredEntries = computed(() =>
 );
 const available = ref<boolean | undefined>(undefined);
 const loading = ref(false);
+/** 瞬时故障（sidecar 重启/transport 抖动）的可重试错误行；不改判可用性。 */
+const loadError = ref("");
 
 async function refresh() {
   loading.value = true;
+  loadError.value = "";
   try {
     const result = await window.dbxPlugin.invoke<{ entries?: AuditEntry[] }>("files/audit/list", { limit: 100 });
     entries.value = result.entries ?? [];
     available.value = true;
   } catch (cause) {
-    if (/method not found/i.test(String(cause))) available.value = false;
-    else available.value = false;
+    // 只有旧 sidecar 缺方法才是「审计不可用」终态；瞬时故障保留旧列表，
+    // 走错误行 + 手动刷新（此前任何错误都映射成不可用文案且无法恢复）。
+    if (isMethodMissing(cause)) available.value = false;
+    else loadError.value = errorMessage(cause);
   } finally {
     loading.value = false;
   }
@@ -95,7 +100,8 @@ props;
           <option v-for="action in actionOptions" :key="action" :value="action">{{ action }}</option>
         </select>
       </label>
-      <div v-if="!entries.length" class="wb-file-empty">{{ loading ? "…" : t("auditEmpty") }}</div>
+      <div v-if="loadError" class="wb-file-empty" role="alert">{{ loadError }}</div>
+      <div v-else-if="!entries.length" class="wb-file-empty">{{ loading ? "…" : t("auditEmpty") }}</div>
       <p v-else-if="!filteredEntries.length" class="wb-file-empty">{{ t("auditFilterNoMatch") }}</p>
       <div v-for="(entry, index) in filteredEntries" v-else :key="index" class="wb-audit-item">
         <div class="wb-audit-head"><span>{{ head(entry) }}</span></div>
