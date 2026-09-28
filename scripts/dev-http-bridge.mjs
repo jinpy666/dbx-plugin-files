@@ -204,4 +204,4 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => console.log(`[bridge] http://127.0.0.1:${PORT} (sidecar=${BIN}, engine=${ENGINE}, vite=${VITE})`));
+server.listen(PORT, "127.0.0.1", () => console.log(`[bridge] http://127.0.0.1:${PORT} (sidecar=${BIN}, vite=${VITE})`));
