@@ -177,6 +177,14 @@ impl Store {
     /// Appends one audit line. Never rewrites the file.
     pub fn append_audit(&self, record: AuditRecord) -> Result<(), String> {
         let path = self.data_dir.join("audit.jsonl");
+        // 5 MiB 单代轮转（0.1.81 对抗复核 #6）：审计只记写操作但永不收缩、
+        // 无清理 API，MCP 自动化循环一天能写上千行。单代覆盖式轮转足够——
+        // 面板只看最近操作，不做多代/压缩/尾部读取。
+        const AUDIT_ROTATE_BYTES: u64 = 5 * 1024 * 1024;
+        if std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0) > AUDIT_ROTATE_BYTES {
+            let rotated = self.data_dir.join("audit.jsonl.1");
+            let _ = std::fs::rename(&path, &rotated);
+        }
         let mut line = serde_json::to_string(&record).map_err(|error| error.to_string())?;
         line.push('\n');
         let mut file = std::fs::OpenOptions::new()

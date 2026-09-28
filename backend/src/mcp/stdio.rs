@@ -272,6 +272,10 @@ fn write_response(stdout: &std::sync::Mutex<io::Stdout>, response: Value) -> io:
 /// over-limit path cheaply.
 pub(crate) const DEFAULT_STDIO_MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
 
+/// Cap on concurrently dispatched JSON-RPC lines (see the semaphore note in
+/// the serve loop).
+const STDIO_DISPATCH_CONCURRENCY: usize = 16;
+
 pub(crate) fn stdio_max_line_bytes() -> usize {
     std::env::var("DBX_FILES_MCP_STDIO_MAX_LINE")
         .ok()
@@ -329,13 +333,25 @@ pub fn run_mcp_stdio(data_dir: PathBuf) -> io::Result<()> {
     // Spawned handlers may finish out of order; the mutex keeps each JSON-RPC
     // line intact and id-based correlation makes ordering irrelevant.
     let stdout = Arc::new(std::sync::Mutex::new(io::stdout()));
+    // Bounded dispatch concurrency: forwarded tool calls can each park on a
+    // multi-minute bridge budget, so the pipeline needs a ceiling even
+    // though every line is length-capped (0.1.81 adversarial review #4).
+    let dispatch_permits = Arc::new(tokio::sync::Semaphore::new(STDIO_DISPATCH_CONCURRENCY));
     let mut in_flight = Vec::new();
     let max_line = stdio_max_line_bytes();
     let mut raw: Vec<u8> = Vec::new();
     let stdin = io::stdin();
     loop {
         raw.clear();
-        let read = stdin.lock().read_until(b'\n', &mut raw)?;
+        // Cap the read itself, not just the post-hoc length check: an
+        // unbounded `read_until` buffered the whole line first, so a peer
+        // that never sent a newline could drive unbounded allocation up to
+        // OOM before the 16 MiB limit was ever consulted (0.1.81 scan).
+        // Reading one byte past the cap still triggers the length error
+        // below; the rest of that hostile line then surfaces as ordinary
+        // parse noise on subsequent iterations.
+        let read = io::Read::take(stdin.lock(), max_line as u64 + 1)
+            .read_until(b'\n', &mut raw)?;
         if read == 0 {
             break; // EOF: stdin closed
         }
@@ -363,7 +379,15 @@ pub fn run_mcp_stdio(data_dir: PathBuf) -> io::Result<()> {
         };
         let server = Arc::clone(&server);
         let stdout = Arc::clone(&stdout);
+        let permits = Arc::clone(&dispatch_permits);
         in_flight.push(runtime.spawn(async move {
+            // Permit acquired INSIDE the task (not in the read loop): the
+            // loop must keep draining stdin — pings/tools-list would wedge
+            // behind a full semaphore otherwise. The cap exists because each
+            // forwarded call can hold a 300s+150s bridge budget, so an
+            // unbounded pipeline lets one peer pin hundreds of tasks
+            // (0.1.81 adversarial review #4).
+            let _permit = permits.acquire().await;
             if let Some(response) = server.dispatch(request).await {
                 let _ = write_response(&stdout, response);
             }

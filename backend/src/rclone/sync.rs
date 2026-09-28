@@ -57,6 +57,39 @@ const MAX_POLL_ERRORS: u32 = 3;
 #[cfg(test)]
 const TERMINAL_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Control-plane RPC cap for the poll/stop paths. `poll_job` rides the
+/// timeout-free transfer client (transfer bodies stream for hours), so its
+/// per-tick calls must not wedge forever when rcd dies mid-job — a hung
+/// `job/status` used to freeze the loop with the cancel unable to land
+/// (0.1.81 scan). (Production `stop_job` callers pass the normal 30s-timeout
+/// client; the cap there is a same-scale backstop, not the primary guard.)
+/// A timeout surfaces as a synthetic `RcError::Rclone`, which the caller's
+/// existing poll-error/terminal handling retires — the bisync terminal arm
+/// explicitly excludes it so one timeout cannot abort a live session.
+const POLL_RPC_TIMEOUT: Duration = Duration::from_secs(30);
+
+async fn bounded_call(
+    client: &RcClient,
+    method: &str,
+    params: &Value,
+) -> Result<Value, RcError> {
+    bounded_call_within(client, POLL_RPC_TIMEOUT, method, params).await
+}
+
+async fn bounded_call_within(
+    client: &RcClient,
+    budget: Duration,
+    method: &str,
+    params: &Value,
+) -> Result<Value, RcError> {
+    match tokio::time::timeout(budget, client.call(method, params)).await {
+        Ok(result) => result,
+        Err(_) => Err(RcError::Rclone {
+            message: format!("{method} did not answer within {budget:?} (rcd wedged?)"),
+        }),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SyncKind {
     /// `sync/copy`: copy src into dst, never delete dst extras.
@@ -484,9 +517,7 @@ pub async fn stop_job(client: &RcClient, handle: &SyncJobHandle) -> Result<(), S
     if let Ok(mut jobs) = canceled_jobs().lock() {
         jobs.insert((handle.group.clone(), handle.jobid));
     }
-    match client
-        .call("job/stop", &serde_json::json!({ "jobid": handle.jobid }))
-        .await
+    match bounded_call(client, "job/stop", &serde_json::json!({ "jobid": handle.jobid })).await
     {
         Ok(_) => Ok(()),
         Err(error) if is_job_not_found(&error) => Ok(()),
@@ -536,9 +567,12 @@ async fn poll_job(
         }
         // Progress snapshot; kept as the completion-totals candidate.
         let mut final_totals: Option<(u64, u64)> = None;
-        if let Ok(stats) = client
-            .call("core/stats", &serde_json::json!({ "group": handle.group }))
-            .await
+        if let Ok(stats) = bounded_call(
+            &client,
+            "core/stats",
+            &serde_json::json!({ "group": handle.group }),
+        )
+        .await
         {
             let transferred = stats.get("bytes").and_then(Value::as_u64).unwrap_or(0);
             let total = stats.get("totalBytes").and_then(Value::as_u64).unwrap_or(0);
@@ -553,9 +587,12 @@ async fn poll_job(
                 .unwrap_or(0);
             final_totals = Some((transferred, files));
         }
-        match client
-            .call("job/status", &serde_json::json!({ "jobid": handle.jobid }))
-            .await
+        match bounded_call(
+            &client,
+            "job/status",
+            &serde_json::json!({ "jobid": handle.jobid }),
+        )
+        .await
         {
             Ok(status) => {
                 poll_errors = 0;
@@ -627,7 +664,13 @@ async fn poll_job(
                 // response (HTTP 500 with an `error` body) instead of a
                 // readable status record — treat that as the terminal abort
                 // signal rather than losing track of the job.
-                if handle.kind == SyncKind::Bisync && rc_error_body(&error).is_some() {
+                // 0.1.81 对抗复核：bounded_call 的合成超时也带 body，会命中
+                // 此臂——单次 30s 控制面超时就把仍在跑的 bisync 报成“已中止”，
+                // 绕过普通作业享有的 MAX_POLL_ERRORS 容忍。超时不算终态信号，
+                // 交给下方 poll_errors 计数（连续 3 次才判 Failed）。
+                let synthetic_timeout =
+                    matches!(&error, RcError::Rclone { message } if message.contains("(rcd wedged?)"));
+                if handle.kind == SyncKind::Bisync && rc_error_body(&error).is_some() && !synthetic_timeout {
                     emit(SyncEvent::BisyncFinished {
                         report: Value::Object(serde_json::Map::new()),
                         success: false,
@@ -655,9 +698,12 @@ async fn poll_job(
 /// per-file records from `core/transferred {group}`. Their `bytes` run 0
 /// for server-side copies, so this under-reports — stats stay preferred.
 async fn transferred_totals(client: &RcClient, handle: &SyncJobHandle) -> (u64, u64) {
-    match client
-        .call("core/transferred", &serde_json::json!({ "group": handle.group }))
-        .await
+    match bounded_call(
+        client,
+        "core/transferred",
+        &serde_json::json!({ "group": handle.group }),
+    )
+    .await
     {
         Ok(value) => match value.get("transferred").and_then(Value::as_array) {
             Some(entries) => (
@@ -680,10 +726,13 @@ async fn transferred_totals(client: &RcClient, handle: &SyncJobHandle) -> (u64, 
 
 /// Clears the job group's counters (§6 leak prevention). Best effort.
 async fn reset_group_stats(client: &RcClient, handle: &SyncJobHandle) -> Result<(), RcError> {
-    client
-        .call("core/stats-reset", &serde_json::json!({ "group": handle.group }))
-        .await
-        .map(|_| ())
+    bounded_call(
+        client,
+        "core/stats-reset",
+        &serde_json::json!({ "group": handle.group }),
+    )
+    .await
+    .map(|_| ())
 }
 
 /// `job not found` recognition: rcd answers HTTP 500 with a JSON error body
@@ -716,6 +765,53 @@ fn is_job_not_found(error: &RcError) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// 0.1.81 scan: the poll-loop calls ride a timeout-free client, so the
+    /// bounded wrapper — not the client — is what retires a wedged rcd.
+    /// A silent (accepting but never answering) peer must trip the budget
+    /// as a synthetic Rclone error, quickly.
+    #[tokio::test]
+    async fn bounded_call_times_out_against_silent_peer() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Bind but never accept: the kernel backlog completes the handshake,
+        // yet no HTTP answer ever comes — a silent peer. (Blocking
+        // `accept()` directly would starve the current-thread runtime and
+        // deadlock the test: the connect never gets polled.)
+        let client = RcClient::new(
+            format!("http://{addr}"),
+            "u".to_string(),
+            "p".to_string(),
+        );
+        let started = tokio::time::Instant::now();
+        let result = {
+            // Keep the listener alive for the whole call so the connection
+            // stays half-open in the backlog instead of being reset.
+            let _keep_bound = listener;
+            bounded_call_within(
+                &client,
+                Duration::from_millis(80),
+                "core/stats",
+                &serde_json::json!({}),
+            )
+            .await
+        };
+        assert!(result.is_err(), "silent peer must trip the budget");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "timeout path must not hang: {:?}",
+            started.elapsed()
+        );
+        match result.unwrap_err() {
+            RcError::Rclone { message } => {
+                assert!(message.contains("core/stats"), "{message}");
+                assert!(message.contains("rcd wedged"), "{message}");
+            }
+            other => panic!("expected synthetic Rclone error, got {other:?}"),
+        }
+    }
+
     use std::time::Instant;
 
     use super::*;

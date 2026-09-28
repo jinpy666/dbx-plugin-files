@@ -230,7 +230,11 @@ pub fn downloads_base_dir(
 
 /// Strips path separators and control characters from a remote-provided file
 /// name; trailing dots/spaces are removed for Windows targets. Empty results
-/// fall back to "download".
+/// fall back to "download". On Windows targets, reserved device names
+/// (`CON`, `NUL`, `COM1`…, including spelled forms like `aux.txt`) get a `_`
+/// prefix — the OS would otherwise fail `File::create` with an inscrutable
+/// error (0.1.81 adversarial review #12; non-Windows builds leave such names
+/// untouched — they are perfectly legal on Unix/S3 remotes).
 pub fn sanitize_file_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
@@ -239,10 +243,24 @@ pub fn sanitize_file_name(name: &str) -> String {
         .collect();
     let trimmed = cleaned.trim().trim_end_matches(['.', ' ']).trim();
     if trimmed.is_empty() {
-        "download".to_string()
-    } else {
-        trimmed.to_string()
+        return "download".to_string();
     }
+    if cfg!(windows) && is_windows_reserved_device_name(trimmed) {
+        return format!("_{trimmed}");
+    }
+    trimmed.to_string()
+}
+
+/// `CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9` — case-insensitive, and a
+/// reserved stem wins even when the name carries an extension (`nul.txt`).
+fn is_windows_reserved_device_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or(name);
+    matches!(
+        stem.to_ascii_uppercase().as_str(),
+        "CON" | "PRN" | "AUX" | "NUL"
+            | "COM1" | "COM2" | "COM3" | "COM4" | "COM5" | "COM6" | "COM7" | "COM8" | "COM9"
+            | "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9"
+    )
 }
 
 /// Picks a non-colliding path in `base` for `file_name`, appending " (n)"

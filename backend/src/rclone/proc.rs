@@ -635,12 +635,22 @@ async fn wait_healthy(endpoint: &RcdEndpoint) -> Result<(), String> {
 /// Tail of the rcd log file (startup failures put the actionable line
 /// last). Same diagnostics shape the old pipe-drain produced.
 fn rcd_log_tail(log_path: &Path) -> String {
-    use std::io::Read;
+    use std::io::{Read, Seek, SeekFrom};
+    // 8 KiB tail，与 tunnel.rs 的 ssh 日志 tail 同口径：rcd 崩溃前若已写出
+    // 巨量 stderr，整段读入会把错误消息撑到不可用（0.1.81 扫描）。
+    const MAX_TAIL: u64 = 8 * 1024;
     let Ok(mut file) = std::fs::File::open(log_path) else {
         return String::new();
     };
-    let mut text = String::new();
-    let _ = file.read_to_string(&mut text);
+    let len = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+    let start = len.saturating_sub(MAX_TAIL);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return String::new();
+    }
+    let mut bytes = Vec::new();
+    let _ = file.read_to_end(&mut bytes);
+    // seek 可能落在 UTF-8 序列中间，lossy 转换把残缺首字符替换掉即可。
+    let text = String::from_utf8_lossy(&bytes);
     if text.trim().is_empty() {
         String::new()
     } else {

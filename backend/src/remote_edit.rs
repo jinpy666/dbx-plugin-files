@@ -156,6 +156,31 @@ pub fn workspace_base(lookup: impl Fn(&str) -> Option<std::ffi::OsString>) -> Pa
     }
 }
 
+/// Creates `dir` (recursively) mode-0700 on Unix, and re-tightens a
+/// pre-existing directory left at wider permissions. The default workspace
+/// base lives under the shared temp dir, where the OS default (0755) would
+/// let same-host accounts traverse into staged remote-file copies (0.1.81
+/// scan). Non-Unix falls back to a plain recursive create.
+pub fn ensure_private_dir(dir: &std::path::Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .recursive(true)
+            .create(dir)
+            .map_err(|error| error.to_string())?;
+        // DirBuilder only applies the mode to directories it creates; a
+        // base left behind by an older build keeps its old mode, so set it.
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(dir).map_err(|error| error.to_string())
+    }
+}
+
 /// Deterministic local copy path for `(connection, remote path)`: sanitized
 /// per remote path segment under `<base>/<connection>/<dirs…>/<name>`, so
 /// same-name files in different remote directories (or connections) never
