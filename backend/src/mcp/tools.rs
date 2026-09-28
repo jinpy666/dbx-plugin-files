@@ -543,7 +543,7 @@ impl Mcp {
                 MAX_INLINE_WRITE_BYTES
             ));
         }
-        let client = route.engine.client_for_binding(&binding).await?;
+        let client = route.engine.client_for_binding(&binding).await?.transfer_client();
         let remote = crate::policy::PathPolicy::from_parts(
             &binding.root,
             binding.lock_to_root,

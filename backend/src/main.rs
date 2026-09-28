@@ -890,7 +890,11 @@ impl Plugin {
             "files/archiveList" => {
                 let request: model::ArchiveListRequest = parse(params)?;
                 let binding = self.rclone.binding(&request.connection_id)?;
-                let client = self.rclone.client_for_binding(&binding).await?;
+                // 归档四条臂（archiveList/extract/compress/archiveDownload）都
+                // 在同一个客户端上流式读/写最大 1 GiB；reqwest 总超时覆盖整个
+                // 响应体，慢链路必然死在 Transport——与 0.1.81 files/write
+                // 同因，改用 transfer client（控制面调用不受影响）。
+                let client = self.rclone.client_for_binding(&binding).await?.transfer_client();
                 let entries = rclone::archive::archive_list(
                     &client,
                     &rclone::call_fs(&binding),
@@ -926,7 +930,7 @@ impl Plugin {
                             .to_string(),
                     );
                 }
-                let client = self.rclone.client_for_binding(&binding).await?;
+                let client = self.rclone.client_for_binding(&binding).await?.transfer_client();
                 rclone::archive::extract(
                     &client,
                     &rclone::call_fs(&binding),
@@ -964,7 +968,7 @@ impl Plugin {
                         request.target_path
                     ));
                 }
-                let client = self.rclone.client_for_binding(&binding).await?;
+                let client = self.rclone.client_for_binding(&binding).await?.transfer_client();
                 let fs = rclone::call_fs(&binding);
                 // Refuse to overwrite: an existing target is never clobbered
                 // by a compression run (stat-first; the gate runs here
@@ -1205,7 +1209,7 @@ impl Plugin {
             "files/archiveDownload" => {
                 let request: model::ArchiveDownloadRequest = parse(params)?;
                 let binding = self.rclone.binding(&request.connection_id)?;
-                let client = self.rclone.client_for_binding(&binding).await?;
+                let client = self.rclone.client_for_binding(&binding).await?.transfer_client();
                 let fs = rclone::call_fs(&binding);
                 let relative = rclone_gate(
                     &binding.root,

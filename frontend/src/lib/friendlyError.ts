@@ -7,10 +7,11 @@
 type Translate = (key: string, values?: Record<string, string | number>) => string;
 
 const RULES: ReadonlyArray<{ pattern: RegExp; key: string }> = [
-  // 连接未在 sidecar registry 注册（binding() 的 "Connection is not connected
-  // (rclone engine)"）：双栏跨连接选择器指向宿主其它连接、或宿主切换激活连接
-  // 的 connect 尚未完成。先于 errNetwork 判断，避免被误读成网络故障。
-  { pattern: /connection is not connected/i, key: "errConnectionNotReady" },
+  // 连接未在 sidecar registry 注册：binding() 的 "Connection is not connected
+  // (rclone engine)"、mock/MCP 路由的 "Unknown connectionId '…'; connect first"。
+  // 双栏跨连接选择器指向宿主其它连接、或宿主切换激活连接的 connect 尚未完成。
+  // 先于 errNetwork 判断，避免被误读成网络故障。
+  { pattern: /connection is not connected|unknown connectionid/i, key: "errConnectionNotReady" },
   // 不存在类：NotFound: /x、no such file、ENOENT
   { pattern: /not\s*found|no such (?:file|directory|entry|path|object)|enoent/i, key: "errNotFound" },
   // 权限类：epERM、eacces、forbidden、403
@@ -46,7 +47,8 @@ export function isNotFoundMessage(message: string): boolean {
 }
 
 /** 连接未在 sidecar 注册（双栏连接切换回退的判定依据）：该 id 从未被宿主
- * `connection/connect` 注册，首个 files/* 调用即失败。 */
+ * `connection/connect` 注册，首个 files/* 调用即失败（真实引擎与 mock 的
+ * 两种文案都识别）。 */
 export function isConnectionNotReadyMessage(message: string): boolean {
-  return /connection is not connected/i.test(String(message ?? ""));
+  return /connection is not connected|unknown connectionid/i.test(String(message ?? ""));
 }

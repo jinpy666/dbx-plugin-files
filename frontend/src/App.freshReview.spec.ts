@@ -359,7 +359,13 @@ describe("round5 retry UI smoke", () => {
     const job = panel.props("jobs").find((item) => item.remotePath?.startsWith(`${paths[0]} →`))!;
     const original = invoke.mock.calls.find(([method, params]) => method === `files/${kind}` && (params as Record<string, unknown>).sourcePath === paths[0])![1];
     expect(original).toMatchObject({ sourceConnectionId: from === "left" ? "__local__" : "mock-conn", targetConnectionId: from === "left" ? "mock-conn" : "__local__" });
-    await wrapper!.get(".wb-pane-source select").setValue("");
+    // ConnectionSelect 自定义下拉：打开左栏连接菜单并选回「同连接」。
+    await wrapper!.get(".wb-pane-source .wb-conn-select-trigger").trigger("click");
+    await nextTick();
+    await wrapper!.findAll(".wb-conn-select-menu [role='option']")
+      .find((item) => item.text() === workbenchMessage("en", "sameConnection"))!
+      .trigger("click");
+    await settle();
     await connectFixture("other");
     host.setContext({ connectionId: "other" });
     await settle();

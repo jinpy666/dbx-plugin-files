@@ -378,7 +378,10 @@ async fn write_response_with_length(
 /// One `<D:response>` block. `rel` is the decoded relative path (`""` root).
 fn render_entry(token: &str, conn_id: &str, rel: &str, entry: &StatEntry) -> String {
     let display_name = if rel.is_empty() {
-        conn_id.to_string()
+        // 根条目 displayname 用连接 id；id 由宿主 lifecycle 下发、未约束
+        // 字符集，与其余名字一样必须过 xml_escape（PROPFIND 消费方是
+        // 本机 OS WebDAV 客户端）。
+        xml_escape(conn_id)
     } else {
         xml_escape(&entry.name)
     };

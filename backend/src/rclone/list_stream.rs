@@ -726,6 +726,9 @@ pub async fn run_session(spec: SessionSpec) {
         .arg(format!("--config={}", spawn_info.config_path.display()))
         .arg("--no-mimetype")
         .arg("--log-level=NOTICE")
+        // `--` 终结 flag 解析：fs 协议的 fs 串是操作员配置的本地 root，
+        // 以 `-` 开头时会被 cobra 当成 flag（参数注入纵深防御）。
+        .arg("--")
         .arg(lsjson_target(&fs, &remote))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())

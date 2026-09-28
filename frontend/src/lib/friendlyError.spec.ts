@@ -18,6 +18,10 @@ describe("friendlyError", () => {
     expect(friendlyError("Connection is not connected (rclone engine)", t)).toBe(
       "该连接尚未在后台建立:请稍候重试,或先在宿主应用中将其切换为当前连接。",
     );
+    // mock/MCP 路由的 registry miss 同类文案。
+    expect(friendlyError("Unknown connectionId 'x'; connect first", t)).toBe(
+      "该连接尚未在后台建立:请稍候重试,或先在宿主应用中将其切换为当前连接。",
+    );
   });
 
   it("keeps unknown messages verbatim (fallback to raw)", () => {

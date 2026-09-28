@@ -1,10 +1,10 @@
 // @vitest-environment happy-dom
-// 双栏跨连接切换回退（HOST_FEEDBACK F-5）：目标连接未在 sidecar registry
-// 注册时（真实宿主只为激活连接调用 connection/connect），切换后的首个
-// files/* 调用报 "Connection is not connected (rclone engine)"。App 侧契约：
-// ① 该错误类映射为可操作的友好文案；② 该栏自动回退到原连接并恢复列表，
-// 不滞留在不可用连接上。mock 宿主不校验 registry，这里用 invoke 拦截注入
-// 真实后端的错误形状。
+// 双栏跨连接切换（HOST_FEEDBACK F-5）：目标连接未在 sidecar registry 注册时
+// （真实宿主只为激活连接调用 connection/connect），切换后的首个 files/* 调用
+// 报 "Connection is not connected (rclone engine)"。App 侧契约：
+// ① 先请宿主跑 connect（host.reopenConnection，凭据在宿主侧）后重试一次；
+// ② 宿主 connect 失败/旧宿主缺方法时回退原连接并给出可操作文案，栏位不滞留。
+// mock 宿主不校验 registry，用 invoke/request 拦截注入真实后端的错误形状。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, type VueWrapper } from "@vue/test-utils";
 import { nextTick } from "vue";
@@ -18,7 +18,13 @@ import { workbenchMessage } from "./lib/i18n";
 let wrapper: VueWrapper | undefined;
 
 const BAD_CONNECTION_ID = "bad-conn";
-const NOT_CONNECTED = "Connection is not connected (rclone engine)";
+
+/** 每用例可调的宿主桥行为开关（真实宿主形状注入）。 */
+const bridge = {
+  /** host.reopenConnection 对 bad-conn 拒绝（模拟宿主 connect 失败）。 */
+  reopenRejects: true,
+  reopenCalls: 0,
+};
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -30,11 +36,11 @@ beforeEach(() => {
     leftSideCollapsed: false,
     rightSideCollapsed: false,
   });
+  bridge.reopenRejects = true;
+  bridge.reopenCalls = 0;
   Reflect.deleteProperty(window, "dbxPlugin");
   window.history.replaceState(null, "", "/?mock=1&locale=en&delay=0");
   installMockHost();
-  // 真实宿主形状注入：listConnections 多给一个未注册连接；该连接的 files/*
-  // 一律按 binding() 的 registry miss 报错。
   const bridged = window.dbxPlugin!;
   const originalInvoke = bridged.invoke.bind(bridged);
   const originalRequest = bridged.request.bind(bridged);
@@ -48,13 +54,16 @@ beforeEach(() => {
             { id: BAD_CONNECTION_ID, name: "Unregistered Storage" },
           ]);
         }
-        return originalRequest(method, params);
-      },
-      invoke: (method: string, params?: Record<string, unknown>, options?: { timeoutMs?: number }) => {
-        if (method.startsWith("files/") && (params as { connectionId?: string } | undefined)?.connectionId === BAD_CONNECTION_ID) {
-          return Promise.reject(new Error(NOT_CONNECTED));
+        if (method === "host.reopenConnection" && (params as { connectionId?: string } | undefined)?.connectionId === BAD_CONNECTION_ID) {
+          bridge.reopenCalls += 1;
+          if (bridge.reopenRejects) return Promise.reject(new Error("Storage connect failed: check the credentials"));
+          // 真实宿主 reopenConnection 的实际动作：向 sidecar 发
+          // connection/connect 注册该连接——mock 注册后 files/* 即放行。
+          return originalInvoke("connection/connect", {
+            connection: { id: BAD_CONNECTION_ID, name: "Unregistered Storage", external_config: { protocol: "fs" } },
+          }).then(() => ({ ok: true }));
         }
-        return originalInvoke(method, params, options);
+        return originalRequest(method, params);
       },
     },
     configurable: true,
@@ -89,29 +98,50 @@ async function openDualPane() {
   await settle();
 }
 
-function targetConnectionSelect() {
-  return wrapper!.find(`select[aria-label="${workbenchMessage("en", "targetConnection")}"]`);
+function targetConnectionTrigger() {
+  return wrapper!.find(`button[aria-label="${workbenchMessage("en", "targetConnection")}"]`);
 }
 
-describe("dual-pane cross-connection switch revert (registry-miss 回退)", () => {
-  it("reverts the right pane to the previous connection and shows actionable guidance", async () => {
+/** 打开右栏连接下拉并点选指定选项（ConnectionSelect 自定义弹层）。 */
+async function pickTargetConnection(name: string) {
+  await targetConnectionTrigger().trigger("click");
+  await nextTick();
+  const option = wrapper!.findAll(".wb-conn-select-menu [role='option']")
+    .find((option) => option.text().includes(name))!;
+  await option.trigger("click");
+  await settle();
+}
+
+describe("dual-pane cross-connection switch (F-5 reopen 自愈与回退)", () => {
+  it("recovers via host.reopenConnection when the target connection registers", async () => {
+    // 未注册 → 首拉失败 → 宿主 connect 成功（清除拒绝）→ 重试放行。
+    bridge.reopenRejects = false;
     mountWorkbench();
     await settle();
     await openDualPane();
 
-    const select = targetConnectionSelect();
-    expect(select.exists()).toBe(true);
-    // 初始为「同连接」（value=""），右栏展示 mock-conn 的根目录。
-    expect((select.element as HTMLSelectElement).value).toBe("");
+    expect(targetConnectionTrigger().exists()).toBe(true);
+    await pickTargetConnection("Unregistered Storage");
 
-    await select.setValue(BAD_CONNECTION_ID);
+    // 自愈契约：宿主 connect 被请求一次，重试拉取成功，栏位停在新连接、无横幅。
+    expect(bridge.reopenCalls).toBe(1);
+    expect(targetConnectionTrigger().attributes("title")).toBe("Unregistered Storage");
+    expect(wrapper!.find(".wb-error-banner").exists()).toBe(false);
+  });
+
+  it("reverts to the previous connection when the host connect fails", async () => {
+    mountWorkbench();
     await settle();
+    await openDualPane();
 
-    // 回退契约：选择器回到原连接，错误横幅给出可操作指引而非原始引擎文案。
-    expect((select.element as HTMLSelectElement).value).toBe("");
+    await pickTargetConnection("Unregistered Storage");
+
+    // 回退契约：宿主 connect 失败 → 选择器回原连接，横幅给出可操作指引而非原始引擎文案。
+    expect(bridge.reopenCalls).toBe(1);
+    expect(targetConnectionTrigger().attributes("title")).toBe(workbenchMessage("en", "sameConnection"));
     const banner = wrapper!.find(".wb-error-banner");
     expect(banner.exists()).toBe(true);
     expect(banner.text()).toContain(workbenchMessage("en", "errConnectionNotReady"));
-    expect(banner.text()).not.toContain(NOT_CONNECTED);
+    expect(banner.text()).not.toContain("Unknown connectionId");
   });
 });

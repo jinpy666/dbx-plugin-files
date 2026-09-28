@@ -28,6 +28,9 @@ const props = defineProps<{
   filtered?: boolean;
   /** issue #49：目录超封顶被截断——footer 条目数显示 N+ 提示并非完整清单。 */
   truncated?: boolean;
+  /** 流式列表中：entries 随 chunk 到达逐帧换引用，重置滚动会把用户弹回
+   *  顶部（大目录数秒内无法下滚）——streaming 期间跳过 entries watch。 */
+  streaming?: boolean;
   t: (key: string, values?: Record<string, string | number>) => string;
 }>();
 
@@ -67,6 +70,7 @@ const visibleEntries = computed(() => props.entries.slice(firstIndex.value, firs
 watch(
   () => props.entries,
   () => {
+    if (props.streaming) return;
     scrollTop.value = 0;
     nav.value = { index: -1, anchor: -1 };
     if (viewport.value) viewport.value.scrollTop = 0;

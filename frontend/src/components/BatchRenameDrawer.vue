@@ -106,7 +106,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="wb-dialog-backdrop" @click.self="emit('close')">
+  <div class="wb-dialog-backdrop" @click.self="!applying && emit('close')">
     <div ref="drawerEl" class="wb-dialog wb-batch-drawer" role="dialog" aria-modal="true" :aria-label="t('batchRenameTitle')" @keydown="onTabKeydown">
       <header>
         <strong>{{ t("batchRenameTitle") }}</strong>

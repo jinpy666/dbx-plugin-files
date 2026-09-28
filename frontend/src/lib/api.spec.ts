@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeEntry, normalizeEntries, type FileEntry } from "./api";
+import { isHostMethodMissing, normalizeEntry, normalizeEntries, type FileEntry } from "./api";
 import { sortEntries, type SortState } from "./sorting";
 
 const modifiedSort: SortState = { column: "modified", direction: "asc" };
@@ -37,5 +37,14 @@ describe("dual-pane modified sort regression (双栏 modifiedAt localeCompare �
     ]);
     expect(() => sortEntries(raw, modifiedSort)).not.toThrow();
     expect(sortEntries(raw, modifiedSort).map((item) => item.name)).toEqual(["old", "new"]);
+  });
+});
+
+describe("isHostMethodMissing", () => {
+  it("detects old-host bridge errors only", () => {
+    expect(isHostMethodMissing(new Error("Unsupported plugin host method 'host.reopenConnection'"))).toBe(true);
+    expect(isHostMethodMissing(new Error("Connection reopen is unavailable"))).toBe(true);
+    expect(isHostMethodMissing(new Error("Method not found: files/list"))).toBe(true);
+    expect(isHostMethodMissing(new Error("Storage connect failed: bad credentials"))).toBe(false);
   });
 });
