@@ -185,6 +185,7 @@ export const messages = {
     errPermission: "Permission denied. Check the connection credentials, access permissions, and read-only settings.",
     errExists: "The target already exists. Choose a different name or destination.",
     errNetwork: "Storage connection failed or timed out. Check the server address and network, then reconnect.",
+    errConnectionNotReady: "This connection is not established in the background yet. Try again in a moment, or activate it as the current connection in the host app first.",
     // P2-6 / P2-10
     downloadNoneSelected: "Selection contains no downloadable files",
     nameExists: "\"{name}\" already exists — pick another name",
@@ -680,6 +681,7 @@ export const messages = {
     errPermission: "Permiso denegado. Comprueba las credenciales de conexión, los permisos de acceso y la configuración de solo lectura.",
     errExists: "El destino ya existe. Elige otro nombre o destino.",
     errNetwork: "La conexión de almacenamiento ha fallado o ha agotado el tiempo de espera. Comprueba la dirección del servidor y la red, y vuelve a conectarte.",
+    errConnectionNotReady: "Esta conexión aún no se ha establecido en segundo plano. Inténtalo de nuevo en un momento, o actívala primero como conexión actual en la aplicación anfitriona.",
     downloadNoneSelected: "La selección no contiene archivos descargables",
     nameExists: "«{name}» ya existe; elige otro nombre",
     // R3-P2-4/5/6/8：文件名校验、覆盖确认、过滤无匹配、列表 a11y
@@ -1163,6 +1165,7 @@ export const messages = {
     errPermission: "Permesso negato. Controlla le credenziali di connessione, i permessi di accesso e le impostazioni di sola lettura.",
     errExists: "La destinazione esiste già. Scegli un altro nome o un’altra destinazione.",
     errNetwork: "La connessione di archiviazione non è riuscita o è scaduta. Controlla l’indirizzo del server e la rete, poi riconnettiti.",
+    errConnectionNotReady: "Questa connessione non è ancora stata stabilita in background. Riprova tra poco, oppure attivala prima come connessione corrente nell’app host.",
     downloadNoneSelected: "La selezione non contiene file scaricabili",
     nameExists: "«{name}» esiste già; scegli un altro nome",
     // R3-P2-4/5/6/8：文件名校验、覆盖确认、过滤无匹配、列表 a11y
@@ -1646,6 +1649,7 @@ export const messages = {
     errPermission: "アクセス権がありません。接続の認証情報、アクセス権、読み取り専用設定を確認してください。",
     errExists: "対象はすでに存在します。別の名前または保存先を選択してください。",
     errNetwork: "ストレージ接続に失敗したか、タイムアウトしました。サーバーのアドレスとネットワークを確認してから再接続してください。",
+    errConnectionNotReady: "この接続はまだバックグラウンドで確立されていません。しばらくしてから再試行するか、先にホストアプリで現在の接続として有効化してください。",
     downloadNoneSelected: "選択項目にダウンロード可能なファイルがありません",
     nameExists: "「{name}」はすでに存在します。別の名前を指定してください",
     // R3-P2-4/5/6/8：ファイル名検証・上書き確認・フィルター不一致・リスト a11y
@@ -2129,6 +2133,7 @@ export const messages = {
     errPermission: "Permissão negada. Verifique as credenciais de conexão, as permissões de acesso e as configurações de somente leitura.",
     errExists: "O destino já existe. Escolha outro nome ou destino.",
     errNetwork: "A conexão de armazenamento falhou ou excedeu o tempo limite. Verifique o endereço do servidor e a rede e conecte-se novamente.",
+    errConnectionNotReady: "Esta conexão ainda não foi estabelecida em segundo plano. Tente novamente em instantes, ou ative-a primeiro como conexão atual no aplicativo host.",
     downloadNoneSelected: "A seleção não contém arquivos baixáveis",
     nameExists: "\"{name}\" já existe; escolha outro nome",
     // R3-P2-4/5/6/8：文件名校验、覆盖确认、过滤无匹配、列表 a11y
@@ -2613,6 +2618,7 @@ export const messages = {
     errPermission: "没有操作权限。请检查连接凭据、访问权限和只读设置。",
     errExists: "目标已存在。请更换名称或目标路径。",
     errNetwork: "存储连接失败或超时。请检查服务器地址和网络后重新连接。",
+    errConnectionNotReady: "该连接尚未在后台建立:请稍候重试,或先在宿主应用中将其切换为当前连接。",
     downloadNoneSelected: "所选内容中没有可下载的文件",
     nameExists: "「{name}」已存在，请更换名称",
     // R3-P2-4/5/6/8：文件名校验、覆盖确认、过滤无匹配、列表 a11y
@@ -3097,6 +3103,7 @@ export const messages = {
     errPermission: "沒有操作權限。請檢查連線憑證、存取權限和唯讀設定。",
     errExists: "目標已存在。請更換名稱或目標路徑。",
     errNetwork: "儲存連線失敗或逾時。請檢查伺服器位址和網路後重新連線。",
+    errConnectionNotReady: "該連線尚未在背景建立:請稍候重試,或先在宿主應用程式中將其切換為目前連線。",
     downloadNoneSelected: "所選內容中沒有可下載的檔案",
     nameExists: "「{name}」已存在，請更換名稱",
     // R3-P2-4/5/6/8：檔案名稱驗證、覆蓋確認、過濾無匹配、清單 a11y
