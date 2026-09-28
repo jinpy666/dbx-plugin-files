@@ -47,3 +47,29 @@
   `validate_plugin_connection_values`（并在 F-1 修复后具备条件校验），
   写入前按 manifest default 回填缺失字段。
 - **状态**：未修复（2026-09-02 提出）。
+
+## F-5 跨连接双栏缺「按需 connect」通道：插件拿不到非激活连接的定义
+
+- **现象**：双栏工作台的左/右栏连接选择器经 `host.listConnections`
+  枚举宿主其它连接（仅返回 `{id, name}`，无凭据/配置）。用户切换到该
+  连接后，插件 immediately 发起 `files/list` 等调用，而 sidecar 的
+  rclone registry 只在宿主调生命周期 `connection/connect`（含完整
+  StoredConnection）时注册连接——宿主只为**当前激活连接**调用它。结果
+  `binding()` 查不到该 id，报
+  `Connection is not connected (rclone engine)`（语义实为「未注册」）。
+  插件侧无法自救：既没有凭据调 `connection/connect`，sidecar 也没有
+  向宿主回调取连接定义的通道。
+- **影响**：双栏跨连接浏览/传输在真实宿主上不可用（mock 宿主不校验
+  registry，测试链路无法暴露；UI_SCAN_FINDINGS 已有「多连接真机行为
+  未验证」的遗留记录）。插件 v0.1.83 起对该错误类做了友好文案 +
+  切换失败自动回退原连接，避免栏位滞留，但跨连接能力本身仍缺位。
+- **建议**（任一即可）：
+  1. `host.listConnections` 返回可连接的完整定义（或新增
+     `host.getConnection`），插件在切换时先调 `connection/connect`；
+  2. 宿主在插件打开/激活时为**全部**连接调用 `connection/connect`
+     预注册；
+  3. 至少收敛切换时序契约：宿主切换激活连接时先完成
+     `connection/connect` 再派发 context 更新事件，避免前端以新
+     connectionId 首拉时命中未注册窗口。
+- **状态**：未修复（2026-09-28 提出）；插件侧降级体验已上线（回退 +
+  友好文案）。

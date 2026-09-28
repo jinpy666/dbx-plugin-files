@@ -15,9 +15,18 @@ export interface FileEntry {
  * 后端 `FileEntry.kind` 序列化为 "dir"|"file"（model.rs），前端统一用
  * "directory"。P-FILES ④ 浏览器验证发现的真实契约错位：不做归一化时
  * 目录双击/目录判断（排序、删除递归、右键菜单）全部失效。
+ *
+ * `modifiedAt` 同类错位：后端序列化为 u64 epoch 毫秒数字，而前端契约是
+ * ISO 字符串；不归一化时按「修改时间」排序会对数字调 localeCompare 崩溃
+ * （`?? ""` 兜不住非 nullish 的数字）。mock 宿主给的是 ISO 字符串，掩盖了
+ * 该错位。这里统一归一为 ISO 字符串，使声明的类型为真。
  */
 export function normalizeEntry(raw: FileEntry): FileEntry {
-  return (raw as { kind: string }).kind === "dir" ? { ...raw, kind: "directory" } : raw;
+  const entry: FileEntry = (raw as { kind: string }).kind === "dir" ? { ...raw, kind: "directory" } : raw;
+  if (typeof entry.modifiedAt === "number") {
+    return { ...entry, modifiedAt: new Date(entry.modifiedAt).toISOString() };
+  }
+  return entry;
 }
 
 export function normalizeEntries(entries: readonly FileEntry[]): FileEntry[] {

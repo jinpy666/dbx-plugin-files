@@ -98,7 +98,7 @@ import { normalizeQuickPaths, type QuickPath } from "./lib/quickPaths";
 import { isNarrowViewport } from "./lib/responsive";
 import { resolveUploadTarget, type UploadTarget } from "./lib/uploadTarget";
 import { MENU_ITEM_SELECTOR, onMenuArrowKeys, onTablistArrowKeys, trapTabKey } from "./lib/a11y";
-import { isNotFoundMessage, isTransportFailure } from "./lib/friendlyError";
+import { isConnectionNotReadyMessage, isNotFoundMessage, isTransportFailure } from "./lib/friendlyError";
 import { createNavGuard } from "./lib/navGuard";
 import { resolveToolbarTarget } from "./lib/toolbarTarget";
 import { validateFileName } from "./lib/fileName";
@@ -1647,15 +1647,47 @@ async function probeConnections() {
   }
 }
 
+/**
+ * 跨连接切换失败（目标连接未在 sidecar registry 注册，见
+ * HOST_FEEDBACK F-5）时回退该栏：恢复原连接的根目录面，避免栏位滞留在
+ * 不可用连接上只剩空列表；回退重载成功会清横幅，故重载后重发友好错误。
+ */
+async function revertPaneConnection(side: PaneSide, previous: string, cause: unknown) {
+  if (side === "left") {
+    leftConnectionId.value = previous;
+    treeGenerations.left += 1;
+    leftTree.value = createTreeRoot("/", "/");
+    await loadDirectory("/").catch(() => undefined);
+    await loadQuickPaths("left");
+  } else {
+    targetConnectionId.value = previous;
+    treeGenerations.right += 1;
+    rightTree.value = createTreeRoot("/", "/");
+    await loadRightDirectory("/").catch(() => undefined);
+    await loadQuickPaths("right");
+  }
+  showError(cause, side);
+}
+
 /** 左栏切换连接（双栏）：新连接回到根目录，quickPaths 随连接面刷新。 */
-async function onLeftConnectionChange() {
+async function onLeftConnectionChange(event: Event) {
+  const previous = leftConnectionId.value;
+  leftConnectionId.value = (event.target as HTMLSelectElement).value;
   markActiveSide("left");
   // 0.1.81 扫描：切换连接必须整树重建——旧连接的缓存子树（loaded=true 的
   // 节点）不会自动重拉，tree tab 会继续展示上一棵连接的目录结构。代数递增
   // 使该栏在途 listing 结果整包丢弃（与 updateHostContext 同法）。
   treeGenerations.left += 1;
   leftTree.value = createTreeRoot("/", "/");
-  await loadDirectory("/").catch(() => undefined);
+  try {
+    await loadDirectory("/");
+  } catch (cause) {
+    if (isConnectionNotReadyMessage(errorMessage(cause))) {
+      await revertPaneConnection("left", previous, cause);
+      return;
+    }
+    return; // 其余失败由 loadDirectory 弹横幅，保留新连接面（原行为）。
+  }
   await loadQuickPaths("left");
   await enterLocalPaneIfAtRoot();
   if (leftSideTab.value === "tree") void followTreePath("left", paneDirPath("left"));
@@ -1663,12 +1695,22 @@ async function onLeftConnectionChange() {
 
 /** 右栏切换连接（双栏）：旧连接的当前路径不带入新连接（大概率 NotFound），
  *  quickPaths/目录树随连接面刷新（与左栏 onLeftConnectionChange 同法）。 */
-async function onRightConnectionChange() {
+async function onRightConnectionChange(event: Event) {
+  const previous = targetConnectionId.value;
+  targetConnectionId.value = (event.target as HTMLSelectElement).value;
   markActiveSide("right");
   rightPath.value = "/";
   treeGenerations.right += 1;
   rightTree.value = createTreeRoot("/", "/");
-  await loadRightDirectory("/").catch(() => undefined);
+  try {
+    await loadRightDirectory("/");
+  } catch (cause) {
+    if (isConnectionNotReadyMessage(errorMessage(cause))) {
+      await revertPaneConnection("right", previous, cause);
+      return;
+    }
+    return;
+  }
   await loadQuickPaths("right");
   if (rightSideTab.value === "tree") void followTreePath("right", paneDirPath("right"));
 }
@@ -4317,7 +4359,7 @@ onBeforeUnmount(() => {
       <section class="wb-pane wb-pane-source" @dragover.prevent @dragenter="dragOverSide = 'left'" @dragleave="dragOverSide = dragOverSide === 'left' ? null : dragOverSide" @drop.prevent="onDropTo('left', $event)">
         <!-- pane 顶条：双栏时放左栏连接选择（与右栏顶条等高对齐）；单栏时整行隐藏 -->
         <div v-if="dualPane" class="wb-pane-topbar">
-          <select v-model="leftConnectionId" class="wb-target-connection" :aria-label="t('sourceConnection')" @change="onLeftConnectionChange">
+          <select :value="leftConnectionId" class="wb-target-connection" :aria-label="t('sourceConnection')" @change="onLeftConnectionChange($event)">
             <option v-for="item in leftConnections" :key="item.id" :value="item.id">{{ item.name }}</option>
           </select>
         </div>
@@ -4413,7 +4455,7 @@ onBeforeUnmount(() => {
       >
         <!-- P2-11：无可切换连接时整个 topbar 不渲染（v-if 提到容器级），不再留 28px 空条 -->
         <div v-if="targetConnections.length" class="wb-pane-topbar">
-          <select v-model="targetConnectionId" class="wb-target-connection" :aria-label="t('targetConnection')" @change="onRightConnectionChange">
+          <select :value="targetConnectionId" class="wb-target-connection" :aria-label="t('targetConnection')" @change="onRightConnectionChange($event)">
             <option value="">{{ t("sameConnection") }}</option>
             <option v-for="item in targetConnections" :key="item.id" :value="item.id">{{ item.name }}</option>
           </select>

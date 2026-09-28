@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from "vitest";
 import { workbenchMessage } from "./i18n";
-import { friendlyError, isNotFoundMessage, isTransportFailure } from "./friendlyError";
+import { friendlyError, isConnectionNotReadyMessage, isNotFoundMessage, isTransportFailure } from "./friendlyError";
 
 const t = (key: string, values?: Record<string, string | number>) => workbenchMessage("zh-CN", key, values);
 
@@ -11,6 +11,13 @@ describe("friendlyError", () => {
     expect(friendlyError("open /etc/hosts: permission denied", t)).toBe("没有操作权限。请检查连接凭据、访问权限和只读设置。");
     expect(friendlyError("Archive target 'a.tar.gz' already exists", t)).toBe("目标已存在。请更换名称或目标路径。");
     expect(friendlyError("dial tcp: connection refused", t)).toBe("存储连接失败或超时。请检查服务器地址和网络后重新连接。");
+  });
+
+  it("maps unregistered-connection engine errors to actionable guidance", () => {
+    // binding() 的 registry miss：双栏跨连接选择器指向未 connect 的宿主连接。
+    expect(friendlyError("Connection is not connected (rclone engine)", t)).toBe(
+      "该连接尚未在后台建立:请稍候重试,或先在宿主应用中将其切换为当前连接。",
+    );
   });
 
   it("keeps unknown messages verbatim (fallback to raw)", () => {
@@ -40,3 +47,12 @@ describe("isNotFoundMessage", () => {
     expect(isNotFoundMessage("permission denied")).toBe(false);
   });
 });
+
+describe("isConnectionNotReadyMessage", () => {
+  it("detects the registry-miss engine error and not network failures", () => {
+    expect(isConnectionNotReadyMessage("Connection is not connected (rclone engine)")).toBe(true);
+    expect(isConnectionNotReadyMessage("dial tcp: connection refused")).toBe(false);
+    expect(isConnectionNotReadyMessage("NotFound: /x")).toBe(false);
+  });
+});
+
