@@ -19,6 +19,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (event: "close"): void;
+  /** applying 状态回传：App 侧全局 Esc 兜底据此避开应用进行中的误关。 */
+  (event: "update:applying", value: boolean): void;
   /** 应用结束（无论成败）：App 侧负责汇总通知与目录刷新。 */
   (event: "applied", result: { ok: number; total: number }): void;
 }>();
@@ -60,6 +62,7 @@ function statusOf(path: string): string {
 async function apply() {
   if (applying.value || !renameCount.value) return;
   applying.value = true;
+  emit("update:applying", true);
   statuses.value = {};
   const targets = plan.value.rows.filter((row) => row.changed && !row.error);
   let ok = 0;
@@ -79,6 +82,7 @@ async function apply() {
     }
   }
   applying.value = false;
+  emit("update:applying", false);
   emit("applied", { ok, total: targets.length });
 }
 

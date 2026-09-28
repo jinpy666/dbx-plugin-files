@@ -406,7 +406,10 @@ impl webdav_gateway::GatewaySource for EngineSource {
     }
 
     fn read(&self, rel: &str) -> webdav_gateway::BoxFut<'_, Result<Vec<u8>, String>> {
-        let client = self.client.clone();
+        // 0.1.81 对抗复核 #1：普通客户端的 reqwest 30s 总超时会掐断大文件的
+        // 网关读取（下载泵同款问题）——读路径与传输一致改用无总超时的
+        // transfer client；256MiB 读取闸维持不变（Range 透传留待后续批次）。
+        let client = self.client.clone().transfer_client();
         let fs = self.fs.clone();
         let root = self.root.clone();
         let lock_to_root = self.lock_to_root;
@@ -807,8 +810,17 @@ pub async fn mount_status(
     for row in rows.iter_mut() {
         if row["strategy"] == "rclone" {
             if let Some(points) = &kernel_points {
+                // 口径与 wait_registered 对齐：trim 后全等。旧的子串
+                // contains 会让前缀嵌套的挂载点互相误报存活——`…/dbxabc`
+                // 卸载后，只要存在 `…/dbxabcdef` 就仍显示 mounted（0.1.81
+                // 扫描）。
+                fn normalize(value: &str) -> &str {
+                    value.trim().trim_end_matches('/')
+                }
                 let live = row["mountPoint"].as_str().map_or(false, |mounted| {
-                    points.iter().any(|point| point.contains(mounted))
+                    points
+                        .iter()
+                        .any(|point| normalize(point) == normalize(mounted))
                 });
                 row["mounted"] = json!(live);
             }

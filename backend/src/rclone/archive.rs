@@ -1,6 +1,12 @@
 //! rc-backed archive surface (`files/archiveList` / `files/extract` /
 //! `files/compress`, F-RCLONE Phase D method-surface closeout).
 //!
+//! Trade-off note (adversarial review #2, accepted): compress/extract build
+//! payloads in memory — peak sidecar memory ≈ the archive byte count
+//! (tar.gz roughly 2× through the gzip-stored wrap), hard-capped by
+//! `MAX_ARCHIVE_BYTES`. Streaming zip assembly needs data descriptors and a
+//! two-pass CRC; deliberately deferred, not a bug.
+//!
 //! Wire shapes stay identical to the earlier method face, the storage byte
 //! channel is the rc engine, and the zip format is included (deferred there
 //! as Phase 2):
@@ -78,23 +84,6 @@ fn serve_fs_string(fs: &str) -> String {
     format!("[{fs}]")
 }
 
-/// Minimal serve-URL escaping (identical rules to `ops::encode_serve_path`):
-/// `%` must be escaped (rcd percent-decodes the path before matching), `?`
-/// and `#` would split query/fragment; `[`/`]` stay literal (route
-/// delimiters).
-fn encode_serve_path(value: &str) -> String {
-    let mut out: Vec<u8> = Vec::with_capacity(value.len());
-    for &byte in value.as_bytes() {
-        match byte {
-            b'%' => out.extend_from_slice(b"%25"),
-            b'?' => out.extend_from_slice(b"%3F"),
-            b'#' => out.extend_from_slice(b"%23"),
-            other => out.push(other),
-        }
-    }
-    String::from_utf8(out).unwrap_or_else(|_| value.to_string())
-}
-
 /// Reads exactly `len` bytes starting at `start` via an inclusive Range. A
 /// body longer than requested proves the backend ignored the Range header —
 /// offsets are then meaningless, so it is a hard error rather than corrupt
@@ -109,10 +98,12 @@ async fn read_exact_range(
     if len == 0 {
         return Ok(Vec::new());
     }
+    // remote 由 rc.rs::serve_url 统一做 URL 定界符转义，调用方传原始路径
+    // （0.1.81 扫描：本地转义副本已删除，转义收敛到收口点）。
     let mut response = client
         .serve_get(
             &serve_fs_string(fs),
-            &encode_serve_path(remote),
+            remote,
             Some((start, Some(start + len - 1))),
         )
         .await
@@ -157,7 +148,7 @@ async fn read_file_capped(
     cap: u64,
 ) -> Result<Vec<u8>, String> {
     let mut response = client
-        .serve_get(&serve_fs_string(fs), &encode_serve_path(remote), None)
+        .serve_get(&serve_fs_string(fs), remote, None)
         .await
         .map_err(|error| format!("Failed to read archive '{display}': {error}"))?;
     let mut body: Vec<u8> = Vec::new();

@@ -669,12 +669,23 @@ impl Mcp {
                 "size": entry.size,
             }),
             // rclone delete/purge are idempotent for missing paths: preview
-            // as absent instead of failing the flow.
-            Err(_) => json!({
+            // as absent instead of failing the flow. 0.1.81 scan: only a
+            // not-found answer counts as missing — swallowing auth/network
+            // failures into "missing" handed callers a fabricated preview
+            // (and confirm token) for paths whose existence was never
+            // actually checked.
+            Err(error) if error.contains("path does not exist") => json!({
                 "tool": tool,
                 "connectionId": connection_id,
                 "path": path,
                 "kind": "missing",
+            }),
+            Err(error) => json!({
+                "tool": tool,
+                "connectionId": connection_id,
+                "path": path,
+                "kind": "inaccessible",
+                "previewError": error,
             }),
         };
         let Some(token) = arguments

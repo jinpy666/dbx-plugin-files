@@ -605,10 +605,11 @@ pub async fn read_prefix(
         return Err(format!("Cannot read '{remote}': it is a directory"));
     }
     // rc-serve 只认 `[{fs}]/{remote}`（模块头文档，实测 v1.68.0 = v1.75.1）。
+    // remote 由 rc.rs::serve_url 统一做 URL 定界符转义，调用方传原始路径。
     let mut response = client
         .serve_get(
             &serve_fs_string(fs),
-            &encode_serve_path(remote),
+            remote,
             Some((0, Some(max_bytes))),
         )
         .await
@@ -637,25 +638,6 @@ pub async fn read_prefix(
 /// (`[{fs}]/{remote}`); `read_prefix` and `read_range` are the consumers.
 fn serve_fs_string(fs: &str) -> String {
     format!("[{fs}]")
-}
-
-/// Minimal serve-URL escaping for the fs/remote path components: `%` must be
-/// escaped (rcd percent-decodes `r.URL.Path` before matching, so a raw `%41`
-/// would resurrect as `A`), `?` and `#` would split query/fragment in the
-/// URL parser, `[`/`]` are the route delimiters themselves and stay literal.
-/// Spaces and non-ASCII bytes are left to the URL parser's own path
-/// percent-encoding. Byte-wise so UTF-8 names pass through untouched.
-fn encode_serve_path(value: &str) -> String {
-    let mut out: Vec<u8> = Vec::with_capacity(value.len());
-    for &byte in value.as_bytes() {
-        match byte {
-            b'%' => out.extend_from_slice(b"%25"),
-            b'?' => out.extend_from_slice(b"%3F"),
-            b'#' => out.extend_from_slice(b"%23"),
-            other => out.push(other),
-        }
-    }
-    String::from_utf8(out).unwrap_or_else(|_| value.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -725,7 +707,7 @@ pub(crate) async fn read_range(
     let mut response = client
         .serve_get(
             &serve_fs_string(fs),
-            &encode_serve_path(remote),
+            remote,
             Some((offset, Some(end))),
         )
         .await
@@ -2053,18 +2035,6 @@ mod tests {
         assert_eq!(serve_fs_string("/"), "[/]");
         assert_eq!(serve_fs_string("dbxAb12:"), "[dbxAb12:]");
         assert_eq!(serve_fs_string("dbxAb12:srv/data"), "[dbxAb12:srv/data]");
-    }
-
-    #[test]
-    fn encode_serve_path_escapes_url_delimiters_only() {
-        assert_eq!(encode_serve_path("[/tmp/work]"), "[/tmp/work]", "定界符保留字面");
-        assert_eq!(encode_serve_path("50%25.txt"), "50%2525.txt", "% 预转义");
-        assert_eq!(encode_serve_path("a?b#c"), "a%3Fb%23c", "query/fragment 定界符");
-        assert_eq!(
-            encode_serve_path("sub dir/报 告.txt"),
-            "sub dir/报 告.txt",
-            "空格与非 ASCII 交给 URL 解析器编码，字节透传不破坏 UTF-8"
-        );
     }
 
     #[test]

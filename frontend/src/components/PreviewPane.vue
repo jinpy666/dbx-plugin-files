@@ -83,6 +83,10 @@ function mdLabel(key: string, fallback: string): string {
 
 const t = (key: string, values?: Record<string, string | number>) => props.t(key, values);
 const title = computed(() => (props.path ? baseName(props.path) : ""));
+/** 非 UTF-8 文本（按 GB18030 展示）：编辑必须停用——TextEncoder 只按 UTF-8
+ *  写回，保存会把 GB18030 字节整体替换成乱码并永久写坏远端文档（对抗复核
+ *  Blocker：唯一不可逆的数据损坏路径）。 */
+const nonUtf8 = ref(false);
 const canEdit = computed(() => Boolean(
   resolution.value?.editable
   && props.canWrite
@@ -90,7 +94,8 @@ const canEdit = computed(() => Boolean(
   && !loading.value
   && !error.value
   && mode.value === "text"
-  && !editing.value,
+  && !editing.value
+  && !nonUtf8.value,
 ));
 const showEditbar = computed(() => Boolean(
   resolution.value?.editable
@@ -144,8 +149,11 @@ async function load() {
   size.value = 0;
   truncated.value = false;
   overCap.value = false;
-  // 换文件即失效进行中的分块循环（token 检查点见 runChunkLoop）。
+  nonUtf8.value = false;
+  // 换文件即失效进行中的分块循环与 files/read 请求（token 检查点见
+  // runChunkLoop / loadArchivePage / loadViaRead 与本函数的 catch/finally）。
   loadToken += 1;
+  const token = loadToken;
   chunkCancelRequested.value = false;
   chunkActive.value = false;
   loadedBytes.value = 0;
@@ -171,11 +179,23 @@ async function load() {
       path: props.path,
       maxBytes: READ_MAX_BYTES,
     }));
+    // 0.1.81 扫描：文本分支此前无过期守卫——A 文件加载中切换到 B 时，A 的
+    // 迟到响应会用 A 的正文冒充 B（标题 B、正文 A），并在 finally 里关掉
+    // B 的 loading。过期响应一律作废，状态归新一次 load 所有。
+    if (token !== loadToken) return;
     const bytes = window.dbxPlugin.decodeBase64(result.dataBase64);
     truncated.value = Boolean(result.truncated);
     size.value = result.size ?? bytes.byteLength;
-    // 文本/代码与未知扩展：先按文本解码，不可打印占比高时回退 hex dump。
-    const decoded = new TextDecoder().decode(bytes);
+    // 文本/代码与未知扩展：先按 UTF-8 严格解码；失败（GBK 等非 UTF-8）回退
+    // GB18030 展示并停用编辑（见 nonUtf8 注释）。
+    let decoded: string;
+    try {
+      decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      nonUtf8.value = false;
+    } catch {
+      decoded = new TextDecoder("gb18030").decode(bytes);
+      nonUtf8.value = true;
+    }
     const printable = decoded.replace(/[^\t\n\r\x20-\x7E\u00A0-\uFFFF]/g, "");
     if (resolution.value.previewStrategy === "hex" && decoded.length && 1 - printable.length / decoded.length > 0.08) {
       mode.value = "hex";
@@ -186,9 +206,11 @@ async function load() {
     text.value = decoded;
     draft.value = decoded;
   } catch (cause) {
+    if (token !== loadToken) return;
     error.value = errorMessage(cause);
   } finally {
-    loading.value = false;
+    // 只有当前这一次 load 才能收 loading；过期请求的 finally 不得干预。
+    if (token === loadToken) loading.value = false;
   }
 }
 
@@ -289,10 +311,12 @@ async function runChunkLoop(resolution: PreviewResolution, fromOffset: number) {
 
 /** 旧 sidecar 回退：readRange 缺失且文件 ≤2MiB 时按原整读路径拼装。 */
 async function loadViaRead(resolution: PreviewResolution) {
+  const token = loadToken;
   const result = await call<{ dataBase64: string; truncated?: boolean; size?: number }>("files/read", withConnection({
     path: props.path,
     maxBytes: READ_MAX_BYTES,
   }));
+  if (token !== loadToken) return;
   const bytes = window.dbxPlugin.decodeBase64(result.dataBase64);
   truncated.value = Boolean(result.truncated);
   size.value = result.size ?? bytes.byteLength;
@@ -402,6 +426,9 @@ const archiveError = ref("");
 
 async function loadArchivePage(reset: boolean) {
   if (!props.path) return;
+  // 0.1.81 扫描：与 load() 的 files/read 分支同理，旧文件的迟到分页响应
+  // 不得写入新文件的状态。
+  const token = loadToken;
   if (reset) {
     archiveEntries.value = [];
     archiveTotal.value = 0;
@@ -417,13 +444,15 @@ async function loadArchivePage(reset: boolean) {
       page,
       pageSize: ARCHIVE_PAGE_SIZE,
     }));
+    if (token !== loadToken) return;
     archivePage.value = page;
     archiveEntries.value.push(...(result.entries ?? []));
     archiveTotal.value = result.total ?? archiveEntries.value.length;
     archiveDone.value = archiveEntries.value.length >= archiveTotal.value || (result.entries ?? []).length === 0;
   } catch (cause) {
+    if (token !== loadToken) return;
     if (isMethodMissing(cause)) {
-      // 后端未含 archiveList（旧 sidecar）→ 保持原占位文案
+      // 后端未含 archiveList（旧 sidecar）→ 保持占位文案
       archiveError.value = t("archivePreviewUnsupported");
     } else {
       archiveError.value = errorMessage(cause);
@@ -481,6 +510,7 @@ const canOpenExternal = computed(() =>
       <button v-if="allowMinimize" class="wb-icon-button wb-icon-neutral" v-tip="t('minimizePreview')" :aria-label="t('minimizePreview')" @click="emit('minimize')"><Minus /></button>
       <button class="wb-icon-button wb-icon-neutral" v-tip="t('close')" @click="emit('close')"><X /></button>
     </div>
+    <div v-if="nonUtf8 && mode === 'text' && !loading && !error" class="wb-preview-editbar" data-test="nonutf8-hint">{{ t("previewNonUtf8") }}</div>
     <div v-if="showEditbar" class="wb-preview-editbar">
       <template v-if="editing">
         <span v-if="editError" class="wb-preview-edit-error">{{ editError }}</span>

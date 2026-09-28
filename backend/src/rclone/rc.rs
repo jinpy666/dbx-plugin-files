@@ -6,6 +6,8 @@
 //! `_async: true` + `job/status` for long operations (progress/cancel live in
 //! `transfers.rs`, phase C).
 
+use std::future::Future;
+use std::task::Poll;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -122,6 +124,73 @@ fn encode_query_component(value: &str) -> String {
         }
     }
     encoded
+}
+
+/// Minimal serve-URL escaping for the remote path component: `%` must be
+/// escaped (rcd percent-decodes `r.URL.Path` before matching, so a raw `%41`
+/// would resurrect as `A`), `?` and `#` would split query/fragment in the
+/// URL parser, `[`/`]` are the route delimiters themselves and stay literal.
+/// Spaces and non-ASCII bytes are left to the URL parser's own path
+/// percent-encoding. Byte-wise so UTF-8 names pass through untouched.
+///
+/// Lives here (not at the call sites): every `serve_get`/`serve_url` caller
+/// used to maintain its own copy of this rule and the download-pump /
+/// WebDAV-gateway paths missed it, breaking downloads of names containing
+/// `%`/`?`/`#` (0.1.81 scan).
+fn encode_serve_path(value: &str) -> String {
+    let mut out: Vec<u8> = Vec::with_capacity(value.len());
+    for &byte in value.as_bytes() {
+        match byte {
+            b'%' => out.extend_from_slice(b"%25"),
+            b'?' => out.extend_from_slice(b"%3F"),
+            b'#' => out.extend_from_slice(b"%23"),
+            other => out.push(other),
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| value.to_string())
+}
+
+/// True idle timeout for a future whose progress manifests as polls: the
+/// future must be polled (i.e. transport progress happened) at least once
+/// per `budget`, but its total runtime is unbounded. `tokio::time::timeout`
+/// spans the whole future instead — wrapped around a streaming multipart
+/// `send()` it aborted any upload whose body transfer exceeded the budget,
+/// which is how large-file uploads misreported as `Stalled` (0.1.81 scan).
+///
+/// Returns `None` when a full `budget` elapsed without polling `fut`.
+async fn idle_timeout<F: Future>(fut: F, budget: Duration) -> Option<F::Output> {
+    tokio::pin!(fut);
+    let mut last_activity = tokio::time::Instant::now();
+    loop {
+        let mut sleep = std::pin::pin!(tokio::time::sleep(budget));
+        // One window: every wakeup polls `fut` first (progress refreshes
+        // `last_activity`), then the window timer. When the timer expires
+        // without any progress poll in between, the peer is idle past the
+        // budget; activity near the window end re-arms.
+        let outcome = std::future::poll_fn(|cx| {
+            let progress = fut.as_mut().poll(cx);
+            let expired = sleep.as_mut().poll(cx);
+            if let Poll::Ready(output) = progress {
+                return Poll::Ready(Some(output));
+            }
+            match expired {
+                Poll::Ready(()) => Poll::Ready(None),
+                Poll::Pending => {
+                    last_activity = tokio::time::Instant::now();
+                    Poll::Pending
+                }
+            }
+        })
+        .await;
+        match outcome {
+            Some(output) => return Some(output),
+            None => {
+                if last_activity.elapsed() >= budget {
+                    return None;
+                }
+            }
+        }
+    }
 }
 
 /// No total timeout; connect stays bounded so a dead rcd fails fast instead
@@ -555,7 +624,9 @@ impl RcClient {
             bracketed = format!("[{fs}]");
             &bracketed
         };
-        let remote_trim = remote.trim_matches('/');
+        // Escape here, once: callers pass the raw remote (see
+        // [`encode_serve_path`]).
+        let remote_trim = encode_serve_path(remote.trim_matches('/'));
         if remote_trim.is_empty() {
             format!("{}/{}", self.base_url, fs_component)
         } else {
@@ -623,20 +694,22 @@ impl RcClient {
             encode_query_component(fs),
             encode_query_component(remote)
         );
-        // M2 (review FILES-M2): the streaming send rides the idle timeout —
-        // rcd wedged mid-body used to hang the upload job forever. The
-        // timeout spans "no bytes moved", not the whole upload, so large
-        // files keep their unbounded total.
-        let response = tokio::time::timeout(
-            TRANSFER_IDLE_TIMEOUT,
+        // M2 (review FILES-M2), semantics fixed in the 0.1.81 scan: this
+        // used to be `tokio::time::timeout`, whose future spans the entire
+        // streaming body — any upload transferring longer than the budget
+        // was aborted and misreported as wedged. [`idle_timeout`] re-arms
+        // on observed progress instead: rcd wedged mid-body still trips the
+        // error, large files keep their unbounded total.
+        let response = idle_timeout(
             self.http
                 .post(url)
                 .basic_auth(&self.user, Some(&self.pass))
                 .multipart(form)
                 .send(),
+            TRANSFER_IDLE_TIMEOUT,
         )
         .await
-        .map_err(|_| {
+        .ok_or_else(|| {
             RcError::Stalled(format!(
                 "upload to '{remote}' stalled: no bytes moved for {TRANSFER_IDLE_TIMEOUT:?} \
                  (rcd wedged or connection dead)"
@@ -665,6 +738,82 @@ impl RcClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 0.1.81 scan: the remote is the escape choke point — `%` must be
+    /// pre-escaped (rcd decodes the raw path before matching), `?`/`#` must
+    /// not truncate the URL, `[`/`]` (route delimiters) stay literal, spaces
+    /// and non-ASCII are left to the URL parser.
+    #[test]
+    fn serve_url_escapes_url_delimiters_in_remote() {
+        let client = RcClient::new(
+            "http://127.0.0.1:52525".to_string(),
+            String::new(),
+            String::new(),
+        );
+        assert_eq!(
+            client.serve_url("[fs]", "50%25.txt"),
+            "http://127.0.0.1:52525/[fs]/50%2525.txt",
+            "% 预转义",
+        );
+        assert_eq!(
+            client.serve_url("[fs]", "a?b#c"),
+            "http://127.0.0.1:52525/[fs]/a%3Fb%23c",
+            "query/fragment 定界符",
+        );
+        assert_eq!(
+            client.serve_url("[fs]", "sub dir/报 告.txt"),
+            "http://127.0.0.1:52525/[fs]/sub dir/报 告.txt",
+            "空格与非 ASCII 留给 URL parser",
+        );
+        assert_eq!(
+            client.serve_url("[/tmp/work]", ""),
+            "http://127.0.0.1:52525/[/tmp/work]",
+            "fs 定界符保留字面",
+        );
+    }
+
+    /// 0.1.81 scan regression: a future that keeps making progress (each
+    /// poll moves the transport) must survive a total runtime well past the
+    /// budget — `tokio::time::timeout` aborted exactly this shape. Real
+    /// clocks with tight budgets: 8×10ms sleeps total 80ms against a 50ms
+    /// budget, with every window seeing fresh activity.
+    #[tokio::test]
+    async fn idle_timeout_admits_progressing_futures_past_total_budget() {
+        let fut = async {
+            for _ in 0..8 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        assert!(
+            idle_timeout(fut, Duration::from_millis(50)).await.is_some(),
+            "总时长 80ms > 预算 50ms，但每个窗口都有进展，不应判 stall",
+        );
+    }
+
+    /// A future that never gets polled again after the first window trips
+    /// the stall error (the wedged-rcd shape).
+    #[tokio::test]
+    async fn idle_timeout_aborts_future_with_no_progress() {
+        let started = tokio::time::Instant::now();
+        let fut = std::future::pending::<()>();
+        assert!(
+            idle_timeout(fut, Duration::from_millis(50)).await.is_none(),
+            "整个窗口无任何 poll，应判 stall",
+        );
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "stall 判定应在窗口量级返回，实际 {elapsed:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn idle_timeout_returns_immediate_output() {
+        assert_eq!(
+            idle_timeout(async { 7u8 }, Duration::from_millis(50)).await,
+            Some(7),
+        );
+    }
 
     /// Review FILES-H1 live regression: `serve/start` with
     /// `baseurl=/<token>` must 404 every request that skips the token

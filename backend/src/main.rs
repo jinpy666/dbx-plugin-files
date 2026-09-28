@@ -529,8 +529,14 @@ impl Plugin {
                         ));
                     }
                     rclone::ensure_nested_file_target(&binding, &remote)?;
+                    // 0.1.81 对抗复核：普通客户端的 reqwest 30s 总超时覆盖
+                    // 流式上传体，慢链路上 files/write（≤4MiB）仍会死在
+                    // Transport 而轮不到 rc.rs 的空闲超时——写分支与上传/
+                    // 回写路径一致改用 transfer client（无总超时，控制面
+                    // 调用不受影响）。
+                    let write_client = self.rclone.client_for_binding(&binding).await?.transfer_client();
                     rclone::ops::write_bytes(
-                        &client,
+                        &write_client,
                         &rclone::call_fs(&binding),
                         &remote,
                         &data,
@@ -1753,15 +1759,24 @@ impl Plugin {
             }
             "files/serve/stop" => {
                 let request: model::ServeStopRequest = parse(params)?;
-                // 归属校验：只能停本连接名下的实例。登记表无此 id 时一律幂等
-                // 成功返回、不再转发 rc 调用（审查 FILES-L5：表外 id 可能归属
-                // 其他连接，转发等于跨连接停 serve；目标状态"不存在"已达成，
-                // 也不会泄露归属信息）。命中但归属不符仍显式报错。
-                let entry = rclone_lock(&self.serves).remove(&request.serve_id);
-                if !entry
-                    .map(|entry| entry.connection_id == request.connection_id)
-                    .unwrap_or(false)
-                {
+                // 归属校验：只能停本连接名下的实例。登记表无此 id 或归属不符
+                // 时一律幂等成功返回、不再转发 rc 调用（审查 FILES-L5：表外 id
+                // 可能归属其他连接，转发等于跨连接停 serve；目标状态"不存在"
+                // 已达成，也不会泄露归属信息）。
+                // 0.1.81 扫描修复：归属比对必须在 remove 之前完成——旧顺序先
+                // remove 再比对，跨连接 stop 会把别人的登记项（URL token）从
+                // 登记表抹掉，owner 从此失去 serve/list 可见性与管理入口，而
+                // rcd 里的匿名 serve 仍在运行。
+                let entry = {
+                    let mut serves = rclone_lock(&self.serves);
+                    match serves.get(&request.serve_id) {
+                        Some(entry) if entry.connection_id == request.connection_id => {
+                            serves.remove(&request.serve_id)
+                        }
+                        _ => None,
+                    }
+                };
+                if entry.is_none() {
                     self.audit_id(
                         &request.connection_id,
                         "files/serve/stop",
@@ -2024,6 +2039,11 @@ impl Plugin {
                         .collect()
                 };
                 let mut cleared = 0u64;
+                // 0.1.81 扫描：清理路径的 store 读-改-写此前不持
+                // history_write_lock，与 record_transfer 的加载→追加→保存
+                // 交错时后写覆盖先写，会丢一条终态记录。锁序安全：持久化
+                // 路径持本锁时只碰 store，不与 jobs 锁交叉。
+                let _history_guard = history_write_lock();
                 if !drop_ids.is_empty() {
                     let mut jobs = rclone_lock(&self.rclone.jobs);
                     let mut sync_jobs = rclone_lock(&self.sync_jobs);
@@ -2047,6 +2067,9 @@ impl Plugin {
                 // same message, terminal records leave the table together
                 // with their sync projection record.
                 let mut removed = 0u64;
+                // 与 clear 路径同理：store 删除行也要和 record_transfer 的
+                // 读-改-写互斥（0.1.81 扫描）。
+                let _history_guard = history_write_lock();
                 {
                     let mut jobs = rclone_lock(&self.rclone.jobs);
                     if let Some(job) = jobs.get(&request.task_id) {
@@ -2161,7 +2184,13 @@ impl Plugin {
                 if let Some(stop) = sync_stop {
                     let (handle, src_conn) = stop?;
                     let client = self.rclone.client_for_id(&src_conn).await?;
-                    rclone::sync::stop_job(&client, &handle).await?;
+                    // 0.1.81 对抗复核：普通客户端 30s 与 bounded_call 30s 同步
+                    // 起跑，谁先触发都只是"rc 停不掉"的瞬时状况——取消标记
+                    // 已插入，poll 循环稍后仍会发 Canceled。此处上抛只会让 UI
+                    // 闪一个假错误（随后又被 Canceled 终态覆盖），按幂等处理。
+                    if let Err(error) = rclone::sync::stop_job(&client, &handle).await {
+                        eprintln!("[io.dbx.files] dir job stop ignored: {error}");
+                    }
                     rclone_sync_terminal(
                         &self.rclone.jobs,
                         &self.sync_jobs,
@@ -2344,9 +2373,17 @@ impl Plugin {
                     ));
                 }
                 let base = remote_edit::workspace_base(|key| std::env::var_os(key));
+                // 默认基座在共享 temp 下：逐级 0700 创建并收紧旧目录，防止
+                // 同机其他账号读取编辑副本（0.1.81 扫描）。用户经
+                // DBX_FILES_EDIT_DIR 自选的目录不代管权限。
+                if std::env::var_os(remote_edit::EDIT_DIR_ENV)
+                    .map_or(true, |value| value.to_string_lossy().trim().is_empty())
+                {
+                    let _ = remote_edit::ensure_private_dir(&base);
+                }
                 let local = remote_edit::local_copy_path(&base, &request.connection_id, &remote)?;
                 if let Some(parent) = local.parent() {
-                    std::fs::create_dir_all(parent).map_err(|error| {
+                    remote_edit::ensure_private_dir(parent).map_err(|error| {
                         format!("Failed to create remote-edit workspace: {error}")
                     })?;
                 }
@@ -3024,6 +3061,24 @@ async fn rclone_start_dir_job(
         &request.target_path,
         crate::policy::PathPolicy::check_write,
     )?;
+    // backup_dir 拼装进目标 fs 的方式与 dst_rel 相同（sync.rs），所以必须过
+    // 同一道写门——漏过这道门时 `../` 拼写的 backup_dir 可以绕开
+    // lock_to_root，把被覆盖/删除的文件搬出连接根（0.1.81 扫描）。
+    // "必须位于同步目标子树之外"的重叠校验仍在 sync.rs，那里才有最终拼写。
+    let backup_dir_rel = request
+        .backup_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|backup| {
+            rclone_gate(
+                &target_binding.root,
+                target_binding.lock_to_root,
+                backup,
+                crate::policy::PathPolicy::check_write,
+            )
+        })
+        .transpose()?;
     let job_id = uuid::Uuid::new_v4().to_string();
     let job = transfers::TransferJob {
         task_id: job_id.clone(),
@@ -3235,7 +3290,7 @@ async fn rclone_start_dir_job(
             max_delete: request.max_delete,
             include: request.include.clone(),
             exclude: request.exclude.clone(),
-            backup_dir_rel: request.backup_dir.clone(),
+            backup_dir_rel: backup_dir_rel.clone(),
             suffix: request.suffix.clone(),
             metadata: request.metadata.unwrap_or(false),
             update: request.update.unwrap_or(false),

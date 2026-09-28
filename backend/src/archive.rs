@@ -133,12 +133,17 @@ pub fn gunzip(raw: &[u8], max_out: u64) -> Result<Vec<u8>, String> {
             .get(pos..pos + 2)
             .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]) as usize)
             .ok_or("truncated gzip header (FEXTRA)")?;
-        pos += 2 + len;
+        // FEXTRA 的长度由归档头（远端内容）决定，可能把 pos 推过缓冲区末尾；
+        // 必须收敛而不是让下一个切片 panic（0.1.81 扫描：构造的 12 字节头
+        // 触发 slice-out-of-range，请求级 panic）。
+        pos = (pos + 2 + len).min(raw.len());
     }
     // FNAME (bit 3) / FCOMMENT (bit 4): NUL-terminated strings.
     for flag in [0x08, 0x10] {
         if flg & flag != 0 {
-            let end = raw[pos..]
+            let end = raw
+                .get(pos..)
+                .ok_or("truncated gzip header (optional fields overrun the header)")?
                 .iter()
                 .position(|&b| b == 0)
                 .ok_or("truncated gzip header (unterminated string)")?;
@@ -696,15 +701,30 @@ fn parse_tar<'a>(data: &'a [u8], limits: &Limits, collect_data: bool) -> Result<
         let raw_size = parse_numeric(&header[124..136])?;
         let mtime = parse_numeric(&header[136..148]).unwrap_or(0);
         let header_name = read_string(&header[0..100]);
-        let padded = (raw_size.div_ceil(512) * 512) as usize;
-        let payload_end = offset + 512 + raw_size as usize;
+        // 全程 checked：raw_size 来自（远端可控的）归档头，可以接近 u64::MAX
+        // ——无检查的加法会回绕绕过下面的边界检查，然后在切片上 panic
+        // （start > end，0.1.81 扫描）。超大声明按干净错误走边界检查。
+        let raw_size_usize = usize::try_from(raw_size).map_err(|_| {
+            format!("tar archive corrupt: entry at offset {offset} declares an oversized payload")
+        })?;
+        let padded = raw_size_usize.checked_next_multiple_of(512).ok_or_else(|| {
+            format!("tar archive corrupt: entry at offset {offset} declares an oversized payload")
+        })?;
+        let payload_end = offset
+            .checked_add(512)
+            .and_then(|base| base.checked_add(raw_size_usize))
+            .ok_or_else(|| {
+                format!("tar archive corrupt: entry at offset {offset} declares an oversized payload")
+            })?;
         if payload_end > data.len() {
             return Err(format!(
                 "truncated tar archive: entry at offset {offset} claims {raw_size} payload bytes past the end"
             ));
         }
         let payload = &data[offset + 512..payload_end];
-        offset += 512 + padded;
+        offset = offset.checked_add(512).and_then(|base| base.checked_add(padded)).ok_or_else(|| {
+            format!("tar archive corrupt: entry at offset {offset} declares an oversized payload")
+        })?;
 
         match typeflag {
             // GNU long name / long link name: payload applies to the next entry.
@@ -746,8 +766,14 @@ fn parse_tar<'a>(data: &'a [u8], limits: &Limits, collect_data: bool) -> Result<
                 .map_err(|_| format!("invalid PAX size override '{size_text}'"))?;
         }
         // Recompute the payload window when the override moved it.
+        // 同样全程 checked：PAX size 覆盖是任意 u64（0.1.81 扫描）。
         let header_end = offset - padded;
-        let payload_end = header_end + size as usize;
+        let size_usize = usize::try_from(size).map_err(|_| {
+            format!("tar archive corrupt: entry at offset {offset} declares an oversized payload")
+        })?;
+        let payload_end = header_end.checked_add(size_usize).ok_or_else(|| {
+            format!("tar archive corrupt: entry at offset {offset} declares an oversized payload")
+        })?;
         if payload_end > data.len() {
             return Err(format!(
                 "truncated tar archive: entry at offset {offset} claims {size} payload bytes past the end"
@@ -1267,6 +1293,51 @@ mod tests {
         tar.extend(std::iter::repeat(0u8).take(1024));
         let entries = list_entries(&tar, &DEFAULT_LIMITS).unwrap();
         assert_eq!(entries[0].size, 70000, "base-256 size field decodes");
+    }
+
+    // -- adversarial archive headers（0.1.81 扫描回归）------------------------
+
+    /// 头部声明接近 u64::MAX 的 size（base-256 可达）必须在 payload 窗口
+    /// 边界检查处干净报错，而不是让 offset+512+size 算术回绕绕过检查后在
+    /// 切片上 panic（start > end）。u64::MAX 本体会先被 parse_numeric 拒掉；
+    /// 这个值能通过解析、命中 checked 算术路径。
+    #[test]
+    fn tar_oversized_base256_size_is_a_clean_error() {
+        let mut header = [0u8; 512];
+        header[..8].copy_from_slice(b"evil.bin");
+        header[156] = b'0';
+        // base-256：最高位置位 + 大端值 → u64::MAX - 1024。
+        header[124] = 0x80;
+        header[125..136].copy_from_slice(&[0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfb, 0xff]);
+        let checksum: u32 = header
+            .iter()
+            .enumerate()
+            .map(|(index, &byte)| if (148..156).contains(&index) { 0x20 } else { byte as u32 })
+            .sum();
+        let checksum_text = format!("{checksum:06o}\0 ");
+        header[148..156].copy_from_slice(checksum_text.as_bytes());
+        let mut tar = Vec::new();
+        tar.extend_from_slice(&header);
+        tar.extend(std::iter::repeat(0u8).take(1024));
+        let error = list_entries(&tar, &DEFAULT_LIMITS).unwrap_err();
+        assert!(
+            error.contains("oversized payload") || error.contains("truncated tar archive"),
+            "{error}"
+        );
+    }
+
+    /// FEXTRA 长度字段远端可控；18 字节缓冲里声明 64KiB 可选数据必须干净
+    /// 报错，绝不能在 FNAME 扫描的切片上 panic（0.1.81 扫描）。
+    #[test]
+    fn gzip_oversized_fextra_is_a_clean_error() {
+        let mut raw = vec![0x1f, 0x8b, 8, 0x04 | 0x08, 0, 0, 0, 0, 0, 0];
+        raw.extend_from_slice(&0xffff_u16.to_le_bytes()); // FEXTRA 长度
+        raw.extend(std::iter::repeat(0u8).take(6)); // 凑足入口的 18 字节下限
+        let error = gunzip(&raw, 1024).unwrap_err();
+        assert!(
+            error.contains("gzip header") || error.contains("truncated gzip"),
+            "{error}"
+        );
     }
 
     #[test]

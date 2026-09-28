@@ -455,15 +455,33 @@ pub struct RemoteBinding {
 }
 
 /// rclone remote name for a connection id: `dbx` + the first 10 characters
-/// of the id after dropping everything outside `[A-Za-z0-9]`. Deterministic;
-/// keeps the rclone config file free of unsafe section-name characters.
+/// of the id after dropping everything outside `[A-Za-z0-9]` + an 8-hex
+/// FNV-1a suffix over the full id. Deterministic; keeps the rclone config
+/// file free of unsafe section-name characters. The suffix exists because
+/// the readable prefix alone collides: two ids sharing their first 10
+/// alphanumeric characters used to map onto one remote, so a later connect
+/// overwrote the earlier connection's config (credentials included) and
+/// either disconnect deleted the shared remote out from under the other
+/// (0.1.81 scan).
 pub fn remote_name(connection_id: &str) -> String {
     let prefix: String = connection_id
         .chars()
         .filter(char::is_ascii_alphanumeric)
         .take(10)
         .collect();
-    format!("dbx{prefix}")
+    format!("dbx{prefix}{:08x}", fnv1a64(connection_id.as_bytes()))
+}
+
+/// FNV-1a 64 — non-cryptographic is fine: the suffix only needs to
+/// distinguish same-prefix connection ids within one host's config, not to
+/// resist an adversary.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 /// `true` when the protocol is part of the support set: everything in
@@ -1549,19 +1567,41 @@ mod tests {
 
     #[test]
     fn remote_name_sanitizes_and_caps() {
-        assert_eq!(remote_name("Ab12Cd34"), "dbxAb12Cd34");
-        assert_eq!(remote_name("urn:dbx:conn-01"), "dbxurndbxconn");
-        assert_eq!(remote_name("ab").len(), 5);
-        // Only alnum survives; ids of symbols collapse to the bare prefix.
-        assert_eq!(remote_name("@#!"), "dbx");
-        assert_eq!(remote_name(""), "dbx");
+        assert!(remote_name("Ab12Cd34").starts_with("dbxAb12Cd34"));
+        assert!(remote_name("urn:dbx:conn-01").starts_with("dbxurndbxconn"));
+        // `dbx` + up-to-10 alnum prefix + FNV-1a hex suffix（宽度 8-16 随值而定，
+        // 只断言后缀存在且全为 hex）。
+        let name = remote_name("ab");
+        let suffix = name.strip_prefix("dbxab").expect("prefix");
+        assert!(!suffix.is_empty());
+        assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()), "{suffix}");
+        // Only alnum survives; ids of symbols collapse to the bare prefix
+        // (the hash suffix still distinguishes them).
+        assert!(remote_name("@#!").starts_with("dbx"));
+        assert!(remote_name("").starts_with("dbx"));
+    }
+
+    /// 0.1.81 scan regression: ids sharing their first 10 alphanumeric
+    /// characters must map to distinct remotes.
+    #[test]
+    fn remote_name_suffix_separates_prefix_collisions() {
+        let a = remote_name("conn1234567-a");
+        let b = remote_name("conn1234567-b");
+        assert_ne!(a, b, "{a} vs {b}");
+        assert_eq!(a.len(), b.len());
+        assert!(a.starts_with("dbxconn12345"));
+        assert!(b.starts_with("dbxconn12345"));
+        // Deterministic across calls.
+        assert_eq!(a, remote_name("conn1234567-a"));
     }
 
     #[test]
     fn remote_name_is_deterministic() {
         let id = "Zeta-42/conn";
         assert_eq!(remote_name(id), remote_name(id));
-        assert_eq!(remote_name(id), "dbxZeta42conn");
+        // 可读前缀 + FNV-1a 后缀（0.1.81 扫描：纯前缀会同前 10 位碰撞）。
+        assert!(remote_name(id).starts_with("dbxZeta42conn"));
+        assert!(remote_name(id).len() > "dbxZeta42conn".len());
     }
 
     #[test]
@@ -2498,7 +2538,11 @@ mod tests {
         connection.bucket = "demo".into();
         connection.root = "prefix".into();
         let binding = binding_for(&connection).expect("binding");
-        assert_eq!(binding.remote_fs, "dbxAb12Cd34:");
+        assert!(
+            binding.remote_fs.starts_with("dbxAb12Cd34") && binding.remote_fs.ends_with(':'),
+            "{}",
+            binding.remote_fs
+        );
         assert_eq!(binding.backend_type, "s3");
         assert_eq!(
             binding.root, "/demo/prefix",
@@ -2535,7 +2579,11 @@ mod tests {
             let binding = binding_for(&connection)
                 .unwrap_or_else(|error| panic!("{protocol}: {error}"));
             assert_eq!(binding.backend_type, backend, "{protocol}");
-            assert_eq!(binding.remote_fs, "dbxAb12Cd34:", "{protocol}");
+            assert!(
+                binding.remote_fs.starts_with("dbxAb12Cd34") && binding.remote_fs.ends_with(':'),
+                "{protocol}: {}",
+                binding.remote_fs
+            );
         }
 
         assert!(binding_for(&fixture("aliyun-drive")).is_err(), "no rclone mapping");

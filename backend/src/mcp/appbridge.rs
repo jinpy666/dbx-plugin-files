@@ -16,6 +16,12 @@
 // "DBX app bridge" prefix (the caller merges it with the inline-credential
 // guidance); no hang, no silent re-dial.
 //
+// Threat model for the port file (adversarial review #5, accepted as-is):
+// anything that can write `<app_data_dir>/mcp-bridge-port` already holds the
+// user's own privileges, so owner/mode validation would be security theater;
+// the forwarded arguments carry no credentials. The response size cap and
+// read budget are the only untrusted-input defenses this client needs.
+//
 // Deliberately dependency-free: a minimal hand-written HTTP/1.1 POST with an
 // explicit `Content-Length`, response read to EOF, status line + body split.
 use std::path::{Path, PathBuf};
@@ -149,8 +155,19 @@ async fn post(path: &str, body: Vec<u8>, read_budget: Duration) -> Result<String
 
     // Read to EOF: the app closes the socket after answering, and the
     // budget belongs to the route (forwarded tool timeout + margin).
+    // 0.1.81 adversarial review #5: the read is also size-capped — a
+    // non-bridge peer (anything that can write the port file) must not be
+    // able to stream unbounded bytes into the sidecar. `take` truncates
+    // silently at the cap, so an over-cap answer fails the strict parse
+    // below instead of growing memory.
+    const MAX_BRIDGE_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
     let mut raw = Vec::new();
-    match tokio::time::timeout(read_budget, stream.read_to_end(&mut raw)).await {
+    match tokio::time::timeout(
+        read_budget,
+        tokio::io::AsyncReadExt::take(stream, MAX_BRIDGE_RESPONSE_BYTES).read_to_end(&mut raw),
+    )
+    .await
+    {
         Ok(Ok(_)) => {}
         Ok(Err(error)) => return Err(format!("DBX app bridge read failed: {error}")),
         Err(_) => {
@@ -226,7 +243,13 @@ fn launch_app() {
             command
         }
     };
-    let _ = command.spawn();
+    // Reap promptly: an unreaped child stays a zombie until the sidecar
+    // exits, and probes fire once per unknown connectionId (0.1.81 scan).
+    if let Ok(mut child) = command.spawn() {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
 }
 
 /// Waits for a reachable app bridge: verifies immediately when present,

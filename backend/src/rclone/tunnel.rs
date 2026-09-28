@@ -308,7 +308,11 @@ impl TunnelSupervisor {
         let mut child = Command::from(std_command)
             .kill_on_drop(true)
             .spawn()
-            .map_err(|error| format!("Failed to spawn {}: {error}", binary.display()))?;
+            .map_err(|error| {
+                // spawn 失败会留下刚建的日志目录（0.1.81 扫描）——顺手清掉。
+                let _ = std::fs::remove_dir_all(&temp_dir);
+                format!("Failed to spawn {}: {error}", binary.display())
+            })?;
 
         let deadline = tokio::time::Instant::now() + SPAWN_HEALTH_TIMEOUT;
         let outcome = loop {

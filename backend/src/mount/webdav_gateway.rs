@@ -68,7 +68,11 @@ const MAX_HEAD_BYTES: usize = 16 * 1024;
 /// PROPFIND bodies are tiny filters; anything bigger is refused (413) so a
 /// loopback peer cannot stream unbounded bytes into the sidecar.
 const MAX_BODY_BYTES: usize = 64 * 1024;
-/// Whole request/response cycle budget per socket (slowloris guard).
+/// Pre-dispatch budget per socket (slowloris guard): covers the request head
+/// and body drain only. Adversarial review #1: wrapping the whole cycle made
+/// large-file GET bodies die at 30s (mount reads can stream far longer); the
+/// post-head peer is the local OS WebDAV client holding the random path
+/// token, so the lingering-connection threat there is negligible.
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub async fn start(config: GatewayConfig) -> Result<GatewayHandle, String> {
@@ -95,11 +99,10 @@ pub async fn start(config: GatewayConfig) -> Result<GatewayHandle, String> {
                         let conn_id = conn_id.clone();
                         let source = source.clone();
                         tokio::spawn(async move {
-                            let _ = tokio::time::timeout(
-                                CONNECTION_TIMEOUT,
-                                serve_once(&mut stream, &token, &conn_id, &source),
-                            )
-                            .await;
+                            // 无整体墙钟：读头/收体阶段的超时在 serve_once
+                            // 内部执行（见 CONNECTION_TIMEOUT 注释）。
+                            let _ =
+                                serve_once(&mut stream, &token, &conn_id, &source).await;
                             let _ = stream.shutdown().await;
                         });
                     }
@@ -130,7 +133,10 @@ async fn serve_once(
     conn_id: &str,
     source: &Arc<dyn GatewaySource>,
 ) -> Result<(), String> {
-    let head_with_leftover = read_head(stream).await?;
+    let head_with_leftover =
+        tokio::time::timeout(CONNECTION_TIMEOUT, read_head(stream))
+            .await
+            .map_err(|_| "head read timed out".to_string())??;
     let request = match parse_head(&head_with_leftover.head, token, conn_id) {
         Some(request) => request,
         None => {
@@ -150,10 +156,16 @@ async fn serve_once(
         remaining -= remaining.min(head_with_leftover.leftover.len());
         let mut sink = vec![0u8; remaining];
         if remaining > 0 {
-            stream
-                .read_exact(&mut sink)
-                .await
-                .map_err(|error| format!("body read failed: {error}"))?;
+            let drained = tokio::time::timeout(
+                CONNECTION_TIMEOUT,
+                stream.read_exact(&mut sink),
+            )
+            .await;
+            match drained {
+                Ok(Ok(_read)) => {}
+                Ok(Err(error)) => return Err(format!("body read failed: {error}")),
+                Err(_) => return Err("body read timed out".to_string()),
+            }
         }
     }
 

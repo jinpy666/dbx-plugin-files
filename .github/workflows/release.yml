@@ -4,8 +4,10 @@ on:
   release:
     types: [published]
 
+# Least privilege (0.1.81 adversarial review #10): validate/build run
+# read-only; only the publish job (gh release upload) gets contents write.
 permissions:
-  contents: write
+  contents: read
 
 env:
   PLUGIN_CLI_VERSION: "0.1.3"
@@ -44,8 +46,11 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      # SHA-pinned third-party actions (review #9): the release pipeline
+      # runs with contents write downstream, so a hijacked tag must not be
+      # able to poison published artifacts. Bump deliberately, comment the ref.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: backend
           cache-on-failure: true
@@ -111,7 +116,7 @@ jobs:
         # provider）在 musl target 下仍要编译 C 源码。nasm 仅服务 aws-lc-sys
         # 的 MSVC 预置对象路径，Linux/musl 构建不需要。
         run: sudo apt-get update && sudo apt-get install -y pkg-config musl-tools
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
           version: 11.24.0
       - uses: actions/setup-node@v7
@@ -123,10 +128,13 @@ jobs:
       # 不再依赖仓里提交的副本（该副本已脱库，见 .gitignore /ui/）。
       - run: pnpm --dir frontend install --frozen-lockfile
       - run: pnpm --dir frontend build
-      - uses: dtolnay/rust-toolchain@stable
+      # SHA-pinned third-party actions (review #9): the release pipeline
+      # runs with contents write downstream, so a hijacked tag must not be
+      # able to poison published artifacts. Bump deliberately, comment the ref.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: ${{ matrix.rust_target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: backend
           cache-on-failure: true
@@ -205,6 +213,8 @@ jobs:
     needs: build
     timeout-minutes: 15
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8

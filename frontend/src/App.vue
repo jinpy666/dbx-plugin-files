@@ -441,11 +441,15 @@ function onSettingsGripPointerdown(event: PointerEvent) {
     settingsGripActive = false;
     window.removeEventListener("pointermove", onMove);
     window.removeEventListener("pointerup", onUp);
+    window.removeEventListener("pointercancel", onCancel);
     prefs.settingsWin = settingsWin.value;
     saveUiPrefs({ ...prefs, settingsWin: settingsWin.value });
   };
+  // 系统手势打断拖拽时 pointercancel 收尾，避免 window 级监听滞留（0.1.81 扫描）。
+  const onCancel = () => onUp();
   window.addEventListener("pointermove", onMove);
   window.addEventListener("pointerup", onUp);
+  window.addEventListener("pointercancel", onCancel);
 }
 const settingsSaving = ref(false);
 const settingsPanelRef = ref<{ save: () => Promise<void> } | null>(null);
@@ -1541,13 +1545,17 @@ function onPreviewGripPointerdown(event: PointerEvent) {
     previewGripActive = false;
     window.removeEventListener("pointermove", onMove);
     window.removeEventListener("pointerup", onUp);
+    window.removeEventListener("pointercancel", onCancel);
     if (previewWin.value) {
       prefs.previewWin = previewWin.value;
       saveUiPrefs({ ...prefs, previewWin: previewWin.value });
     }
   };
+  // 同 settings grip：pointercancel 收尾（0.1.81 扫描）。
+  const onCancel = () => onUp();
   window.addEventListener("pointermove", onMove);
   window.addEventListener("pointerup", onUp);
+  window.addEventListener("pointercancel", onCancel);
 }
 
 function minimizePreview() {
@@ -1642,9 +1650,27 @@ async function probeConnections() {
 /** 左栏切换连接（双栏）：新连接回到根目录，quickPaths 随连接面刷新。 */
 async function onLeftConnectionChange() {
   markActiveSide("left");
+  // 0.1.81 扫描：切换连接必须整树重建——旧连接的缓存子树（loaded=true 的
+  // 节点）不会自动重拉，tree tab 会继续展示上一棵连接的目录结构。代数递增
+  // 使该栏在途 listing 结果整包丢弃（与 updateHostContext 同法）。
+  treeGenerations.left += 1;
+  leftTree.value = createTreeRoot("/", "/");
   await loadDirectory("/").catch(() => undefined);
   await loadQuickPaths("left");
   await enterLocalPaneIfAtRoot();
+  if (leftSideTab.value === "tree") void followTreePath("left", paneDirPath("left"));
+}
+
+/** 右栏切换连接（双栏）：旧连接的当前路径不带入新连接（大概率 NotFound），
+ *  quickPaths/目录树随连接面刷新（与左栏 onLeftConnectionChange 同法）。 */
+async function onRightConnectionChange() {
+  markActiveSide("right");
+  rightPath.value = "/";
+  treeGenerations.right += 1;
+  rightTree.value = createTreeRoot("/", "/");
+  await loadRightDirectory("/").catch(() => undefined);
+  await loadQuickPaths("right");
+  if (rightSideTab.value === "tree") void followTreePath("right", paneDirPath("right"));
 }
 
 // ---- dialogs ---------------------------------------------------------------
@@ -2273,6 +2299,7 @@ async function executePaneTransfer(from: PaneSide, move: boolean, list: FileEntr
   const sourceConnectionId = sideConnectionId(from) ?? connectionId.value;
   const targetConnection = sideConnectionId(to) ?? connectionId.value;
   const requestConnectionId = connectionId.value;
+  let okCount = 0;
   try {
     for (const item of list) {
       const params: Record<string, unknown> = {
@@ -2288,6 +2315,7 @@ async function executePaneTransfer(from: PaneSide, move: boolean, list: FileEntr
       if (result.transport === "job" && result.jobId) {
         trackSidecarJob(result.jobId, move ? "move" : "copy", `${item.path} → ${String(params.targetPath)}`, { method, params });
       }
+      okCount += 1;
     }
     showNotice(t("paneTransferred", { count: list.length }));
     if (to === "left") await loadDirectory().catch(() => undefined);
@@ -2299,6 +2327,9 @@ async function executePaneTransfer(from: PaneSide, move: boolean, list: FileEntr
       else await loadRightDirectory().catch(() => undefined);
     }
   } catch (cause) {
+    // 0.1.81 扫描：中途失败时已生效的前 okCount 项不能静默——先用既有
+    // 成功文案报出实际生效数，错误横幅随后点名失败项。
+    if (okCount > 0) showNotice(t("paneTransferred", { count: okCount }));
     showError(cause);
   }
 }
@@ -2418,8 +2449,11 @@ function onHostFileDrop(files: Array<{ handleId: string; name: string; size: num
   const fileTransfer = window.dbxPlugin.fileTransfer;
   if (!fileTransfer) return;
   void (async () => {
-    const items = await planUpload(files.map((file) => hostFileItem(fileTransfer, file)), uploadTarget());
-    if (items) await uploadHostFiles(items, uploadTarget());
+    // 0.1.81 扫描：预检与落点必须是同一 target——此前第二次 uploadTarget()
+    // 重新取当前目录，冲突询问期间切换目录会把文件落进与预检不同的目录。
+    const target = uploadTarget();
+    const items = await planUpload(files.map((file) => hostFileItem(fileTransfer, file)), target);
+    if (items) await uploadHostFiles(items, target);
   })().catch(showError);
 }
 
@@ -2432,27 +2466,43 @@ const conflictPolicy = ref<ConflictPolicy>(loadConflictPolicy());
 
 const fileConflictOpen = ref(false);
 const fileConflictMessage = ref("");
-let fileConflictResolve: ((mode: "overwrite" | "rename" | undefined) => void) | undefined;
+/** 并发冲突询问队列：上传与下载管线独立，可能同时触发撞名询问；
+ * 0.1.81 扫描发现单 resolver 槽位被第二次询问覆盖后，第一批 promise 永久
+ * 悬挂（上传/下载各挂死一个批次且目录不再刷新）。FIFO 排队逐个询问。 */
+type FileConflictAsk = {
+  resolve: (mode: "overwrite" | "rename" | undefined) => void;
+  names: readonly string[];
+};
+const fileConflictQueue: FileConflictAsk[] = [];
 
 /** 三键冲突询问：resolve 值 undefined = 用户取消（整批/整次放弃）。 */
 function askFileConflict(names: readonly string[]): Promise<"overwrite" | "rename" | undefined> {
-  fileConflictMessage.value = t("conflictAskBody", { count: names.length, names: names.slice(0, 5).join(", ") });
-  fileConflictOpen.value = true;
   return new Promise((resolve) => {
-    fileConflictResolve = resolve;
+    fileConflictQueue.push({ resolve, names });
+    syncFileConflictDialog();
   });
 }
 
+/** 弹窗状态跟随队首：队列非空才显示，文案描述当前询问的一批。 */
+function syncFileConflictDialog() {
+  const head = fileConflictQueue[0];
+  fileConflictOpen.value = Boolean(head);
+  if (head) {
+    fileConflictMessage.value = t("conflictAskBody", { count: head.names.length, names: head.names.slice(0, 5).join(", ") });
+  }
+}
+
+function settleFileConflictHead(mode: "overwrite" | "rename" | undefined) {
+  fileConflictQueue.shift()?.resolve(mode);
+  syncFileConflictDialog();
+}
+
 function onFileConflictChoose(mode: "overwrite" | "rename") {
-  fileConflictOpen.value = false;
-  fileConflictResolve?.(mode);
-  fileConflictResolve = undefined;
+  settleFileConflictHead(mode);
 }
 
 function onFileConflictCancel() {
-  fileConflictOpen.value = false;
-  fileConflictResolve?.(undefined);
-  fileConflictResolve = undefined;
+  settleFileConflictHead(undefined);
 }
 
 /** 设置页保存链路（SettingsPanel transfer 页签统一「保存更改」触发）。 */
@@ -2754,7 +2804,9 @@ async function onUpload(files: File[] | null) {
   if (items) await uploadItems(items, target);
 }
 
-async function downloadEntry(entry: FileEntry, side: PaneSide = "left", id = sideConnectionId(side) ?? connectionId.value) {
+/** @returns true=下载完成；false=失败或用户取消（批量循环据此决定是否弹
+ *  成功提示——0.1.81 扫描：此前循环无视单项目结果，全败仍弹「已下载」）。 */
+async function downloadEntry(entry: FileEntry, side: PaneSide = "left", id = sideConnectionId(side) ?? connectionId.value): Promise<boolean> {
   const fileTransfer = window.dbxPlugin.fileTransfer;
   let taskId: string | undefined;
   // R5-P2-4：泵级取消标志（cancelTransfer 置位 + releaseFrames 打断帧等待）。
@@ -2784,7 +2836,7 @@ async function downloadEntry(entry: FileEntry, side: PaneSide = "left", id = sid
         });
         if (probe.exists) {
           const chosen = await askFileConflict([entry.name]);
-          if (!chosen) return;
+          if (!chosen) return false;
           if (chosen === "overwrite") downloadConflict = "overwrite";
         }
       } catch {
@@ -2805,6 +2857,13 @@ async function downloadEntry(entry: FileEntry, side: PaneSide = "left", id = sid
     pumpCancelFlags.set(taskId, cancelFlag);
     channel = `files/download/${taskId}`;
     const size = info.size;
+    // 0.1.81 扫描：host.saveFile 兜底路径此前收完全部字节才在 saveHostFile
+    // 里检查上限——超大文件白白耗尽内存与流量后失败。start 响应已知 size，
+    // 提前拒绝并撤销 sidecar 任务。
+    if (!saveToLocal && !hostTransfer && size > HOST_SAVE_MAX_BYTES) {
+      await call("files/transfer/cancel", { taskId }).catch(() => undefined);
+      throw new Error(t("localSaveTooLarge", { size: formatBytes(size), limit: formatBytes(HOST_SAVE_MAX_BYTES) }));
+    }
     releaseFrames(channel);
     registerJob({
       jobId: taskId,
@@ -2862,6 +2921,7 @@ async function downloadEntry(entry: FileEntry, side: PaneSide = "left", id = sid
     tracker.onProgress({ jobId: taskId, taskId, state: "completed", transferred: size, localPath });
     if (localPath) showNotice(t("downloadedTo", { name: info.fileName ?? entry.name, path: localPath }));
     else showNotice(t("downloaded", { name: info.fileName ?? entry.name }));
+    return true;
   } catch (cause) {
     // 下载泵失败同样落终态（此前漏标，job 会永远停在 running）；取消走
     // canceled 终态（无 error 文案、不弹横幅），失败仍落 failed。
@@ -2870,6 +2930,7 @@ async function downloadEntry(entry: FileEntry, side: PaneSide = "left", id = sid
       tracker.onProgress({ jobId: taskId, taskId, state: canceled ? "canceled" : "failed", error: canceled ? undefined : errorMessage(cause) });
     }
     if (!(cause instanceof TransferCanceled || cancelFlag.canceled)) showError(cause);
+    return false;
   } finally {
     if (channel) releaseFrames(channel);
     if (taskId) pumpCancelFlags.delete(taskId);
@@ -2983,6 +3044,7 @@ async function deleteTransferRecord(jobId: string) {
   try {
     await call("files/transfers/delete", { taskId: jobId });
     tracker.remove(jobId);
+    transferRetryParams.delete(jobId);
     showNotice(t("recordDeleted"));
   } catch (cause) {
     showError(cause);
@@ -3003,15 +3065,23 @@ watch(canSaveLocal, (can) => {
 /** sidecar 平台标签（macos/windows/linux/other），驱动「打开方式」预设与文案。 */
 const localPlatform = ref("");
 function probeLocalCapabilities() {
-  localCapabilities ??= window.dbxPlugin
-    .invoke<{ canSaveLocal: boolean; downloadsDir: string; platform?: string }>("files/local/capabilities")
-    .then((result) => {
-      localDownloadDir.value = result.downloadsDir || "";
-      canSaveLocal.value = !!result.canSaveLocal;
-      localPlatform.value = result.platform || "";
-      return result;
-    })
-    .catch(() => undefined);
+  if (!localCapabilities) {
+    localCapabilities = window.dbxPlugin
+      .invoke<{ canSaveLocal: boolean; downloadsDir: string; platform?: string }>("files/local/capabilities")
+      .then((result) => {
+        localDownloadDir.value = result.downloadsDir || "";
+        canSaveLocal.value = !!result.canSaveLocal;
+        localPlatform.value = result.platform || "";
+        return result;
+      })
+      .catch(() => {
+        // 0.1.81 扫描：失败不缓存——sidecar 未就绪时启动会把已 rejection 的
+        // promise 永久存进 ??= 槽位，挂载/本机落盘/打开方式整会话消失且无
+        // 重试。清空槽位让下次调用重新探测。
+        localCapabilities = undefined;
+        return undefined;
+      });
+  }
   return localCapabilities;
 }
 
@@ -3047,10 +3117,18 @@ const deepSearchTruncated = ref(false);
 const deepSearchIndex = ref(-1);
 
 /** 回车触发：从该栏当前目录递归搜索文件名子串。 */
+// 0.1.81 扫描（对抗复核 #8）：请求序号让慢的旧响应整包作废；
+// deepSearchSearchedTerm 记录当前结果对应的查询词，供 Enter 判断
+// 「改了词要重搜，没改词才打开旧选中项」。
+let deepSearchToken = 0;
+const deepSearchSearchedTerm = ref("");
+
 async function runDeepSearch(side: PaneSide, query: string) {
   const term = query.trim();
   if (!term) return;
   const id = sideConnectionId(side) ?? connectionId.value;
+  const token = ++deepSearchToken;
+  deepSearchSearchedTerm.value = term;
   deepSearchOpen.value = true;
   deepSearchSide.value = side;
   deepSearchBusy.value = true;
@@ -3061,21 +3139,26 @@ async function runDeepSearch(side: PaneSide, query: string) {
       "files/search",
       { connectionId: id, root: paneDirPath(side), pattern: term },
     );
+    if (token !== deepSearchToken) return;
     deepSearchResults.value = result.entries ?? [];
     deepSearchTruncated.value = Boolean(result.truncated);
     deepSearchIndex.value = result.entries?.length ? 0 : -1;
   } catch (cause) {
+    if (token !== deepSearchToken) return;
     deepSearchOpen.value = false;
     showError(cause);
   } finally {
-    deepSearchBusy.value = false;
+    if (token === deepSearchToken) deepSearchBusy.value = false;
   }
 }
 
-/** 搜索框 ↑↓：在结果间移动选中行（循环）；Enter 打开选中项。 */
+/** 搜索框 ↑↓：在结果间移动选中行（循环）；Enter 打开选中项——但查询词
+ *  已变化时 Enter 重跑搜索（0.1.81 扫描：旧面板开着时改词回车会跳进旧
+ *  选中项的目录，吞掉新查询）。 */
 function onSearchKeydown(side: PaneSide, key: string, query: string) {
+  const term = query.trim();
   const count = deepSearchResults.value.length;
-  if (!deepSearchOpen.value || !count) {
+  if (!deepSearchOpen.value || !count || (key === "Enter" && term && term !== deepSearchSearchedTerm.value)) {
     if (key === "Enter") runDeepSearch(side, query);
     return;
   }
@@ -3107,18 +3190,23 @@ function closeDeepSearch() {
 const leftRemoteUsage = ref<{ used: number; total: number } | null>(null);
 const rightRemoteUsage = ref<{ used: number; total: number } | null>(null);
 
+const remoteUsageTokens: Record<PaneSide, number> = { left: 0, right: 0 };
 async function loadRemoteUsage(side: PaneSide) {
   const id = sideConnectionId(side) ?? connectionId.value;
   const target = side === "left" ? leftRemoteUsage : rightRemoteUsage;
+  // 0.1.81 扫描：换连接/换目录的慢 about 响应不得覆盖新一轮的用量显示。
+  const token = ++remoteUsageTokens[side];
   if (!id || id === "__local__") {
     target.value = null;
     return;
   }
   try {
     const result = await call<{ used?: number; total?: number }>("files/about", { connectionId: id });
+    if (token !== remoteUsageTokens[side]) return;
     target.value = result.total ? { used: result.used ?? 0, total: result.total } : null;
   } catch {
     // 后端不支持（旧 sidecar/特殊协议）时静默隐藏，不打扰用户。
+    if (token !== remoteUsageTokens[side]) return;
     target.value = null;
   }
 }
@@ -3373,6 +3461,10 @@ function closeBatchRename() {
   batchRenameOpen.value = false;
 }
 
+/** 抽屉 applying 状态回传（Esc 兜底关闭需避开应用进行中——0.1.81 扫描：
+ *  applying 时关抽屉会让剩余行继续在后台改名而用户以为已取消）。 */
+const batchRenameApplying = ref(false);
+
 async function onBatchRenameApplied(result: { ok: number; total: number }) {
   refreshAuditPanel();
   showNotice(t("batchRenameApplied", { ok: result.ok, total: result.total }));
@@ -3485,8 +3577,13 @@ function menuAction(action: MenuAction) {
           showNotice(t("downloadNoneSelected"));
           return;
         }
-        for (const item of files) await downloadEntry(item, side, id);
-        showNotice(t("downloaded", { name: files[0].name }));
+        // 0.1.81 扫描：downloadEntry 内部吞错（失败已弹横幅、取消静默），
+        // 循环不得再无条件弹成功——全部成功才提示。
+        let failed = 0;
+        for (const item of files) {
+          if (!(await downloadEntry(item, side, id))) failed += 1;
+        }
+        if (!failed) showNotice(t("downloaded", { name: files[0].name }));
       })();
       break;
     case "copySelected":
@@ -4041,8 +4138,9 @@ function onContextClick() {
 }
 
 function onDocumentKeydown(event: KeyboardEvent) {
-  // 快捷键速查：仅无输入焦点时响应 `?`（输入框/文本域/可编辑区不拦截）。
-  if (event.key === "?" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+  // 快捷键速查：仅无输入焦点时响应 `?`（输入框/文本域/可编辑区不拦截；
+  // isComposing 排除输入法组合态外泄，0.1.81 扫描）。
+  if (event.key === "?" && !event.metaKey && !event.ctrlKey && !event.altKey && !event.isComposing) {
     const target = event.target as HTMLElement | null;
     const tag = target?.tagName;
     if (tag !== "INPUT" && tag !== "TEXTAREA" && !target?.isContentEditable) {
@@ -4062,7 +4160,8 @@ function onDocumentKeydown(event: KeyboardEvent) {
     return;
   }
   if (batchRenameOpen.value) {
-    closeBatchRename();
+    // applying 期间不关（见 batchRenameApplying 注释）。
+    if (!batchRenameApplying.value) closeBatchRename();
     return;
   }
   // 拖放动作选择（焦点在弹层内时组件自身 Esc 已取消；这里兜底焦点在外的情况）。
@@ -4149,6 +4248,16 @@ onBeforeUnmount(() => {
   // 在途流式列表会话：卸载时 best-effort 取消，sidecar 不再白做枚举。
   abandonStream("left");
   abandonStream("right");
+  // 0.1.81 扫描：卸载时拒掉全部在途帧等待并清空队列——在途下载泵立即按
+  // 失败终态收场（而非挂在 30s 帧超时上产生无人处理的 rejection），卸载后
+  // sidecar 迟到的帧也不会再重建已释放的 channel 队列。
+  for (const waiters of frameWaiters.values()) {
+    for (const waiter of waiters) {
+      waiter.reject(new Error("workbench unmounted"));
+    }
+  }
+  frameWaiters.clear();
+  frameQueue.clear();
   uiIntent.stop();
   unsubscribeEvent?.();
   unsubscribeBinary?.();
@@ -4304,7 +4413,7 @@ onBeforeUnmount(() => {
       >
         <!-- P2-11：无可切换连接时整个 topbar 不渲染（v-if 提到容器级），不再留 28px 空条 -->
         <div v-if="targetConnections.length" class="wb-pane-topbar">
-          <select v-model="targetConnectionId" class="wb-target-connection" :aria-label="t('targetConnection')" @change="markActiveSide('right'); loadRightDirectory(rightPath)">
+          <select v-model="targetConnectionId" class="wb-target-connection" :aria-label="t('targetConnection')" @change="onRightConnectionChange">
             <option value="">{{ t("sameConnection") }}</option>
             <option v-for="item in targetConnections" :key="item.id" :value="item.id">{{ item.name }}</option>
           </select>
@@ -4809,6 +4918,7 @@ onBeforeUnmount(() => {
       :connection-id="sideConnectionId(batchRenameSide) ?? connectionId"
       :t="t"
       @close="closeBatchRename"
+      @update:applying="batchRenameApplying = $event"
       @applied="onBatchRenameApplied"
     />
 
