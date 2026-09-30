@@ -3,7 +3,7 @@
   "manifest_version": 1,
   "id": "io.dbx.files",
   "name": "Files Studio",
-  "version": "0.1.85-beta.1",
+  "version": "0.1.86-beta.1",
   "publisher": "jinpy",
   "description": "One dual-pane file workbench for local disks and 80+ rclone backends — S3, Azure Blob, Google Cloud Storage, OBS, Tencent COS, WebDAV, FTP, SFTP, SMB/CIFS and more — with transfers, directory sync, zip archives, and MCP automation.",
   "source": "https://github.com/jinpy666/dbx-plugin-files",
