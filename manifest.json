@@ -5,7 +5,7 @@
   "name": "Files Studio",
   "version": "0.1.83",
   "publisher": "jinpy",
-  "description": "A unified file workspace for local folders, S3-compatible storage, Azure Blob, Google Cloud Storage, Huawei OBS, Tencent COS, WebDAV, FTP, SFTP, SMB/CIFS, and other rclone storage backends.",
+  "description": "One dual-pane file workbench for local disks and 80+ rclone backends — S3, Azure Blob, Google Cloud Storage, OBS, Tencent COS, WebDAV, FTP, SFTP, SMB/CIFS and more — with transfers, directory sync, zip archives, and MCP automation.",
   "source": "https://github.com/jinpy666/dbx-plugin-files",
   "homepage": "https://github.com/jinpy666/dbx-plugin-files",
   "icon": "assets/plugin.svg",
@@ -257,6 +257,10 @@
               "value": "gofile"
             },
             {
+              "label": "Google Photos",
+              "value": "google photos"
+            },
+            {
               "label": "Hasher",
               "value": "hasher"
             },
@@ -309,12 +313,20 @@
               "value": "mega"
             },
             {
+              "label": "Memory (testing)",
+              "value": "memory"
+            },
+            {
               "label": "Akamai NetStorage",
               "value": "netstorage"
             },
             {
               "label": "OpenDrive",
               "value": "opendrive"
+            },
+            {
+              "label": "Oracle Object Storage",
+              "value": "oracleobjectstorage"
             },
             {
               "label": "PikPak",
@@ -428,6 +440,7 @@
               "http",
               "imagekit",
               "netstorage",
+              "oracleobjectstorage",
               "qingstor",
               "quatrix",
               "sia"
@@ -498,6 +511,7 @@
               "filen",
               "filescom",
               "gofile",
+              "google photos",
               "hasher",
               "hdfs",
               "hidrive",
@@ -511,8 +525,10 @@
               "linkbox",
               "mailru",
               "mega",
+              "memory",
               "netstorage",
               "opendrive",
+              "oracleobjectstorage",
               "pikpak",
               "pixeldrain",
               "premiumizeme",
@@ -573,6 +589,7 @@
               "aliyun-drive",
               "dropbox",
               "gdrive",
+              "google photos",
               "onedrive",
               "box",
               "hidrive",
@@ -586,7 +603,7 @@
             ]
           },
           "placeholder": "your-app-client-id",
-          "description": "OAuth client ID of a registered application, for OAuth-configured cloud backends (drive services, box, hidrive, huaweidrive, jottacloud, mailru, premiumizeme, putio, sharefile, zoho)."
+          "description": "OAuth client ID of a registered application, for OAuth-configured cloud backends (drive services, google photos, box, hidrive, huaweidrive, jottacloud, mailru, premiumizeme, putio, sharefile, zoho)."
         },
         {
           "key": "client_secret",
@@ -600,6 +617,7 @@
               "aliyun-drive",
               "dropbox",
               "gdrive",
+              "google photos",
               "onedrive",
               "box",
               "hidrive",
@@ -837,11 +855,18 @@
           "binding": "config",
           "default": "",
           "placeholder": "us-east-1",
-          "description": "S3 region; leave empty to default to us-east-1 (AWS, MinIO, Ceph).",
+          "description": "S3 region; leave empty to default to us-east-1 (AWS, MinIO, Ceph). Oracle Object Storage takes its OCI region identifier (e.g. us-ashburn-1).",
           "visible_when": {
             "field": "protocol",
             "one_of": [
-              "s3"
+              "s3",
+              "oracleobjectstorage"
+            ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
+              "oracleobjectstorage"
             ]
           }
         },
@@ -994,6 +1019,7 @@
               "quatrix",
               "shade",
               "storj",
+              "tardigrade",
               "ulozto"
             ]
           },
@@ -1006,7 +1032,7 @@
               "shade"
             ]
           },
-          "description": "API key, token, or access grant, kept in the host secret binding: fichier/filelu/pixeldrain/quatrix/shade API key, ulozto app token, linkbox token, storj access grant, filen API key, filefabric permanent token."
+          "description": "API key, token, or access grant, kept in the host secret binding: fichier/filelu/pixeldrain/quatrix/shade API key, ulozto app token, linkbox token, storj/tardigrade access grant, filen API key, filefabric permanent token."
         },
         {
           "key": "secret_id",
@@ -1176,6 +1202,7 @@
               "koofr",
               "pcloud",
               "seafile",
+              "crypt",
               "filen",
               "filescom",
               "iclouddrive",
@@ -1209,7 +1236,7 @@
               "protondrive"
             ]
           },
-          "description": "Login password or secret. WebDAV/FTP/SMB password (FTP with empty user = anonymous); native SFTP accepts passwords, plain SFTP is key-only; swift: storage key; sia: API daemon password; netstorage: account secret."
+          "description": "Login password or secret. WebDAV/FTP/SMB password (FTP with empty user = anonymous); native SFTP accepts passwords, plain SFTP is key-only; swift: storage key; sia: API daemon password; netstorage: account secret. crypt: encryption password; the wrapping remote and second-round password go in the JSON extras."
         },
         {
           "key": "key",
@@ -1351,14 +1378,14 @@
       "type": "workbench",
       "id": "io.dbx.files.workbench",
       "label": "Files Workbench",
-      "description": "Browse, transfer, and sync files across connected storage services.",
+      "description": "Dual-pane browsing of local and remote storage: copy, move, and drag files between panes, with directory sync and zip archives in the same view.",
       "icon": "assets/plugin.svg"
     }
   ],
   "localizations": {
     "zh-CN": {
       "name": "Files Studio",
-      "description": "统一管理本地文件夹、S3 兼容存储、腾讯云 COS、WebDAV、FTP、SFTP、SMB/CIFS 及其他 rclone 存储后端的文件工作台。",
+      "description": "双栏文件工作台：本地磁盘与 S3、阿里云 OSS、腾讯云 COS、Azure Blob、GCS、WebDAV、FTP、SFTP、SMB/CIFS 等 80 余种 rclone 后端共用一套浏览、传输、同步与归档体验，并内置 MCP 自动化。",
       "contributions": {
         "io.dbx.files.connection": {
           "label": "存储",
@@ -1452,7 +1479,10 @@
                 "nos": "网易数帆 NOS",
                 "bos": "百度智能云 BOS",
                 "tos": "火山引擎 TOS",
-                "ks3": "金山云 KS3"
+                "ks3": "金山云 KS3",
+                "google photos": "Google 相册",
+                "memory": "Memory（内存测试盘）",
+                "oracleobjectstorage": "Oracle 对象存储"
               },
               "description": "选择存储后端：常见后端有专属表单；通用后端复用下方通用字段，额外选项以 JSON 提供。"
             },
@@ -1510,7 +1540,7 @@
             "region": {
               "label": "区域",
               "placeholder": "us-east-1",
-              "description": "S3 区域；留空时默认使用 us-east-1（AWS、MinIO、Ceph 通用）。"
+              "description": "S3 区域；留空时默认使用 us-east-1（AWS、MinIO、Ceph 通用）。 Oracle 对象存储填 OCI 区域标识（如 us-ashburn-1）。"
             },
             "access_key_id": {
               "label": "Access Key ID",
@@ -1548,7 +1578,7 @@
             },
             "password": {
               "label": "密码",
-              "description": "登录密码或机密。WebDAV/FTP/SMB 密码（FTP 用户留空即匿名）；SFTP（原生）支持密码，SFTP 仅支持密钥；swift：存储密钥；sia：API 守护进程密码；netstorage：账户机密。"
+              "description": "登录密码或机密。WebDAV/FTP/SMB 密码（FTP 用户留空即匿名）；SFTP（原生）支持密码，SFTP 仅支持密钥；swift：存储密钥；sia：API 守护进程密码；netstorage：账户机密。 crypt：加密密码（包装的 remote 与第二轮密码写入 JSON 附加选项）。"
             },
             "key": {
               "label": "私钥或私钥路径",
@@ -1571,7 +1601,7 @@
             "client_id": {
               "label": "OAuth 客户端 ID",
               "placeholder": "your-app-client-id",
-              "description": "已注册应用的 OAuth 客户端 ID，用于配置了 OAuth 的云后端（网盘服务及 box、hidrive、huaweidrive、jottacloud、mailru、premiumizeme、putio、sharefile、zoho）。"
+              "description": "已注册应用的 OAuth 客户端 ID，用于配置了 OAuth 的云后端（网盘服务、Google 相册及 box、hidrive、huaweidrive、jottacloud、mailru、premiumizeme、putio、sharefile、zoho）。"
             },
             "client_secret": {
               "label": "OAuth 客户端密钥",
@@ -1619,7 +1649,7 @@
             "token": {
               "label": "API 密钥 / 令牌",
               "placeholder": "your-api-key-or-token",
-              "description": "API 密钥、令牌或访问授权，由宿主 secret binding 保管：fichier/filelu/pixeldrain/quatrix/shade 的 API 密钥、ulozto 应用令牌、linkbox 令牌、storj 访问授权、filen API 密钥、filefabric 永久令牌。"
+              "description": "API 密钥、令牌或访问授权，由宿主 secret binding 保管：fichier/filelu/pixeldrain/quatrix/shade 的 API 密钥、ulozto 应用令牌、linkbox 令牌、storj/tardigrade 访问授权、filen API 密钥、filefabric 永久令牌。"
             },
             "display_charset": {
               "label": "文件名显示编码",
@@ -1636,13 +1666,13 @@
         },
         "io.dbx.files.workbench": {
           "label": "文件工作台",
-          "description": "在已连接的存储服务之间浏览、传输与同步文件。"
+          "description": "本地与远端双栏对照浏览：跨栏复制、移动与拖拽传输，同步与 zip 归档同屏完成。"
         }
       }
     },
     "zh-TW": {
       "name": "Files Studio",
-      "description": "統一管理本機資料夾、S3 相容儲存、WebDAV、FTP、SFTP、SMB/CIFS 及其他 rclone 儲存後端的檔案工作台。",
+      "description": "雙欄檔案工作台：本機磁碟與 S3、阿里雲 OSS、騰訊雲 COS、Azure Blob、GCS、WebDAV、FTP、SFTP、SMB/CIFS 等 80 餘種 rclone 後端共用一套瀏覽、傳輸、同步與封存體驗，並內建 MCP 自動化。",
       "contributions": {
         "io.dbx.files.connection": {
           "label": "儲存",
@@ -1736,7 +1766,10 @@
                 "nos": "網易數帆 NOS",
                 "bos": "百度智能雲 BOS",
                 "tos": "火山引擎 TOS",
-                "ks3": "金山雲 KS3"
+                "ks3": "金山雲 KS3",
+                "google photos": "Google 相簿",
+                "memory": "Memory（記憶體測試盤）",
+                "oracleobjectstorage": "Oracle 物件儲存"
               },
               "description": "選擇儲存後端：常見後端有專屬表單；通用後端重複使用下方通用欄位，額外選項以 JSON 提供。"
             },
@@ -1794,7 +1827,7 @@
             "region": {
               "label": "區域",
               "placeholder": "us-east-1",
-              "description": "S3 區域；留空時預設使用 us-east-1（AWS、MinIO、Ceph 通用）。"
+              "description": "S3 區域；留空時預設使用 us-east-1（AWS、MinIO、Ceph 通用）。 Oracle 物件儲存填 OCI 區域識別碼（如 us-ashburn-1）。"
             },
             "access_key_id": {
               "label": "Access Key ID",
@@ -1832,7 +1865,7 @@
             },
             "password": {
               "label": "密碼",
-              "description": "登入密碼或機密。WebDAV/FTP/SMB 密碼（FTP 使用者留空即匿名）；SFTP（原生）支援密碼，SFTP 僅支援金鑰；swift：儲存金鑰；sia：API 常駐程式密碼；netstorage：帳戶機密。"
+              "description": "登入密碼或機密。WebDAV/FTP/SMB 密碼（FTP 使用者留空即匿名）；SFTP（原生）支援密碼，SFTP 僅支援金鑰；swift：儲存金鑰；sia：API 常駐程式密碼；netstorage：帳戶機密。 crypt：加密密碼（包裝的 remote 與第二輪密碼寫入 JSON 附加選項）。"
             },
             "key": {
               "label": "私鑰或私鑰路徑",
@@ -1855,7 +1888,7 @@
             "client_id": {
               "label": "OAuth 用戶端 ID",
               "placeholder": "your-app-client-id",
-              "description": "已註冊應用的 OAuth 用戶端 ID，用於設定了 OAuth 的雲端後端（網盤服務及 box、hidrive、huaweidrive、jottacloud、mailru、premiumizeme、putio、sharefile、zoho）。"
+              "description": "已註冊應用的 OAuth 用戶端 ID，用於設定了 OAuth 的雲端後端（網盤服務、Google 相簿及 box、hidrive、huaweidrive、jottacloud、mailru、premiumizeme、putio、sharefile、zoho）。"
             },
             "client_secret": {
               "label": "OAuth 用戶端密鑰",
@@ -1903,7 +1936,7 @@
             "token": {
               "label": "API 金鑰 / 權杖",
               "placeholder": "your-api-key-or-token",
-              "description": "API 金鑰、權杖或存取授權，由宿主 secret binding 保管：fichier/filelu/pixeldrain/quatrix/shade 的 API 金鑰、ulozto 應用程式權杖、linkbox 權杖、storj 存取授權、filen API 金鑰、filefabric 永久權杖。"
+              "description": "API 金鑰、權杖或存取授權，由宿主 secret binding 保管：fichier/filelu/pixeldrain/quatrix/shade 的 API 金鑰、ulozto 應用程式權杖、linkbox 權杖、storj/tardigrade 存取授權、filen API 金鑰、filefabric 永久權杖。"
             },
             "display_charset": {
               "label": "檔名顯示編碼",
@@ -1920,13 +1953,13 @@
         },
         "io.dbx.files.workbench": {
           "label": "檔案工作台",
-          "description": "在已連線的儲存服務之間瀏覽、傳輸與同步檔案。"
+          "description": "本機與遠端雙欄對照瀏覽：跨欄複製、移動與拖曳傳輸，同步與 zip 封存同屏完成。"
         }
       }
     },
     "en": {
       "name": "Files Studio",
-      "description": "A unified file workspace for local folders, S3-compatible storage, Azure Blob, Google Cloud Storage, Huawei OBS, Tencent COS, WebDAV, FTP, SFTP, SMB/CIFS, and other rclone storage backends.",
+      "description": "One dual-pane file workbench for local disks and 80+ rclone backends — S3, Azure Blob, Google Cloud Storage, OBS, Tencent COS, WebDAV, FTP, SFTP, SMB/CIFS and more — with transfers, directory sync, zip archives, and MCP automation.",
       "contributions": {
         "io.dbx.files.connection": {
           "label": "Storage",
@@ -2020,7 +2053,10 @@
                 "nos": "Netease NOS",
                 "bos": "Baidu BOS",
                 "tos": "Volcengine TOS",
-                "ks3": "Kingsoft KS3"
+                "ks3": "Kingsoft KS3",
+                "google photos": "Google Photos",
+                "memory": "Memory (testing)",
+                "oracleobjectstorage": "Oracle Object Storage"
               },
               "description": "Pick a storage backend: popular backends get a dedicated form; generic backends reuse the common fields and take extra options as JSON."
             },
@@ -2078,7 +2114,7 @@
             "region": {
               "label": "Region",
               "placeholder": "us-east-1",
-              "description": "S3 region; leave empty to default to us-east-1 (AWS, MinIO, Ceph)."
+              "description": "S3 region; leave empty to default to us-east-1 (AWS, MinIO, Ceph). Oracle Object Storage takes its OCI region identifier (e.g. us-ashburn-1)."
             },
             "access_key_id": {
               "label": "Access key ID",
@@ -2116,7 +2152,7 @@
             },
             "password": {
               "label": "Password",
-              "description": "Login password or secret. WebDAV/FTP/SMB password (FTP with empty user = anonymous); native SFTP accepts passwords, plain SFTP is key-only; swift: storage key; sia: API daemon password; netstorage: account secret."
+              "description": "Login password or secret. WebDAV/FTP/SMB password (FTP with empty user = anonymous); native SFTP accepts passwords, plain SFTP is key-only; swift: storage key; sia: API daemon password; netstorage: account secret. crypt: encryption password; the wrapping remote and second-round password go in the JSON extras."
             },
             "key": {
               "label": "Private key or path",
@@ -2139,7 +2175,7 @@
             "client_id": {
               "label": "OAuth client ID",
               "placeholder": "your-app-client-id",
-              "description": "OAuth client ID of a registered application, for OAuth-configured cloud backends (drive services, box, hidrive, huaweidrive, jottacloud, mailru, premiumizeme, putio, sharefile, zoho)."
+              "description": "OAuth client ID of a registered application, for OAuth-configured cloud backends (drive services, google photos, box, hidrive, huaweidrive, jottacloud, mailru, premiumizeme, putio, sharefile, zoho)."
             },
             "client_secret": {
               "label": "OAuth client secret",
@@ -2187,7 +2223,7 @@
             "token": {
               "label": "API key / token",
               "placeholder": "your-api-key-or-token",
-              "description": "API key, token, or access grant, kept in the host secret binding: fichier/filelu/pixeldrain/quatrix/shade API key, ulozto app token, linkbox token, storj access grant, filen API key, filefabric permanent token."
+              "description": "API key, token, or access grant, kept in the host secret binding: fichier/filelu/pixeldrain/quatrix/shade API key, ulozto app token, linkbox token, storj/tardigrade access grant, filen API key, filefabric permanent token."
             },
             "display_charset": {
               "label": "Display filename encoding",
@@ -2204,13 +2240,13 @@
         },
         "io.dbx.files.workbench": {
           "label": "Files Workbench",
-          "description": "Browse, transfer, and sync files across connected storage services."
+          "description": "Dual-pane browsing of local and remote storage: copy, move, and drag files between panes, with directory sync and zip archives in the same view."
         }
       }
     },
     "es": {
       "name": "Files Studio",
-      "description": "Espacio de trabajo de archivos unificado para carpetas locales, almacenamiento compatible con S3, WebDAV, FTP, SFTP, SMB/CIFS y otros backends de almacenamiento de rclone.",
+      "description": "Espacio de trabajo de archivos de doble panel: discos locales y más de 80 backends rclone (S3, Azure Blob, Google Cloud Storage, WebDAV, FTP, SFTP, SMB/CIFS y más) con transferencias, sincronización, archivos zip y automatización MCP en un solo lugar.",
       "contributions": {
         "io.dbx.files.connection": {
           "label": "Almacenamiento",
@@ -2304,7 +2340,10 @@
                 "nos": "Netease NOS",
                 "bos": "Baidu BOS",
                 "tos": "Volcengine TOS",
-                "ks3": "Kingsoft KS3"
+                "ks3": "Kingsoft KS3",
+                "google photos": "Google Fotos",
+                "memory": "Memoria (pruebas)",
+                "oracleobjectstorage": "Almacenamiento de objetos Oracle"
               },
               "description": "Elija un backend de almacenamiento: los más comunes tienen formulario propio; los genéricos reutilizan los campos comunes y aceptan opciones extra en JSON."
             },
@@ -2488,13 +2527,13 @@
         },
         "io.dbx.files.workbench": {
           "label": "Mesa de trabajo de archivos",
-          "description": "Explora, transfiere y sincroniza archivos entre servicios de almacenamiento conectados."
+          "description": "Navegación dual de almacenamiento local y remoto: copia, mueve y arrastra archivos entre paneles, con sincronización de directorios y archivos zip en la misma vista."
         }
       }
     },
     "it": {
       "name": "Files Studio",
-      "description": "Area di lavoro unificata per i file: cartelle locali, archiviazione compatibile S3, WebDAV, FTP, SFTP, SMB/CIFS e altri backend di archiviazione rclone.",
+      "description": "Area di lavoro file a doppio pannello: dischi locali e oltre 80 backend rclone (S3, Azure Blob, Google Cloud Storage, WebDAV, FTP, SFTP, SMB/CIFS e altri) con trasferimenti, sincronizzazione, archivi zip e automazione MCP in un unico posto.",
       "contributions": {
         "io.dbx.files.connection": {
           "label": "Archiviazione",
@@ -2588,7 +2627,10 @@
                 "nos": "Netease NOS",
                 "bos": "Baidu BOS",
                 "tos": "Volcengine TOS",
-                "ks3": "Kingsoft KS3"
+                "ks3": "Kingsoft KS3",
+                "google photos": "Google Foto",
+                "memory": "Memoria (test)",
+                "oracleobjectstorage": "Oracle Object Storage"
               },
               "description": "Scegliere un backend di archiviazione: i più comuni hanno un modulo dedicato; quelli generici riutilizzano i campi comuni e accettano opzioni extra in JSON."
             },
@@ -2772,13 +2814,13 @@
         },
         "io.dbx.files.workbench": {
           "label": "Banco di lavoro file",
-          "description": "Sfoglia, trasferisci e sincronizza file tra i servizi di archiviazione connessi."
+          "description": "Navigazione a doppio pannello di archiviazione locale e remota: copia, sposta e trascina file tra i pannelli, con sincronizzazione delle directory e archivi zip nella stessa vista."
         }
       }
     },
     "ja": {
       "name": "Files Studio",
-      "description": "ローカルフォルダー、S3 互換ストレージ、WebDAV、FTP、SFTP、SMB/CIFS など各種 rclone ストレージバックエンドを束ねた統合ファイルワークベンチ。",
+      "description": "デュアルペインのファイルワークベンチ：ローカルディスクと S3、Azure Blob、Google Cloud Storage、WebDAV、FTP、SFTP、SMB/CIFS など 80 種類以上の rclone バックエンドを 1 つのパネルに統合し、転送・同期・zip アーカイブ・MCP 自動化に対応。",
       "contributions": {
         "io.dbx.files.connection": {
           "label": "ストレージ",
@@ -2872,7 +2914,10 @@
                 "nos": "Netease NOS",
                 "bos": "Baidu BOS",
                 "tos": "Volcengine TOS",
-                "ks3": "Kingsoft KS3"
+                "ks3": "Kingsoft KS3",
+                "google photos": "Google フォト",
+                "memory": "メモリ（テスト用）",
+                "oracleobjectstorage": "Oracle オブジェクトストレージ"
               },
               "description": "ストレージバックエンドを選択します。主要なバックエンドには専用フォームがあり、汎用バックエンドは共通フィールドを再利用し、追加オプションは JSON で設定します。"
             },
@@ -3056,13 +3101,13 @@
         },
         "io.dbx.files.workbench": {
           "label": "ファイルワークベンチ",
-          "description": "接続したストレージサービス間でファイルを閲覧・転送・同期します。"
+          "description": "ローカルとリモートを並べて閲覧するデュアルペイン：ペイン間でファイルをコピー・移動・ドラッグでき、ディレクトリ同期や zip アーカイブも同じ画面で。"
         }
       }
     },
     "pt-BR": {
       "name": "Files Studio",
-      "description": "Espaço de trabalho unificado de arquivos para pastas locais, armazenamento compatível com S3, WebDAV, FTP, SFTP, SMB/CIFS e outros backends de armazenamento do rclone.",
+      "description": "Espaço de trabalho de arquivos com painel duplo: discos locais e mais de 80 backends rclone (S3, Azure Blob, Google Cloud Storage, WebDAV, FTP, SFTP, SMB/CIFS e outros) com transferências, sincronização, arquivos zip e automação MCP em um só lugar.",
       "contributions": {
         "io.dbx.files.connection": {
           "label": "Armazenamento",
@@ -3156,7 +3201,10 @@
                 "nos": "Netease NOS",
                 "bos": "Baidu BOS",
                 "tos": "Volcengine TOS",
-                "ks3": "Kingsoft KS3"
+                "ks3": "Kingsoft KS3",
+                "google photos": "Google Fotos",
+                "memory": "Memória (testes)",
+                "oracleobjectstorage": "Armazenamento de objetos da Oracle"
               },
               "description": "Escolha um backend de armazenamento: os mais comuns têm formulário próprio; os genéricos reutilizam os campos comuns e aceitam opções extras em JSON."
             },
@@ -3340,7 +3388,7 @@
         },
         "io.dbx.files.workbench": {
           "label": "Bancada de arquivos",
-          "description": "Navegue, transfira e sincronize arquivos entre os serviços de armazenamento conectados."
+          "description": "Navegação em painel duplo de armazenamento local e remoto: copie, mova e arraste arquivos entre os painéis, com sincronização de diretórios e arquivos zip na mesma tela."
         }
       }
     }

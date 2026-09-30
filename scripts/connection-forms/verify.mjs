@@ -142,7 +142,7 @@ const ENDPOINT_PROTOCOLS = [
   "sftp-native", "smb", "koofr", "pcloud", "seafile",
   // generic backends whose service address has a dedicated field
   "azurefiles", "filefabric", "hdfs", "http", "imagekit", "netstorage",
-  "qingstor", "quatrix", "sia",
+  "oracleobjectstorage", "qingstor", "quatrix", "sia",
 ];
 const ENDPOINT_REQUIRED = [
   "gcs", "azblob", "obs", "oss", "cos", "qiniu", "r2", "wasabi", "spaces",
@@ -164,7 +164,7 @@ const USERNAME_REQUIRED = [
 ];
 const PASSWORD_VISIBLE = [
   "webdav", "ftp", "smb", "sftp-native", "koofr", "pcloud", "seafile",
-  "filen", "filescom", "iclouddrive", "internxt", "linkbox", "mega",
+  "crypt", "filen", "filescom", "iclouddrive", "internxt", "linkbox", "mega",
   "mailru", "netstorage", "opendrive", "pikpak", "protondrive", "sia",
   "swift", "ulozto",
 ];
@@ -177,11 +177,11 @@ const KEY_VISIBLE_PROTOCOLS = ["s3", "obs", "oss", "qiniu", "r2", "wasabi", "spa
 const KEY_REQUIRED_PROTOCOLS = ["s3", "obs", "oss", "qiniu", "r2", "wasabi", "spaces", "scaleway", "idrive", "us3", "ecloud", "nos", "bos", "tos", "ks3", "b2", "cloudinary", "imagekit"];
 const OAUTH_CLIENT_VISIBLE = [
   "aliyun-drive", "dropbox", "gdrive", "onedrive",
-  "box", "hidrive", "huaweidrive", "jottacloud", "mailru", "premiumizeme",
-  "putio", "sharefile", "zoho",
+  "box", "google photos", "hidrive", "huaweidrive", "jottacloud", "mailru",
+  "premiumizeme", "putio", "sharefile", "zoho",
 ];
 const ACCESS_TOKEN_VISIBLE = ["dropbox", "gdrive", "onedrive", "yandex-disk", "box", "drime", "gofile"];
-const TOKEN_VISIBLE = ["fichier", "filefabric", "filelu", "filen", "linkbox", "pixeldrain", "quatrix", "shade", "storj", "ulozto"];
+const TOKEN_VISIBLE = ["fichier", "filefabric", "filelu", "filen", "linkbox", "pixeldrain", "quatrix", "shade", "storj", "tardigrade", "ulozto"];
 const TOKEN_REQUIRED = ["filelu", "linkbox", "quatrix", "shade"];
 const QUICK_PROTOCOLS = new Set(["fs", "aliyun-drive", "dropbox", "gdrive", "onedrive", "yandex-disk", "s3", "gcs", "azblob", "obs", "oss", "cos", "qiniu", "r2", "wasabi", "spaces", "scaleway", "idrive", "us3", "ecloud", "nos", "bos", "tos", "ks3", "webdav", "ftp", "sftp", "sftp-native", "smb", "koofr", "pcloud", "seafile"]);
 const GENERIC_PROTOCOLS = options("protocol").filter((value) => !QUICK_PROTOCOLS.has(value));
@@ -221,7 +221,9 @@ for (const protocol of options("protocol")) {
     current.visible("credential", protocol === "gcs");
     current.required("credential", protocol === "gcs");
     current.visible("scope", protocol === "gcs");
-    current.visible("region", protocol === "s3");
+    current.visible("region", ["s3", "oracleobjectstorage"].includes(protocol));
+    // s3 keeps the us-east-1 fallback optional; OCI has no usable default.
+    current.required("region", protocol === "oracleobjectstorage");
     current.visible("enable_virtual_host_style", protocol === "s3");
     current.visible("access_key_id", KEY_VISIBLE_PROTOCOLS.includes(protocol));
     current.required("access_key_id", KEY_REQUIRED_PROTOCOLS.includes(protocol));

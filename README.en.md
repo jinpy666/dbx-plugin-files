@@ -6,50 +6,79 @@
 
 [中文](README.md) · [Product media](docs/MEDIA.en.md) · [Feature comparison](docs/COMPARISON.en.md) · [MCP usage guide](docs/MCP_USAGE.en.md) · [Files MCP reference](docs/MCP.zh-CN.md) · [Repository split notes](docs/REPOSITORY_SPLIT.en.md) · [Release checklist](docs/RELEASE.en.md)
 
-Files Studio (`io.dbx.files`) is a unified workspace for multi-backend file operations:
-local folders, object storage, and remote file services share one browsing,
-transfer, and administration experience, turning "moving files between storages"
-into a coherent, auditable, and automatable workflow.
+**Local disks and dozens of remote storage backends, in one DBX panel.** Files Studio
+(`io.dbx.files`) is a file workbench for day-to-day file operations and cross-storage
+migration: dual-pane side-by-side browsing, drag-and-drop transfers between panes,
+directory sync, zip archives, and MCP automation all share one workflow — switch
+storage, keep your habits.
 
-> Files · Storage · Transfer: fs, S3, OSS, COS, WebDAV, FTP, SFTP, SMB plus transfers,
-> archives, and automation in a single DBX workbench panel.
+> Files · Storage · Transfer: fs, S3, OSS, COS, WebDAV, FTP, SFTP, SMB — browsing,
+> transfers, archives, and automation in a single DBX workbench panel.
 
 ![Files Studio walkthrough](docs/media/dbx-files-demo.mp4)
+
+**85 storage backends · 13 MCP tools · 7 UI languages · 5 release platforms**
 
 ## Why it is worth using
 
 | What you need to do | What Files Studio gives you |
 | --- | --- |
+| FileZilla-style side-by-side moves | Dual pane with local on one side and remote on the other; cross-pane copy, move, and drag ship with conflict pre-checks and overwrite confirmation |
 | Move data between local and remote storage | Unified browse, copy, move, and directory sync with transfer jobs: progress, cancel, and history |
 | Inspect and organize files across providers | digest-paged browsing for large directories with sorting, stats, and quick paths, consistent across protocols |
 | Handle archives and sharing | zip compress/extract/inline browsing and presigned public links for signature-capable object storage |
 | Constrain risky operations | Read-only mode, delete protection, root-path locking, and per-connection timeouts |
-| Automate repetitive work | MCP tools reuse connections, policies, and permission boundaries: digest→cursor paging, two-phase deletes |
+| Automate repetitive work | 13 MCP tools reuse connections, policies, and permission boundaries: digest→cursor paging, two-phase deletes |
 
-## Use cases
+## Supported backends (85)
 
-- Move or synchronize data between local folders, object storage, and remote file services.
-- Inspect, preview, and organize files across different providers with one workflow.
-- Give teams a controlled file-operations entry point with root restrictions and read-only policies.
+Powered by a managed rclone rcd engine with one connection form for all: 32 mainstream
+backends get dedicated forms, the remaining 53 generic backends plug in through common
+fields plus JSON options (unknown options are rejected alongside the list of valid names).
+
+| Category | Backends |
+| --- | --- |
+| **Local & network filesystems (8)** | Local disk (fs), SMB / CIFS, WebDAV, FTP, SFTP (OpenDAL), SFTP native (russh, password support), HTTP, HDFS |
+| **Object storage (31)** | AWS S3 / MinIO, Google Cloud Storage, Azure Blob, Azure Files, Alibaba Cloud OSS, Tencent Cloud COS, Huawei OBS, Qiniu Kodo, Cloudflare R2, Backblaze B2, Wasabi, DigitalOcean Spaces, Scaleway, IDrive e2, UCloud US3, China Mobile EOS, Netease NOS, Baidu BOS, Volcengine TOS, Kingsoft KS3, Oracle Object Storage, QingStor, OpenStack Swift, Storj, Tardigrade, Sia, Internet Archive, Akamai NetStorage, ImageKit, Cloudinary, DOI |
+| **International cloud drives (23)** | Google Drive, Google Photos (read-only), Dropbox, OneDrive, iCloud Drive, Box, pCloud, Mega, Proton Drive, Yandex Disk, Koofr, Seafile, Jottacloud, Mail.ru Cloud, HiDrive, Filen, Internxt, OpenDrive, SugarSync, Zoho WorkDrive, premiumize.me, Put.io, Drime |
+| **China cloud drives (2)** | Alibaba Drive (resource / share / backup), Huawei Drive |
+| **File transfer & relay services (8)** | PikPak, Files.com, 1Fichier, FileLu, Gofile, Linkbox, Pixeldrain, Uloz.to |
+| **Enterprise & specialized (4)** | Enterprise File Fabric, Citrix ShareFile, Maytech Quatrix, Shade |
+| **Combine & utility backends (8)** | Alias, Union, Combine, Archive, Chunker, Crypt (client-side encryption), Compress, Hasher |
+| **Testing (1)** | Memory (in-memory rclone test backend, data never persisted) |
+
+> SFTP ships as a dual stack: the `sftp` quick protocol (OpenDAL, keyfile auth) and
+> `sftp-native` (russh, password or keyfile); on Windows use `sftp-native`. FTP supports
+> display-name conversion for legacy non-UTF-8 encodings (GBK / Big5 / Shift-JIS and
+> more). Vendor-specific S3 endpoint formats are hinted in the form — R2 / Wasabi /
+> Spaces and friends connect by copy-paste.
+
+## Dual-pane workbench
+
+- The left pane defaults to the local filesystem while the right pane keeps your
+  current remote connection; toggle single/dual pane anytime without losing your place.
+- Copy, move, and drag across panes; point the left pane at another saved connection
+  to transfer cross-connection. A dead connection self-heals on demand and falls back
+  gracefully instead of interrupting long-running work.
+- Each pane keeps its own sorting and browsing state, consistent across protocols.
 
 ## Highlights
 
-- Multi-protocol engine (managed rclone rcd): local filesystems,
-  S3/MinIO, Alibaba Cloud OSS, Tencent Cloud COS, Qiniu Kodo, Huawei OBS,
-  Cloudflare R2, Wasabi, DigitalOcean Spaces, Scaleway, IDrive e2, UCloud US3,
-  China Mobile EOS, Netease NOS, Baidu BOS, Volcengine TOS, Kingsoft KS3,
-  WebDAV, FTP, SFTP, SMB/CIFS, and 50 generic rclone backends such as hdfs/qingstor.
-- SFTP dual stack: the `sftp` quick protocol (OpenDAL, keyfile auth) and
-  `sftp-native` (russh, password or keyfile) coexist; on Windows use `sftp-native`.
+- 85 backend options on one engine (full list above): local filesystems, S3/MinIO,
+  Alibaba Cloud OSS, Tencent Cloud COS, Huawei OBS, Cloudflare R2, WebDAV, FTP, SFTP,
+  SMB/CIFS — 32 mainstream backends get dedicated forms; the remaining 53 generic
+  rclone backends plug in through common fields plus JSON options, with unknown
+  options rejected alongside the list of valid names.
 - Consistent browse, read, upload, download, copy, move, rename, and delete operations.
 - Large-file transfers with progress, cancellation, asynchronous jobs, and the DBX
   binary channel; transfer history is per-connection and clearable.
 - zip archives: compress, extract, and inline listing (paged archiveList); directory
   synchronization (syncDir), object-storage presigned links, and root-path restrictions.
-- Read-only mode, delete protection, Known Hosts policies, and per-connection timeouts.
-- Connection credentials managed by DBX host secret bindings rather than plugin configuration.
+- Safety boundaries live in the connection: read-only mode, delete protection,
+  Known Hosts policies, and per-connection timeouts; credentials are managed by DBX
+  host secret bindings, never written to plugin configuration or logs.
 - Simplified Chinese, Traditional Chinese, English, Spanish, Italian, Japanese,
-  and Portuguese UI.
+  and Portuguese UI, with light/dark theme following the host.
 
 See [Feature comparison](docs/COMPARISON.en.md) for the full positioning and
 [Product media](docs/MEDIA.en.md) for promotional material.

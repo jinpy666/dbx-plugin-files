@@ -27,14 +27,16 @@ describe("rcloneServices", () => {
     expect(suggestions).toContain("b2");
   });
 
-  it("generic protocol ids exclude quick-mapped types (aligned with model::GENERIC_PROTOCOLS)", () => {
-    for (const type of ["b2", "http", "mega", "protondrive", "zoho"]) {
+  it("generic protocol ids align with model::GENERIC_PROTOCOLS (53 entries)", () => {
+    for (const type of ["b2", "http", "mega", "protondrive", "zoho", "memory", "google photos", "oracleobjectstorage"]) {
       expect(GENERIC_PROTOCOL_IDS.has(type), type).toBe(true);
     }
-    for (const quick of ["local", "s3", "gcs", "azureblob", "webdav", "ftp", "sftp", "smb", "drive", "memory", "cache"]) {
-      expect(GENERIC_PROTOCOL_IDS.has(quick), quick).toBe(false);
+    // quick-mapped types, the alias forms, and the non-promoted cache must
+    // not masquerade as protocol ids.
+    for (const notProtocol of ["local", "s3", "gcs", "azureblob", "webdav", "ftp", "sftp", "smb", "drive", "cache", "gphotos", "oos"]) {
+      expect(GENERIC_PROTOCOL_IDS.has(notProtocol), notProtocol).toBe(false);
     }
-    expect(GENERIC_PROTOCOL_IDS.size).toBe(52);
+    expect(GENERIC_PROTOCOL_IDS.size).toBe(53);
   });
 
   it("config hints parse as JSON object drafts", () => {

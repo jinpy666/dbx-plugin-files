@@ -37,7 +37,7 @@ pub const JSON_CHUNK_BYTES: usize = 1024 * 1024;
 /// (stored `service` + JSON parameters). Stored connections from the
 /// OpenDAL era (`opendal-custom`) are normalized onto `rclone-custom` at
 /// parse time — the alias never reaches the engine.
-pub const PROTOCOLS: [&str; 83] = [
+pub const PROTOCOLS: [&str; 86] = [
     "fs",
     "s3",
     "gcs",
@@ -95,6 +95,7 @@ pub const PROTOCOLS: [&str; 83] = [
     "filen",
     "filescom",
     "gofile",
+    "google photos",
     "hasher",
     "hdfs",
     "hidrive",
@@ -108,8 +109,10 @@ pub const PROTOCOLS: [&str; 83] = [
     "linkbox",
     "mailru",
     "mega",
+    "memory",
     "netstorage",
     "opendrive",
+    "oracleobjectstorage",
     "pikpak",
     "pixeldrain",
     "premiumizeme",
@@ -132,15 +135,15 @@ pub const PROTOCOLS: [&str; 83] = [
 /// Protocols whose backend type is the protocol value itself and whose
 /// parameters travel verbatim in the `config` JSON field (`external_config.
 /// config` → `config/create` parameters). The form carries the same list.
-pub const GENERIC_PROTOCOLS: [&str; 50] = [
+pub const GENERIC_PROTOCOLS: [&str; 53] = [
     "alias", "archive", "azurefiles", "b2", "box", "chunker", "cloudinary", "combine",
     "compress", "crypt", "doi", "drime", "fichier", "filefabric", "filelu", "filen",
-    "filescom", "gofile", "hasher", "hdfs", "hidrive", "http",
+    "filescom", "gofile", "google photos", "hasher", "hdfs", "hidrive", "http",
     "huaweidrive", "iclouddrive", "imagekit", "internetarchive", "internxt",
-    "jottacloud", "linkbox", "mailru", "mega", "netstorage", "opendrive",
-    "pikpak", "pixeldrain", "premiumizeme", "protondrive", "putio", "qingstor",
-    "quatrix", "shade", "sharefile", "sia", "storj", "sugarsync", "swift",
-    "tardigrade", "ulozto", "union", "zoho",
+    "jottacloud", "linkbox", "mailru", "mega", "memory", "netstorage", "opendrive",
+    "oracleobjectstorage", "pikpak", "pixeldrain", "premiumizeme", "protondrive",
+    "putio", "qingstor", "quatrix", "shade", "sharefile", "sia", "storj", "sugarsync",
+    "swift", "tardigrade", "ulozto", "union", "zoho",
 ];
 
 /// Egress proxy protocol of a connection. Maps onto the rclone ftp/sftp
@@ -2575,8 +2578,8 @@ mod tests {
         endpoint_protocols.extend_from_slice(&s3_vendors);
         endpoint_protocols.extend_from_slice(&[
             "webdav", "ftp", "sftp", "smb", "sftp-native", "koofr", "pcloud", "seafile",
-            "azurefiles", "filefabric", "hdfs", "http", "imagekit", "netstorage", "qingstor",
-            "quatrix", "sia",
+            "azurefiles", "filefabric", "hdfs", "http", "imagekit", "netstorage",
+            "oracleobjectstorage", "qingstor", "quatrix", "sia",
         ]);
         let expects: &[(&str, &[&str])] = &[
             ("bucket", &bucket_protocols),
@@ -2585,7 +2588,7 @@ mod tests {
             ("account_key", &["azblob"]),
             ("credential", &["gcs"]),
             ("scope", &["gcs"]),
-            ("region", &["s3"]),
+            ("region", &["s3", "oracleobjectstorage"]),
             ("access_key_id", &key_protocols),
             ("secret_access_key", &key_protocols),
             ("enable_virtual_host_style", &["s3"]),
@@ -2608,27 +2611,28 @@ mod tests {
             // semantics; password accounts belong to `sftp-native`.
             ("password", &[
                 "webdav", "ftp", "smb", "sftp-native", "koofr", "pcloud", "seafile",
-                "filen", "filescom", "iclouddrive", "internxt", "linkbox", "mega", "mailru",
-                "netstorage", "opendrive", "pikpak", "protondrive", "sia", "swift", "ulozto",
+                "crypt", "filen", "filescom", "iclouddrive", "internxt", "linkbox", "mega",
+                "mailru", "netstorage", "opendrive", "pikpak", "protondrive", "sia", "swift",
+                "ulozto",
             ]),
             ("key", &["sftp", "sftp-native"]),
             ("known_hosts_strategy", &["sftp", "sftp-native"]),
             ("config", &GENERIC_PROTOCOLS),
             ("access_token", &["dropbox", "gdrive", "onedrive", "yandex-disk", "box", "drime", "gofile"]),
             ("client_id", &[
-                "aliyun-drive", "dropbox", "gdrive", "onedrive",
+                "aliyun-drive", "dropbox", "gdrive", "google photos", "onedrive",
                 "box", "hidrive", "huaweidrive", "jottacloud", "mailru", "premiumizeme",
                 "putio", "sharefile", "zoho",
             ]),
             ("client_secret", &[
-                "aliyun-drive", "dropbox", "gdrive", "onedrive",
+                "aliyun-drive", "dropbox", "gdrive", "google photos", "onedrive",
                 "box", "hidrive", "huaweidrive", "jottacloud", "mailru", "premiumizeme",
                 "putio", "sharefile", "zoho",
             ]),
             ("refresh_token", &["aliyun-drive", "dropbox", "gdrive", "onedrive"]),
             ("token", &[
                 "fichier", "filefabric", "filelu", "filen", "linkbox", "pixeldrain",
-                "quatrix", "shade", "storj", "ulozto",
+                "quatrix", "shade", "storj", "tardigrade", "ulozto",
             ]),
             ("drive_type", &["aliyun-drive"]),
             ("email", &["koofr"]),
@@ -2718,6 +2722,7 @@ mod tests {
             "email",
             "repo_name",
             "token",
+            "region",
         ];
         for key in conditionally_required {
             let item = field_of(key);

@@ -876,6 +876,7 @@ pub fn is_bucket_rooted(backend_type: &str) -> bool {
             | "tardigrade"
             | "internetarchive"
             | "seafile"
+            | "oracleobjectstorage"
     )
 }
 

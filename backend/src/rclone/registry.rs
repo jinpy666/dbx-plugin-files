@@ -84,6 +84,7 @@ enum GenericField {
     ClientSecret,
     AccessToken,
     Token,
+    Region,
 }
 
 /// protocol → (field, rclone option name) pairs. Partial by design: an
@@ -110,6 +111,10 @@ const GENERIC_FIELD_MAP: &[(&str, &[(GenericField, &str)])] = &[
         (GenericField::AccessKeyId, "api_key"),
         (GenericField::SecretAccessKey, "api_secret"),
     ]),
+    // crypt: the wrapping `remote` and the second-round `password2` stay in
+    // the config JSON extras; the primary encryption password maps onto the
+    // common password field (IsPassword, so `obscure` applies).
+    ("crypt", &[(GenericField::Password, "password")]),
     ("drime", &[(GenericField::AccessToken, "access_token")]),
     ("fichier", &[(GenericField::Token, "api_key")]),
     ("filefabric", &[
@@ -127,6 +132,12 @@ const GENERIC_FIELD_MAP: &[(&str, &[(GenericField, &str)])] = &[
         (GenericField::Password, "password"),
     ]),
     ("gofile", &[(GenericField::AccessToken, "access_token")]),
+    // google photos: OAuth token blob (headless) travels in the config JSON;
+    // the registered app's client material maps onto the common fields.
+    ("google photos", &[
+        (GenericField::ClientId, "client_id"),
+        (GenericField::ClientSecret, "client_secret"),
+    ]),
     ("hdfs", &[
         (GenericField::Endpoint, "namenode"),
         (GenericField::Username, "username"),
@@ -185,6 +196,13 @@ const GENERIC_FIELD_MAP: &[(&str, &[(GenericField, &str)])] = &[
         (GenericField::Username, "username"),
         (GenericField::Password, "password"),
     ]),
+    // oracleobjectstorage: the OCI auth `provider` switch, `namespace` and
+    // `compartment` stay in the config JSON; service address and region map
+    // onto the common fields.
+    ("oracleobjectstorage", &[
+        (GenericField::Endpoint, "endpoint"),
+        (GenericField::Region, "region"),
+    ]),
     ("pikpak", &[
         (GenericField::Username, "user"),
         (GenericField::Password, "pass"),
@@ -229,6 +247,7 @@ const GENERIC_FIELD_MAP: &[(&str, &[(GenericField, &str)])] = &[
         (GenericField::Username, "user"),
         (GenericField::Password, "key"),
     ]),
+    ("tardigrade", &[(GenericField::Token, "access_grant")]),
     ("ulozto", &[
         (GenericField::Token, "app_token"),
         (GenericField::Username, "username"),
@@ -268,6 +287,7 @@ fn generic_field_value<'a>(
         GenericField::ClientSecret => &connection.client_secret,
         GenericField::AccessToken => &connection.access_token,
         GenericField::Token => &connection.token,
+        GenericField::Region => &connection.region,
     };
     let value = value.trim();
     if value.is_empty() {
@@ -296,6 +316,7 @@ fn merge_generic_fields(
         GenericField::ClientSecret,
         GenericField::AccessToken,
         GenericField::Token,
+        GenericField::Region,
     ] {
         let Some(param) = generic_field_param(protocol, field) else {
             continue;
@@ -3148,6 +3169,7 @@ mod manifest_matrix {
                 "crypt" => json!({ "remote": "src", "password": secret("cryptpass") }),
                 "doi" => json!({ "doi": "10.1000/xyz" }),
                 "shade" => json!({ "drive_id": "1" }),
+                "oracleobjectstorage" => json!({ "namespace": "examplenamespace" }),
                 _ => json!({}),
             },
             "access_token" => json!(secret("access")),
@@ -3270,6 +3292,7 @@ mod manifest_matrix {
             GenericField::ClientSecret,
             GenericField::AccessToken,
             GenericField::Token,
+            GenericField::Region,
         ] {
             if let Some(param) = generic_field_param(protocol, field) {
                 if !keys.contains(&param) {
@@ -3284,6 +3307,7 @@ mod manifest_matrix {
             "crypt" => &["remote", "password"],
             "doi" => &["doi"],
             "shade" => &["drive_id"],
+            "oracleobjectstorage" => &["namespace"],
             _ => &[],
         };
         for key in config_keys {
@@ -3473,7 +3497,7 @@ mod manifest_matrix {
                     let structural = matches!(
                         protocol.as_str(),
                         "alias" | "chunker" | "combine" | "compress" | "crypt" | "doi"
-                            | "hasher" | "shade" | "union"
+                            | "hasher" | "shade" | "union" | "oracleobjectstorage"
                     ) && key == "config";
                     assert!(
                         form_required

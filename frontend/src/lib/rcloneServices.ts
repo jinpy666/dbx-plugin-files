@@ -5,10 +5,12 @@
 // 为准（v1.75.1），不得凭记忆新增（见 docs/IMPL_PLAN_RCLONE §4）。
 
 /**
- * rclone 后端类型全集（`rclone config providers` on v1.75.1；gcs/gphotos/oos
- * 为 provider 展示名对应的真实 backend type）。透传可达任意类型——这份清单
- * 只是 datalist 建议，不是白名单：后端在使用时按实际 rclone 校验，新版本
- * 新增的后端可直接手输（见 https://rclone.org/overview/）。
+ * rclone 后端类型全集（`rclone config providers` on v1.75.1 的别名与规范
+ * 名，仅收小写字母/数字——与 sidecar `custom_rclone_type` 的校验规则一致，
+ * 因此带空格的规范类型如 "google photos" 不可经 rclone-custom 透传，只能走
+ * 一级协议）。透传可达任意类型——这份清单只是 datalist 建议，不是白名单：
+ * 后端在使用时按实际 rclone 校验，新版本新增的后端可直接手输（见
+ * https://rclone.org/overview/）。
  */
 export const RCLONE_BACKEND_TYPES: ReadonlySet<string> = new Set([
   "alias", "archive", "azureblob", "azurefiles", "b2", "box", "cache", "chunker",
@@ -16,11 +18,11 @@ export const RCLONE_BACKEND_TYPES: ReadonlySet<string> = new Set([
   "fichier", "filefabric", "filelu", "filen", "filescom", "ftp", "gcs", "gofile",
   "gphotos", "hasher", "hdfs", "hidrive", "http", "huaweidrive", "iclouddrive",
   "imagekit", "internetarchive", "internxt", "jottacloud", "koofr", "linkbox",
-  "local", "mailru", "mega", "memory", "netstorage", "onedrive", "oos", "opendrive",
-  "pcloud", "pikpak", "pixeldrain", "premiumizeme", "protondrive", "putio",
-  "qingstor", "quatrix", "s3", "seafile", "sftp", "shade", "sharefile", "sia",
-  "smb", "storj", "sugarsync", "swift", "tardigrade", "ulozto", "union", "webdav",
-  "yandex", "zoho",
+  "local", "mailru", "mega", "memory", "netstorage", "oos", "onedrive", "opendrive",
+  "oracleobjectstorage", "pcloud", "pikpak", "pixeldrain", "premiumizeme",
+  "protondrive", "putio", "qingstor", "quatrix", "s3", "seafile", "sftp", "shade",
+  "sharefile", "sia", "smb", "storj", "sugarsync", "swift", "tardigrade", "ulozto",
+  "union", "webdav", "yandex", "zoho",
 ]);
 
 /** service 输入框的 datalist 建议：rclone 后端全集。 */
@@ -29,19 +31,22 @@ export function customServiceSuggestions(): string[] {
 }
 
 /**
- * 已升为一级协议的通用 rclone 后端（无快捷表单的后端全集）：协议值即
- * rclone backend type，参数走 `config` JSON 字段。与后端
- * `model::GENERIC_PROTOCOLS` 对齐（快捷协议已映射的类型与 memory/cache
- * 不进表单）。
+ * 已升为一级协议的通用 rclone 后端：协议值即 rclone backend type，参数走
+ * `config` JSON 字段。与后端 `model::GENERIC_PROTOCOLS` 逐项对齐（53 项，
+ * 含带空格的规范类型 "google photos"）；别名形式（gphotos/oos）与未升级的
+ * cache 不在此列。
  */
-const QUICK_MAPPED_BACKEND_TYPES: ReadonlySet<string> = new Set([
-  "local", "s3", "gcs", "azureblob", "webdav", "ftp", "sftp", "smb", "drive",
-  "dropbox", "onedrive", "yandex", "seafile", "koofr", "pcloud", "memory", "cache",
+export const GENERIC_PROTOCOL_IDS: ReadonlySet<string> = new Set([
+  "alias", "archive", "azurefiles", "b2", "box", "chunker", "cloudinary",
+  "combine", "compress", "crypt", "doi", "drime", "fichier", "filefabric",
+  "filelu", "filen", "filescom", "gofile", "google photos", "hasher", "hdfs",
+  "hidrive", "http", "huaweidrive", "iclouddrive", "imagekit",
+  "internetarchive", "internxt", "jottacloud", "linkbox", "mailru", "mega",
+  "memory", "netstorage", "opendrive", "oracleobjectstorage", "pikpak",
+  "pixeldrain", "premiumizeme", "protondrive", "putio", "qingstor", "quatrix",
+  "shade", "sharefile", "sia", "storj", "sugarsync", "swift", "tardigrade",
+  "ulozto", "union", "zoho",
 ]);
-
-export const GENERIC_PROTOCOL_IDS: ReadonlySet<string> = new Set(
-  [...RCLONE_BACKEND_TYPES].filter((type) => !QUICK_MAPPED_BACKEND_TYPES.has(type)),
-);
 
 /**
  * 常用后端的参数示例（JSON 编辑器的占位草稿）。键名经
@@ -57,4 +62,6 @@ export const CUSTOM_CONFIG_HINTS: Readonly<Record<string, string>> = {
   azurefiles: '{\n  "account": "...",\n  "key": "..."\n}',
   protondrive: '{\n  "username": "...",\n  "password": "..."\n}',
   swift: '{\n  "user": "...",\n  "key": "...",\n  "region": "..."\n}',
+  oracleobjectstorage:
+    '{\n  "provider": "user_principal_auth",\n  "namespace": "...",\n  "region": "us-ashburn-1",\n  "compartment": "..."\n}',
 };
