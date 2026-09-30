@@ -63,47 +63,47 @@ importers:
         specifier: ^6.43.12
         version: 6.43.12
       '@file-viewer/capability-midi':
-        specifier: 3.1.1
-        version: 3.1.1
+        specifier: 3.1.2
+        version: 3.1.2
       '@file-viewer/capability-pdf-identity-repair':
-        specifier: 3.1.1
-        version: 3.1.1
+        specifier: 3.1.2
+        version: 3.1.2
       '@file-viewer/capability-rtf':
-        specifier: 3.1.1
-        version: 3.1.1
+        specifier: 3.1.2
+        version: 3.1.2
       '@file-viewer/capability-text-tools':
-        specifier: 3.1.1
-        version: 3.1.1
+        specifier: 3.1.2
+        version: 3.1.2
       '@file-viewer/renderer-image':
-        specifier: 3.1.1
-        version: 3.1.1
+        specifier: 3.1.2
+        version: 3.1.2
       '@file-viewer/renderer-media':
-        specifier: 3.1.1
-        version: 3.1.1
+        specifier: 3.1.2
+        version: 3.1.2
       '@file-viewer/renderer-mindmap':
-        specifier: 3.1.1
-        version: 3.1.1
+        specifier: 3.1.2
+        version: 3.1.2
       '@file-viewer/renderer-ofd':
-        specifier: 3.1.1
-        version: 3.1.1
+        specifier: 3.1.2
+        version: 3.1.2
       '@file-viewer/renderer-pdf':
-        specifier: 3.1.1
-        version: 3.1.1(pdf-lib@1.17.1)
+        specifier: 3.1.2
+        version: 3.1.2(pdf-lib@1.17.1)
       '@file-viewer/renderer-presentation':
-        specifier: 3.1.1
-        version: 3.1.1
+        specifier: 3.1.2
+        version: 3.1.2
       '@file-viewer/renderer-spreadsheet':
-        specifier: 3.1.1
-        version: 3.1.1
+        specifier: 3.1.2
+        version: 3.1.2
       '@file-viewer/renderer-text':
-        specifier: 3.1.1
-        version: 3.1.1
+        specifier: 3.1.2
+        version: 3.1.2
       '@file-viewer/renderer-word':
-        specifier: 3.1.1
-        version: 3.1.1
+        specifier: 3.1.2
+        version: 3.1.2
       '@file-viewer/vue3':
-        specifier: 3.1.1
-        version: 3.1.1(vue@3.5.42(typescript@6.0.3))
+        specifier: 3.1.2
+        version: 3.1.2(vue@3.5.42(typescript@6.0.3))
       '@lezer/highlight':
         specifier: ^1.2.3
         version: 1.2.3
@@ -227,23 +227,23 @@ packages:
   '@codemirror/view@6.43.12':
     resolution: {integrity: sha512-Nv0vxQ19NAqvB/c2pFzjIzFlzzJl7jmdtNkwOwGbn0Ks9mFAzibvumz7cQem5cRsFA2cEw2fg+uHZGbcHupLQQ==}
 
-  '@file-viewer/capability-midi@3.1.1':
-    resolution: {integrity: sha512-gUcwmLIS2rEOkDxa8sVaEmFkl/faYIAlz9E/Torn/NOttVFk74Y3FMGixe5IYvZ5ICuolG/GMRgMQvfxZ4PYcw==}
+  '@file-viewer/capability-midi@3.1.2':
+    resolution: {integrity: sha512-Fd46dTiVz0kU7CsQvSiCk0c3Gx18uC6Zez+TyNWlwwgfBsqldU7X5eDc2aFIAD3sfqPuSOnPcCw5HMKhSlLKLg==}
 
-  '@file-viewer/capability-pdf-identity-repair@3.1.1':
-    resolution: {integrity: sha512-OjuLXxHjqLiDH366/ATaBdxFYxml91ISodu8ru2W8irehLHas9NcwPPnC12/AYD8e0MXeaMR96KVCaJnE80DJg==}
+  '@file-viewer/capability-pdf-identity-repair@3.1.2':
+    resolution: {integrity: sha512-XwDGybL8PiEsN0nRXFLTWR27dr64+GRbwd+wFW1Th4F+Vn5UDr4U/3ozNGzEUL4SXRDywrwzuPubYWokuKIf4g==}
 
-  '@file-viewer/capability-rtf@3.1.1':
-    resolution: {integrity: sha512-S+oTcXGM5962QCWbJv2ugVCK1dGYGkytYJ5shzNgHoswuSr2vrqn+zWL2YsxuYrRXxYxVhgzy4fDlp2CqKuRtA==}
+  '@file-viewer/capability-rtf@3.1.2':
+    resolution: {integrity: sha512-AodJyrBS2/jkuXm1FJpR4yVpkoBV3JUvXBrrg4+4k7oPZjGyneuT2cdPYyfOeDit/ktYuvc4iQkusG++2PAW3A==}
 
-  '@file-viewer/capability-text-tools@3.1.1':
-    resolution: {integrity: sha512-zONQeqnfxD95uVXtJ9f4sQCnEiIQMP/FEm00Kot9Wf1g9oRTotUjwhS9zvKrB97iiPuqwOSCcW269MUIRKYhlA==}
+  '@file-viewer/capability-text-tools@3.1.2':
+    resolution: {integrity: sha512-dsxsy1VMKRKHUcXZqg5C+OIBbKIV0ERNWunGsMPFM+ey0JVe7mRgvV3NuBKcGYKvoNWDKzksRUUEHhIeHij5Ng==}
 
-  '@file-viewer/core@3.1.1':
-    resolution: {integrity: sha512-2BRqtQAPQ5J/mS/a4wjQxQMXQql051N6INeM2+Og9e8pNPwpupo25W06Uz3mr2uB8MG3/d7Q7RRqfk9KwpJBBA==}
+  '@file-viewer/core@3.1.2':
+    resolution: {integrity: sha512-jrHwj/zP9gQwlu8kTQ/8kkaFiXAR54ynHuTN/G6quHUMam7f6aoahWwUi9l4gDlhtQm2LyXZBX5pBIAyB/PESw==}
 
-  '@file-viewer/doc@3.1.1':
-    resolution: {integrity: sha512-87G2ACgcXxbBftVl/KOKaYOdEolfJW3KZOJ7/uXxCeDcgSuvMsNnDbIOK2GrphB7g44C/F9H5SWV694q6uhnow==}
+  '@file-viewer/doc@3.1.2':
+    resolution: {integrity: sha512-0goAnumFuyoKatN/WNyZru8f4lF8he9t6fbo2zYm6gYk0ziaFaToKqglDOPNMLWExnEoaj+laXs6MCp8aPsbrw==}
 
   '@file-viewer/docx@0.3.32':
     resolution: {integrity: sha512-fJyeMKXXMYmV4dzb/4/2WGbLIgVvkhlHJ/p0oEgqw3LUle4Ia5gWpjzMLS6X3fbeAU1fjFK90CefSGtwIsFSag==}
@@ -252,49 +252,58 @@ packages:
     resolution: {integrity: sha512-9I0rCheWYlPO7peC4DjflCcBTJJxbGMkEvqIZfueG7Lgh/VLow/Ol1YqWSr3kuNHr4FBojQJOa+lqmfx3iJsSg==}
     engines: {node: '>=18'}
 
-  '@file-viewer/pptx@3.1.1':
-    resolution: {integrity: sha512-ADJYro96roFQ9q6FyX8+IucP/VyQsA9OEQy4wEM1wieEmSGk75Ilw2zGsrXkQ0Jk5597H/XjRTGcc8Na7NWikw==}
+  '@file-viewer/pptx@3.1.2':
+    resolution: {integrity: sha512-cr00PMBf4ioFzI6F0wVXid+I1e79+nVYmP8vf9y5/FC4esPptYHYKMJX8HJAfjigSjaRgMx0RV1YG9LeQJEL7Q==}
 
-  '@file-viewer/renderer-image@3.1.1':
-    resolution: {integrity: sha512-dRrI3f6W4TsE+9oSzQskOE2ZR6amsTssUEenP/VvwELCcwaZiq3/3BrRCyx6sEufYdrsV17YpKQjRoZXMK+R2g==}
+  '@file-viewer/renderer-image@3.1.2':
+    resolution: {integrity: sha512-gSQhHRyMJ/lgWF2iBq7bYdx9PznCAjwYVrHbRes6bRruTQAcxek7/c6tBSJE6Eo4gW+8kaf9eCeUL4VIBU62tw==}
 
-  '@file-viewer/renderer-media@3.1.1':
-    resolution: {integrity: sha512-hijn1mNcgTY1fwDEeoAQ6CuwFgj3Aj3sFlWq1Wqs+1IrgsdG3f9U85fT+tVVm3Htx0H7rcyKbHnn2TawL3lw5w==}
+  '@file-viewer/renderer-media@3.1.2':
+    resolution: {integrity: sha512-Z9CKzGXtp0WvBjtLzIqenEOyRFuN7XMM5cz7bDLE08qRHf1EjTNcIbYF9LPEoBaq7M+ylrf887bPZdGziYUptQ==}
 
-  '@file-viewer/renderer-mindmap@3.1.1':
-    resolution: {integrity: sha512-MEuw7OVWxwGBsymb8beGLejB5TkpEbozMAuUOp8tGIQctOD2aI+9mLcl6P83itKNK/FZ9ZUi1uhtwsRET/ikow==}
+  '@file-viewer/renderer-mindmap@3.1.2':
+    resolution: {integrity: sha512-dPK/IMKZiH7p5acBh2ZVC7/rvtF6WJCIv184GqWWNw1dT9KFX11m+Yv3FjxgocD6x/si/mbcH7cHdfj/Y4r1rQ==}
 
-  '@file-viewer/renderer-ofd@3.1.1':
-    resolution: {integrity: sha512-HW4rvG/VgwWmj8qBwHSBlJ9ijnhfYIPMVJNgNdJaWijY3vUj+d1WpkNctM8mWIyMYqYUrNz8uX6mWtGAhh8JoQ==}
+  '@file-viewer/renderer-ofd@3.1.2':
+    resolution: {integrity: sha512-rSq6zvI7ENVb70TQVWHBIacPfw7Xwp2qtUBYwPzmjGG8qa2NK74MLk8KgSXFC5xBBAytrDSnJoNfBpdOXg9slg==}
 
-  '@file-viewer/renderer-pdf@3.1.1':
-    resolution: {integrity: sha512-TSPmkuMqNyFxH+cHy4uytmH9Jj3D/zlfYoLVrwntlqExncbTTc7WWZ2k9gCoAzjf/Umo3COgVuF/y3ae3s8HlQ==}
+  '@file-viewer/renderer-pdf@3.1.2':
+    resolution: {integrity: sha512-MlrvRYo7BiGl6zDusm6qVP/oZ6QZ6gayFMGul7s7lw/KW1HA1tJLlWi6rWIuJAslQ56+/LhLecpzVGumjsjuYw==}
     peerDependencies:
       pdf-lib: 1.17.1
     peerDependenciesMeta:
       pdf-lib:
         optional: true
 
-  '@file-viewer/renderer-ppt@3.1.1':
-    resolution: {integrity: sha512-VuoHzUPL2RGRBrayDMncHJmxssFbOF/DdZL2NHn8mEz1KVwP59bwLj2Z6ZyfoQSMCvL6XwVQ+u3i/VereCzKnw==}
+  '@file-viewer/renderer-ppt@3.1.2':
+    resolution: {integrity: sha512-bU9Cwubf2UOBNwNU0lji46bdDdumqEbBvLIu5ROOjCg3gQCYkR3sD1Q7H7WGTpDn327Ux9HOc7WRPhX8zQk/WA==}
 
-  '@file-viewer/renderer-pptx@3.1.1':
-    resolution: {integrity: sha512-JAmFEbjHfdMd3xqB/nTqhyubzqYC5uJqSJRDyybIkNlFquX/RFwaDgkN+wBLl4reYegx5YqgdjvU7jPfULm2Hw==}
+  '@file-viewer/renderer-pptx@3.1.2':
+    resolution: {integrity: sha512-2pr4A83ZfoICfl7hBdqHD+QnEe1+yQcAwL1Yzj0rll6nWBoDsvWMsnxIG2ZdzP+WdoIsPSBq+WEXm2TBUqd8oA==}
 
-  '@file-viewer/renderer-presentation@3.1.1':
-    resolution: {integrity: sha512-VqnFTpiiLr1yMBmqHSAgkiMCyOko+VT7KQK2pt5iYa8dqu8d592Fdet57Edzv2EBkadtpyZO+t88jT+jnA4GLg==}
+  '@file-viewer/renderer-presentation@3.1.2':
+    resolution: {integrity: sha512-M2dLJztNdJWCseokeD270qGHMBVZbsWRSDYo7PSlCA0tXI/GqGKYi8oPI5tZ/PWZX9h9pRYxaYYiZ1RaIEZ1OQ==}
 
-  '@file-viewer/renderer-spreadsheet@3.1.1':
-    resolution: {integrity: sha512-D2wwJQPTE0yu9pRb9bou2SU3h5y1WAt7tzN6J3xWe6+j+oMxNXHwuzXfhZ2pOLxL6Eu2I0TGiwJdqhtFzBT8yg==}
+  '@file-viewer/renderer-spreadsheet@3.1.2':
+    resolution: {integrity: sha512-NZN2P98QnYDZPmViB0tUjZemLBTrczCoOM3nvoJsZBb5l6oN0/1V5nCt3KXcZrSBcoUSos68IZuUMKci+X2DOg==}
 
-  '@file-viewer/renderer-text@3.1.1':
-    resolution: {integrity: sha512-bu3fCs5Ov74U8RJMAgFFpUi/ouSeAL+tuZORrpqVytM/hHMHjOQZ35Rv/B3aTgoXWUNZ/C/zJEnhGcAMgscpiA==}
+  '@file-viewer/renderer-text@3.1.2':
+    resolution: {integrity: sha512-u8n/+LRB1OMvjmIkJa3iPThykJtev3TiNxM5ilCRNGVxq39pgTftalITs6e0SPSjENGLtZ3iSyfgluWTMA8s5Q==}
+    hasBin: true
+    peerDependencies:
+      xmllint-wasm: 5.3.0
+      xslt-polyfill: 1.0.29
+    peerDependenciesMeta:
+      xmllint-wasm:
+        optional: true
+      xslt-polyfill:
+        optional: true
 
-  '@file-viewer/renderer-word@3.1.1':
-    resolution: {integrity: sha512-rq45ObslpgUbgHfSq2Ze8XdYxA8OeYewmlVCMtD6Fps5H4Dw1Vv89aMZ0I5m+rZns6NLdUmAhdwSb+fjtD3h9w==}
+  '@file-viewer/renderer-word@3.1.2':
+    resolution: {integrity: sha512-peyLWxrtgRj7spcgA3XtAho1ANFi5CWfpZZhCtGbly0E4bgO2EsxZJLp8Mjp7x6ISdoQO9CwYiQkDUeVGe7WDw==}
 
-  '@file-viewer/vue3@3.1.1':
-    resolution: {integrity: sha512-VhXO85cbGJ1gvosNcJB7GtKx6d0zCups98ifh986V44IBxFU6uT8L22LdmMdWJjABle6Id9uqKMyxCaKXaudiA==}
+  '@file-viewer/vue3@3.1.2':
+    resolution: {integrity: sha512-6vAqQ40Scr+wo7ZVTyFJzbq/IO2N9Szd0u3vhoPHR/GG/R3LvtkTUwuqK9nxUHfXghcxSqnFDGAr8NLlefpPSQ==}
     peerDependencies:
       vue: '>=3.3 <4'
 
@@ -1318,32 +1327,35 @@ snapshots:
       style-mod: 4.1.3
       w3c-keyname: 2.2.8
 
-  '@file-viewer/capability-midi@3.1.1':
+  '@file-viewer/capability-midi@3.1.2':
     dependencies:
-      '@file-viewer/renderer-media': 3.1.1
+      '@file-viewer/renderer-media': 3.1.2
       '@tonejs/midi': 2.0.28
 
-  '@file-viewer/capability-pdf-identity-repair@3.1.1':
+  '@file-viewer/capability-pdf-identity-repair@3.1.2':
     dependencies:
-      '@file-viewer/renderer-pdf': 3.1.1(pdf-lib@1.17.1)
+      '@file-viewer/renderer-pdf': 3.1.2(pdf-lib@1.17.1)
       pdf-lib: 1.17.1
 
-  '@file-viewer/capability-rtf@3.1.1':
+  '@file-viewer/capability-rtf@3.1.2':
     dependencies:
-      '@file-viewer/renderer-word': 3.1.1
+      '@file-viewer/renderer-word': 3.1.2
       rtf.js: 3.0.9
 
-  '@file-viewer/capability-text-tools@3.1.1':
+  '@file-viewer/capability-text-tools@3.1.2':
     dependencies:
-      '@file-viewer/renderer-text': 3.1.1
+      '@file-viewer/renderer-text': 3.1.2
       diff2html: 3.4.56
       pako: 2.2.0
+    transitivePeerDependencies:
+      - xmllint-wasm
+      - xslt-polyfill
 
-  '@file-viewer/core@3.1.1':
+  '@file-viewer/core@3.1.2':
     dependencies:
       dompurify: 3.4.15
 
-  '@file-viewer/doc@3.1.1':
+  '@file-viewer/doc@3.1.2':
     dependencies:
       dompurify: 3.4.15
 
@@ -1353,7 +1365,7 @@ snapshots:
 
   '@file-viewer/ppt@0.3.4': {}
 
-  '@file-viewer/pptx@3.1.1':
+  '@file-viewer/pptx@3.1.2':
     dependencies:
       dingbat-to-unicode: 1.0.2
       dompurify: 3.4.15
@@ -1361,54 +1373,54 @@ snapshots:
       tinycolor2: 1.6.0
       utif: 3.1.0
 
-  '@file-viewer/renderer-image@3.1.1':
+  '@file-viewer/renderer-image@3.1.2':
     dependencies:
-      '@file-viewer/core': 3.1.1
+      '@file-viewer/core': 3.1.2
       heic2any: 0.0.4
       utif: 3.1.0
 
-  '@file-viewer/renderer-media@3.1.1':
+  '@file-viewer/renderer-media@3.1.2':
     dependencies:
-      '@file-viewer/core': 3.1.1
+      '@file-viewer/core': 3.1.2
 
-  '@file-viewer/renderer-mindmap@3.1.1':
+  '@file-viewer/renderer-mindmap@3.1.2':
     dependencies:
-      '@file-viewer/core': 3.1.1
+      '@file-viewer/core': 3.1.2
       '@ljheee/xmind-parser': 1.1.3
       '@panzoom/panzoom': 4.6.2
       jszip: 3.10.2
 
-  '@file-viewer/renderer-ofd@3.1.1':
+  '@file-viewer/renderer-ofd@3.1.2':
     dependencies:
-      '@file-viewer/core': 3.1.1
+      '@file-viewer/core': 3.1.2
       jszip: 3.10.2
 
-  '@file-viewer/renderer-pdf@3.1.1(pdf-lib@1.17.1)':
+  '@file-viewer/renderer-pdf@3.1.2(pdf-lib@1.17.1)':
     dependencies:
-      '@file-viewer/core': 3.1.1
+      '@file-viewer/core': 3.1.2
       '@fontsource-variable/noto-sans-sc': 5.3.0
     optionalDependencies:
       pdf-lib: 1.17.1
 
-  '@file-viewer/renderer-ppt@3.1.1':
+  '@file-viewer/renderer-ppt@3.1.2':
     dependencies:
-      '@file-viewer/core': 3.1.1
+      '@file-viewer/core': 3.1.2
       '@file-viewer/ppt': 0.3.4
 
-  '@file-viewer/renderer-pptx@3.1.1':
+  '@file-viewer/renderer-pptx@3.1.2':
     dependencies:
-      '@file-viewer/core': 3.1.1
-      '@file-viewer/pptx': 3.1.1
+      '@file-viewer/core': 3.1.2
+      '@file-viewer/pptx': 3.1.2
 
-  '@file-viewer/renderer-presentation@3.1.1':
+  '@file-viewer/renderer-presentation@3.1.2':
     dependencies:
-      '@file-viewer/core': 3.1.1
-      '@file-viewer/renderer-ppt': 3.1.1
-      '@file-viewer/renderer-pptx': 3.1.1
+      '@file-viewer/core': 3.1.2
+      '@file-viewer/renderer-ppt': 3.1.2
+      '@file-viewer/renderer-pptx': 3.1.2
 
-  '@file-viewer/renderer-spreadsheet@3.1.1':
+  '@file-viewer/renderer-spreadsheet@3.1.2':
     dependencies:
-      '@file-viewer/core': 3.1.1
+      '@file-viewer/core': 3.1.2
       '@xmldom/xmldom': 0.9.12
       e-virt-table: 1.4.15
       jszip: 3.10.2
@@ -1416,25 +1428,25 @@ snapshots:
       tinycolor2: 1.6.0
       utif: 3.1.0
 
-  '@file-viewer/renderer-text@3.1.1':
+  '@file-viewer/renderer-text@3.1.2':
     dependencies:
-      '@file-viewer/core': 3.1.1
+      '@file-viewer/core': 3.1.2
       '@prettier/plugin-xml': 3.4.2(prettier@3.9.6)
       dompurify: 3.4.15
       highlight.js: 11.12.0
       marked: 18.0.13
       prettier: 3.9.6
 
-  '@file-viewer/renderer-word@3.1.1':
+  '@file-viewer/renderer-word@3.1.2':
     dependencies:
-      '@file-viewer/core': 3.1.1
-      '@file-viewer/doc': 3.1.1
+      '@file-viewer/core': 3.1.2
+      '@file-viewer/doc': 3.1.2
       '@file-viewer/docx': 0.3.32
       jszip: 3.10.2
 
-  '@file-viewer/vue3@3.1.1(vue@3.5.42(typescript@6.0.3))':
+  '@file-viewer/vue3@3.1.2(vue@3.5.42(typescript@6.0.3))':
     dependencies:
-      '@file-viewer/core': 3.1.1
+      '@file-viewer/core': 3.1.2
       vue: 3.5.42(typescript@6.0.3)
 
   '@floating-ui/core@1.8.0':
