@@ -85,7 +85,7 @@ interface HostFileTransferStub {
   cancel: ReturnType<typeof vi.fn>;
   onDragState: ReturnType<typeof vi.fn>;
   onDrop: ReturnType<typeof vi.fn>;
-  listeners: { drag: Array<(active: boolean) => void>; drop: Array<(files: Array<{ handleId: string; name: string; size: number; contentType: string }>) => void> };
+  listeners: { drag: Array<(active: boolean) => void>; drop: Array<(files: Array<{ handleId: string; name: string; size: number; contentType: string; relativePath?: string }>, drop?: { dropId?: string; truncated?: boolean }) => void> };
 }
 
 /** mount 前注入宿主 fileTransfer 桩（mock 宿主不实现该桥），捕获订阅监听器。 */
@@ -102,12 +102,27 @@ function injectHostFileTransfer(): HostFileTransferStub {
     stub.listeners.drag.push(listener);
     return () => undefined;
   });
-  stub.onDrop.mockImplementation((listener: (files: Array<{ handleId: string; name: string; size: number; contentType: string }>) => void) => {
+  stub.onDrop.mockImplementation((listener: (files: Array<{ handleId: string; name: string; size: number; contentType: string; relativePath?: string }>, drop?: { dropId?: string; truncated?: boolean }) => void) => {
     stub.listeners.drop.push(listener);
     return () => undefined;
   });
   Object.assign(window.dbxPlugin, { fileTransfer: { pick: stub.pick, read: stub.read, cancel: stub.cancel, onDragState: stub.onDragState, onDrop: stub.onDrop } });
   return stub;
+}
+
+/** 记录指定方法的 invoke 调用（mkdir/upload/start 等），其余照常走 mock 宿主。 */
+function stubInvokeMethods(methods: string[]) {
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const raw = window.dbxPlugin.invoke.bind(window.dbxPlugin);
+  vi.spyOn(window.dbxPlugin, "invoke").mockImplementation((async (
+    method: string,
+    params?: Record<string, unknown>,
+    options?: { timeoutMs?: number },
+  ) => {
+    if (methods.includes(method)) calls.push({ method, params: params ?? {} });
+    return raw(method, params, options);
+  }) as typeof window.dbxPlugin.invoke);
+  return calls;
 }
 
 describe("paste-to-upload", () => {
@@ -199,5 +214,37 @@ describe("host-level drag & drop (fileTransfer bridge)", () => {
     document.dispatchEvent(pasteEvent({ files: [new File(["A"], "web-paste.txt")] }));
     await settle();
     expect(wrapper!.find(".wb-host-drop-overlay").exists()).toBe(false);
+  });
+
+  it("routes host-dropped folder entries through the folder pipeline (mkdir + remoteDir)", async () => {
+    const stub = injectHostFileTransfer();
+    mountWorkbench();
+    await settle();
+    const calls = stubInvokeMethods(["files/mkdir", "files/upload/start"]);
+    stub.listeners.drop[0]([
+      { handleId: "h2", name: "nested.txt", size: 1, contentType: "text/plain", relativePath: "docs/2024/nested.txt" },
+      { handleId: "h3", name: "top.txt", size: 1, contentType: "text/plain" },
+    ], { dropId: "d1", truncated: false });
+    await settle();
+    // 目录树先建（rclone mkdir 递归建目录，与工具栏文件夹上传同款只建叶子），
+    // 文件夹条目落到 remoteDir 还原的远端路径。
+    const mkdirPaths = calls.filter((c) => c.method === "files/mkdir").map((c) => String(c.params.path));
+    expect(mkdirPaths).toEqual([expect.stringContaining("/docs/2024")]);
+    const uploads = calls.filter((c) => c.method === "files/upload/start");
+    const remotePaths = uploads.map((c) => String(c.params.remotePath)).sort();
+    expect(remotePaths[0]).toContain("/docs/2024/nested.txt");
+    expect(remotePaths[1]).toContain("/top.txt");
+    expect(stub.read).toHaveBeenCalledWith("h2", 0, expect.any(Number));
+    expect(stub.cancel).toHaveBeenCalledWith("h2");
+    expect(stub.cancel).toHaveBeenCalledWith("h3");
+  });
+
+  it("warns instead of silently dropping files when the host truncated the expansion", async () => {
+    const stub = injectHostFileTransfer();
+    mountWorkbench();
+    await settle();
+    stub.listeners.drop[0]([{ handleId: "h9", name: "first.txt", size: 1, contentType: "text/plain" }], { dropId: "d2", truncated: true });
+    await settle();
+    expect(wrapper!.find(".wb-notice").text()).toContain("truncated");
   });
 });

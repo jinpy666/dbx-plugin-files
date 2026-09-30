@@ -30,7 +30,12 @@ interface DbxPluginFileTransferApi {
   finish(handleId: string): Promise<void>;
   cancel(handleId: string): Promise<void>;
   onDragState(listener: (active: boolean) => void): () => void;
-  onDrop(listener: (files: Array<{ handleId: string; name: string; size: number; contentType: string }>) => void): () => void;
+  /** onDrop 条目：relativePath 为可选增量——宿主遍历拖入目录后按树内相对路径
+   * （`/` 分隔，含文件名，首段 = 拖入文件夹名）附带，文件夹上传据此重建目录
+   * 结构；旧宿主不带。drop 为第二参数：truncated 表示宿主目录展开撞上限
+   * （如单文件夹 2000 文件）只交付了前缀——宿主桥对旧监听器保持单参兼容，
+   * 插件按需消费。 */
+  onDrop(listener: (files: Array<{ handleId: string; name: string; size: number; contentType: string; relativePath?: string }>, drop?: { dropId?: string; truncated?: boolean }) => void): () => void;
 }
 
 interface DbxPluginTheme {

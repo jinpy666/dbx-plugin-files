@@ -2069,3 +2069,39 @@ http/webdav 官方参数（live 验证 v1.75.1），rclone 未来若改 baseurl 
   MCP digest 面未加桶字段（MCP 输出契约未动）。
 - 真机复验路径：docker-minio-ns 连接 → 根列表圆柱图标 + 「桶」根标签 +
   新建桶 → 删除桶确认文案；桶内连接（docker-minio）不受影响。
+
+## 2026-09-30 宿主拖入文件夹上传（fileTransfer onDrop 目录契约消费）
+
+### 做了什么
+
+- **宿主契约对齐（对标 ssh 插件）**：宿主桌面端已实现 OS 拖入目录的树内
+  展开——`fileTransfer.onDrop` 条目新增可选 `relativePath`（`/` 分隔、含
+  文件名，首段 = 拖入文件夹名，与 webkitRelativePath 同构；顶层文件不带），
+  第二参数 `drop.truncated` 标记目录展开撞上限（单文件夹 2000 文件 / 深度
+  上限）只交付前缀。旧宿主两字段都不带，插件前向兼容、行为不变。
+- **前端消费（App.vue `onHostFileDrop`）**：带 `relativePath` 的条目拆段为
+  `name` + `remoteDir`（末段 = 文件名，与 `onUploadFolder` 的
+  webkitRelativePath 拆法一致），与工具栏文件夹上传共用建树
+  （`ensureRemoteDirs`，rclone mkdir 递归、只建叶子）→ 分组冲突预检
+  （`planUpload`，建树先于预检——目录未建时列子目录失败会静默跳过撞名
+  检查）→ 统一上传泵（`uploadHostFiles`，句柄 finally 回收）。建目录排序抽
+  `dirDepthOrder` 共用。截断警示：进入管线即弹，管线正常结束后重弹一次
+  （`afterUpload` 的成功计数提示会覆盖横幅，丢文件警示必须最后可见）。
+- **i18n**：`hostDropTruncated` 七语补齐（文案与 ssh `hostDrop.truncated`
+  同源，指引工具栏「上传文件夹」选择器做完整上传）。
+
+### 结果
+
+- 前端 typecheck 全绿、**80 文件 / 638 用例全绿**（+2：宿主目录拖入走
+  文件夹管线（mkdir 叶子路径 + remoteDir 还原上传路径 + 句柄回收）、截断
+  提示不被成功计数覆盖）；build 正常。未动 backend。
+
+### 边界与剩余风险
+
+- 拖入**多个**文件夹/文件夹+文件混合按各自 relativePath 独立拆段，均落
+  目标根下各自文件夹；目录树同步（syncTreeAfterMutation）由 uploadHostFiles
+  的 afterUpload 复用既有路径。
+- 深度/数量截断值随宿主（当前 2000 文件 / 递归深度上限），文案写死 2000
+  与 ssh 一致；宿主侧调整上限时两插件文案需同步。
+- 真机复验路径：桌面端从 Finder 拖文件夹进工作台 → 目标侧出现目录树 +
+  文件逐个上传；拖 >2000 文件的文件夹出截断横幅。

@@ -2603,8 +2603,14 @@ function onWorkspacePaste(event: ClipboardEvent) {
   void onUpload(files);
 }
 
-/** 宿主桥 onDrop（句柄对象，非 File）：与 OS 拖入同门禁，经 fileTransfer.read 走上传泵。 */
-function onHostFileDrop(files: Array<{ handleId: string; name: string; size: number; contentType: string }>) {
+/**
+ * 宿主桥 onDrop（句柄对象，非 File）：与 OS 拖入同门禁，经 fileTransfer.read 走
+ * 上传泵。宿主遍历目录后的条目带 relativePath（`/` 分隔、含文件名，首段 =
+ * 拖入文件夹名，与 webkitRelativePath 同构）——拆段后与工具栏文件夹上传共用
+ * 建树 + 分组冲突预检 + 统一上传泵；无相对路径的顶层文件落目标根。旧宿主
+ * 两字段都不带，退化为平面上传，行为不变。
+ */
+function onHostFileDrop(files: Array<{ handleId: string; name: string; size: number; contentType: string; relativePath?: string }>, drop?: { truncated?: boolean }) {
   hostDragActive.value = false;
   if (!canWrite.value) {
     showNotice(t("readOnly"));
@@ -2612,12 +2618,37 @@ function onHostFileDrop(files: Array<{ handleId: string; name: string; size: num
   }
   const fileTransfer = window.dbxPlugin.fileTransfer;
   if (!fileTransfer) return;
+  // 宿主目录展开撞上限（如单文件夹 2000 文件）只交付前缀：明确提示而不是静默
+  // 丢文件；完整上传指引工具栏「上传文件夹」选择器（浏览器枚举，无此限）。
+  if (drop?.truncated) showNotice(t("hostDropTruncated"));
   void (async () => {
     // 0.1.81 扫描：预检与落点必须是同一 target——此前第二次 uploadTarget()
     // 重新取当前目录，冲突询问期间切换目录会把文件落进与预检不同的目录。
     const target = uploadTarget();
-    const items = await planUpload(files.map((file) => hostFileItem(fileTransfer, file)), target);
-    if (items) await uploadHostFiles(items, target);
+    // relativePath 拆段：末段 = 文件名，其余 = remoteDir（与 onUploadFolder 的
+    // webkitRelativePath 拆法一致）。建树必须先于预检——planUpload 按 remoteDir
+    // 分组列子目录清单，目录未建时列目录失败会静默跳过撞名检查。
+    const items: Array<UploadQueueItem & { handleId: string }> = [];
+    const dirs = new Set<string>();
+    for (const file of files) {
+      let name = file.name;
+      let remoteDir = "";
+      if (typeof file.relativePath === "string" && file.relativePath) {
+        const segments = file.relativePath.split("/").filter(Boolean);
+        const popped = segments.pop();
+        if (!popped) continue;
+        name = popped;
+        remoteDir = segments.join("/");
+      }
+      if (remoteDir) dirs.add(remoteDir);
+      items.push({ ...hostFileItem(fileTransfer, file), name, remoteDir: remoteDir || undefined });
+    }
+    await ensureRemoteDirs([...dirs].sort(dirDepthOrder), target);
+    const planned = await planUpload(items, target);
+    if (planned) await uploadHostFiles(planned, target);
+    // 完成提示（afterUpload 的 Uploaded N）会覆盖横幅；丢文件警示比成功计数
+    // 重要，管线正常结束后重弹，确保截断场景最后停在警示上。
+    if (drop?.truncated) showNotice(t("hostDropTruncated"));
   })().catch(showError);
 }
 
@@ -2870,6 +2901,9 @@ async function ensureRemoteDirs(dirs: readonly string[], target: UploadTarget) {
   }
 }
 
+/** 建目录顺序：深度升序（父先于子），同深度按名稳定。 */
+const dirDepthOrder = (a: string, b: string) => a.split("/").length - b.split("/").length || a.localeCompare(b);
+
 /** 文件夹上传（webkitdirectory 原生选择器，web 与桌面宿主同路径）：按
  * webkitRelativePath 还原目录结构——首段是所选文件夹名，最终落到
  * target/<folder>/…；建树后逐文件走统一上传泵，冲突策略与平面上传一致
@@ -2889,7 +2923,7 @@ async function onUploadFolder(files: readonly File[]) {
     items.push({ ...localFileItem(file), name, remoteDir });
   }
   try {
-    await ensureRemoteDirs([...dirs].sort((a, b) => a.split("/").length - b.split("/").length || a.localeCompare(b)), target);
+    await ensureRemoteDirs([...dirs].sort(dirDepthOrder), target);
     const planned = await planUpload(items, target);
     if (planned) await uploadItems(planned, target);
   } catch (cause) {
