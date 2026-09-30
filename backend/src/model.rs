@@ -2869,8 +2869,8 @@ mod tests {
 
         // endpoint is conditionally required on a SUBSET of its visible
         // protocols: oss/webdav/ftp/sftp/smb/sftp-native need it (the OSS
-        // service has no default endpoint), s3 stays optional (the AWS
-        // default endpoint applies when unset). The host evaluates
+        // service has no default endpoint), while s3 and gcs use their
+        // default endpoints when unset. The host evaluates
         // required_when independently of visible_when, so the subset must
         // never leave the required scope hidden — asserted here by keeping
         // it inside the endpoint visible list.
@@ -2901,7 +2901,7 @@ mod tests {
             "endpoint required_when must stay inside its visible_when"
         );
         for required_protocol in [
-            "gcs", "azblob", "obs", "oss", "cos", "qiniu", "r2", "wasabi", "spaces", "scaleway",
+            "azblob", "obs", "oss", "cos", "qiniu", "r2", "wasabi", "spaces", "scaleway",
             "idrive", "us3", "ecloud", "nos", "bos", "tos", "ks3", "webdav", "ftp", "sftp",
             "smb", "sftp-native", "koofr", "pcloud", "seafile", "filefabric", "hdfs", "http",
             "imagekit", "netstorage", "quatrix",
@@ -2912,8 +2912,8 @@ mod tests {
             );
         }
         assert!(
-            !endpoint_required.contains(&"s3"),
-            "endpoint stays optional for s3 (AWS default endpoint)"
+            !endpoint_required.contains(&"s3") && !endpoint_required.contains(&"gcs"),
+            "endpoint stays optional for s3 and gcs (default endpoints)"
         );
         assert!(
             !endpoint_required.contains(&"qingstor") && !endpoint_required.contains(&"sia")
