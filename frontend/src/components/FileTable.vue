@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { Check, Folder, FolderOpen, SearchX } from "@lucide/vue";
+import { Check, Database, Folder, FolderOpen, SearchX } from "@lucide/vue";
 import { formatBytes, formatTime, type FileEntry } from "../lib/api";
 import { fileIcon, fileIconClass } from "../lib/fileIcons";
 import { listNav, scrollRowIntoView, selectionRange, type ListNavState } from "../lib/listNav";
@@ -428,7 +428,8 @@ function onResizeEnd() {
           />
         </label>
         <span class="wb-file-name" :style="cellStyle('name')">
-          <Folder v-if="entry.kind === 'directory'" class="wb-icon-dir" />
+          <Database v-if="entry.bucket" class="wb-icon-dir" v-tip="t('bucketEntry')" />
+          <Folder v-else-if="entry.kind === 'directory'" class="wb-icon-dir" />
           <component :is="fileIcon(entry.name)" v-else aria-hidden="true" :class="fileIconClass(entry.name)" />
           <span :title="entry.path">{{ entry.displayName ?? entry.name }}</span>
         </span>

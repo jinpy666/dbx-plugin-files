@@ -3,8 +3,9 @@
 #
 # 与 scripts/container_smoke.sh（CI 即焚冒烟、凭据一次性）互补：这套容器
 # --restart unless-stopped，数据与凭据落在状态目录，供本地手工验证与 DBX
-# 客户端长期连接使用。配合 scripts/docker_env_connect_dbx.py 可把六条
-# docker-* 存储连接注入本地 DBX 宿主。
+# 客户端长期连接使用。配合 scripts/docker_env_connect_dbx.py 可把七条
+# docker-* 存储连接注入本地 DBX 宿主（含 docker-minio-ns：bucket 留空的
+# namespace 连接，根目录直接列出桶——桶存储的一等观察面）。
 #
 # 用法:
 #   scripts/docker_env.sh up              # 初始化并启动（幂等：已运行则跳过）
@@ -29,6 +30,9 @@ SMB_NAME=dbx-files-docker-samba
 WEBDAV_NAME=dbx-files-docker-webdav
 FTP_NAME=dbx-files-docker-ftp
 ALL_NAMES="$MINIO_NAME $SFTP_NAME $SMB_NAME $WEBDAV_NAME $FTP_NAME"
+# rclone 工具镜像钉扎：与插件自带引擎同版本（scripts/fetch-rclone.sh 的
+# v1.75.1-dbx.1），口径同 scripts/container_smoke.sh——工具链不用浮动 tag。
+RCLONE_IMAGE="rclone/rclone:1.75.1"
 
 die() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -81,6 +85,8 @@ init_state() {
   # shellcheck disable=SC1091
   source "$STATE_DIR/env.conf"
   MINIO_BUCKET="$(cat "$STATE_DIR/minio_bucket")"
+  # 第二桶：旧状态目录没有该文件时用固定名兜底（桶名只是观察面，非凭据）。
+  MINIO_BUCKET2="$(cat "$STATE_DIR/minio_bucket2" 2>/dev/null || echo dbx-files-test2)"
 }
 
 load_passwords() {
@@ -101,10 +107,15 @@ up() {
     return 0
   fi
 
-  # 端口预检：只在需要新建容器时执行（已运行容器占着端口是正常状态）
-  local p
-  for p in "$MINIO_PORT" "$SFTP_PORT" "$SMB_PORT" "$WEBDAV_PORT" "$FTP_PORT"; do
-    if ! container_exists "$MINIO_NAME" && port_in_use "$p"; then
+  # 端口预检：只在需要新建对应容器时执行（已运行容器占着端口是正常状态，
+  # 包括本环境其他仍存活的容器——部分重建不能被存活容器自己的端口拦死）
+  local item name p
+  for item in "$MINIO_NAME:$MINIO_PORT" "$SFTP_NAME:$SFTP_PORT" \
+              "$SMB_NAME:$SMB_PORT" "$WEBDAV_NAME:$WEBDAV_PORT" \
+              "$FTP_NAME:$FTP_PORT"; do
+    name="${item%%:*}"
+    p="${item##*:}"
+    if ! container_exists "$name" && port_in_use "$p"; then
       die "端口 $p 已被占用（非本环境容器），换 DBX_FILES_DOCKER_*_PORT 或释放端口"
     fi
   done
@@ -113,29 +124,45 @@ up() {
   chmod 777 "$STATE_DIR/dav-data" "$STATE_DIR/dav-runtime"
 
   echo "==> MinIO (:${MINIO_PORT})"
-  ensure_image minio/minio "quay.io/minio/minio" "mirror.gcr.io/minio/minio"
-  ensure_image minio/mc "quay.io/minio/mc" "mirror.gcr.io/minio/mc"
+  # minio/minio 与 minio/mc 2025-09-07 起上游停止发布预编译镜像（docker.io/
+  # quay.io 均 401，重试无效），持久环境沿用即坏。镜像与建桶工具改用
+  # bitnamilegacy/minio（Bitnami 归档的社区版最后镜像，多架构）+ rclone 官方
+  # 镜像，与 scripts/container_smoke.sh 同一套选型。
+  # Bitnami 容器数据目录是 /bitnami/minio/data（entrypoint 自动建并 chown 到
+  # 非 root 运行用户），默认 Cmd 已带 server 启动——显式追加 "server /data"
+  # 反而 file access denied；旧数据卷（官方镜像布局）原样挂入即可，MinIO
+  # 数据布局本身不换。
+  ensure_image "bitnamilegacy/minio:2025.7.23"
+  ensure_image "$RCLONE_IMAGE"
   if container_running "$MINIO_NAME"; then echo "  already running"
   else
     docker rm -f "$MINIO_NAME" >/dev/null 2>&1 || true
     docker run -d --name "$MINIO_NAME" --restart unless-stopped \
       -p "${MINIO_PORT}:9000" \
-      -v "$STATE_DIR/minio-data:/data" \
+      -v "$STATE_DIR/minio-data:/bitnami/minio/data" \
       -e "MINIO_ROOT_USER=${MINIO_USER}" \
       -e "MINIO_ROOT_PASSWORD=${MINIO_PASSWORD}" \
       -e "MINIO_API_ODIRECT=off" \
-      minio/minio server /data >/dev/null
+      bitnamilegacy/minio:2025.7.23 >/dev/null
   fi
   for _ in $(seq 1 30); do
     curl -fsS "http://127.0.0.1:${MINIO_PORT}/minio/health/live" >/dev/null 2>&1 && break
     sleep 1
   done
   curl -fsS "http://127.0.0.1:${MINIO_PORT}/minio/health/live" >/dev/null || die "MinIO 未就绪"
-  # 桶持久化在数据卷里；--ignore-existing 保证重复执行幂等
-  MC_URL="$(printf 'http://%s:%s@minio:9000' "$MINIO_USER" "$MINIO_PASSWORD")"
+  # 建桶持久化在数据卷里，rclone mkdir 对已存在桶幂等；双桶——主桶 +
+  # 第二桶，namespace 连接的根列表才有「桶集合」可看（桶管理面测试与
+  # docker-minio-ns 连接的观察面）。凭据经 :s3, 连接字符串进一次性 --rm
+  # 容器 argv（container_smoke.sh 已评审的口径）；建桶后 lsd 显式校验——
+  # mc mb 吞参假成功的历史教训，建桶不允许「静默没建」。
+  MINIO_CS=":s3,provider=Minio,access_key_id=${MINIO_USER},secret_access_key=${MINIO_PASSWORD},endpoint='http://minio:9000'"
+  for b in "$MINIO_BUCKET" "$MINIO_BUCKET2"; do
+    docker run --rm --link "${MINIO_NAME}:minio" \
+      "$RCLONE_IMAGE" mkdir "${MINIO_CS}:${b}" >/dev/null
+  done
   docker run --rm --link "${MINIO_NAME}:minio" \
-    -e "MC_HOST_local=${MC_URL}" --entrypoint mc minio/mc \
-    mb --ignore-existing "local/${MINIO_BUCKET}" >/dev/null
+    "$RCLONE_IMAGE" lsd "${MINIO_CS}:" | grep -q "${MINIO_BUCKET}" \
+    || die "bucket ${MINIO_BUCKET} 未建成"
 
   echo "==> OpenSSH SFTP (:${SFTP_PORT}, 密码+密钥双认证)"
   ensure_image "linuxserver/openssh-server" "ghcr.io/linuxserver/openssh-server" "mirror.gcr.io/linuxserver/openssh-server"

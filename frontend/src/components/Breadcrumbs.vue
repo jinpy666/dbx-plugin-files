@@ -10,6 +10,8 @@ const props = defineProps<{
   maxVisible?: number;
   /** FTP 显示字符集（issue #32）；空 = 不做显示解码。 */
   displayCharset?: string;
+  /** 根 crumb 替换文案（namespace 连接传「桶」；空 = 恒渲染 "/"）。 */
+  rootLabel?: string;
 }>();
 
 const emit = defineEmits<{
@@ -49,7 +51,7 @@ const items = computed(() => {
         type="button"
         :class="{ 'is-current': item.path === path }"
         @click="emit('navigate', item.path)"
-      >{{ item.name }}</button>
+      >{{ !index && rootLabel ? rootLabel : item.name }}</button>
     </template>
   </nav>
 </template>

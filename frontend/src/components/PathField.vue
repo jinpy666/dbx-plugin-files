@@ -11,6 +11,8 @@ const props = defineProps<{
   maxVisible?: number;
   /** FTP 显示字符集（issue #32）；仅用于面包屑显示解码。 */
   displayCharset?: string;
+  /** 根 crumb 替换文案（namespace 连接传「桶」；空 = 恒渲染 "/"）。 */
+  rootLabel?: string;
   t: (key: string, values?: Record<string, string | number>) => string;
 }>();
 
@@ -70,7 +72,7 @@ function onBlur() {
     </button>
     <!-- 面包屑占满剩余宽度：点级（button）跳转，点空白任意处直接进入编辑态。 -->
     <div v-if="!editing" class="wb-path-crumb-area" @click="onCrumbAreaClick">
-      <Breadcrumbs :path="path" :max-visible="maxVisible ?? 3" :display-charset="displayCharset" @navigate="emit('navigate', $event)" />
+      <Breadcrumbs :path="path" :max-visible="maxVisible ?? 3" :display-charset="displayCharset" :root-label="rootLabel" @navigate="emit('navigate', $event)" />
     </div>
     <input
       v-else

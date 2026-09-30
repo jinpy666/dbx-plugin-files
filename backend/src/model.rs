@@ -521,6 +521,12 @@ pub struct FileEntry {
     /// Unix epoch milliseconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub modified_at: Option<u64>,
+    /// bucket 根型 namespace 连接上，本条目是「桶」而非目录：namespace 根
+    /// (`/`) 列出的目录条目、以及单段路径 `files/stat` 命中的桶本身。目录树
+    /// 存储与桶内条目恒为 `false`（序列化时省略），前端据此给桶图标与
+    /// 「新建桶/删除桶」语义。
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub bucket: bool,
 }
 
 /// Capability report for `files/capabilities`; mirrors `info().capability()`
@@ -2390,10 +2396,12 @@ mod tests {
             kind: "file",
             size: Some(3),
             modified_at: Some(1_700_000_000_000),
+            bucket: false,
         };
         let text = serde_json::to_string(&entry).unwrap();
         assert!(text.contains("\"modifiedAt\":1700000000000"), "{text}");
         assert!(text.contains("\"path\":\"/data/a.txt\""), "{text}");
+        assert!(!text.contains("bucket"), "bucket=false must stay omitted: {text}");
 
         let sparse = FileEntry {
             name: "d".into(),
@@ -2401,9 +2409,22 @@ mod tests {
             kind: "dir",
             size: None,
             modified_at: None,
+            bucket: false,
         };
         let text = serde_json::to_string(&sparse).unwrap();
         assert!(!text.contains("size"), "{text}");
+
+        // bucket 根型 namespace 连接的根层目录条目：`"bucket":true` 显式出现。
+        let bucket = FileEntry {
+            name: "photos".into(),
+            path: "/photos".into(),
+            kind: "dir",
+            size: None,
+            modified_at: None,
+            bucket: true,
+        };
+        let text = serde_json::to_string(&bucket).unwrap();
+        assert!(text.contains("\"bucket\":true"), "{text}");
     }
 
     #[test]

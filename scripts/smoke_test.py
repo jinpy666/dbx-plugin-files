@@ -372,6 +372,36 @@ def scenario_structure(runner: Runner, base: str) -> None:
         assert not any(entry["name"] == "dir2" for entry in listing), "dir rename left the source behind"
     runner.step("rename-dir-degrade", _rename_dir_degrade)
 
+    def _copy_dir_degrade():
+        # Directory files/copy must degrade to the server-side dir job —
+        # operations/copyfile is file-only and answers "is a directory
+        # not a file" on dirs. The degrade always returns a pollable jobId.
+        runner.call("files/mkdir", {"connectionId": cid, "path": f"{base}/dir3"})
+        payload = base64.b64encode(b"dircopy").decode()
+        runner.call("files/write", {"connectionId": cid, "path": f"{base}/dir3/inner.txt", "dataBase64": payload})
+        result = runner.call("files/copy", {"connectionId": cid, "sourcePath": f"{base}/dir3", "targetPath": f"{base}/dir3-copy"})
+        job_id = result.get("jobId")
+        assert job_id, f"dir copy should degrade to a job: {result}"
+        state = wait_job(runner, job_id)
+        assert state == "completed", f"dir copy job ended as {state}"
+        entries = runner.call("files/list", {"connectionId": cid, "path": f"{base}/dir3-copy"}).get("entries", [])
+        assert any(entry["name"] == "inner.txt" for entry in entries), f"dir copy lost contents: {entries}"
+    runner.step("copy-dir-degrade", _copy_dir_degrade)
+
+    def _move_dir_degrade():
+        # Same degrade contract for files/move on a directory (sync/move
+        # job): pollable jobId, destination populated, source tree gone.
+        result = runner.call("files/move", {"connectionId": cid, "sourcePath": f"{base}/dir3-copy", "targetPath": f"{base}/dir3-moved"})
+        job_id = result.get("jobId")
+        assert job_id, f"dir move should degrade to a job: {result}"
+        state = wait_job(runner, job_id)
+        assert state == "completed", f"dir move job ended as {state}"
+        entries = runner.call("files/list", {"connectionId": cid, "path": f"{base}/dir3-moved"}).get("entries", [])
+        assert any(entry["name"] == "inner.txt" for entry in entries), f"dir move lost contents: {entries}"
+        listing = runner.call("files/list", {"connectionId": cid, "path": base}).get("entries", [])
+        assert not any(entry["name"] == "dir3-copy" for entry in listing), "dir move left the source behind"
+    runner.step("move-dir-degrade", _move_dir_degrade)
+
     def _delete():
         runner.call("files/delete", {"connectionId": cid, "path": f"{base}/dir/renamed.txt"})
         result = runner.call("files/list", {"connectionId": cid, "path": f"{base}/dir"})
@@ -901,11 +931,20 @@ def run_s3_section(client: SidecarClient) -> None:
         }))
     runner.step("connection-test-root-stat", _connection_test)
 
+    # 桶内连接的能力面：bucketRooted 真、bucketNamespace 假（根被折叠进
+    # 桶内，前端不得展示「新建桶」语义）。
+    def _scoped_capabilities():
+        caps = runner.call("files/capabilities", {"connectionId": runner.connection_id})
+        assert caps.get("bucketRooted") is True and caps.get("bucketNamespace") is False, (
+            f"bucket-scoped capabilities wrong: bucketRooted={caps.get('bucketRooted')} "
+            f"bucketNamespace={caps.get('bucketNamespace')}")
+    runner.step("scoped-capabilities-bucket-flags", _scoped_capabilities)
+
 
 def scenario_namespace_cross_bucket(runner: Runner, bucket: str, bucket2: str, endpoint: str, access: str, secret: str) -> None:
-    """Bucket-namespace 连接（bucket 留空）的直传覆盖：namespace 根列出桶伪
-    目录、同桶走子服务原生 CopyObject、跨桶走命名空间流式复制
-    （engine/bucket_ns，rclone 跨桶直传对齐项）。"""
+    """Bucket-namespace 连接（bucket 留空）的桶语义覆盖：namespace 根列出桶伪
+    目录、同桶走子服务原生 CopyObject、跨桶走命名空间流式复制、mkdir/rmdir/
+    purge 直接管理桶（engine/bucket_ns，rclone 跨桶直传对齐项）。"""
     client = runner.client
     ns = "smoke-s3-ns"
     connect(client, ns, {
@@ -922,7 +961,32 @@ def scenario_namespace_cross_bucket(runner: Runner, bucket: str, bucket2: str, e
         # 引擎把目录尾斜杠规范化进 name，列表断言用裸桶名。
         names = [entry["name"].rstrip("/") for entry in entries]
         assert bucket in names and bucket2 in names, f"namespace root missing buckets: {names}"
+        # 桶标注契约：namespace 根层的目录条目必须带 `bucket:true`（前端
+        # 桶图标/「新建桶」语义的数据源），文件条目不标。
+        for entry in entries:
+            if entry.get("kind") == "dir":
+                assert entry.get("bucket") is True, (
+                    f"namespace root dir entry missing bucket flag: {entry}")
+            else:
+                assert "bucket" not in entry, f"file entry must not carry bucket flag: {entry}"
     runner.step("namespace-root-lists-buckets", _namespace_root_lists_buckets)
+
+    def _stat_bucket_and_nested_dir():
+        # 单段路径 stat 命中桶本身 → bucket:true；桶内目录 → 无该字段。
+        bucket_stat = client.request("files/stat", {"connectionId": ns, "path": f"/{bucket}"})
+        assert bucket_stat["entry"].get("bucket") is True, f"stat on bucket missing flag: {bucket_stat}"
+        client.request("files/write", {"connectionId": ns, "path": f"/{bucket}/ns-flag/a.txt", "dataBase64": payload})
+        nested = client.request("files/stat", {"connectionId": ns, "path": f"/{bucket}/ns-flag"})
+        assert "bucket" not in nested["entry"], f"in-bucket dir must not carry bucket flag: {nested}"
+        client.request("files/delete", {"connectionId": ns, "path": f"/{bucket}/ns-flag/a.txt"})
+    runner.step("namespace-stat-bucket-flag", _stat_bucket_and_nested_dir)
+
+    def _namespace_capabilities():
+        caps = client.request("files/capabilities", {"connectionId": ns})
+        assert caps.get("bucketNamespace") is True and caps.get("bucketRooted") is True, (
+            f"namespace capabilities wrong: bucketNamespace={caps.get('bucketNamespace')} "
+            f"bucketRooted={caps.get('bucketRooted')}")
+    runner.step("namespace-capabilities-bucket-flags", _namespace_capabilities)
 
     def _cross_bucket_copy():
         client.request("files/write", {"connectionId": ns, "path": f"/{bucket}/ns-cross.txt", "dataBase64": payload})
@@ -946,6 +1010,37 @@ def scenario_namespace_cross_bucket(runner: Runner, bucket: str, bucket2: str, e
         stat = client.request("files/stat", {"connectionId": ns, "path": f"/{bucket}/ns-cross-2.txt"})
         assert stat["entry"]["size"] == len(b"cross-bucket"), f"same-bucket copy size mismatch: {stat}"
     runner.step("namespace-same-bucket-native-copy", _same_bucket_native_copy)
+
+    # 桶生命周期：namespace 连接上 mkdir/rmdir/purge 的目标就是桶本身 ——
+    # mkdir 建桶（s3 CanHaveEmptyDirectories=false，引擎补 .keep 占位让新桶
+    # 立即在根可见）、rmdir 拒绝非空桶（含误删防护）、purge 连桶带内容整体
+    # 移除。这是「桶存储」区别于目录树存储的管理面语义，容器环境是唯一能
+    # 真跑它们的地方。
+    ns_bucket = f"dbx-files-ns-{int(time.time())}"
+
+    def _root_names():
+        entries = client.request("files/list", {"connectionId": ns, "path": "/"}).get("entries", [])
+        return [entry["name"].rstrip("/") for entry in entries]
+
+    def _mkdir_creates_bucket():
+        client.request("files/mkdir", {"connectionId": ns, "path": f"/{ns_bucket}"})
+        assert ns_bucket in _root_names(), (
+            f"mkdir-created bucket missing at namespace root: {_root_names()}")
+    runner.step("namespace-mkdir-creates-bucket", _mkdir_creates_bucket)
+
+    def _rmdir_refuses_nonempty_bucket():
+        # ns_bucket 里有 mkdir 补的 .keep，主桶还有前面场景写入的文件：
+        # 两者都必须被 rmdir 拒绝，桶删除只能走 purge —— 断言成功删除即 FAIL。
+        runner.expect_error("files/rmdir", {"connectionId": ns, "path": f"/{ns_bucket}"})
+        runner.expect_error("files/rmdir", {"connectionId": ns, "path": f"/{bucket}"})
+        assert ns_bucket in _root_names(), "non-empty bucket was deleted by rmdir"
+    runner.step("namespace-rmdir-refuses-nonempty-bucket", _rmdir_refuses_nonempty_bucket)
+
+    def _purge_removes_bucket():
+        client.request("files/purge", {"connectionId": ns, "path": f"/{ns_bucket}"})
+        assert ns_bucket not in _root_names(), (
+            f"purged bucket still at namespace root: {_root_names()}")
+    runner.step("namespace-purge-removes-bucket", _purge_removes_bucket)
 
 
 def scenario_qiniu_alias(runner: Runner, bucket: str, endpoint: str, access: str, secret: str) -> None:

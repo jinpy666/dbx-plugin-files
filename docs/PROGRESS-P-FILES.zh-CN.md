@@ -2025,3 +2025,47 @@ http/webdav 官方参数（live 验证 v1.75.1），rclone 未来若改 baseurl 
 - 未动 host/；未提交未 push；manifest 版本未 bump。
 - 真机复验：明暗主题切换跟随（含右栏 CodeMirror 预览）、跨连接切换自愈
   （4d7eb7da）与 appearance 收敛叠加后的首绘/跟随路径。
+
+## 2026-09-30 MinIO 桶语义 docker 测试补齐 + 桶概念一等化（engine/bucket_ns 二批）
+
+### 做了什么
+
+- **docker 测试补齐（scripts/）**：`smoke_test.py` namespace 连接补桶生命周期
+  三步——`namespace-mkdir-creates-bucket`（mkdir 建桶，s3 无空目录引擎补
+  `.keep` 占位使其立即可见）、`namespace-rmdir-refuses-nonempty-bucket`
+  （rmdir 必须拒绝非空桶，误删防护）、`namespace-purge-removes-bucket`
+  （purge 连桶带内容整体移除）；`docker_env.sh` MinIO 镜像切
+  `bitnamilegacy/minio:2025.7.23`（官方镜像 2025-09-07 起下架 401）、建桶改
+  rclone 连接字符串并建双桶 + lsd 建桶校验、端口预检改为按各自容器判定
+  （部分重建不再被存活容器自己的端口拦死）；`docker_env_connect_dbx.py`
+  注入 `docker-minio-ns`（bucket 留空）namespace 连接，DBX 根目录直接看桶。
+- **桶概念一等化（backend/ + frontend/）**：`FileEntry` 新增可选
+  `bucket: bool`（false 序列化省略）——namespace 连接的 `files/list` /
+  `files/listPaged` 非递归列根目录条目、`files/stat` 单段路径命中、
+  `files/listStream` 会话（快路径 + lsjson 升级路径）统一标注；递归列表
+  整树混桶内目录，不做整表标注。`files/capabilities` 新增连接级
+  `bucketRooted` / `bucketNamespace`（同 `readOnly` 在 handler 注入，
+  非 backend capability）。`rclone/mod.rs` 新增 `is_bucket_namespace` /
+  `is_bucket_path` / `mark_bucket_entries` 纯函数（各带单测）。
+  前端：`FileTable`/`DirTree` 桶条目换 `Database` 圆柱图标、目录树
+  `bucket` 标志透传（dirTree.ts）、`App.vue` namespace 列根时新建动作
+  换「新建桶」标题/占位、删除桶条目追加「连桶带全部对象删除」警示正文、
+  路径栏根 crumb 换「桶」标签（Breadcrumbs/PathField `rootLabel` prop）、
+  i18n 七语补 5 键（newBucketTitle/newBucketPlaceholder/bucketEntry/
+  bucketRootLabel/deleteBucketWarn）。
+
+### 结果
+
+- backend `cargo test` 475 全绿（含 4 个新桶语义单测 + 序列化契约测试）；
+  前端 typecheck 全绿、**80 文件 / 636 用例全绿**（+2：FileTable 桶图标、
+  dirTree 桶标志透传）；build 正常。container smoke 两轮全绿
+  （framed `PASS 236 FAIL 0`——含桶生命周期与标注断言、MCP 30/31，
+  R7 无 OSS 容器按设计 SKIP）；持久 docker 环境 5/5 协议健康、双桶确认。
+
+### 边界与剩余风险
+
+- `rmdir` 拒绝非空桶的失败文案未强断言（断言"报错且桶仍在"，文案随
+  rclone 上游）；listStream 升级路径的桶标注由 SessionSpec 布尔下发，
+  MCP digest 面未加桶字段（MCP 输出契约未动）。
+- 真机复验路径：docker-minio-ns 连接 → 根列表圆柱图标 + 「桶」根标签 +
+  新建桶 → 删除桶确认文案；桶内连接（docker-minio）不受影响。

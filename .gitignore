@@ -16,3 +16,6 @@ bin/
 .dbx-dev/
 frontend/.pnpm-store/
 .zcode/
+
+# GUI 测试截图产物不入库
+gui-test-screenshots/

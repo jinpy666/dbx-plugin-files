@@ -880,6 +880,31 @@ pub fn is_bucket_rooted(backend_type: &str) -> bool {
     )
 }
 
+/// namespace 浏览：bucket 根型后端且连接根未折叠任何 bucket（binding.root
+/// 为空——`registry` 只在 bucket 字段非空时才把 `/{bucket}` 折进 root）。
+/// 这类连接的根目录直接列出桶，`files/list`、`files/listPaged` 的根层
+/// 条目与 `files/stat` 的单段路径命中都是「桶」而非目录。
+pub fn is_bucket_namespace(backend_type: &str, root: &str) -> bool {
+    is_bucket_rooted(backend_type) && root.trim_matches('/').is_empty()
+}
+
+/// namespace 连接上的路径是否命中「桶本身」：恰一个路径段（如
+/// `/mybucket`）。根路径（列出桶）与更深路径（桶内目录）都不是。
+pub fn is_bucket_path(path: &str) -> bool {
+    let trimmed = path.trim().trim_matches('/');
+    !trimmed.is_empty() && !trimmed.contains('/')
+}
+
+/// 标注一批条目为桶（namespace 根层列出的目录条目）。非目录条目不动——
+/// 桶根型连接的写侧守卫本就拒绝根级文件目标。
+pub fn mark_bucket_entries(entries: &mut [crate::model::FileEntry]) {
+    for entry in entries.iter_mut() {
+        if entry.kind == "dir" {
+            entry.bucket = true;
+        }
+    }
+}
+
 /// 写侧守卫：bucket 根型连接（root 为空）上，文件目标必须带目录段
 /// （首段 = bucket）。在写入前给出可操作的错误，而不是让 rc 500 的空键
 /// 报错透传给用户。目录级操作（mkdir/列根）不受此限。
@@ -977,6 +1002,45 @@ mod wiring_tests {
         for backend in ["ftp", "sftp", "smb", "webdav", "local", "gdrive", "dropbox", "koofr", "chunker", "alias"] {
             assert!(!is_bucket_rooted(backend), "{backend} must not be bucket-rooted");
         }
+    }
+
+    /// namespace 判定 = 桶根型 + 根未折叠 bucket：桶内连接（bucket 已折进
+    /// root）与路径根型协议都不是 namespace，桶字段语义不生效。
+    #[test]
+    fn is_bucket_namespace_requires_rootless_bucket_binding() {
+        for backend in ["s3", "gcs", "azureblob", "b2"] {
+            assert!(is_bucket_namespace(backend, ""), "{backend} rootless is namespace");
+            assert!(is_bucket_namespace(backend, "/"), "{backend} bare slash is namespace");
+            assert!(
+                !is_bucket_namespace(backend, "photos"),
+                "{backend} folded bucket root is bucket-scoped, not namespace"
+            );
+        }
+        assert!(!is_bucket_namespace("local", ""), "path-rooted backends are never namespace");
+        assert!(!is_bucket_namespace("sftp", "/"), "path-rooted backends are never namespace");
+    }
+
+    /// 桶本身 = 单段路径；根（列出桶）与桶内更深路径都不是。
+    #[test]
+    fn is_bucket_path_matches_single_segment_only() {
+        assert!(is_bucket_path("/photos"));
+        assert!(is_bucket_path("photos"));
+        assert!(!is_bucket_path("/"), "root lists buckets, is not one");
+        assert!(!is_bucket_path(""), "root lists buckets, is not one");
+        assert!(!is_bucket_path("/photos/2024"), "in-bucket dir is not a bucket");
+    }
+
+    /// 桶标注只落在目录条目上：文件条目（即使出现在根层）不被标注。
+    #[test]
+    fn mark_bucket_entries_flags_directories_only() {
+        use crate::model::FileEntry;
+        let mut entries = vec![
+            FileEntry { name: "photos".into(), path: "/photos".into(), kind: "dir", size: None, modified_at: None, bucket: false },
+            FileEntry { name: "stray.txt".into(), path: "/stray.txt".into(), kind: "file", size: Some(1), modified_at: None, bucket: false },
+        ];
+        mark_bucket_entries(&mut entries);
+        assert!(entries[0].bucket, "dir entry at the namespace root is a bucket");
+        assert!(!entries[1].bucket, "file entries are never buckets");
     }
 
     /// 根级文件目标只在「bucket 根型 + root 为空」组合下拒绝：绑定过

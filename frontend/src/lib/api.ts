@@ -9,6 +9,8 @@ export interface FileEntry {
   modifiedAt?: string;
   /** FTP 显示解码名（charset.ts；仅显示用，操作一律用 name/path）。 */
   displayName?: string;
+  /** bucket 根型 namespace 连接上，本条目是「桶」而非目录（仅根层出现）。 */
+  bucket?: boolean;
 }
 
 /**
@@ -40,6 +42,10 @@ export interface FileCapabilities {
   write: boolean;
   delete?: boolean;
   move?: boolean;
+  /** bucket 根型后端：首段路径即桶（main.rs 按 backend_type 判定）。 */
+  bucketRooted?: boolean;
+  /** namespace 浏览：根目录直接列出桶，「新建文件夹」在该根上是「新建桶」。 */
+  bucketNamespace?: boolean;
   [key: string]: boolean | undefined;
 }
 

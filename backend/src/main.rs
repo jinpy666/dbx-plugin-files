@@ -312,6 +312,9 @@ impl Plugin {
                 let (cancel, guard) = self.list_streams.register(&request_id, &group);
                 let fs = rclone::call_fs(&binding);
                 let prefix = remote.trim_matches('/').to_string();
+                // namespace 列根（与 files/list 同口径）：流式条目标注为桶。
+                let bucket_level = request.path.trim().trim_matches('/').is_empty()
+                    && rclone::is_bucket_namespace(&binding.backend_type, &binding.root);
                 let mut ack = json!({ "requestId": request_id });
                 if !binding.display_charset.is_empty() {
                     ack["displayCharset"] =
@@ -333,6 +336,7 @@ impl Plugin {
                         prefix,
                         root: binding.root.clone(),
                         lock_to_root: binding.lock_to_root,
+                        bucket_level,
                         spawn_info,
                         sink,
                         cancel,
@@ -359,7 +363,7 @@ impl Plugin {
                         // issue #49：rclone rc 无服务端分页，非递归浏览路径保序
                         // 截断（上限与 listPaged 对齐）并显式 truncated 交给前端
                         // 提示；递归语义要求完整结果，维持原行为不封顶。
-                        let (entries, truncated) = if request.recurse {
+                        let (mut entries, truncated) = if request.recurse {
                             (
                                 rclone::ops::list(
                                     &client,
@@ -383,6 +387,14 @@ impl Plugin {
                             )
                             .await?
                         };
+                        // namespace 连接的非递归列根：目录条目是「桶」。递归
+                        // 列表整树混着桶内目录，不做整表标注。
+                        if !request.recurse
+                            && request.path.trim().trim_matches('/').is_empty()
+                            && rclone::is_bucket_namespace(&binding.backend_type, &binding.root)
+                        {
+                            rclone::mark_bucket_entries(&mut entries);
+                        }
                         let mut response = json!({ "entries": entries, "truncated": truncated });
                         if !binding.display_charset.is_empty() {
                             response["displayCharset"] = Value::String(binding.display_charset.clone());
@@ -393,7 +405,7 @@ impl Plugin {
                         let request: model::ListPagedRequest = parse(params)?;
                         let binding = self.rclone.binding(&request.connection_id)?;
                         let fs = rclone::call_fs(&binding);
-                        let (entries, total) = rclone::ops::list_paged(
+                        let (mut entries, total) = rclone::ops::list_paged(
                             &client,
                             &fs,
                             &request.path,
@@ -403,6 +415,12 @@ impl Plugin {
                             binding.lock_to_root,
                         )
                         .await?;
+                        // namespace 列根：目录条目是「桶」（与 files/list 同口径）。
+                        if request.path.trim().trim_matches('/').is_empty()
+                            && rclone::is_bucket_namespace(&binding.backend_type, &binding.root)
+                        {
+                            rclone::mark_bucket_entries(&mut entries);
+                        }
                         let mut response = json!({ "entries": entries, "total": total });
                         if !binding.display_charset.is_empty() {
                             response["displayCharset"] = Value::String(binding.display_charset.clone());
@@ -413,7 +431,7 @@ impl Plugin {
                         let request: model::PathRequest = parse(params)?;
                         let binding = self.rclone.binding(&request.connection_id)?;
                         let fs = rclone::call_fs(&binding);
-                        let entry = rclone::ops::stat(
+                        let mut entry = rclone::ops::stat(
                             &client,
                             &fs,
                             &request.path,
@@ -421,6 +439,13 @@ impl Plugin {
                             binding.lock_to_root,
                         )
                         .await?;
+                        // namespace 连接上的单段路径命中桶本身（如 `/photos`）。
+                        if entry.kind == "dir"
+                            && rclone::is_bucket_namespace(&binding.backend_type, &binding.root)
+                            && rclone::is_bucket_path(&request.path)
+                        {
+                            entry.bucket = true;
+                        }
                         Ok(json!({ "entry": entry }))
                     }
                     _ => {
@@ -450,6 +475,20 @@ impl Plugin {
                     serde_json::to_value(capabilities).map_err(|error| error.to_string())?;
                 if let Some(object) = payload.as_object_mut() {
                     object.insert("readOnly".to_string(), serde_json::Value::Bool(binding.read_only));
+                    // 连接级桶语义（同 readOnly，非 backend capability）：
+                    // bucketRooted = 首段路径即桶；bucketNamespace = 根目录
+                    // 直接列出桶。前端据此做桶图标、「新建桶/删除桶」文案。
+                    object.insert(
+                        "bucketRooted".to_string(),
+                        serde_json::Value::Bool(rclone::is_bucket_rooted(&binding.backend_type)),
+                    );
+                    object.insert(
+                        "bucketNamespace".to_string(),
+                        serde_json::Value::Bool(rclone::is_bucket_namespace(
+                            &binding.backend_type,
+                            &binding.root,
+                        )),
+                    );
                 }
                 Ok(payload)
             }
@@ -702,7 +741,59 @@ impl Plugin {
                 let client = self.rclone.client_for_binding(&source_binding).await?;
                 let src_fs = rclone::call_fs(&source_binding);
                 let dst_fs = rclone::call_fs(&target_binding);
-                if method == "files/copy" {
+                // `operations/copyfile|movefile` are file-only rc endpoints —
+                // a directory source 500s with "is a directory not a file".
+                // Degrade to the same server-side dir job as files/copyDir
+                // (copy → sync/copy, move → sync/move, which also carries the
+                // source delete gate and pre-creates the destination).
+                let dir_job_id = if rclone::ops::stat(
+                    &client,
+                    &src_fs,
+                    &request.source_path,
+                    &source_binding.root,
+                    source_binding.lock_to_root,
+                )
+                .await?
+                .kind
+                    == "dir"
+                {
+                    Some(
+                        rclone_start_dir_job(
+                            Arc::clone(&self.rclone),
+                            Arc::clone(&self.sync_jobs),
+                            &model::DirJobRequest {
+                                source_connection_id: source_connection_id.clone(),
+                                source_path: request.source_path.clone(),
+                                target_connection_id: target_connection_id.clone(),
+                                target_path: request.target_path.clone(),
+                                // Plain copy/move carries no sync-policy
+                                // options (parity with the dir-rename
+                                // degrade below).
+                                dry_run: Some(false),
+                                max_delete: None,
+                                include: None,
+                                exclude: None,
+                                backup_dir: None,
+                                suffix: None,
+                                metadata: Some(false),
+                                update: None,
+                                existing: None,
+                                immutable: None,
+                                min_size: None,
+                                max_size: None,
+                                min_age: None,
+                                max_age: None,
+                                transfers: None,
+                                checkers: None,
+                                retries: None,
+                            },
+                            false,
+                            method == "files/move",
+                            Some(emitter),
+                        )
+                        .await?,
+                    )
+                } else if method == "files/copy" {
                     rclone::ops::copy_file(
                         &client,
                         &src_fs,
@@ -713,6 +804,7 @@ impl Plugin {
                         target_binding.lock_to_root,
                     )
                     .await?;
+                    None
                 } else {
                     rclone::ops::move_file(
                         &client,
@@ -724,7 +816,8 @@ impl Plugin {
                         target_binding.lock_to_root,
                     )
                     .await?;
-                }
+                    None
+                };
                 self.audit_id(&request.connection_id, method, &request.source_path, "ok")?;
                 // P2 决策缓存失效：目标父目录 +1 条目；move 的源父目录 -1。
                 if let Ok(relative) = rclone_gate(
@@ -743,12 +836,14 @@ impl Plugin {
                 ) {
                     self.list_cache.invalidate_around(&target_connection_id, &relative);
                 }
-                // rc operations/copyfile|movefile answer synchronously — no
-                // degraded job, so `transport` is always "native".
+                // File sources answer synchronously (`transport: "native"`,
+                // `jobId: null`); dir sources run as the async dir job above
+                // (`transport: "job"` — the value both the confirm dialog and
+                // the pane transfer check to register sidecar-job tracking).
                 Ok(json!({
                     "success": true,
-                    "transport": "native",
-                    "jobId": Option::<String>::None,
+                    "transport": if dir_job_id.is_some() { "job" } else { "native" },
+                    "jobId": dir_job_id,
                 }))
             }
             "files/rename" => {
@@ -830,7 +925,9 @@ impl Plugin {
                     ) {
                         self.list_cache.invalidate_around(&rename_conn, &relative);
                     }
-                    return Ok(json!({ "success": true, "transport": "dirJob", "jobId": job_id }));
+                    // transport matches the files/copy|files/move dir degrade:
+                    // the UI checks `transport === "job"` to start tracking.
+                    return Ok(json!({ "success": true, "transport": "job", "jobId": job_id }));
                 }
                 rclone::ops::rename(
                     &client,

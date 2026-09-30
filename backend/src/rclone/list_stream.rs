@@ -184,6 +184,9 @@ fn entry_from_item(item: &Value) -> FileEntry {
         kind: if is_dir { "dir" } else { "file" },
         size,
         modified_at,
+        // 与 ops::entry_from_item 同口径：桶标注由 handler 按 binding 判定
+        // 后统一标注（见 SessionSpec.bucket_level），item 本身不携带。
+        bucket: false,
     }
 }
 
@@ -610,6 +613,9 @@ pub struct SessionSpec {
     pub prefix: String,
     pub root: String,
     pub lock_to_root: bool,
+    /// namespace 连接列根：本会话条目是「桶」而非目录（`is_bucket_namespace`
+    /// + 根路径的合取，main.rs 判定后传入；升级路径由 stream_child 标注）。
+    pub bucket_level: bool,
     pub spawn_info: RcdSpawnInfo,
     pub sink: Arc<dyn ChunkSink>,
     pub cancel: CancelFlag,
@@ -642,6 +648,7 @@ pub async fn run_session(spec: SessionSpec) {
         prefix,
         root,
         lock_to_root,
+        bucket_level,
         spawn_info,
         sink,
         cancel,
@@ -693,11 +700,15 @@ pub async fn run_session(spec: SessionSpec) {
             return;
         }
         FastAttempt::Skipped => {} // 缓存直通/软超时 → 升级为 lsjson 流式
-        FastAttempt::Done(entries) => {
+        FastAttempt::Done(mut entries) => {
             // 快路径成功：filter_and_sort 完整排序后按帧预算切块交付。
+            // namespace 列根时条目是桶——标注与非流式 list 同口径。
             // 小目录仍是一帧 done（尾帧）；大响应若单帧梭哈会被 8MB 桥
             // 上限直接拒收（帧静默丢失、前端悬挂）——issue #49 的深层根因。
             let total = entries.len() as u64;
+            if bucket_level {
+                super::mark_bucket_entries(&mut entries);
+            }
             cache.record(&connection_id, &remote, total);
             let mut seq: u64 = 0;
             let mut batcher = Batcher::new();
@@ -742,7 +753,7 @@ pub async fn run_session(spec: SessionSpec) {
     match child {
         Ok(child) => {
             let (outcome, delivered) =
-                stream_child(&request_id, &prefix, child, &cancel, &opts, sink.as_ref()).await;
+                stream_child(&request_id, &prefix, child, &cancel, &opts, bucket_level, sink.as_ref()).await;
             if outcome == StreamOutcome::Completed {
                 if let Some(total) = delivered {
                     cache.record(&connection_id, &remote, total);
@@ -779,6 +790,7 @@ pub(crate) async fn stream_child(
     mut child: tokio::process::Child,
     cancel: &CancelFlag,
     opts: &StreamOpts,
+    bucket_level: bool,
     sink: &dyn ChunkSink,
 ) -> (StreamOutcome, Option<u64>) {
     // 第二个值：成功完成时 done 帧的 total（P2 决策缓存回写用）。
@@ -848,7 +860,10 @@ pub(crate) async fn stream_child(
                     match parse_lsjson_line(first, text) {
                         Ok(LsLine::Open) => first = false,
                         Ok(LsLine::Close) => break LoopEnd::Closed,
-                        Ok(LsLine::Entry(entry)) => {
+                        Ok(LsLine::Entry(mut entry)) => {
+                            if bucket_level && entry.kind == "dir" {
+                                entry.bucket = true;
+                            }
                             if keep(&entry, prefix) {
                                 if let Some(entries) = batcher.push(entry) {
                                     seq += 1;
@@ -1001,6 +1016,7 @@ mod tests {
             kind,
             size: Some(0),
             modified_at: None,
+            bucket: false,
         }
     }
 
@@ -1420,6 +1436,7 @@ mod tests {
             child,
             &CancelFlag::new(),
             &deterministic_opts(),
+            false,
             &sink,
         )
         .await;
@@ -1473,6 +1490,7 @@ mod tests {
             child,
             &CancelFlag::new(),
             &deterministic_opts(),
+            false,
             &sink,
         )
         .await;
@@ -1504,6 +1522,7 @@ mod tests {
             child,
             &CancelFlag::new(),
             &deterministic_opts(),
+            false,
             &sink,
         )
         .await;
@@ -1530,6 +1549,7 @@ mod tests {
             child,
             &CancelFlag::new(),
             &deterministic_opts(),
+            false,
             &sink,
         )
         .await;
@@ -1556,6 +1576,7 @@ mod tests {
             child,
             &CancelFlag::new(),
             &deterministic_opts(),
+            false,
             &sink,
         )
         .await;
@@ -1585,6 +1606,7 @@ mod tests {
             child,
             &CancelFlag::new(),
             &deterministic_opts(),
+            false,
             &sink,
         )
         .await;
@@ -1613,6 +1635,7 @@ mod tests {
             child,
             &CancelFlag::new(),
             &deterministic_opts(),
+            false,
             &sink,
         )
         .await;
@@ -1640,7 +1663,7 @@ mod tests {
         let mut opts = deterministic_opts();
         opts.watchdog = Duration::from_millis(150);
         let sink = VecSink::default();
-        let (outcome, _total) = stream_child("req", "", child, &CancelFlag::new(), &opts, &sink).await;
+        let (outcome, _total) = stream_child("req", "", child, &CancelFlag::new(), &opts, false, &sink).await;
         assert_eq!(outcome, StreamOutcome::TimedOut);
         let frames = sink.frames();
         assert_eq!(frames.len(), 1);
@@ -1667,7 +1690,7 @@ mod tests {
         cancel.cancel();
         let mut opts = deterministic_opts();
         opts.watchdog = Duration::from_secs(3600);
-        let (outcome, _total) = stream_child("req", "", child, &cancel, &opts, &sink).await;
+        let (outcome, _total) = stream_child("req", "", child, &cancel, &opts, false, &sink).await;
         assert_eq!(outcome, StreamOutcome::Cancelled);
         // M3：取消必须发恰好一帧 cancelled 终帧——后端侧静默取消（组
         // teardown）曾让 ack 已登记的前端会话永久悬挂。前端自己发起的

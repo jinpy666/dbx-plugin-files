@@ -3,6 +3,8 @@
 export interface DirTreeNode {
   path: string;
   name: string;
+  /** namespace 连接的根层子节点是「桶」（DirTree 用桶图标渲染）。 */
+  bucket?: boolean;
   /** 子目录是否展开；collapse 只翻标记，children 缓存保留。 */
   expanded: boolean;
   /** 子目录列表是否已拉取（侧栏刷新用 markTreeStale 重置）。 */
@@ -12,8 +14,8 @@ export interface DirTreeNode {
 }
 
 /** 根节点（连接根目录）；name 传 "/"，展示层用 quickRoot 文案替换。 */
-export function createTreeRoot(path: string, name = "/"): DirTreeNode {
-  return { path, name, expanded: false, loaded: false, loading: false, children: [] };
+export function createTreeRoot(path: string, name = "/", bucket = false): DirTreeNode {
+  return { path, name, bucket: bucket || undefined, expanded: false, loaded: false, loading: false, children: [] };
 }
 
 /** 按路径精确查找节点（侧栏目录数有限，DFS 足够）。 */
@@ -27,11 +29,11 @@ export function findTreeNode(root: DirTreeNode, path: string): DirTreeNode | nul
 }
 
 /** files/list 结果 → 子节点：仅目录（树内不显示文件）、按名称排序。 */
-export function childTreeNodes(entries: Array<{ path: string; name: string; kind: string }>): DirTreeNode[] {
+export function childTreeNodes(entries: Array<{ path: string; name: string; kind: string; bucket?: boolean }>): DirTreeNode[] {
   return entries
     .filter((entry) => entry.kind === "directory")
     .sort((a, b) => a.name.localeCompare(b.name))
-    .map((entry) => createTreeRoot(entry.path, entry.name));
+    .map((entry) => createTreeRoot(entry.path, entry.name, entry.bucket === true));
 }
 
 /**
@@ -41,7 +43,7 @@ export function childTreeNodes(entries: Array<{ path: string; name: string; kind
 export function applyTreeChildren(
   root: DirTreeNode,
   parentPath: string,
-  entries: Array<{ path: string; name: string; kind: string }>,
+  entries: Array<{ path: string; name: string; kind: string; bucket?: boolean }>,
 ): DirTreeNode | null {
   const parent = findTreeNode(root, parentPath);
   if (!parent) return null;

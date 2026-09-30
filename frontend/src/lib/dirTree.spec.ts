@@ -14,6 +14,17 @@ describe("dir tree", () => {
     expect(nodes[0]).toEqual({ path: "/a", name: "a", expanded: false, loaded: false, loading: false, children: [] });
   });
 
+  it("threads the bucket flag from namespace root entries onto tree nodes", () => {
+    // namespace 连接列根（engine/bucket_ns）：`bucket:true` 的目录条目是桶，
+    // 普通目录条目不带该字段（undefined，序列化省略）。
+    const nodes = childTreeNodes([
+      { path: "/photos", name: "photos", kind: "directory", bucket: true },
+      { path: "/docs", name: "docs", kind: "directory" },
+    ]);
+    expect(nodes.find((node) => node.name === "photos")?.bucket).toBe(true);
+    expect(nodes.find((node) => node.name === "docs")?.bucket).toBeUndefined();
+  });
+
   it("applies children to the parent and expands it", () => {
     const root = createTreeRoot("/");
     const parent = applyTreeChildren(root, "/", entries);

@@ -259,6 +259,8 @@ docker rm -f dbx-files-webdav-test >/dev/null 2>&1 || true
 # httpd:alpine 不带 apr-util 的 DBM 驱动（mod_dav_fs 锁库需要），缺了它一切
 # 写方法（MKCOL/PUT/…）都 500 “The DBM driver could not be loaded”——读方法
 # PROPFIND 却正常，极易误判为认证/权限问题。启动时补装 gdbm 驱动再起 httpd。
+# apk 对 Alpine CDN 的 TLS 握手有间歇抖动（2026-09-30 连续三次硬失败把
+# --rm 容器烧掉）：重试 5 次×2s 吸收，仍失败让容器退出走 FAIL 分支。
 docker run -d --rm --name dbx-files-webdav-test \
   -p "${WEBDAV_PORT}:80" \
   -v "$TMPDIR_SMOKE/httpd.conf:/usr/local/apache2/conf/httpd.conf:ro" \
@@ -266,7 +268,7 @@ docker run -d --rm --name dbx-files-webdav-test \
   -v "$TMPDIR_SMOKE/dav-data:/dav" \
   -v "$TMPDIR_SMOKE/dav-runtime:/runtime" \
   --entrypoint sh \
-  httpd:2.4-alpine -c "apk add --no-cache apr-util-dbm_gdbm >/dev/null 2>&1 && exec httpd-foreground" >/dev/null
+  httpd:2.4-alpine -c "for _ in 1 2 3 4 5; do apk add --no-cache apr-util-dbm_gdbm >/dev/null 2>&1 && exec httpd-foreground; sleep 2; done; exit 1" >/dev/null
 
 echo "==> waiting for webdav authenticated PROPFIND"
 webdav_up=0

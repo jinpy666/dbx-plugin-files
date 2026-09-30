@@ -65,6 +65,26 @@ describe("FileTable keyboard selection (P2-9 Space 首按回归)", () => {
 });
 
 describe("FileTable 空态与 a11y（R3-P2-6 / R3-P2-8）", () => {
+  it("bucket entries render the bucket icon, plain dirs keep the folder icon", () => {
+    // namespace 连接根层（engine/bucket_ns）：`bucket:true` 的目录条目是桶。
+    const wrapper = mount(FileTable, {
+      props: {
+        entries: [
+          { name: "photos", path: "/photos", kind: "directory", bucket: true },
+          { name: "docs", path: "/docs", kind: "directory" },
+          { name: "a.txt", path: "/a.txt", kind: "file" },
+        ],
+        selection: [],
+        activePath: "",
+        sort: { column: "name", direction: "asc" },
+        t: (key: string) => key,
+      },
+    });
+    const html = wrapper.html();
+    expect(html).toContain("lucide-database");
+    expect(html).toContain("lucide-folder");
+  });
+
   it("empty + filtered shows the no-match message instead of the empty-folder message (R3-P2-6)", () => {
     const wrapper = mount(FileTable, {
       props: {

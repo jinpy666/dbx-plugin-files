@@ -205,6 +205,8 @@ const notice = ref<I18nInput>("");
 const noticeText = computed(() => i18nTextOf(notice.value, locale.value));
 const capabilities = ref<FileCapabilities | undefined>();
 const capabilitiesLoading = ref(false);
+// namespace 连接（根目录直接列出桶）：路径栏根 crumb 与新建动作换桶语义。
+const bucketRootLabel = computed(() => (capabilities.value?.bucketNamespace ? t("bucketRootLabel") : ""));
 const initialized = ref(false);
 
 // ---- 目标栏（右栏，A-FILES ①）---------------------------------------------
@@ -683,8 +685,12 @@ const pendingPaneTransfer = ref<{ from: PaneSide; move: boolean; list: FileEntry
 // 返回 null = 非输入类确认（删除/覆盖等），弹层不渲染表单。
 const confirmFieldSpec = computed(() => {
   switch (confirmKind.value) {
-    case "newFolder":
-      return { label: t("newFolderPlaceholder"), placeholder: t("newFolderPlaceholder") };
+    case "newFolder": {
+      // namespace 列根（确认侧所在栏）：占位随桶语义。
+      const bucketRoot = capabilities.value?.bucketNamespace && paneDirPath(confirmSide.value) === "/";
+      const key = bucketRoot ? "newBucketPlaceholder" : "newFolderPlaceholder";
+      return { label: t(key), placeholder: t(key) };
+    }
     case "newFile":
       return { label: t("newFilePlaceholder"), placeholder: t("newFilePlaceholder") };
     case "rename":
@@ -1871,7 +1877,10 @@ function checkConfirmName(): boolean {
 }
 
 function startNewFolder(side: PaneSide = "left") {
-  openConfirm("newFolder", { title: { key: "newFolderTitle" }, draft: "", side });
+  // namespace 连接列根：这里的新建目录其实是建桶（mkdir 语义同一入口，
+  // 引擎在 namespace 根上的 mkdir 即建桶——engine/bucket_ns 冒烟钉死）。
+  const bucketRoot = capabilities.value?.bucketNamespace && paneDirPath(side) === "/";
+  openConfirm("newFolder", { title: { key: bucketRoot ? "newBucketTitle" : "newFolderTitle" }, draft: "", side });
 }
 
 /** 新建文件（P-FILES）：复用 files/write 写空内容（≤MAX_INLINE_WRITE_BYTES）。 */
@@ -1901,7 +1910,12 @@ function startDelete(targets: FileEntry[], side: PaneSide = "left") {
     );
     openConfirm("delete", {
       title: { key: "deleteTitle", values: { count: targets.length } },
-      body: [{ key: "deleteBody" }, { key: "deleteRecursiveWarn" }],
+      body: [
+        { key: "deleteBody" },
+        { key: "deleteRecursiveWarn" },
+        // 桶条目（namespace 根层）：删除即连桶带全部对象，语义与目录不同。
+        ...(dirs.some((entry) => entry.bucket) ? [{ key: "deleteBucketWarn" }] : []),
+      ],
       danger: worst.level === "danger",
       hits: worst.hits,
       target: { targets },
@@ -4540,7 +4554,7 @@ onBeforeUnmount(() => {
               <button class="wb-icon-button wb-icon-neutral" v-tip="t('up')" :disabled="!path || path === '/'" @click="onToolbarNavigate(parentPath(path))"><ArrowUp /></button>
               <button class="wb-icon-button wb-icon-neutral" v-tip="t('refresh')" :disabled="loading" @click="markActiveSide('left'); refreshDirectory()"><RefreshCw :class="{ 'wb-spin': loading }" /></button>
               <div class="wb-path-toolbar">
-                <PathField :path="path" :display-charset="paneDisplayCharset('left')" :t="t" @navigate="onToolbarNavigate" />
+                <PathField :path="path" :display-charset="paneDisplayCharset('left')" :root-label="bucketRootLabel" :t="t" @navigate="onToolbarNavigate" />
                 <span class="wb-search-box">
                   <Search class="wb-search-icon" aria-hidden="true" />
                   <input
@@ -4634,7 +4648,7 @@ onBeforeUnmount(() => {
               <button class="wb-icon-button wb-icon-neutral" v-tip="t('up')" :disabled="!rightPath || rightPath === '/'" @click="onRightNavigate(parentPath(rightPath))"><ArrowUp /></button>
               <button class="wb-icon-button wb-icon-neutral" v-tip="t('refresh')" :disabled="rightLoading" @click="markActiveSide('right'); refreshRightDirectory()"><RefreshCw :class="{ 'wb-spin': rightLoading }" /></button>
               <div class="wb-path-toolbar">
-                <PathField :path="rightPath" :display-charset="paneDisplayCharset('right')" :t="t" @navigate="onRightNavigate" />
+                <PathField :path="rightPath" :display-charset="paneDisplayCharset('right')" :root-label="bucketRootLabel" :t="t" @navigate="onRightNavigate" />
                 <span class="wb-search-box">
                   <Search class="wb-search-icon" aria-hidden="true" />
                   <input

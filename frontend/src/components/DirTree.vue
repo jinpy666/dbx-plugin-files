@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 目录树（侧栏 tree tab）：递归渲染懒加载节点。单击行 = 本栏进入该目录，
 // caret = 展开/收缩（首次展开经 App.vue 拉 files/list），右键上抛统一侧栏菜单。
-import { ChevronDown, ChevronRight, Folder, FolderOpen } from "@lucide/vue";
+import { ChevronDown, ChevronRight, Database, Folder, FolderOpen } from "@lucide/vue";
 import type { DirTreeNode } from "../lib/dirTree";
 
 defineProps<{
@@ -34,7 +34,8 @@ const emit = defineEmits<{
         <ChevronDown v-else-if="node.expanded" />
         <ChevronRight v-else />
       </button>
-      <FolderOpen v-if="node.expanded" class="wb-icon-dir" />
+      <Database v-if="node.bucket" class="wb-icon-dir" />
+      <FolderOpen v-else-if="node.expanded" class="wb-icon-dir" />
       <Folder v-else class="wb-icon-dir" />
       <span class="wb-tree-name">{{ node.name === "/" ? t("quickRoot") : node.name }}</span>
     </div>

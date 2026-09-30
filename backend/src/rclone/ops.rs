@@ -1200,6 +1200,9 @@ fn entry_from_item(item: &Value) -> FileEntry {
         kind: if is_dir { "dir" } else { "file" },
         size,
         modified_at,
+        // 桶标注是连接级语义（namespace 根层），不由 rclone item 携带——
+        // 由 main.rs 的 list/stat handler 按 binding 判定后统一标注。
+        bucket: false,
     }
 }
 
@@ -1388,7 +1391,7 @@ mod tests {
     // -- list 封顶截断（issue #49）---------------------------------------------
 
     fn file_entry(path: &str) -> FileEntry {
-        FileEntry { name: path.into(), path: path.into(), kind: "file", size: Some(1), modified_at: None }
+        FileEntry { name: path.into(), path: path.into(), kind: "file", size: Some(1), modified_at: None, bucket: false }
     }
 
     #[test]
@@ -1539,9 +1542,9 @@ mod tests {
     #[test]
     fn filter_and_sort_drops_marker_and_orders_by_path() {
         let entries = vec![
-            FileEntry { name: "z.txt".into(), path: "/z.txt".into(), kind: "file", size: Some(1), modified_at: None },
-            FileEntry { name: "sub".into(), path: "/sub".into(), kind: "dir", size: None, modified_at: None },
-            FileEntry { name: "a.txt".into(), path: "/a.txt".into(), kind: "file", size: Some(1), modified_at: None },
+            FileEntry { name: "z.txt".into(), path: "/z.txt".into(), kind: "file", size: Some(1), modified_at: None, bucket: false },
+            FileEntry { name: "sub".into(), path: "/sub".into(), kind: "dir", size: None, modified_at: None, bucket: false },
+            FileEntry { name: "a.txt".into(), path: "/a.txt".into(), kind: "file", size: Some(1), modified_at: None, bucket: false },
         ];
         let filtered = filter_and_sort(entries, "sub");
         let paths: Vec<&str> = filtered.iter().map(|entry| entry.path.as_str()).collect();
@@ -1549,9 +1552,9 @@ mod tests {
 
         // Prefix marker with trailing slash + empty root marker both drop.
         let markers = vec![
-            FileEntry { name: "sub".into(), path: "/sub/".into(), kind: "dir", size: None, modified_at: None },
-            FileEntry { name: "/".into(), path: "/".into(), kind: "dir", size: None, modified_at: None },
-            FileEntry { name: "keep".into(), path: "/keep".into(), kind: "dir", size: None, modified_at: None },
+            FileEntry { name: "sub".into(), path: "/sub/".into(), kind: "dir", size: None, modified_at: None, bucket: false },
+            FileEntry { name: "/".into(), path: "/".into(), kind: "dir", size: None, modified_at: None, bucket: false },
+            FileEntry { name: "keep".into(), path: "/keep".into(), kind: "dir", size: None, modified_at: None, bucket: false },
         ];
         let filtered = filter_and_sort(markers, "sub");
         assert_eq!(filtered.len(), 1);

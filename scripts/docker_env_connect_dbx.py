@@ -2,17 +2,19 @@
 """把 scripts/docker_env.sh 起的 docker 测试存储连接注入本地 DBX 宿主。
 
 读取状态目录（默认 ~/.dbx-files-docker-test，可用 --state-dir 或
-DBX_FILES_DOCKER_ENV_DIR 覆盖）里的 env.conf 与凭据文件，按名字 upsert 六条
-io.dbx.files 存储连接：docker-minio / docker-sftp / docker-sftp-native /
-docker-smb / docker-webdav / docker-ftp。重复执行会替换同名连接。
+DBX_FILES_DOCKER_ENV_DIR 覆盖）里的 env.conf 与凭据文件，按名字 upsert 七条
+io.dbx.files 存储连接：docker-minio / docker-minio-ns / docker-sftp /
+docker-sftp-native / docker-smb / docker-webdav / docker-ftp。
+docker-minio-ns 是 bucket 留空的 namespace 连接：根目录直接列出 MinIO 的
+全部桶，桶存储的观察面；docker-minio 则固定进主桶内部。重复执行会替换同名连接。
 
 安全边界：只写本机 DBX 宿主库；写之前自动备份；DBX 运行中拒绝执行（宿主
 只在启动时加载连接，运行中写入既不生效也可能被覆盖）。凭据仅写入宿主本地
 connection_secrets 表，不经过任何网络。
 
 用法:
-  python3 scripts/docker_env_connect_dbx.py           # 注入/更新六条连接
-  python3 scripts/docker_env_connect_dbx.py --remove  # 删除这六条连接
+  python3 scripts/docker_env_connect_dbx.py           # 注入/更新七条连接
+  python3 scripts/docker_env_connect_dbx.py --remove  # 删除这七条连接
   python3 scripts/docker_env_connect_dbx.py --list    # 只打印将要写入的内容
 """
 import argparse
@@ -29,7 +31,7 @@ STATE_DIR = pathlib.Path(
 )
 DB = pathlib.Path.home() / "Library/Application Support/com.dbx.app/dbx.db"
 NAMES = (
-    "docker-minio", "docker-sftp", "docker-sftp-native",
+    "docker-minio", "docker-minio-ns", "docker-sftp", "docker-sftp-native",
     "docker-smb", "docker-webdav", "docker-ftp",
 )
 
@@ -65,6 +67,12 @@ def connection_rows(state: dict):
     return [
         ("docker-minio", "s3",
          {"endpoint": minio_ep, "bucket": state["minio_bucket"],
+          "access_key_id": state["MINIO_USER"], "region": "us-east-1"},
+         {"secret_access_key": state["minio_password"]}),
+        # bucket 留空 = bucket-namespace 连接：根目录列出全部桶，第一段路径
+        # 即桶名。与 docker-minio（固定进主桶）配对，DBX 里直接观察桶概念。
+        ("docker-minio-ns", "s3",
+         {"endpoint": minio_ep, "bucket": "",
           "access_key_id": state["MINIO_USER"], "region": "us-east-1"},
          {"secret_access_key": state["minio_password"]}),
         ("docker-sftp", "sftp",
@@ -118,7 +126,7 @@ def build_config(name: str, protocol: str, external: dict, secrets: dict) -> dic
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--state-dir", default=str(STATE_DIR))
-    parser.add_argument("--remove", action="store_true", help="删除六条 docker-* 连接")
+    parser.add_argument("--remove", action="store_true", help="删除七条 docker-* 连接")
     parser.add_argument("--list", action="store_true", help="只打印将要写入的内容")
     args = parser.parse_args()
     state_dir = pathlib.Path(args.state_dir).expanduser()
@@ -170,7 +178,7 @@ def main() -> int:
     for name in NAMES:
         print(f"{action}: {name}")
     if not args.remove:
-        print("下一步: 启动 DBX，侧边栏搜索 docker 即可见六条连接。")
+        print("下一步: 启动 DBX，侧边栏搜索 docker 即可见七条连接。")
     return 0
 
 
