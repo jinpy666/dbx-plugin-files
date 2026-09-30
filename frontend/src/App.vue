@@ -96,7 +96,7 @@ import { sortEntries, toggleSortState, type SortColumn, type SortState } from ".
 import { withDisplayName } from "./lib/charset";
 import { filterEntries } from "./lib/searchFilter";
 import { isLargeDirectory } from "./lib/largeDir";
-import { applyTreeChildren, createTreeRoot, markTreeStale, type DirTreeNode } from "./lib/dirTree";
+import { applyTreeChildren, createTreeRoot, findTreeNode, markTreeStale, type DirTreeNode } from "./lib/dirTree";
 import { normalizeQuickPaths, type QuickPath } from "./lib/quickPaths";
 import { isNarrowViewport } from "./lib/responsive";
 import { resolveUploadTarget, type UploadTarget } from "./lib/uploadTarget";
@@ -264,6 +264,23 @@ function refreshTree(side: PaneSide) {
   // loaded=false 的根会自行重拉并展开；token 递增使旧的在途 follow 链路全部
   // 失效，避免旧链路回灌已刷新的树，也避免根加载失败时双重报错。
   void followTreePath(side, paneDirPath(side));
+}
+
+/** 变更操作（mkdir/rename/delete/传输/上传/批量改名）后的目录树同步。
+ * tree tab 不可见或侧栏收起时只整树标 stale（零网络）：树缓存保留展开形态，
+ * 切回 tree tab 的 follow watcher 会对 loaded=false 的路径链自动重拉。
+ * 可见时优先重拉当前目录节点让变更即时上树；节点不在已加载树里（懒加载
+ * 前沿之外）同样退回整树标 stale，交由展开/跟随时的重拉兜底。 */
+function syncTreeAfterMutation(side: PaneSide) {
+  const tree = side === "left" ? leftTree.value : rightTree.value;
+  const tabVisible = (side === "left" ? leftSideTab.value : rightSideTab.value) === "tree"
+    && !(side === "left" ? leftSideCollapsed.value : rightSideCollapsed.value);
+  const node = tabVisible ? findTreeNode(tree, paneDirPath(side)) : null;
+  if (node?.loaded) {
+    void loadTreeChildren(side, node);
+    return;
+  }
+  markTreeStale(tree);
 }
 
 // ---- 树跟随定位（issue #66）----------------------------------------------------
@@ -1065,6 +1082,9 @@ function handleEvent(event: DbxPluginEvent) {
       if (job.state === "completed") {
         void loadDirectory().catch(() => undefined);
         if (dualPane.value) void loadRightDirectory().catch(() => undefined);
+        // 传输/改名可能落在任一侧目录：两侧树都同步（不可见侧零网络标 stale）。
+        syncTreeAfterMutation("left");
+        syncTreeAfterMutation("right");
       }
       refreshAuditPanel();
     }
@@ -1800,9 +1820,11 @@ async function pathExists(id: string, target: string): Promise<boolean | undefin
   }
 }
 
-/** 重名预检失败：横幅提示 + 弹层保持打开（用户可直接改名重提）。 */
+/** 重名预检失败：横幅提示 + 弹层保持打开（用户可直接改名重提）。
+ * 走 showError 而非直接赋值 error.value：否则没有 8s 自动消失计时器，
+ * 横幅会一直挂到下一个 showError/showNotice 才被顶掉（0.1.83 视觉测试发现）。 */
 function rejectDuplicate(name: string) {
-  error.value = { kind: "i18n", text: { key: "nameExists", values: { name } } };
+  showError({ key: "nameExists", values: { name } });
 }
 
 function openConfirm(kind: ConfirmKind, options: {
@@ -2347,6 +2369,7 @@ async function onConfirm() {
       await loadDirectory().catch(() => undefined);
       if (side === "right" && dualPane.value) await loadRightDirectory().catch(() => undefined);
     }
+    syncTreeAfterMutation(side);
     if (deleteBatchError) throw deleteBatchError;
   } catch (cause) {
     showError(cause);
@@ -2451,6 +2474,8 @@ async function executePaneTransfer(from: PaneSide, move: boolean, list: FileEntr
       if (from === "left") await loadDirectory().catch(() => undefined);
       else await loadRightDirectory().catch(() => undefined);
     }
+    syncTreeAfterMutation(to);
+    if (move) syncTreeAfterMutation(from);
   } catch (cause) {
     // 0.1.81 扫描：中途失败时已生效的前 okCount 项不能静默——先用既有
     // 成功文案报出实际生效数，错误横幅随后点名失败项。
@@ -2767,6 +2792,8 @@ async function afterUpload(count: number, target: UploadTarget, hadFailure = fal
   const uploadError = hadFailure ? error.value : "";
   if (dualPane.value) await loadRightDirectory().catch(() => undefined);
   else await loadDirectory().catch(() => undefined);
+  // 文件夹上传会在目标栏当前目录建目录树，同样要同步目录树。
+  syncTreeAfterMutation(dualPane.value ? "right" : "left");
   if (hadFailure && uploadError) error.value = uploadError;
   refreshAuditPanel();
   if (count && !hadFailure) showNotice(t("uploaded", { count, path: target.path }));
@@ -3597,6 +3624,7 @@ async function onBatchRenameApplied(result: { ok: number; total: number }) {
   showNotice(t("batchRenameApplied", { ok: result.ok, total: result.total }));
   if (batchRenameSide.value === "left") await loadDirectory().catch(() => undefined);
   else if (dualPane.value) await loadRightDirectory().catch(() => undefined);
+  syncTreeAfterMutation(batchRenameSide.value);
 }
 
 // ---- 快捷键速查弹层（parity-tools）：`?` 触发 / 空白区右键入口 / Esc 关闭 ----
@@ -3795,6 +3823,7 @@ async function runRmdirs(entry: FileEntry, side: PaneSide) {
     showNotice(t("rmdirsDone"));
     await loadDirectory().catch(() => undefined);
     if (side === "right" && dualPane.value) await loadRightDirectory().catch(() => undefined);
+    syncTreeAfterMutation(side);
   } catch (cause) {
     showError(cause);
   }
