@@ -1997,3 +1997,31 @@ release sidecar framed smoke `PASS 78 / SKIP 6 / FAIL 0`，MCP smoke
 由 serve/list 自清，token 生命周期与实例一致；`baseurl` 为 rclone serve
 http/webdav 官方参数（live 验证 v1.75.1），rclone 未来若改 baseurl 匹配
 语义（如 404→重定向）需回归 live 用例。
+
+## 2026-09-29 评审跨插件项修复 + hostThemeRuntime 单点收敛（前端批次）
+
+### 做了什么
+
+- **X-P4 appearance 修复**：applyAppearance 从无条件 setProperty 改为探测
+  宿主令牌再 removeProperty（appearance 事件后持续跟随宿主主题）；循环体
+  收敛 `shared/frontend/hostThemeRuntime.ts` 单点。
+- **hostThemeRuntime 接入**：`subscribeHostEnvironment` 统一 env + context +
+  appearance 订阅。files 特有语义经 `onEnv` 钩子完整保留（SDK 先更新
+  api.locale 再投递 env，files 以 api.locale 为权威源）；原先
+  `if (!api.onAppearanceChange)` 分支下 appearance 通道从未被订阅的缺口
+  一并补上（宿主有 appearance 通道时此前被忽略，现正确订阅）。handleEvent
+  保留 env 窄化守卫。新增薄 spec `lib/hostThemeRuntime.spec.ts`。
+- 2026-09-28 批次（同日早前）：files 无幽灵订阅（env.d.ts 本就只有
+  onContext，mockHost.spec 有无幽灵 API 断言，为家族范本）；build.mjs
+  `<!--` 双层转义为本项的修复源（X-M8，其余三家已回移）。
+
+### 结果
+
+- 前端 typecheck 全绿；**79 文件 / 630 用例全绿**（与并行的下载桥
+  reopenConnection 自愈工作合流后）；build 正常。
+
+### 边界与剩余风险
+
+- 未动 host/；未提交未 push；manifest 版本未 bump。
+- 真机复验：明暗主题切换跟随（含右栏 CodeMirror 预览）、跨连接切换自愈
+  （4d7eb7da）与 appearance 收敛叠加后的首绘/跟随路径。
