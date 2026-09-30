@@ -52,7 +52,7 @@ jobs:
           python-version: "3.x"
       - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version-file: .nvmrc
       - run: python3 scripts/validate_repo.py
       - run: node scripts/connection-forms/verify.mjs files
 
@@ -68,13 +68,24 @@ jobs:
       # setup-node 的 pnpm 缓存需要 pnpm 已在 PATH 中，故置于 pnpm/action-setup 之后
       - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version-file: .nvmrc
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
       - run: pnpm --dir frontend install --frozen-lockfile
       - run: pnpm --dir frontend typecheck
       - run: pnpm --dir frontend test
       - run: pnpm --dir frontend build
+      # UI 构建一次：candidate 矩阵 job 取 artifact 直接打包，
+      # 不再每个平台重复 install + build。
+      - name: Upload prebuilt UI
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-ui-files
+          # Glob pins the artifact root at ui/ so packaging jobs unpack it
+          # straight as ui/index.html.
+          path: ui/**
+          if-no-files-found: error
+          retention-days: 3
       # ui/index.html 已脱库：发布与候选打包各自现构建前端，
       # 不再用「重建后 git diff 必须为空」的 freshness 门卡主仓。
 
@@ -249,14 +260,9 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\bin" | Out-Null
           Copy-Item "$dir\rclone.exe" "$env:USERPROFILE\bin\rclone.exe"
           Add-Content $env:GITHUB_PATH "$env:USERPROFILE\bin"
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 11.24.0
       - uses: actions/setup-node@v7
         with:
-          node-version: "22"
-          cache: pnpm
-          cache-dependency-path: frontend/pnpm-lock.yaml
+          node-version-file: .nvmrc
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust_target }}
@@ -277,8 +283,12 @@ jobs:
         with:
           workspaces: backend
           cache-on-failure: true
-      - run: pnpm --dir frontend install --frozen-lockfile
-      - run: pnpm --dir frontend build
+      # UI 由 frontend job 构建一次，矩阵 job 取 artifact 直接打包。
+      - name: Download prebuilt UI
+        uses: actions/download-artifact@v8
+        with:
+          name: frontend-ui-files
+          path: ui
       # CARGO_BUILD_TARGET 经环境变量传导给本步与 package 步内 CLI 的
       # cargo build（CLI 不传 --target）；非 linux 条目 RUST_TARGET 为空。
       - name: Build sidecar

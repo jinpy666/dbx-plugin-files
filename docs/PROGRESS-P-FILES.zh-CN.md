@@ -2105,3 +2105,23 @@ http/webdav 官方参数（live 验证 v1.75.1），rclone 未来若改 baseurl 
   与 ssh 一致；宿主侧调整上限时两插件文案需同步。
 - 真机复验路径：桌面端从 Finder 拖文件夹进工作台 → 目标侧出现目录树 +
   文件逐个上传；拖 >2000 文件的文件夹出截断横幅。
+
+## CI 提速：候选/发布前端构建 ×5 去重 + Node pin 单一真源（2026-10-01）
+
+改动（本仓 `.github/workflows/`、`scripts/build.sh`、`scripts/test.sh`、新增 `.nvmrc`）：
+
+- **前端构建去重**：ci candidate 原每平台重复 `pnpm install + build`（×5）。
+  现在 frontend job 构建一次并上传 `frontend-ui-files` artifact，candidate
+  下载到 `ui/` 后直接打包。release 同款：新增 frontend job（install+build
+  一次分发），build 矩阵去重；validate 的 cargo test 发布门禁不动。
+- **Node 版本单一真源**：新增 `.nvmrc`（22.21.0），CI `setup-node` 改
+  `node-version-file`；build.sh/test.sh 硬编码 `v22.21.0`/`v22*` glob 改读
+  `.nvmrc`（精确命中，缺失回退最新 v22；`tr` 写法 BSD/GNU 通用）。
+- **release.yml 加 concurrency**（按 tag 分组、不取消；ci 原有）。
+- 本插件 ci 的 sccache 体系为仓内首创，本轮原样保留，并作为模板移植到
+  ssh 与主仓 build-candidates.yml（Rust staging 重建提速）。
+
+验证：actionlint 结构校验全绿；`bash -n` 全过；本地
+`DBX_PREBUILT_UI=1 bash scripts/build.sh` 实跑通过——增量 cargo release
+44.8s、打包产出 `io.dbx.files-0.1.86-darwin-arm64.dbxp` 完整、
+check_rclone_package OK。剩余风险：GitHub runner 真跑待推送观察。
