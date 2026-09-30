@@ -971,17 +971,32 @@ function showError(cause: unknown, side: PaneSide | "global" = "global") {
 }
 
 /** 错误横幅上的重试（④ UI 三态：错误可恢复）。P2-4：按出错栏位重放——
- * 左/右栏失败只重载该栏，全局错误（操作类）两栏都重载。 */
+ * 左/右栏失败只重载该栏，全局错误（操作类）两栏都重载。
+ * issue #68：重放命中「连接未注册」类失败时，先请宿主补连
+ * （host.reopenConnection）再按原栏位原路径重试一次——sidecar 注册表为空时
+ * 裸重发必然再败，手动重试必须接上同一条自愈链路。 */
 async function retryAfterError() {
   error.value = "";
   const side = errorSide.value;
-  try {
+  const replay = async () => {
     if (side === "right") await loadRightDirectory();
     else if (side === "left") await loadDirectory();
     else {
       await loadDirectory();
       if (dualPane.value) await loadRightDirectory();
     }
+  };
+  try {
+    await replay();
+    return;
+  } catch (cause) {
+    // 其余错误维持原状（横幅已由 load 弹出）。
+    if (!isConnectionNotReadyMessage(errorMessage(cause))) return;
+  }
+  const id = side === "global" ? connectionId.value : (sideConnectionId(side) ?? connectionId.value);
+  if (!(await requestHostConnectionReopen(id))) return;
+  try {
+    await replay();
   } catch {
     /* banner already shows the error */
   }
@@ -1729,12 +1744,16 @@ async function beginPaneConnectionSwitch(side: PaneSide, previous: string, reloa
  * 宿主切换激活连接的 context 事件可能先于其 connection/connect 完成
  * （F-5 时序竞态）：重置栏首拉报「连接未注册」时请宿主 connect 后重试
  * 一次；其余错误不扰动（updateHostContext 原为静默吞错）。
+ * `anyFailure`：不限错误类型（issue #68 的同 id 重开事件入口用——宿主主动
+ * 重开了连接，失败栏位无论因何失败都应借事件重拉一次）。
  */
-async function recoverPaneListing(side: PaneSide, cause: unknown) {
-  if (!isConnectionNotReadyMessage(errorMessage(cause))) return;
+async function recoverPaneListing(side: PaneSide, cause: unknown, options: { anyFailure?: boolean } = {}) {
+  if (!options.anyFailure && !isConnectionNotReadyMessage(errorMessage(cause))) return;
   const id = sideConnectionId(side) ?? connectionId.value;
   if (!(await requestHostConnectionReopen(id))) return;
-  void (side === "left" ? loadDirectory("/") : loadRightDirectory("/")).catch(() => undefined);
+  // 重拉该栏**当前路径**（而非固定根目录）：issue #68 的宿主重开事件与
+  // 途中导航失败的自愈都不应把用户扔回根目录。
+  void (side === "left" ? loadDirectory(paneDirPath("left")) : loadRightDirectory(paneDirPath("right"))).catch(() => undefined);
 }
 
 /** 左栏切换连接（双栏）：新连接回到根目录，quickPaths 随连接面刷新。 */
@@ -4115,11 +4134,29 @@ async function stopShare(row: ShareRow) {
 
 // ---- lifecycle -----------------------------------------------------------------
 
+/** 同 id context 事件自愈的去抖：8s 内至多一轮，防宿主 reopen 引发的
+ * 后续 context 事件与自愈重拉互相触发成环。 */
+let lastContextListingHealAt = 0;
+
 /** SDK context 消费：重新绑定默认连接，只丢弃依赖该连接的栏位缓存。 */
 function updateHostContext(context: Record<string, unknown>) {
   const previous = connectionId.value;
   hostContext.value = context;
-  if (!initialized.value || previous === connectionId.value) return;
+  if (!initialized.value) return;
+  if (previous === connectionId.value) {
+    // issue #68：宿主关闭后重开**同一**连接（Docker 刷新页面再点开连接）
+    // 时 context 的 connectionId 不变，下方主体整体早退——宿主 connect 已
+    // 重建 sidecar 注册表，面板却没有任何通道得知，失败栏位永远停在「无法
+    // 加载」卡片上（错误横幅 8s 自动消失后更是毫无信号）。失败栏位尚在报错
+    // 时（listingFailed 持久于横幅存活期），借这次事件补一轮自愈，不限错误
+    // 类型；健康面板不受扰动。8s 去抖防 reopen 引发的后续 context 事件成环。
+    const side: PaneSide | null = listingFailed.value ? "left" : rightListingFailed.value ? "right" : null;
+    if (side && Date.now() - lastContextListingHealAt >= 8000) {
+      lastContextListingHealAt = Date.now();
+      void recoverPaneListing(side, undefined, { anyFailure: true });
+    }
+    return;
+  }
   hostContextVersion += 1;
   bindApi((method, params, options) => window.dbxPlugin.invoke(method, params, options), connectionId.value || null);
   capabilities.value = undefined;
@@ -4223,9 +4260,11 @@ async function initialize() {
   const version = hostContextVersion;
   await loadCapabilities();
   if (version === hostContextVersion) {
-    await loadDirectory("/").catch(() => undefined);
+    // issue #68：面板首开（安装/升级/容器重启/刷新后宿主尚未重建连接）首拉
+    // 报「连接未注册」时不再静默吞掉，走同一套自愈（请宿主补连后重拉）。
+    await loadDirectory("/").catch((cause) => recoverPaneListing("left", cause));
     if (version === hostContextVersion) {
-      if (dualPane.value) await loadRightDirectory("/").catch(() => undefined);
+      if (dualPane.value) await loadRightDirectory("/").catch((cause) => recoverPaneListing("right", cause));
       await loadQuickPaths("left");
       if (leftSideTab.value === "tree") void followTreePath("left", paneDirPath("left"));
       if (dualPane.value) {
