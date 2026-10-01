@@ -2125,3 +2125,13 @@ http/webdav 官方参数（live 验证 v1.75.1），rclone 未来若改 baseurl 
 `DBX_PREBUILT_UI=1 bash scripts/build.sh` 实跑通过——增量 cargo release
 44.8s、打包产出 `io.dbx.files-0.1.86-darwin-arm64.dbxp` 完整、
 check_rclone_package OK。剩余风险：GitHub runner 真跑待推送观察。
+
+## CI 实测结果：分支 CI 全绿 + 主仓 sccache 链实证（2026-10-01 续）
+
+`ci-optimize-prebuilt-ui` draft PR #69 的 pull_request CI 全绿
+（run 36758932369，含容器协议冒烟 + 5 平台 candidate）。主仓
+build-candidates 的 files 目标：Linux ×2 全绿——本插件首创的
+sccache 层移植主仓后经真实 runner 验证（355 次编译请求正常走
+sccache；zig shim 与 PKG_CONFIG_PATH 修复由 files Linux job 最先
+证明通过，随后 ssh Linux 同链路通过）。files/windows-x64 在主仓
+矩阵同批全绿（run 36799950921 部分窗口）。
