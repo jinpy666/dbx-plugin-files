@@ -697,8 +697,12 @@ def run_remote_stdio_roundtrip(connection: dict, tag: str, base_dir: str | None 
 
         digest = session.call_tool("files_scan_digest", connection=connection,
                                    path=base, glob="*")
-        # a.txt + b.log + sub (dir entry) + sub/c.txt
-        assert digest["matched"] == 4, digest
+        # a.txt + b.log + sub (dir entry) + sub/c.txt。桶型后端（s3，确认
+        # CanHaveEmptyDirectories=false）的 mkdir 会补 sub/.keep 占位——
+        # 工作台与 MCP 的 mkdir 已收敛到同一入口（2026-10 审查对齐，
+        # ops::mkdir_with_placeholder），恰好多一行；其余后端能力未知或为
+        # true，不触发占位，维持 4 行。
+        assert digest["matched"] == (5 if tag == "s3" else 4), digest
         assert digest["scanned"] >= digest["matched"], digest
         assert digest["stats"]["byExtension"], digest
         assert digest["cursorId"], digest
