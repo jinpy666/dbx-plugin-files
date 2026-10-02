@@ -122,12 +122,21 @@ impl PathPolicy {
     /// Input forms:
     /// - `""` or `"/"` — the root itself;
     /// - `"a/b"` — relative to the configured root;
-    /// - `"/a/b"` — absolute within the backend-visible space.
+    /// - `"/a/b"` — absolute within the backend-visible space, or the
+    ///   listing vocabulary: `files/list` entries carry fs-relative paths
+    ///   spelled with a leading `/` (rclone ports the root into the fs
+    ///   string, so for rooted connections the visible space IS the root
+    ///   and `/sub` addresses `root/sub`). A slash-prefixed spelling that
+    ///   is not at/under the configured root is therefore re-resolved
+    ///   root-relative — otherwise every path the backend itself returns
+    ///   would be an invalid input on locked-root connections (the
+    ///   "outside the locked connection root" round-trip bug).
     ///
-    /// When `lock_to_root` is set and a root is configured, absolute-form
-    /// paths must equal the root or lie beneath it. Rejected: NUL/control
-    /// characters, backslashes (ambiguous across fs backends), and any `..`
-    /// that escapes the visible space.
+    /// When `lock_to_root` is set and a root is configured, every resolved
+    /// path stays inside `root`; root-prefixed absolute spellings keep their
+    /// absolute reading. Rejected: NUL/control characters, backslashes
+    /// (ambiguous across fs backends), and any `..` that escapes the visible
+    /// space.
     pub fn resolve(&self, path: &str) -> Result<ResolvedPath, String> {
         let sanitized = sanitize(path)?;
         // Inputs without a leading slash are relative to the configured root
@@ -140,17 +149,29 @@ impl PathPolicy {
         } else if relative_input && self.root != "/" {
             format!("{}{}", self.root, sanitized)
         } else {
-            sanitized
+            // cloned: the listing-vocabulary respell below still reads it.
+            sanitized.clone()
         };
 
         if self.lock_to_root && self.root != "/" {
             let under_root = absolute == self.root
                 || absolute.starts_with(&format!("{}/", self.root));
             if !under_root {
-                return Err(format!(
-                    "path '{path}' is outside the locked connection root '{}'",
-                    self.root
-                ));
+                if relative_input {
+                    // Unreachable by construction (a relative input joins
+                    // onto the root above); kept as the lock's defensive
+                    // rejection should the resolution forms ever grow.
+                    return Err(format!(
+                        "path '{path}' is outside the locked connection root '{}'",
+                        self.root
+                    ));
+                }
+                // Listing vocabulary: re-read the slash-prefixed spelling as
+                // root-relative (`/sub` → `sub` → `root/sub`). Terminates:
+                // the re-spelled input is relative, so the recursive call
+                // lands under the root directly.
+                let respelled = sanitized.trim_start_matches('/');
+                return self.resolve(respelled);
             }
         }
 
@@ -402,6 +423,48 @@ mod tests {
         }
     }
 
+    /// 工具面词汇回环（本仓 bug 报告：锁定的本地 root 连接点目录树报
+    /// "outside the locked connection root"）。files/list 返回的 entry.path
+    /// 恒为 `/sub` 形态（fs 相对、带前导斜杠，entry_from_item 契约）；该
+    /// 路径必须能原样传回任何 files/* 操作——否则后端自己给出的路径是
+    /// 非法输入。带前导斜杠且不在 root 下的拼写按「root 相对」重解；
+    /// root 前缀绝对拼写与 `..` 逃逸语义不变。
+    #[test]
+    fn resolve_accepts_listing_vocabulary_round_trip() {
+        // 局部不得叫 `policy`：会遮蔽本块的 `policy(..)` 构造帮助函数。
+        let locked = policy("/Users/Jinpy/Downloads", true, false, true);
+        // 列根得到的子目录路径（tree 节点/文件表格/MCP list 条目都携带它）。
+        let resolved = locked
+            .resolve("/微信支付账单(20250301-20250510)")
+            .unwrap_or_else(|err| panic!("listing entry path must round-trip: {err}"));
+        assert_eq!(resolved.absolute, "/Users/Jinpy/Downloads/微信支付账单(20250301-20250510)");
+        assert_eq!(resolved.relative, "微信支付账单(20250301-20250510)");
+        // 深层条目同语义。
+        let resolved = locked.resolve("/sub/deep").expect("deep listing path");
+        assert_eq!(resolved.absolute, "/Users/Jinpy/Downloads/sub/deep");
+        assert_eq!(resolved.relative, "sub/deep");
+        // 多余前导斜杠同样归一。
+        let resolved = locked.resolve("//sub").expect("double slash");
+        assert_eq!(resolved.absolute, "/Users/Jinpy/Downloads/sub");
+        // 未锁定连接上带斜杠拼写保持原语义（绝对拼写字面保留、relative 取
+        // 尾段——逐字不变）；词汇重解只在 lock_to_root 下发生。
+        let unlocked = policy("/Users/Jinpy/Downloads", false, false, true);
+        let unlocked_resolved = unlocked.resolve("/sub/deep").unwrap();
+        assert_eq!(unlocked_resolved.absolute, "/sub/deep");
+        assert_eq!(unlocked_resolved.relative, "sub/deep");
+    }
+
+    /// 锁定连接的越界拒绝面收窄到真实逃逸：`..` 逃逸依旧拒绝；root 前缀
+    /// 绝对拼写依旧按绝对处理（等于 root 自身合法）。
+    #[test]
+    fn resolve_locked_still_rejects_traversal() {
+        let policy = policy("/mnt/nas", true, false, true);
+        let error = policy.resolve("../escape").unwrap_err();
+        assert!(error.contains("escapes the connection root"), "{error}");
+        assert!(policy.resolve("/mnt/nas").is_ok());
+        assert!(policy.resolve("/mnt/nas/sub").is_ok());
+    }
+
     #[test]
     fn resolve_with_root_and_lock_to_root() {
         let policy = policy("/mnt/nas", true, false, true);
@@ -411,6 +474,8 @@ mod tests {
             ("sub/f", "/mnt/nas/sub/f", "sub/f"),
             ("/mnt/nas/sub", "/mnt/nas/sub", "sub"),
             ("a/../sub", "/mnt/nas/sub", "sub"),
+            // listing 词汇：带前导斜杠的非 root 前缀拼写 = root 相对。
+            ("/sub", "/mnt/nas/sub", "sub"),
         ];
         for (input, absolute, relative) in cases {
             let resolved = policy
@@ -419,15 +484,16 @@ mod tests {
             assert_eq!(resolved.absolute, absolute, "input '{input}'");
             assert_eq!(resolved.relative, relative, "input '{input}'");
         }
-        for input in ["/etc/passwd", "/mnt/nasx/steal", "../escape", "/"] {
-            // "/" resolves to the root itself and is fine — only absolute
-            // forms *outside* the root must fail.
+        for input in ["../escape", "/"] {
+            // "/" resolves to the root itself and is fine — only traversal
+            // escapes must fail. Slash-prefixed spellings are the listing
+            // vocabulary and resolve root-relative (round-trip test above).
             if input == "/" {
                 assert!(policy.resolve(input).is_ok());
             } else {
                 assert!(
                     policy.resolve(input).is_err(),
-                    "resolve('{input}') should be rejected by lock_to_root"
+                    "resolve('{input}') should be rejected"
                 );
             }
         }
@@ -438,6 +504,12 @@ mod tests {
     /// fall back to `/`, making `lock_to_root` a no-op. Drive-form input
     /// must backslash-normalize to the exact same canonical root as its
     /// forward-slash spelling, and the lock must actually lock.
+    ///
+    /// 词汇语义更新后（listing round-trip）："锁定"的形态是解析保证——
+    /// 带斜杠的越界拼写在 rooted 连接上按 root 相对重解（`/C:/elsewhere`
+    /// → `C:/elsewhere` → `root/C:/elsewhere`），不再硬拒；相对输入与
+    /// root 前缀绝对拼写仍在 root 下解析。canonicalization 回归（两种盘
+    /// 符拼写出同一 root，不再静默回落 `/`）保持不变。
     #[test]
     fn windows_drive_root_normalizes_and_lock_to_root_applies() {
         let backslash = PathPolicy::from_parts("C:\\data", true, false, true);
@@ -445,22 +517,25 @@ mod tests {
         // Both spellings canonicalize identically (`/C:/data`)...
         assert_eq!(backslash.root, forward.root, "{:?} vs {:?}", backslash.root, forward.root);
         assert_eq!(backslash.root, "/C:/data");
-        // ...and the lock holds: under-root paths pass, outside paths fail
-        // (before the fix every absolute path passed because root fell
-        // back to "/").
+        // ...and the lock resolves: relative and root-prefixed inputs land
+        // inside the drive-form root (before the FILES-M3 fix the root fell
+        // back to "/" and nothing was scoped at all).
         assert!(backslash.resolve("sub/f").is_ok());
         assert!(backslash.resolve("/C:/data/sub/f").is_ok());
-        assert!(backslash.resolve("/C:/elsewhere").is_err());
-        assert!(backslash.resolve("/C:/datax").is_err());
+        assert_eq!(
+            backslash.resolve("/C:/elsewhere").unwrap().relative,
+            "C:/elsewhere",
+            "slash-prefixed outside spelling is the listing vocabulary → root-relative"
+        );
+        assert_eq!(backslash.resolve("/C:/datax").unwrap().relative, "C:/datax");
         assert_eq!(forward, backslash);
-        // Bare drive root (`C:\` == `C:/`): also normalized, still locked —
-        // the bare drive root scopes the whole drive, so anything under
-        // `C:/` passes while other drives are refused.
+        // Bare drive root (`C:\` == `C:/`): also normalized, still scoped —
+        // the bare drive root scopes the whole drive.
         let bare = PathPolicy::from_parts("C:\\", true, false, true);
         assert_eq!(bare.root, "/C:");
         assert!(bare.resolve("f").is_ok());
         assert!(bare.resolve("/C:/other/f").is_ok());
-        assert!(bare.resolve("/D:/elsewhere").is_err());
+        assert!(bare.resolve("/D:/elsewhere").is_ok());
     }
 
     #[test]

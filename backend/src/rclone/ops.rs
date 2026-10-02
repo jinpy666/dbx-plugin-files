@@ -1336,13 +1336,14 @@ mod tests {
     #[tokio::test]
     async fn gate_locks_paths_before_any_rc_call() {
         let client = dead_client();
-        let error = list(&client, "dbxdead:", "/etc/passwd", false, "/srv/data", true)
+        // lock_to_root 下带前导斜杠的拼写是 listing 词汇（root 相对，policy
+        // 词汇更新）：门禁放行，dead client 上只剩 transport 失败——证明
+        // 门禁不再拦截、且 rc 流量发生在任何真实远端之外。
+        let error = list(&client, "dbxdead:", "/etc/x", false, "/srv/data", true)
             .await
             .unwrap_err();
-        assert!(
-            error.contains("outside the locked connection root '/srv/data'"),
-            "{error}"
-        );
+        assert!(error.starts_with("Failed to list"), "{error}");
+        // 遍历逃逸依旧在任何 rc 调用之前拒绝。
         let error = stat(&client, "dbxdead:", "../escape", "/srv/data", true)
             .await
             .unwrap_err();
@@ -1979,8 +1980,38 @@ mod tests {
     async fn phase_b_gates_refuse_before_any_rc_call() {
         let client = dead_client();
         let locked = "/srv/data";
-        // lock_to_root 逃逸：七类操作的路径白名单都在 HTTP 之前拒绝。
+        // 遍历逃逸：七类操作的入口 gate 都在 HTTP 之前拒绝（policy 的
+        // sanitize 先于锁检查，Phase A 同语义）。
         let escaped = vec![
+            mkdir(&client, "dbx:", "../e", locked, true).await.unwrap_err(),
+            rmdir(&client, "dbx:", "../e", locked, true).await.unwrap_err(),
+            delete_file(&client, "dbx:", "../e", locked, true)
+                .await
+                .unwrap_err(),
+            purge(&client, "dbx:", "../e", locked, true).await.unwrap_err(),
+            rename(&client, "dbx:", "ok.txt", "../e", locked, true)
+                .await
+                .unwrap_err(),
+            copy_file(&client, "src:", "s.txt", "dst:", "../e", locked, true)
+                .await
+                .unwrap_err(),
+            move_file(&client, "src:", "s.txt", "dst:", "../e", locked, true)
+                .await
+                .unwrap_err(),
+            public_link(&client, "dbx:", "../e", locked, true)
+                .await
+                .unwrap_err(),
+        ];
+        for error in escaped {
+            assert!(
+                error.contains("escapes the connection root"),
+                "{error}"
+            );
+        }
+        // listing 词汇（带前导斜杠、root 相对，policy 词汇更新后）：同一批
+        // 操作的门禁全部放行——dead client 上只剩各 op 的 transport 文案，
+        // 证明没有任何 rc 副作用路径被绕开。
+        let listing = vec![
             mkdir(&client, "dbx:", "/etc/x", locked, true).await.unwrap_err(),
             rmdir(&client, "dbx:", "/etc/x", locked, true).await.unwrap_err(),
             delete_file(&client, "dbx:", "/etc/x", locked, true)
@@ -2000,15 +2031,12 @@ mod tests {
                 .await
                 .unwrap_err(),
         ];
-        for error in escaped {
+        for error in listing {
             assert!(
-                error.contains("outside the locked connection root"),
-                "{error}"
+                error.starts_with("Failed to"),
+                "listing vocabulary must pass the gate, got: {error}"
             );
         }
-        // 遍历逃逸在 policy 的 sanitize 阶段就被拒（先于锁检查，Phase A 同语义）。
-        let error = purge(&client, "dbx:", "../e", locked, true).await.unwrap_err();
-        assert!(error.contains("escapes the connection root"), "{error}");
         // 反斜杠路径同样在 HTTP 之前拒绝。
         let error = delete_file(&client, "dbx:", "a\\b", "", false)
             .await

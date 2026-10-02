@@ -1057,15 +1057,17 @@ mod tests {
 
     #[test]
     fn gate_remote_rejects_lock_to_root_escapes() {
-        // lock_to_root 下绝对路径越界与 .. 逃逸必须拒绝——错误文本即
-        // PathPolicy 原文（files/list 同款）。
-        assert!(gate_remote("/srv/data", true, "/etc/x").is_err());
+        // lock_to_root 下带前导斜杠的拼写是 listing 词汇（root 相对，policy
+        // 词汇更新）：照常过门并归一为 root 相对 remote。
+        assert_eq!(gate_remote("/srv/data", true, "/etc/x").unwrap(), "etc/x");
+        // `..` 逃逸必须拒绝——错误文本即 PathPolicy 原文（files/list 同款）。
         assert!(gate_remote("/srv/data", true, "../x").is_err());
     }
 
     /// 死 client（gate 在任何 HTTP 流量之前失败）：断言 listStream 的入口
     /// gate 与 files/list 的 ops::list 入口 gate 对同一输入产出逐字相同的
-    /// 错误——两处装配漂移即失败。
+    /// 结果——拒绝时错误文本逐字一致，放行时一致放行（dead client 上只剩
+    /// transport 文案）——两处装配漂移即失败。
     #[tokio::test]
     async fn gate_remote_matches_ops_list_gate() {
         let client = RcClient::new(
@@ -1073,12 +1075,18 @@ mod tests {
             "u".to_string(),
             "p".to_string(),
         );
-        for (root, path) in [("/srv/data", "/etc/x"), ("/srv/data", "../x")] {
-            let ops_error =
-                ops::list(&client, "fs:", path, false, root, true).await.unwrap_err();
-            let gate_error = gate_remote(root, true, path).unwrap_err();
-            assert_eq!(ops_error, gate_error, "gate drift for '{path}'");
-        }
+        // 拒绝面：遍历逃逸，两侧错误逐字一致。
+        let ops_error = ops::list(&client, "fs:", "../x", false, "/srv/data", true)
+            .await
+            .unwrap_err();
+        let gate_error = gate_remote("/srv/data", true, "../x").unwrap_err();
+        assert_eq!(ops_error, gate_error, "gate drift for '../x'");
+        // 放行面：listing 词汇过门（gate 返回 remote，ops 只剩 transport）。
+        assert_eq!(gate_remote("/srv/data", true, "/etc/x").unwrap(), "etc/x");
+        let ops_error = ops::list(&client, "fs:", "/etc/x", false, "/srv/data", true)
+            .await
+            .unwrap_err();
+        assert!(ops_error.starts_with("Failed to list"), "{ops_error}");
     }
 
     // -- lsjson 目标拼接 -------------------------------------------------------
@@ -1194,6 +1202,36 @@ mod tests {
         assert!(!keep(&entry("", "dir"), ""));
         assert!(!keep(&entry("sub", "dir"), "sub"));
         assert!(keep(&entry("sub/a.txt", "file"), "sub"));
+    }
+
+    /// 锁定 root 连接的列出→回开回环（本仓 bug 报告的完整形态）：锁定的
+    /// 本地 root 连接列出根目录后，点击目录树/表格里的子目录（MCP 客户端
+    /// 回传 list 条目同理）把 entry.path 原样送回 files/*——该路径必须能
+    /// 过 `lock_to_root` 门禁，否则后端自己返回的路径全是非法输入
+    /// （"outside the locked connection root"）。
+    #[test]
+    fn listing_entry_paths_round_trip_through_locked_policy() {
+        let root = "/Users/Jinpy/Downloads";
+        let policy = crate::policy::PathPolicy::from_parts(root, true, false, true);
+        // entry_from_item 契约：rclone 相对 Path 恒映射为「前导斜杠 + 相对」。
+        let item = serde_json::json!({
+            "Path": "微信支付账单(20250301-20250510)——【解压密码可在微信支付公众号查看】",
+            "Name": "微信支付账单(20250301-20250510)——【解压密码可在微信支付公众号查看】",
+            "IsDir": true,
+        });
+        let listed = entry_from_item(&item);
+        assert_eq!(listed.path, format!("/{}", item["Path"].as_str().unwrap()));
+        let resolved = policy
+            .resolve(&listed.path)
+            .unwrap_or_else(|err| panic!("entry.path must round-trip on a locked connection: {err}"));
+        assert_eq!(resolved.relative, item["Path"].as_str().unwrap());
+        // 深层子目录同理（列出 /sub 后再点 /sub/deep）。
+        let deep = entry_from_item(&serde_json::json!({
+            "Path": "sub/deep", "Name": "deep", "IsDir": true,
+        }));
+        let resolved = policy.resolve(&deep.path).expect("deep round-trip");
+        assert_eq!(resolved.absolute, format!("{root}/sub/deep"));
+        assert_eq!(resolved.relative, "sub/deep");
     }
 
     // -- batcher ---------------------------------------------------------------
