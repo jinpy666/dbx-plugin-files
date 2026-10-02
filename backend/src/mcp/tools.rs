@@ -572,7 +572,12 @@ impl Mcp {
         Ok(result)
     }
 
-    /// `files_mkdir` over the rclone engine (rc `operations/mkdir`, mkdir -p).
+    /// `files_mkdir` over the rclone engine (rc `operations/mkdir`, mkdir -p),
+    /// sharing the workbench `files/mkdir` entry point
+    /// [`crate::rclone::ops::mkdir_with_placeholder`] — including its
+    /// empty-directory placeholder fallback — so a new folder is visible on
+    /// `CanHaveEmptyDirectories=false` backends no matter which surface
+    /// created it.
     pub(crate) async fn files_mkdir_rclone(
         &self,
         route: &RcloneRoute,
@@ -585,9 +590,10 @@ impl Mcp {
         let raw = required_str(arguments, "path")?;
         validate_path_shape(raw, "path")?;
         let client = route.engine.client_for_binding(&binding).await?;
-        crate::rclone::ops::mkdir(
+        crate::rclone::ops::mkdir_with_placeholder(
             &client,
             &crate::rclone::call_fs(&binding),
+            &binding.backend_type,
             raw,
             &binding.root,
             binding.lock_to_root,

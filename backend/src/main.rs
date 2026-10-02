@@ -538,7 +538,10 @@ impl Plugin {
                         crate::policy::PathPolicy::check_read,
                     )?;
                     let (data, truncated) = rclone::ops::read_prefix(
-                        &client,
+                        // 与 write/upload 同口径：普通客户端的 30s 总超时
+                        // 会掐死慢链路上的 2MiB 预览读；读侧已有 max_bytes
+                        // 封顶，无总超时不会失控。
+                        &client.transfer_client(),
                         &rclone::call_fs(&binding),
                         &remote,
                         max_bytes,
@@ -602,7 +605,9 @@ impl Plugin {
                     crate::policy::PathPolicy::check_read,
                 )?;
                 let (data, total_size) = rclone::ops::read_range(
-                    &client,
+                    // files/read 同口径：分段读也走无总超时的 transfer
+                    // client，长度由 clamp_range_length 封顶。
+                    &client.transfer_client(),
                     &rclone::call_fs(&binding),
                     &remote,
                     request.offset,

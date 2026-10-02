@@ -217,7 +217,12 @@ impl Store {
 
     fn write_json_atomic(&self, file_name: &str, value: &Value) -> Result<(), String> {
         let path = self.data_dir.join(file_name);
-        let tmp = self.data_dir.join(format!("{file_name}.tmp"));
+        // Unique tmp name: concurrent savers of the same file (e.g. the
+        // prefs RPC vs. a background bwlimit persist) must not interleave on
+        // one shared `*.tmp` and clobber each other's rename.
+        let tmp = self
+            .data_dir
+            .join(format!("{file_name}.{}.tmp", uuid::Uuid::new_v4().simple()));
         let body = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
         std::fs::write(&tmp, body).map_err(|error| format!("Failed to write {file_name}: {error}"))?;
         std::fs::rename(&tmp, &path).map_err(|error| format!("Failed to finalize {file_name}: {error}"))

@@ -16,6 +16,7 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::store::TransferRecord;
 
@@ -303,29 +304,43 @@ pub fn finalize_download_path(base: &Path, file_name: &str, overwrite: bool) -> 
 /// Opens the platform file manager with `path` selected (or its parent folder
 /// selected when the file was already moved away). Spawn failures surface as
 /// errors; explorer's nonzero exit codes are famously meaningless and ignored.
+/// The macOS branch waits for `open -R` only up to [`REVEAL_WAIT_TIMEOUT`] —
+/// the caller runs on an async worker, and an unbounded join on a slow Finder
+/// would stall it; past the deadline the launch is assumed to have succeeded.
+const REVEAL_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
+const REVEAL_POLL_INTERVAL: Duration = Duration::from_millis(20);
+
 pub fn reveal_in_file_manager(path: &Path) -> Result<(), String> {
     if cfg!(target_os = "macos") {
-        if std::process::Command::new("open")
+        let mut child = std::process::Command::new("open")
             .arg("-R")
             .arg(path)
-            .status()
-            .map_err(|error| format!("Failed to launch Finder: {error}"))?
-            .success()
-        {
-            return Ok(());
+            .spawn()
+            .map_err(|error| format!("Failed to launch Finder: {error}"))?;
+        let deadline = Instant::now() + REVEAL_WAIT_TIMEOUT;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    if status.success() {
+                        return Ok(());
+                    }
+                    break;
+                }
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        return Ok(());
+                    }
+                    std::thread::sleep(REVEAL_POLL_INTERVAL);
+                }
+                Err(error) => return Err(format!("Failed to launch Finder: {error}")),
+            }
         }
         let parent = path.parent().unwrap_or(path);
         return std::process::Command::new("open")
             .arg(parent)
-            .status()
-            .map_err(|error| format!("Failed to launch Finder: {error}"))
-            .and_then(|status| {
-                if status.success() {
-                    Ok(())
-                } else {
-                    Err("Finder exited with an error".to_string())
-                }
-            });
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("Failed to launch Finder: {error}"));
     }
     if cfg!(windows) {
         let selected = format!("/select,{}", path.as_os_str().to_string_lossy());

@@ -19,7 +19,7 @@ pub mod webdav_gateway;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -33,6 +33,14 @@ use crate::rclone::{self, rc::RcClient};
 /// M1 gateway reads are whole-file; refuse to buffer absurd files into the
 /// sidecar. Editors and documents sit far below this line.
 const MAX_GATEWAY_READ_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Whole-file reads buffer up to [`MAX_GATEWAY_READ_BYTES`] of RAM each, so
+/// worst-case gateway memory scales with read concurrency. The gateway is
+/// loopback-only and token-gated, but nothing else bounds how many reads a
+/// WebDAV client (or OS prefetch) opens in parallel — cap the in-flight
+/// reads at 4, a hard ≤1GiB ceiling (4 × 256MiB).
+static GATEWAY_READ_SLOTS: std::sync::LazyLock<tokio::sync::Semaphore> =
+    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(4));
 
 /// One live mount, keyed by `mount_id` (uuid).
 pub struct MountRecord {
@@ -424,6 +432,10 @@ impl webdav_gateway::GatewaySource for EngineSource {
         Box::pin(async move {
             let policy = PathPolicy::from_parts(&root, lock_to_root, true, true);
             let resolved = policy.check_read(&path)?;
+            let _slot = GATEWAY_READ_SLOTS
+                .acquire()
+                .await
+                .map_err(|_| "gateway read slots closed".to_string())?;
             let response = client
                 .serve_get(&fs, &resolved.relative, None)
                 .await
@@ -459,6 +471,42 @@ fn to_stat_entry(entry: &model::FileEntry) -> webdav_gateway::StatEntry {
 // ---------------------------------------------------------------------------
 // files/mount · files/unmount · files/mountStatus
 // ---------------------------------------------------------------------------
+
+/// In-flight registry for concurrent `start_mount` WebDAV launches: the
+/// duplicate check reads committed records, but the gateway start + OS mount
+/// are slow awaits before the record lands — two same-surface requests in
+/// that window both pass the check and open two gateways. A claim occupies
+/// `(connection_id, mount surface)` for the whole window.
+static WEBDAV_MOUNTS_INFLIGHT: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+/// Held for the rest of `start_mount` after a successful claim; Drop releases
+/// the key so any early return (gateway spawn failure, pinned-strategy error)
+/// can't wedge the surface permanently.
+struct WebDavMountClaim {
+    key: (String, String),
+}
+
+impl WebDavMountClaim {
+    /// `None` = the same surface is already being mounted right now.
+    fn claim(connection_id: &str, mount_path: &str) -> Option<Self> {
+        let key = (connection_id.to_string(), mount_path.trim_matches('/').to_string());
+        let mut inflight = WEBDAV_MOUNTS_INFLIGHT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if inflight.contains(&key) {
+            return None;
+        }
+        inflight.push(key.clone());
+        Some(Self { key })
+    }
+}
+
+impl Drop for WebDavMountClaim {
+    fn drop(&mut self) {
+        WEBDAV_MOUNTS_INFLIGHT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|entry| entry != &self.key);
+    }
+}
 
 pub async fn start_mount(
     engine: &rclone::RcloneEngine,
@@ -567,6 +615,19 @@ pub async fn start_mount(
             "webdav mount failed: mount point unusable: {surface} is already mounted (mountId {existing}) — unmount it first"
         ));
     }
+    // Concurrency seam: from here until the record lands, the same surface is
+    // only protected by the in-flight claim (the committed-records check above
+    // can't see unregistered gateways).
+    let Some(_webdav_claim) = WebDavMountClaim::claim(connection_id, &mount_path) else {
+        let surface = if mount_path.is_empty() {
+            "/".to_string()
+        } else {
+            mount_path.clone()
+        };
+        return Err(format!(
+            "webdav mount failed: mount point unusable: {surface} is already being mounted — unmount it first or retry"
+        ));
+    };
     let token = random_token();
     let gateway = webdav_gateway::start(webdav_gateway::GatewayConfig {
         conn_id: connection_id.to_string(),
@@ -810,9 +871,17 @@ pub async fn mount_status(
     };
     // Best-effort liveness for kernel mounts: anything the rcd no longer
     // reports is marked stale rather than dropped (the user unmounts).
-    let kernel_points = match engine.client_for_id(connection_id).await {
-        Ok(client) => rclone::mount::list_mount_points(&client).await.ok(),
-        Err(_) => None,
+    // Same guard as refresh_mount_caches: only resolve an rc client when an
+    // rclone-strategy mount actually needs one — spawning (and keeping
+    // alive) a group rcd just to check WebDav/zero rows defeats
+    // reap_idle_groups.
+    let kernel_points = if rows.iter().any(|row| row["strategy"] == "rclone") {
+        match engine.client_for_id(connection_id).await {
+            Ok(client) => rclone::mount::list_mount_points(&client).await.ok(),
+            Err(_) => None,
+        }
+    } else {
+        None
     };
     for row in rows.iter_mut() {
         if row["strategy"] == "rclone" {
@@ -1153,6 +1222,18 @@ mod tests {
             .unwrap()
             .is_none());
         assert!(duplicate_mount_conflict(&mounts, "c1", "").unwrap().is_none());
+    }
+
+    #[test]
+    fn webdav_mount_claim_blocks_same_surface_until_dropped() {
+        // check-then-act 缝隙：duplicate 检查通过后、记录登记前的占位语义。
+        let claim = WebDavMountClaim::claim("c-claim", "/data/inside").expect("first claim wins");
+        assert!(WebDavMountClaim::claim("c-claim", "/data/inside/").is_none(), "同面（含斜杠拼写差异）被占位拒绝");
+        let other = WebDavMountClaim::claim("c-claim", "/data/other").expect("不同挂载面不受影响");
+        drop(claim);
+        let reclaimed = WebDavMountClaim::claim("c-claim", "/data/inside").expect("占位句柄 Drop 后释放，同面可再次进入");
+        drop(other);
+        drop(reclaimed);
     }
 
     #[test]

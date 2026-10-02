@@ -3,7 +3,7 @@
 use std::io::Write as _;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::process::{Child, Command};
 use tokio::time::sleep;
@@ -20,6 +20,13 @@ pub const MIN_RCLONE_VERSION: (u64, u64, u64) = (1, 68, 0);
 /// How long `RcdHandle::wait_healthy` polls `rc/noopauth` before giving up.
 const SPAWN_HEALTH_TIMEOUT: Duration = Duration::from_secs(10);
 const SPAWN_HEALTH_INTERVAL: Duration = Duration::from_millis(150);
+
+/// Upper bound for one `<binary> version` probe. A PATH candidate that hangs
+/// (network share, wrapper script) must not stall binary resolution — and,
+/// through the supervisor lock held during `client_for`, every engine call —
+/// indefinitely.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const PROBE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 /// Everything needed to talk to a running rcd (owned by [`RcdHandle`]).
 #[derive(Debug, Clone)]
@@ -370,11 +377,20 @@ impl RcdSupervisor {
         }
         let binary = match self.binary.clone() {
             Some(binary) => binary,
-            None => resolve_binary().ok_or_else(|| {
-                "rclone binary not found; set DBX_FILES_RCLONE_BIN or install rclone >= \
-                 1.68 on PATH"
-                    .to_string()
-            })?,
+            None => {
+                let binary = resolve_binary().ok_or_else(|| {
+                    "rclone binary not found; set DBX_FILES_RCLONE_BIN or install rclone >= \
+                     1.68 on PATH"
+                        .to_string()
+                })?;
+                // Cache the probe-validated binary: a PATH rescan spawns one
+                // `version` process per entry and runs under the supervisor
+                // lock, so paying that on every respawn / keepalive sweep is
+                // waste. `set_binary` still overrides (tests, explicit
+                // configuration).
+                self.binary = Some(binary.clone());
+                binary
+            }
         };
         let handle = RcdHandle::start(&binary, env).await?;
         let client = handle.client();
@@ -527,18 +543,46 @@ pub fn startup_diagnostic() -> String {
     }
 }
 
-/// Runs `<binary> version` and checks the minimum version.
+/// Runs `<binary> version` and checks the minimum version. Bounded: a child
+/// that neither exits nor produces output within [`PROBE_TIMEOUT`] is killed
+/// and reported as a probe failure instead of hanging resolution forever.
 pub fn probe_version(binary: &Path) -> Result<(u64, u64, u64), String> {
-    let output = std::process::Command::new(binary)
+    use std::io::Read as _;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(binary)
         .arg("version")
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .map_err(|error| format!("cannot execute {}: {error}", binary.display()))?;
-    if !output.status.success() {
+    let deadline = Instant::now() + PROBE_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "{} version probe timed out after {PROBE_TIMEOUT:?}",
+                        binary.display()
+                    ));
+                }
+                std::thread::sleep(PROBE_POLL_INTERVAL);
+            }
+            Err(error) => return Err(format!("cannot await {}: {error}", binary.display())),
+        }
+    };
+    let mut stdout = String::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        let _ = pipe.read_to_string(&mut stdout);
+    }
+    if !status.success() {
         return Err(format!("{} exited non-zero", binary.display()));
     }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let version = parse_version(&text)
-        .ok_or_else(|| format!("cannot parse rclone version from output: {text:.80}"))?;
+    let version = parse_version(&stdout)
+        .ok_or_else(|| format!("cannot parse rclone version from output: {stdout:.80}"))?;
     if version < MIN_RCLONE_VERSION {
         return Err(format!(
             "rclone {}.{}.{} is older than the required {}.{}.{}",
