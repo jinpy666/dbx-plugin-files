@@ -107,7 +107,8 @@ describe("listStream cancel on navigation (导航切换)", () => {
     expect(methods).toContain("files/listCancel");
     // 旧 /docs 会话的迟到帧不得落地：最终停留在新目录（空目录）。
     expect(leftEntries()).toHaveLength(0);
-    expect(wrapper!.find(".wb-file-empty").text()).toBe(workbenchMessage("en", "emptyDirectory"));
+    // 空态卡片现含「新建文件夹」CTA（可写连接）：断言文案为前缀包含。
+    expect(wrapper!.find(".wb-file-empty").text()).toContain(workbenchMessage("en", "emptyDirectory"));
   });
 });
 

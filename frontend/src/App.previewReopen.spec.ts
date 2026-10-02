@@ -75,7 +75,8 @@ function table(side: "left" | "right") {
 
 function rowOf(side: "left" | "right", path: string) {
   return table(side).findAll(".wb-file-row").find((row) =>
-    row.find(".wb-file-name span").attributes("title") === path,
+    // v-tip 迁移：悬浮提示文案同步写在 aria-label（webview 不渲染原生 title）。
+    row.find(".wb-file-name span").attributes("aria-label") === path,
   )!;
 }
 

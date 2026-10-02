@@ -36,6 +36,10 @@ const numberingStart = ref(1);
 const applying = ref(false);
 /** 应用结果：path → "ok" | 错误消息（仅已尝试行）。 */
 const statuses = ref<Record<string, string>>({});
+/** 应用进行中的逐项进度与「取消剩余」标志（大批准rename此前只能对着
+ *  不动的 loading 干等到底）。 */
+const progress = ref({ done: 0, total: 0 });
+const cancelRequested = ref(false);
 
 const drawerEl = ref<HTMLElement>();
 
@@ -58,15 +62,19 @@ function statusOf(path: string): string {
   return statuses.value[path] ?? "";
 }
 
-/** 应用：串行 files/rename（沿用单文件 rename 的调用链与错误透传）。 */
+/** 应用：串行 files/rename（沿用单文件 rename 的调用链与错误透传）。
+ *  「取消剩余」在行间检查点生效：已发起的行照常完成，未发起的行跳过。 */
 async function apply() {
   if (applying.value || !renameCount.value) return;
   applying.value = true;
   emit("update:applying", true);
   statuses.value = {};
+  cancelRequested.value = false;
   const targets = plan.value.rows.filter((row) => row.changed && !row.error);
+  progress.value = { done: 0, total: targets.length };
   let ok = 0;
   for (const row of targets) {
+    if (cancelRequested.value) break;
     try {
       const newPath = joinPath(parentPath(row.entry.path), row.newName);
       // 目录 rename 可能降级 job（transport=job）：任务继续在传输面板跟踪，行内按成功计。
@@ -80,10 +88,11 @@ async function apply() {
     } catch (cause) {
       statuses.value = { ...statuses.value, [row.entry.path]: errorMessage(cause) };
     }
+    progress.value = { ...progress.value, done: progress.value.done + 1 };
   }
   applying.value = false;
   emit("update:applying", false);
-  emit("applied", { ok, total: targets.length });
+  emit("applied", { ok, total: progress.value.total });
 }
 
 /** 焦点陷阱：Tab 在抽屉内循环（同 ConfirmDialog）。 */
@@ -177,7 +186,11 @@ onMounted(async () => {
         </table>
       </div>
       <footer>
-        <span class="wb-muted">{{ renameCount ? "" : t("batchRenameNoChanges") }}</span>
+        <!-- 应用进行中：显示逐项进度（3/50）并提供「取消剩余」；文案为语言
+             中立的计数，取消沿用全局 cancel key。 -->
+        <span v-if="applying" class="wb-muted" role="status">{{ progress.done }} / {{ progress.total }}</span>
+        <span v-else class="wb-muted">{{ renameCount ? "" : t("batchRenameNoChanges") }}</span>
+        <button v-if="applying" type="button" class="wb-dialog-cancel" data-test="cancel-remaining" @click="cancelRequested = true">{{ t("cancel") }}</button>
         <button type="button" class="wb-dialog-cancel" :disabled="applying" @click="emit('close')">{{ t("close") }}</button>
         <button type="button" class="wb-dialog-primary" :disabled="!renameCount || applying" data-test="apply" @click="apply">
           {{ applying ? t("loading") : t("batchRenameApply", { count: renameCount }) }}

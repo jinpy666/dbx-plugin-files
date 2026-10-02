@@ -313,7 +313,7 @@ async function loadTreeChildren(side: PaneSide, node: DirTreeNode, isStale?: () 
     node.loading = true;
     const tree = side === "left" ? leftTree.value : rightTree.value;
     try {
-      const list = await fetchListing(node.path, sideConnectionId(side));
+      const list = await fetchListing(node.path, sideConnectionId(side), { pill: false });
       if (tree !== (side === "left" ? leftTree.value : rightTree.value) || treeGenerations[side] !== generation) return false;
       return applyTreeChildren(tree, node.path, list.entries) !== null;
     } catch (cause) {
@@ -1025,6 +1025,15 @@ async function retryAfterError() {
   }
 }
 
+/** 断连 pill 点击重连（FileToolbar）：与错误横幅重试同一条自愈链路——先请
+ *  宿主补连（可能弹凭据框），随后重载双栏（无论补连成败：旧宿主缺 reopen
+ *  方法时返回 false，直接重载由 load 弹出真实错误）。 */
+async function reconnectFromToolbar() {
+  if (await requestHostConnectionReopen(connectionId.value)) error.value = "";
+  await loadDirectory().catch(() => undefined);
+  if (dualPane.value) await loadRightDirectory().catch(() => undefined);
+}
+
 // ---- host bridge ---------------------------------------------------------
 
 async function waitForHostApi(timeoutMs = 8000) {
@@ -1212,7 +1221,13 @@ interface FrameWaiter {
 }
 
 const frameQueue = new Map<string, DownloadChunk[]>();
+const frameQueueBytes = new Map<string, number>();
 const frameWaiters = new Map<string, FrameWaiter[]>();
+/** 单通道排队帧的字节上限：sidecar 泵快于消费方（逐帧 IPC/落盘）时，
+ * 无上限的积压会把 webview 内存顶到接近文件体积。超限即判该通道溢出、
+ * 立刻以错误掐断下载（fail-fast），不静默吞帧制造必然的超时。 */
+const FRAME_QUEUE_MAX_BYTES = 64 * 1024 * 1024;
+const frameOverflow = new Set<string>();
 /** 已释放（取消/完成）的下载通道：sidecar 在处理 cancel 前仍在推的帧
  * 直接丢弃——无 waiter 的迟到帧会逐帧重建 queue 且永远无人消费。 */
 const releasedChannels = new Set<string>();
@@ -1232,14 +1247,38 @@ function handleBinary(event: DbxPluginBinaryEvent) {
   }
   const queue = frameQueue.get(event.channel) ?? [];
   queue.push(chunk);
+  const queuedBytes = (frameQueueBytes.get(event.channel) ?? 0) + chunk.data.byteLength;
+  if (queuedBytes > FRAME_QUEUE_MAX_BYTES) {
+    frameQueue.delete(event.channel);
+    frameQueueBytes.delete(event.channel);
+    frameOverflow.add(event.channel);
+    const pending = frameWaiters.get(event.channel);
+    if (pending) {
+      for (const waiter of pending) waiter.reject(new Error("download frame queue overflow"));
+      frameWaiters.delete(event.channel);
+    }
+    return;
+  }
   frameQueue.set(event.channel, queue);
+  frameQueueBytes.set(event.channel, queuedBytes);
 }
 
 function waitForFrame(channel: string, offset: number, timeoutMs = 30_000): Promise<DownloadChunk> {
+  if (frameOverflow.has(channel)) {
+    return Promise.reject(new Error("download frame queue overflow"));
+  }
   const queued = frameQueue.get(channel);
   if (queued?.length) {
     const index = queued.findIndex((chunk) => chunk.offset === offset);
-    if (index >= 0) return Promise.resolve(queued.splice(index, 1)[0]);
+    if (index >= 0) {
+      const chunk = queued.splice(index, 1)[0];
+      if (queued.length) frameQueueBytes.set(channel, Math.max(0, (frameQueueBytes.get(channel) ?? 0) - chunk.data.byteLength));
+      else {
+        frameQueue.delete(channel);
+        frameQueueBytes.delete(channel);
+      }
+      return Promise.resolve(chunk);
+    }
   }
   return new Promise((resolve, reject) => {
     const waiter: FrameWaiter = {
@@ -1269,6 +1308,8 @@ function waitForFrame(channel: string, offset: number, timeoutMs = 30_000): Prom
 function releaseFrames(channel: string) {
   releasedChannels.add(channel);
   frameQueue.delete(channel);
+  frameQueueBytes.delete(channel);
+  frameOverflow.delete(channel);
   const waiters = frameWaiters.get(channel);
   if (waiters) {
     for (const waiter of waiters) waiter.reject(new Error("download channel released"));
@@ -1278,14 +1319,17 @@ function releaseFrames(channel: string) {
 
 // ---- directory -----------------------------------------------------------
 
-async function fetchListing(target: string, explicitConnectionId?: string): Promise<{ entries: FileEntry[]; truncated: boolean }> {
+async function fetchListing(target: string, explicitConnectionId?: string, options?: { pill?: boolean }): Promise<{ entries: FileEntry[]; truncated: boolean }> {
   const version = hostContextVersion;
   const params: Record<string, unknown> = { path: target };
   if (explicitConnectionId) params.connectionId = explicitConnectionId;
   // 连接状态 pill：任一非本地栏的 files/list 都反映存储连接健康度（本地
   // __local__ 恒可用，不代表连接）；主连接 id 在部分宿主/mock 的 context
-  // 里缺失，无法按 id 精确归因，按"非本地"判定。
-  const hitsHost = explicitConnectionId !== LOCAL_CONNECTION_ID;
+  // 里缺失，无法按 id 精确归因，按"非本地"判定。树懒加载/跨栏冲突预检/
+  // 上传预检等后台用途传 pill:false——它们复用取数但不该把 pill 反复闪成
+  // 「连接中」，主列表浏览（streamListing 回落路径）维持默认反馈。
+  const trackPill = options?.pill !== false;
+  const hitsHost = trackPill && explicitConnectionId !== LOCAL_CONNECTION_ID;
   if (hitsHost) connState.value = "connecting";
   try {
     // truncated（issue #49）：rclone rc 无服务端分页，后端对非递归浏览在
@@ -1699,8 +1743,13 @@ async function probeConnections() {
  * 跨连接切换失败（目标连接未在 sidecar registry 注册，见
  * HOST_FEEDBACK F-5）时回退该栏：恢复原连接的根目录面，避免栏位滞留在
  * 不可用连接上只剩空列表；回退重载成功会清横幅，故重载后重发友好错误。
+ * `expected` = 本次切换所指向的连接：回退链路含 requestHostConnectionReopen
+ * （可能弹凭据框耗时数秒），期间用户可能已再次切换该栏——当前连接已不是
+ * expected 时放弃回退，不覆盖用户更新的选择，也不弹已作废切换的错误。
  */
-async function revertPaneConnection(side: PaneSide, previous: string, cause: unknown) {
+async function revertPaneConnection(side: PaneSide, previous: string, expected: string, cause: unknown) {
+  const current = side === "left" ? leftConnectionId.value : targetConnectionId.value;
+  if (current !== expected) return;
   if (side === "left") {
     leftConnectionId.value = previous;
     treeGenerations.left += 1;
@@ -1755,13 +1804,13 @@ async function beginPaneConnectionSwitch(side: PaneSide, previous: string, reloa
     if (!isConnectionNotReadyMessage(errorMessage(cause))) return;
     const target = side === "left" ? leftConnectionId.value : targetConnectionId.value;
     if (!(await requestHostConnectionReopen(target))) {
-      await revertPaneConnection(side, previous, cause);
+      await revertPaneConnection(side, previous, target, cause);
       return;
     }
     try {
       await attempt();
     } catch (retryCause) {
-      await revertPaneConnection(side, previous, retryCause);
+      await revertPaneConnection(side, previous, target, retryCause);
     }
   }
 }
@@ -2446,7 +2495,7 @@ async function transferBetween(from: PaneSide, move: boolean, dragged?: FileEntr
 /** R3-P2-5：目标目录一次性拉取，返回与传入列表同名的冲突条目。 */
 async function findTargetConflicts(to: PaneSide, destPath: string, list: FileEntry[]): Promise<FileEntry[]> {
   try {
-    const existing = await fetchListing(destPath, sideConnectionId(to));
+    const existing = await fetchListing(destPath, sideConnectionId(to), { pill: false });
     const names = new Set(existing.entries.map((entry) => entry.name));
     return list.filter((item) => names.has(item.name));
   } catch {
@@ -2717,9 +2766,11 @@ function uploadRemotePath(base: string, item: Pick<UploadQueueItem, "name" | "re
   return joinPath(path, item.name);
 }
 
-/** 上传预检：目标目录已有同名时按策略放行/改名/询问；列表失败不阻断
- * （与跨栏 copy/move 预检同策略，交由后端执行时兜底）。undefined = 取消。
- * 文件夹上传按 remoteDir 分组，各子目录各自对目标清单查撞名。 */
+/** 上传预检：目标目录已有同名时按策略放行/改名/询问。列表失败时
+ * overwrite/rename 档照旧放行（后端执行时兜底）；ask 档 fail-closed ——
+ * 「撞名必须问过用户」的语义下，预检失败静默放行等于跳过询问直接覆盖，
+ * 此时取消整批并提示（undefined = 取消）。文件夹上传按 remoteDir 分组，
+ * 各子目录各自对目标清单查撞名。 */
 async function planUpload<T extends UploadQueueItem>(items: readonly T[], target: UploadTarget): Promise<readonly T[] | undefined> {
   if (!items.length || conflictPolicy.value === "overwrite") return items;
   const groups = groupByRemoteDir(items);
@@ -2727,11 +2778,15 @@ async function planUpload<T extends UploadQueueItem>(items: readonly T[], target
   try {
     await Promise.all(
       [...groups.keys()].map(async (dir) => {
-        const listing = await fetchListing(dir ? uploadRemotePath(target.path, { name: "", remoteDir: dir }) : target.path, target.connectionId ?? connectionId.value);
+        const listing = await fetchListing(dir ? uploadRemotePath(target.path, { name: "", remoteDir: dir }) : target.path, target.connectionId ?? connectionId.value, { pill: false });
         existing.set(dir, new Set(listing.entries.map((entry) => entry.name)));
       }),
     );
   } catch {
+    if (conflictPolicy.value === "ask") {
+      showError(t("uploadPrecheckFailed"));
+      return undefined;
+    }
     return items;
   }
   const conflicts = items.filter((item) => existing.get(item.remoteDir ?? "")?.has(item.name));
@@ -3183,9 +3238,13 @@ async function downloadSelection(side: PaneSide = "left") {
 
 function onPreviewDownload(target: string | null) {
   if (!target) return;
-  const entry = sortedEntries.value.find((item) => item.path === target)
-    ?? rightSorted.value.find((item) => item.path === target);
-  if (entry) void downloadEntry(entry, rightSorted.value.some((item) => item.path === target) ? "right" : "left");
+  // 预览内下载必须落在打开预览的那一栏：双栏镜像目录下同名 path 在另一栏
+  // 是另一个连接上的另一个文件，不能按「右栏是否含该 path」猜 side。
+  const fromPreview = previewSide.value === "right" ? rightSorted.value : sortedEntries.value;
+  const fromOther = previewSide.value === "right" ? sortedEntries.value : rightSorted.value;
+  const entry = fromPreview.find((item) => item.path === target)
+    ?? fromOther.find((item) => item.path === target);
+  if (entry) void downloadEntry(entry, previewSide.value);
 }
 
 function onPreviewSaved() {
@@ -3356,6 +3415,13 @@ async function runDeepSearch(side: PaneSide, query: string) {
  *  选中项的目录，吞掉新查询）。 */
 function onSearchKeydown(side: PaneSide, key: string, query: string) {
   const term = query.trim();
+  // 结果面板是全局单例：另一栏搜索框的按键不得操作别栏查询的结果——
+  // Enter 视为该栏新查询，方向键忽略（否则 ↑↓ 会移动别栏结果的选中行，
+  // Enter 会跳进别栏查询的目录）。
+  if (deepSearchOpen.value && deepSearchSide.value !== side) {
+    if (key === "Enter") runDeepSearch(side, query);
+    return;
+  }
   const count = deepSearchResults.value.length;
   if (!deepSearchOpen.value || !count || (key === "Enter" && term && term !== deepSearchSearchedTerm.value)) {
     if (key === "Enter") runDeepSearch(side, query);
@@ -3780,13 +3846,12 @@ function menuAction(action: MenuAction) {
           showNotice(t("downloadNoneSelected"));
           return;
         }
-        // 0.1.81 扫描：downloadEntry 内部吞错（失败已弹横幅、取消静默），
-        // 循环不得再无条件弹成功——全部成功才提示。
-        let failed = 0;
+        // downloadEntry 成功/失败各自已有反馈（成功逐文件提示，失败弹横幅、
+        // 取消静默）；循环不再追加聚合提示——此前「全部成功才提示」只会
+        // 重复第一个文件名，N 个文件时语义错误。
         for (const item of files) {
-          if (!(await downloadEntry(item, side, id))) failed += 1;
+          await downloadEntry(item, side, id);
         }
-        if (!failed) showNotice(t("downloaded", { name: files[0].name }));
       })();
       break;
     case "copySelected":
@@ -4242,7 +4307,16 @@ function updateHostContext(context: Record<string, unknown>) {
   notice.value = "";
   onContextClick();
   closeConfirm();
-  previewPath.value = null;
+  // 与手动关闭同一条守卫：预览里有未保存草稿时不能被 context 切换静默
+  // 丢弃，交由预览丢弃确认（previewDiscardOpen）让用户显式决定。
+  if (previewPath.value) {
+    if (previewRef.value?.isDirty) {
+      previewDiscardOpen.value = true;
+    } else {
+      previewPath.value = null;
+      previewMinimized.value = false;
+    }
+  }
   // 挂载状态面板按连接过滤：换连接时关闭设置弹窗，避免展示旧连接的挂载行。
   settingsOpen.value = false;
   if (!sideConnectionId("left")) {
@@ -4406,6 +4480,12 @@ function onDocumentKeydown(event: KeyboardEvent) {
     onFileConflictCancel();
     return;
   }
+  // 同步/复制弹窗（Esc 链统一收口，组件不再自带 window 监听）：请求在途
+  // 不关闭——半途关闭会让用户不知道任务是否已发起。
+  if (syncDialogOpen.value) {
+    if (!syncDialogBusy.value) closeSyncDialog();
+    return;
+  }
   if (openWithState.value) {
     closeOpenWithDialog();
     return;
@@ -4554,6 +4634,7 @@ onBeforeUnmount(() => {
       @bwlimit-click="openSettings('transfer')"
       @bwlimit-set="onBwlimitSave"
       @toggle-favorite="toggleFavorite(toolbarTarget.side)"
+      @reconnect="reconnectFromToolbar"
       @toggle-dock="(tab) => { const target = tab ?? dockTab; if (dockOpen && dockTab === target) dockOpen = false; else { dockOpen = true; dockTab = target; if (target === 'audit') auditRef?.refresh(); } }"
     />
 
@@ -4628,6 +4709,7 @@ onBeforeUnmount(() => {
               @retry="refreshDirectory"
               @contextmenu="openContextMenu('left', $event)"
               @blank-context="openBlank('left', $event)"
+              @new-folder="startNewFolder('left')"
               @sort="(column) => sortRouted('left', column)"
               @batch-rename="openBatchRename('left')"
             />
@@ -4724,6 +4806,7 @@ onBeforeUnmount(() => {
               @blank-context="openBlank('right', $event)"
               @sort="(column) => sortRouted('right', column)"
               @batch-rename="openBatchRename('right')"
+              @new-folder="startNewFolder('right')"
             />
           </div>
         </div>
@@ -4837,6 +4920,7 @@ onBeforeUnmount(() => {
       :default-target="syncDialogDraft"
       :bisync-state="syncDialogBisyncState"
       :connection-id="syncDialogSourceConnectionId"
+      :busy="syncDialogBusy"
       @close="closeSyncDialog"
       @confirm="onSyncDialogConfirm"
       @pair-change="onSyncPairChange"

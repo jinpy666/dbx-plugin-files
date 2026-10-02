@@ -37,7 +37,9 @@ function previewTheme() {
     },
     ".cm-gutters": { backgroundColor: colors.muted, color: colors.mutedForeground, borderRightColor: colors.border },
     ".cm-activeLine, .cm-activeLineGutter": { backgroundColor: colors.accent },
-    ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": { backgroundColor: "#5f7aa855" },
+    // 选区色随主题：半透明 accent（style.css 同款 color-mix 手法），硬编码
+    // 蓝灰在亮色主题下对比度不足且不随明暗切换。
+    ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": { backgroundColor: `color-mix(in srgb, ${colors.accent} 45%, transparent)` },
   }, { dark: props.appearance.colorScheme === "dark" });
 }
 

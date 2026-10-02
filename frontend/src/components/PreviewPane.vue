@@ -11,7 +11,7 @@ let sessionMarkdownView: MarkdownView = "render";
 // tiff/heic 等需解码的图片交给 FileViewerPreview。二进制预览经 files/stat +
 // files/readRange 分块流式拼装（2MiB/片，≤256MiB）；文本/可编辑链路仍走 files/read（≤2MiB）。
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
-import { Download, Minus, Pencil, RefreshCw, Settings2, X } from "@lucide/vue";
+import { Download, FileText, Folder, Minus, Pencil, RefreshCw, Settings2, X } from "@lucide/vue";
 import { baseName, call, errorMessage, formatBytes, isMethodMissing } from "../lib/api";
 import { canEditBytes, hexDump, PREVIEW_MAX_BYTES, READ_MAX_BYTES, WRITE_MAX_BYTES } from "../lib/preview";
 import { resolvePreview, type PreviewResolution } from "../lib/previewResolver";
@@ -581,8 +581,9 @@ const canOpenExternal = computed(() =>
           <div class="wb-muted wb-archive-total">{{ t("archiveEntriesLabel", { count: archiveTotal }) }}</div>
           <ul class="wb-archive-list wb-mono">
             <li v-for="entry in archiveEntries" :key="entry.path" class="wb-archive-entry">
-              <span class="wb-archive-kind">{{ entry.kind === "directory" ? "🗂" : "📄" }}</span>
-              <span class="wb-archive-path" :title="entry.path">{{ entry.path }}</span>
+              <!-- lucide 图标与 FileTable 行图标同体系；彩色 emoji 在深色主题下突兀且跨平台尺寸不一。 -->
+              <span class="wb-archive-kind" aria-hidden="true"><Folder v-if="entry.kind === 'directory'" /><FileText v-else /></span>
+              <span class="wb-archive-path" v-tip="entry.path">{{ entry.path }}</span>
               <span class="wb-muted">{{ formatBytes(entry.size) }}</span>
             </li>
           </ul>

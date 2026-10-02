@@ -61,6 +61,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-session-pill.session-connecting .wb-session-dot { background: var(--warning); }
 .wb-session-pill.session-disconnected { color: var(--destructive); border-color: color-mix(in srgb, var(--destructive) 45%, var(--border)); }
 .wb-session-pill.session-disconnected .wb-session-dot { background: var(--destructive); }
+/* 断连态 pill 转为可点按钮：沿用 pill 视觉，补按钮默认样式重置 + 可点暗示。 */
+button.wb-session-reconnect { appearance: none; font: inherit; cursor: pointer; background: none; }
+button.wb-session-reconnect:hover { border-color: var(--destructive); background: color-mix(in srgb, var(--destructive) 12%, transparent); }
+button.wb-session-reconnect:focus-visible { outline: 2px solid var(--destructive); outline-offset: 1px; }
 .wb-toolbar-actions { min-width: 0; justify-content: flex-end; gap: 2px; }
 .wb-icon-button, .wb-toolbar-button, .wb-link-button, .wb-context-menu button, .wb-dialog button, .wb-path-toolbar button { border: 0; background: transparent; cursor: pointer; }
 .wb-icon-button, .wb-toolbar-button { height: 24px; border-radius: 4px; }
@@ -143,6 +147,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wb-file-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; max-width: 320px; margin: 24px auto 0; border: 1px dashed var(--border); border-radius: var(--radius); padding: 20px 14px; text-align: center; color: var(--muted-foreground); font-size: 12px; }
 .wb-file-empty svg { width: 22px; height: 22px; stroke-width: 1.5; opacity: .8; }
 .wb-file-empty p { margin: 0; }
+/* 空态 CTA（新建文件夹引导）：上面的 svg 规则会波及按钮内图标，收敛回工具栏尺寸。 */
+.wb-file-empty .wb-empty-cta svg { width: 14px; height: 14px; opacity: 1; }
+.wb-file-empty .wb-empty-cta { margin-top: 6px; }
 .wb-file-footer { display: flex; align-items: center; gap: 10px; border-top: 1px solid var(--border); padding: 3px 10px; color: var(--muted-foreground); font-size: 11px; }
 /* 列自定义（对标 WinSCP/Finder）：表头单元格与行单元格共用显式宽度；
    列右边界 6px 拖拽热区，悬停/拖拽中高亮，拖拽期间锁定光标与选择。 */

@@ -77,7 +77,8 @@ function PathFieldComponent() {
 }
 
 function treeRow(path: string) {
-  return leftPanel().findAll(".wb-tree-row").find((row) => row.attributes("title") === path);
+  // v-tip 迁移：悬浮提示文案同步写在 aria-label（webview 不渲染原生 title）。
+  return leftPanel().findAll(".wb-tree-row").find((row) => row.attributes("aria-label") === path);
 }
 
 describe("side tree follows the pane directory (issue #66)", () => {

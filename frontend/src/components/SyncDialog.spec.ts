@@ -171,10 +171,30 @@ describe("SyncDialog", () => {
     bisync.unmount();
   });
 
-  it("closes on Escape like the other top-level dialogs", async () => {
+  it("keeps every close affordance working while idle", async () => {
     const wrapper = dialog();
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await wrapper.find(".wb-dialog-cancel").trigger("click");
     expect(wrapper.emitted("close")).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  // busy（请求在途）时确认/取消/头部关闭/遮罩点击全部停用：防重复提交，
+  // 也防「任务是否已发起」无反馈时半途关闭。Esc 关闭由 App 的键盘链统一
+  // 负责（busy 同样不关），组件自身不再监听键盘。
+  it("disables confirm and every close affordance while busy", async () => {
+    const wrapper = mount(SyncDialog, {
+      props: { t, kind: "syncDir" as const, sourcePath: "/reports/2024", defaultTarget: "/mirror/2024", connectionId: "conn-test", busy: true },
+    });
+    const primary = wrapper.find(".wb-dialog-primary");
+    expect((primary.element as HTMLButtonElement).disabled).toBe(true);
+    expect((wrapper.find(".wb-dialog-cancel").element as HTMLButtonElement).disabled).toBe(true);
+    expect((wrapper.find("header button").element as HTMLButtonElement).disabled).toBe(true);
+    await wrapper.find(".wb-dialog-cancel").trigger("click");
+    await wrapper.find("header button").trigger("click");
+    await wrapper.find(".wb-mount-backdrop").trigger("click");
+    expect(wrapper.emitted("close")).toBeUndefined();
+    // busy 态确认按钮文案切到 loading。
+    expect(primary.text()).toBe(workbenchMessage("en", "loading"));
     wrapper.unmount();
   });
 

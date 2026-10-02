@@ -5,7 +5,7 @@
 // SyncDialogOptions 交给父层发起 files/syncDir|copyDir|bisync；数值字段在
 // 组件内先夹紧范围（rc 对非法值静默忽略，夹紧是唯一防线）。路径提交
 // （change）时上抛 pair-change，父层据此刷新 bisync 状态查询。
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { FolderOpen, X } from "@lucide/vue";
 import { parentPath } from "../lib/api";
 import DirectoryBrowser from "./DirectoryBrowser.vue";
@@ -49,6 +49,10 @@ const props = defineProps<{
   bisyncState?: "synced" | "new" | null;
   /** 路径选择器浏览的连接（源/目标同连接，由父层固化）。 */
   connectionId: string;
+  /** 请求在途：确认/取消与一切关闭入口停用——防重复提交，也防用户在
+   *  「任务是否已发起」无反馈时半途关闭弹窗。Esc 关闭统一由 App 的
+   *  document 键盘链负责（busy 时同样不关），组件不再自带 window 监听。 */
+  busy?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -59,13 +63,6 @@ const emit = defineEmits<{
 }>();
 
 const t = (key: string, values?: Record<string, string | number>) => props.t(key, values);
-
-// Esc 关闭：与 ConfirmDialog/MountDialog 的键盘语义对齐。
-function onDialogKeydown(event: KeyboardEvent) {
-  if (event.key === "Escape") emit("close");
-}
-onMounted(() => window.addEventListener("keydown", onDialogKeydown));
-onBeforeUnmount(() => window.removeEventListener("keydown", onDialogKeydown));
 
 // 源路径默认取右键目录，可编辑重指；目标默认同连接根下同名目录。
 const sourcePath = ref(props.sourcePath);
@@ -176,11 +173,11 @@ function confirm() {
 </script>
 
 <template>
-  <div class="wb-mount-backdrop" role="dialog" aria-modal="true" :aria-label="t('syncOptionsTitle')" @click.self="emit('close')">
+  <div class="wb-mount-backdrop" role="dialog" aria-modal="true" :aria-label="t('syncOptionsTitle')" @click.self="!busy && emit('close')">
     <div class="wb-mount-dialog wb-sync-dialog">
       <header>
         <strong>{{ kind === "bisync" ? t("transferKind.bisync") : kind === "syncDir" ? t("transferKind.syncDir") : t("transferKind.copyDir") }}</strong>
-        <button class="wb-icon-button wb-icon-neutral" v-tip="t('close')" @click="emit('close')"><X /></button>
+        <button class="wb-icon-button wb-icon-neutral" v-tip="t('close')" :disabled="busy" @click="emit('close')"><X /></button>
       </header>
       <p v-if="kind === 'bisync'" class="wb-mount-hint">{{ t("bisyncBetaWarn") }}</p>
       <p v-else class="wb-mount-hint">{{ kind === "syncDir" ? t("syncDirBody") : t("copyDirBody") }}</p>
@@ -332,8 +329,8 @@ function confirm() {
       <footer>
         <span v-if="kind !== 'bisync'" class="wb-muted wb-mount-foot-hint">{{ t("syncAdvancedHint") }}</span>
         <span class="wb-mount-foot-actions">
-          <button class="wb-dialog-cancel" type="button" @click="emit('close')">{{ t("cancel") }}</button>
-          <button class="wb-dialog-primary" type="button" :disabled="!targetPath.trim() || sameTarget" @click="confirm">{{ t("syncConfirm") }}</button>
+          <button class="wb-dialog-cancel" type="button" :disabled="busy" @click="emit('close')">{{ t("cancel") }}</button>
+          <button class="wb-dialog-primary" type="button" :disabled="busy || !targetPath.trim() || sameTarget" @click="confirm">{{ busy ? t("loading") : t("syncConfirm") }}</button>
         </span>
       </footer>
     </div>

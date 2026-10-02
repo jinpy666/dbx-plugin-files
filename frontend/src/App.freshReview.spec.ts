@@ -84,7 +84,8 @@ async function openDualPane() {
 
 async function selectEntry(side: "left" | "right", entry: FileEntry) {
   const row = table(side).findAll(".wb-file-row").find((row) =>
-    row.find(".wb-file-name span").attributes("title") === entry.path,
+    // v-tip 迁移：悬浮提示文案同步写在 aria-label（webview 不渲染原生 title）。
+    row.find(".wb-file-name span").attributes("aria-label") === entry.path,
   )!;
   await row.trigger("click");
 }
@@ -98,7 +99,8 @@ describe("fresh review UI smoke", () => {
     const empty = table("left").props("entries").find((entry) => entry.path === "/empty")!;
     table("left").vm.$emit("open", empty);
     await settle();
-    expect(table("left").get(".wb-file-empty").text()).toBe(workbenchMessage("en", "emptyDirectory"));
+    // 空态卡片现含「新建文件夹」CTA（可写连接）：断言文案为前缀包含。
+    expect(table("left").get(".wb-file-empty").text()).toContain(workbenchMessage("en", "emptyDirectory"));
   });
 
   it("keeps left and right side navigation tabs independent", async () => {

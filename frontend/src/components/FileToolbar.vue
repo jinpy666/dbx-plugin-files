@@ -48,6 +48,8 @@ const emit = defineEmits<{
   (event: "bwlimit-set", rate: string): void;
   /** 收藏切换（rclone-ui parity）：作用于活动栏当前目录，App 负责落 prefs。 */
   (event: "toggle-favorite"): void;
+  /** 断连 pill 点击重连：App 走与错误横幅重试相同的 reopen + 重载链路。 */
+  (event: "reconnect"): void;
 }>();
 
 function t(key: string, values?: Record<string, string | number>) {
@@ -171,7 +173,16 @@ const statsDockOpen = computed(() => props.dockOpen && props.dockTab === "stats"
       <span v-if="connectionColor" class="wb-connection-color" :style="{ background: connectionColor }" />
       <strong :title="connectionName">{{ connectionName }}</strong>
       <span v-if="readOnly" class="wb-readonly-badge">{{ t("readOnly") }}</span>
-      <span class="wb-session-pill" :class="`session-${connState}`"><span class="wb-session-dot" aria-hidden="true" />{{ t(`sessionStatus.${connState}`) }}</span>
+      <!-- 断连态 pill 可点：网络恢复后给用户一个显式重连入口（此前唯一
+           主动重连路径藏在错误横幅的 ↻ 里，pill 只能被动等待下一次失败）。 -->
+      <button
+        v-if="connState === 'disconnected'"
+        type="button"
+        class="wb-session-pill session-disconnected wb-session-reconnect"
+        v-tip="t('sessionReconnectTip')"
+        @click="emit('reconnect')"
+      ><span class="wb-session-dot" aria-hidden="true" />{{ t("sessionStatus.disconnected") }}</button>
+      <span v-else class="wb-session-pill" :class="`session-${connState}`"><span class="wb-session-dot" aria-hidden="true" />{{ t(`sessionStatus.${connState}`) }}</span>
     </div>
     <div class="wb-toolbar-actions">
       <!-- 审计中#13：文字按钮统一 v-tip（宿主 webview 不渲染原生 title）。 -->

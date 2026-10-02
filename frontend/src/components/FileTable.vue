@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { Check, Database, Folder, FolderOpen, SearchX } from "@lucide/vue";
+import { Check, Database, Folder, FolderOpen, FolderPlus, SearchX } from "@lucide/vue";
 import { formatBytes, formatTime, type FileEntry } from "../lib/api";
 import { fileIcon, fileIconClass } from "../lib/fileIcons";
 import { listNav, scrollRowIntoView, selectionRange, type ListNavState } from "../lib/listNav";
@@ -49,6 +49,8 @@ const emit = defineEmits<{
   (event: "drag-entries", payload: { paneId: string; entries: FileEntry[] }): void;
   /** parity-tools：多选时的批量重命名入口（底部按钮，键盘可达）。 */
   (event: "batch-rename"): void;
+  /** 空目录引导（UX）：空态卡片内直达「新建文件夹」，App 按栏发起。 */
+  (event: "new-folder"): void;
 }>();
 
 // 虚拟滚动：固定行高 + 视口窗口切片，万级条目列表也只渲染可见行。
@@ -57,6 +59,13 @@ const OVERSCAN = 8;
 const SKELETON_ROWS = 12;
 const scrollTop = ref(0);
 const viewport = ref<HTMLElement>();
+let resizeObserver: ResizeObserver | undefined;
+
+// viewport 可能随条件渲染晚于 onMounted 出现：模板 ref 变化时重新挂观察器。
+watch(viewport, (el, previous) => {
+  if (previous) resizeObserver?.unobserve(previous);
+  if (el) resizeObserver?.observe(el);
+});
 
 function onScroll() {
   if (viewport.value) scrollTop.value = viewport.value.scrollTop;
@@ -261,9 +270,18 @@ onMounted(() => {
     columns.value = next;
   });
   document.addEventListener("pointerdown", onDocumentPointerDown, true);
+  // clientHeight 不是响应式依赖：窗口拉大后 visibleCount 不会自行失效，
+  // 列表底部会留白到下一次 scroll 才恢复。借 ResizeObserver 触碰 scrollTop
+  // 让窗口切片重新计算（值不变时 ref 写入也不触发，这里写回自身即可）。
+  resizeObserver = new ResizeObserver(() => {
+    if (viewport.value) scrollTop.value = viewport.value.scrollTop;
+  });
+  if (viewport.value) resizeObserver.observe(viewport.value);
 });
 
 onBeforeUnmount(() => {
+  resizeObserver?.disconnect();
+  resizeObserver = undefined;
   unsubscribeColumns?.();
   document.removeEventListener("pointerdown", onDocumentPointerDown, true);
   document.body.classList.remove("wb-col-resizing");
@@ -431,7 +449,7 @@ function onResizeEnd() {
           <Database v-if="entry.bucket" class="wb-icon-dir" v-tip="t('bucketEntry')" />
           <Folder v-else-if="entry.kind === 'directory'" class="wb-icon-dir" />
           <component :is="fileIcon(entry.name)" v-else aria-hidden="true" :class="fileIconClass(entry.name)" />
-          <span :title="entry.path">{{ entry.displayName ?? entry.name }}</span>
+          <span v-tip="entry.path">{{ entry.displayName ?? entry.name }}</span>
         </span>
         <span v-if="!isColumnHidden('size')" class="wb-numeric" :style="cellStyle('size')">{{ entry.kind === "directory" ? "" : formatBytes(entry.size) }}</span>
         <span v-if="!isColumnHidden('modified')" class="wb-muted" :style="{ ...cellStyle('modified'), fontSize: '11px', whiteSpace: 'nowrap', overflow: 'hidden' }">{{ formatTime(entry.modifiedAt) }}</span>
@@ -450,6 +468,12 @@ function onResizeEnd() {
       <div v-else-if="!entries.length" class="wb-file-empty" role="status">
         <component :is="filtered ? SearchX : FolderOpen" aria-hidden="true" />
         <p>{{ filtered ? t("noMatchResults") : t("emptyDirectory") }}</p>
+        <!-- 空目录引导：新用户面对空目录（尤其是新建的远端桶）不知道下一步，
+             上传入口在顶部工具栏而视线焦点在列表中央。过滤无匹配态与只读连接
+             不显示；上传按 P1-5 固定右栏目标，不放这里以免误导。 -->
+        <button v-if="!filtered && canWrite" type="button" class="wb-toolbar-button wb-empty-cta" @click="emit('new-folder')">
+          <FolderPlus /> {{ t("newFolder") }}
+        </button>
       </div>
     </div>
   </div>

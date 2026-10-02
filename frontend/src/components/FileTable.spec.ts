@@ -112,6 +112,31 @@ describe("FileTable 空态与 a11y（R3-P2-6 / R3-P2-8）", () => {
     expect(wrapper.find(".wb-file-empty").text()).toBe("emptyDirectory");
   });
 
+  // 空目录引导（UX）：可写连接的空目录在空态卡片内给「新建文件夹」直达；
+  // 过滤无匹配态与只读连接不显示。
+  it("empty directory offers the new-folder CTA when writable, hidden when filtered or read-only", async () => {
+    const wrapper = mount(FileTable, {
+      props: {
+        entries: [],
+        selection: [],
+        activePath: "",
+        sort: { column: "name", direction: "asc" },
+        canWrite: true,
+        t: (key: string) => key,
+      },
+    });
+    const cta = wrapper.find(".wb-empty-cta");
+    expect(cta.exists()).toBe(true);
+    expect(cta.text()).toContain("newFolder");
+    await cta.trigger("click");
+    expect(wrapper.emitted("new-folder")).toEqual([[]]);
+    await wrapper.setProps({ filtered: true });
+    expect(wrapper.find(".wb-empty-cta").exists()).toBe(false);
+    await wrapper.setProps({ filtered: false, canWrite: false });
+    expect(wrapper.find(".wb-empty-cta").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it("rows expose option semantics with aria-selected (R3-P2-8)", () => {
     const wrapper = mount(FileTable, {
       props: {

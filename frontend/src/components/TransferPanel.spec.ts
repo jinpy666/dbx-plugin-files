@@ -166,7 +166,8 @@ describe("TransferPanel record interactions", () => {
     expect(path.exists()).toBe(true);
     expect(path.find(".wb-transfer-path-name").text()).toBe("report.pdf");
     expect(path.find(".wb-transfer-path-parent").text()).toBe("/Users/me/Downloads");
-    expect(path.attributes("title")).toBe("/Users/me/Downloads/report.pdf");
+    // v-tip 迁移：悬浮提示文案同步写在 aria-label（webview 不渲染原生 title）。
+    expect(path.attributes("aria-label")).toBe("/Users/me/Downloads/report.pdf");
     const buttons = wrapper.findAll(".wb-transfer-item button");
     const tips = buttons.map((button) => button.attributes("aria-label") ?? button.text());
     expect(tips).toContain("revealInFolder");

@@ -121,14 +121,13 @@ function timeLabel(job: TransferJob): string {
           :is="statusIcon(job)"
           class="wb-transfer-status-icon"
           :class="[`is-${job.state}`, { 'wb-spin': job.state === 'running' }]"
-          :title="statusLabel(job)"
-          :aria-label="statusLabel(job)"
+          v-tip="statusLabel(job)"
           role="img"
         />
-        <strong :title="fullLabel(job)">{{ label(job) }}</strong>
+        <strong v-tip="fullLabel(job)">{{ label(job) }}</strong>
         <button class="wb-icon-button wb-icon-danger" v-tip="t('cancelTransfer')" @click="emit('cancel', job.jobId)"><X /></button>
       </div>
-      <div v-if="pathParts(job.remotePath || job.jobId).parent" class="wb-transfer-localpath wb-mono" :title="fullLabel(job)">
+      <div v-if="pathParts(job.remotePath || job.jobId).parent" class="wb-transfer-localpath wb-mono" v-tip="fullLabel(job)">
         <span class="wb-transfer-path-parent">{{ pathParts(job.remotePath || job.jobId).parent }}</span>
       </div>
       <div class="wb-transfer-meta">
@@ -167,11 +166,10 @@ function timeLabel(job: TransferJob): string {
           :is="statusIcon(job)"
           class="wb-transfer-status-icon"
           :class="[`is-${job.state}`, { 'wb-spin': job.state === 'running' }]"
-          :title="statusLabel(job)"
-          :aria-label="statusLabel(job)"
+          v-tip="statusLabel(job)"
           role="img"
         />
-        <strong :title="fullLabel(job)">{{ label(job) }}</strong>
+        <strong v-tip="fullLabel(job)">{{ label(job) }}</strong>
         <button v-if="canRetry(job)" class="wb-icon-button" v-tip="t('retryTransfer')" @click="emit('retry', job.jobId)"><RotateCw /></button>
         <button v-if="canReveal(job)" class="wb-icon-button" v-tip="t('revealInFolder')" @click="emit('reveal', job.localPath!)"><FolderOpen /></button>
         <button v-if="canReveal(job)" class="wb-icon-button" v-tip="t('openDownloadedFile')" @click="emit('open', job.localPath!)"><FileText /></button>
@@ -192,7 +190,7 @@ function timeLabel(job: TransferJob): string {
           @click="copyCheckSummary(job)"
         >{{ job.checkSummary }}</button>
       </div>
-      <p v-if="job.localPath" class="wb-transfer-localpath wb-mono" :title="job.localPath">
+      <p v-if="job.localPath" class="wb-transfer-localpath wb-mono" v-tip="job.localPath">
         <span v-if="pathParts(job.localPath!).parent" class="wb-transfer-path-parent">{{ pathParts(job.localPath!).parent }}</span>
         <span class="wb-transfer-path-name">{{ pathParts(job.localPath!).name }}</span>
       </p>
