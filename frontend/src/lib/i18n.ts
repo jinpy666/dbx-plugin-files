@@ -137,6 +137,8 @@ export const messages = {
     // 外部编辑器（1:1 复刻 ssh sftpEdit）：右键子菜单/自定义命令/回传确认/设置区。
     sftpEdit: {
       systemDefault: "System default app",
+      settingsSection: "External editors",
+
       customCommand: "Custom command…",
       customCommandTitle: "Custom editor command",
       customEditorNamePlaceholder: "Display name (optional)",
@@ -676,6 +678,8 @@ export const messages = {
     openWithOpening: "Descargando a la copia temporal local…",
     sftpEdit: {
       systemDefault: "Aplicación predeterminada del sistema",
+      settingsSection: "Editores externos",
+
       customCommand: "Comando personalizado…",
       customCommandTitle: "Comando de editor personalizado",
       customEditorNamePlaceholder: "Nombre visible (opcional)",
@@ -1202,6 +1206,8 @@ export const messages = {
     openWithOpening: "Scaricamento nella copia temporanea locale…",
     sftpEdit: {
       systemDefault: "App predefinita del sistema",
+      settingsSection: "Editor esterni",
+
       customCommand: "Comando personalizzato…",
       customCommandTitle: "Comando editor personalizzato",
       customEditorNamePlaceholder: "Nome visualizzato (facoltativo)",
@@ -1728,6 +1734,8 @@ export const messages = {
     openWithOpening: "ローカルの一時コピーにダウンロード中…",
     sftpEdit: {
       systemDefault: "システム既定のアプリ",
+      settingsSection: "外部エディター",
+
       customCommand: "カスタムコマンド…",
       customCommandTitle: "カスタムエディターコマンド",
       customEditorNamePlaceholder: "表示名（任意）",
@@ -2254,6 +2262,8 @@ export const messages = {
     openWithOpening: "Baixando para a cópia temporária local…",
     sftpEdit: {
       systemDefault: "Aplicativo padrão do sistema",
+      settingsSection: "Editores externos",
+
       customCommand: "Comando personalizado…",
       customCommandTitle: "Comando de editor personalizado",
       customEditorNamePlaceholder: "Nome de exibição (opcional)",
@@ -2781,6 +2791,8 @@ export const messages = {
     openWithOpening: "正在下载到本机临时副本…",
     sftpEdit: {
       systemDefault: "系统默认程序",
+      settingsSection: "外部编辑器",
+
       customCommand: "自定义命令…",
       customCommandTitle: "自定义编辑器命令",
       customEditorNamePlaceholder: "显示名称(可选)",
@@ -3308,6 +3320,8 @@ export const messages = {
     openWithOpening: "正在下載到本機暫存副本…",
     sftpEdit: {
       systemDefault: "系統預設程式",
+      settingsSection: "外部編輯器",
+
       customCommand: "自訂命令…",
       customCommandTitle: "自訂編輯器命令",
       customEditorNamePlaceholder: "顯示名稱(可選)",

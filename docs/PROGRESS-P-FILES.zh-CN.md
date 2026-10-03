@@ -2207,3 +2207,27 @@ editorId、自定义命令+记住为默认持久化、modified→decide 决议�
 提示/错误条）；`validate_repo.py` 75:75（新增 decide）；connection-forms
 verify PASS。剩余风险：ask 策略的「总是上传」授权按会话记忆（重启后重新
 询问），与 ssh 的 watchId 级记忆粒度一致但未跨会话持久化。
+
+## 打开方式走查批：浏览器截图验证 + 三处修复（2026-10-04 续 2）
+
+按工作区规范对新 UX 做浏览器走查（构建产物 `?mock=1&local=1&platform=macos`
+桌面模拟 + 截图），确认右键子菜单/自定义命令弹窗/设置编辑器区与 ssh 同构，
+端到端链路实测通过（自定义命令提交 → `files/remote-edit/open` 携
+customCommand+remotePath → 顶部提示；「记住为默认」后子菜单出现自定义编辑
+器且关联命中打勾切换；设置区关联添加/保存 dirty/「设置已保存」联动）。
+走查发现并修复三处问题：
+
+1. **子菜单触发点击取反 bug**：hover 已把子菜单打开，`@click` 再取反会让
+   紧随的点击立即关掉它——点击恒为展开，收口走鼠标移出/Esc。
+2. **自定义命令弹窗排版**：`.wb-dialog-body input` 全宽规则命中 checkbox
+   （勾选框横贯整行）+ hint 段内联 margin 与勾选行交叠——checkbox 排除
+   全宽规则，提示段/勾选行块级排布样式化。
+3. **`sftpEdit.settingsSection` 七语漏译**：设置区标题直接显示键名，七语
+   补齐（外部编辑器/Editores externos/…）。
+
+增强：设置打开时强制重探编辑器目录（ssh 同行为，静默失败不刷错误）——
+本机安装状态可能在中途变化。
+
+验证：`pnpm typecheck/test` 全绿（662）；build 通过。剩余说明：ask 决议
+弹窗复用同一 `.wb-dialog` 样式体系，视觉走查由决议流 spec 逻辑覆盖 +
+子菜单/弹窗截图背书，未单独截图。

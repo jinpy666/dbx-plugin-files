@@ -386,6 +386,11 @@ body.wb-col-resizing { cursor: col-resize; user-select: none; -webkit-user-selec
 .wb-dialog .wb-dialog-body .wb-dialog-danger-list { margin: 6px 0 0; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--destructive) 40%, transparent); border-radius: var(--radius); color: var(--destructive); }
 .wb-dialog .wb-dialog-body input, .wb-dialog .wb-dialog-body textarea { width: 100%; margin-top: 6px; border: 1px solid var(--border); border-radius: var(--radius); background: color-mix(in srgb, var(--background) 60%, var(--muted)); color: var(--foreground); padding: 5px 8px; }
 .wb-dialog .wb-dialog-body textarea { min-height: 150px; font-family: var(--mono-font-family); resize: vertical; }
+/* 自定义命令弹窗（打开方式子菜单）：提示段与勾选行的块级排布；checkbox
+   不吃全宽 input 规则（否则勾选框横贯整行）。 */
+.wb-dialog .wb-dialog-body > p.wb-settings-help { margin: 8px 0 0; }
+.wb-dialog .wb-dialog-body > label { display: flex; align-items: center; gap: 6px; margin-top: 8px; color: var(--foreground); }
+.wb-dialog .wb-dialog-body label input[type="checkbox"] { width: auto; margin: 0; flex: 0 0 auto; }
 /* R3-P2-4：弹层内行内校验提示（文件名非法等）。 */
 .wb-dialog .wb-dialog-warning { margin: 6px 0 0; color: var(--destructive); font-size: 12px; }
 /* ConfirmDialog 表单字段（右键操作共用）：标签-输入行-提示三段式，与

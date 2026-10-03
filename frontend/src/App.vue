@@ -507,6 +507,10 @@ function openSettings(category?: SettingsCategory) {
     void loadMounts();
     void loadShares();
   }
+  // 已知编辑器目录每次打开设置都重探（ssh 同行为）：本机安装状态可能已变化；
+  // 静默失败——旧 sidecar 缺方法时不该每次开设置都弹错误。
+  externalEditorsLoaded = false;
+  void ensureExternalEditors({ silent: true });
   void nextTick(() => document.querySelector<HTMLElement>(".wb-settings-nav .is-active")?.focus());
 }
 
@@ -3687,10 +3691,11 @@ function updateEditorConfig(next: EditorConfig) {
   saveEditorConfig(editorConfig.value);
 }
 
-// sidecar 编辑器目录（files/local/editors/list，进程内缓存；子菜单打开时拉取）。
+// sidecar 编辑器目录（files/local/editors/list，进程内缓存；子菜单展开与
+// 设置打开时拉取，后者强制重探——本机安装状态可能已变化，与 ssh 同行为）。
 const externalEditors = ref<KnownEditor[]>([]);
 let externalEditorsLoaded = false;
-async function ensureExternalEditors(): Promise<KnownEditor[]> {
+async function ensureExternalEditors(options?: { silent?: boolean }): Promise<KnownEditor[]> {
   if (externalEditorsLoaded) return externalEditors.value;
   try {
     const payload = await window.dbxPlugin.invoke<{ editors: KnownEditor[] }>(
@@ -3699,7 +3704,7 @@ async function ensureExternalEditors(): Promise<KnownEditor[]> {
     externalEditors.value = payload.editors ?? [];
     externalEditorsLoaded = true;
   } catch (cause) {
-    showError(cause);
+    if (!options?.silent) showError(cause);
   }
   return externalEditors.value;
 }
@@ -5123,8 +5128,8 @@ onBeforeUnmount(() => {
             :aria-label="t('sftpEdit.customEditorCommandPlaceholder')"
             @keydown.enter="commitCustomEditor"
           />
-          <p style="margin: 0" class="wb-settings-help">{{ t("sftpEdit.customEditorCommandHint") }}</p>
-          <label style="display: flex; align-items: center; gap: 6px">
+          <p class="wb-settings-help">{{ t("sftpEdit.customEditorCommandHint") }}</p>
+          <label>
             <input v-model="customEditorRemember" type="checkbox" />
             <span>{{ t("sftpEdit.rememberAssociation", { pattern: customEditorPattern }) }}</span>
           </label>
@@ -5290,7 +5295,9 @@ onBeforeUnmount(() => {
              设置「打开方式」区。web/docker 的 sidecar 不在本机，canSaveLocal
              未探测到前不渲染。 -->
         <div v-if="contextMenu.entry.kind === 'file' && canSaveLocal && !isArchivePath(contextMenu.entry.path)" class="wb-menu-sub" role="none" @mouseenter="toggleOpenWithSub(true)" @mouseleave="toggleOpenWithSub(false)">
-          <button role="menuitem" :aria-haspopup="true" :aria-expanded="openWithSubOpen" @click="toggleOpenWithSub(!openWithSubOpen)"><ExternalLink /> {{ t("openWithMenu") }}<ChevronRight class="wb-menu-sub-chevron" /></button>
+          <!-- 点击恒为展开而非取反：hover 已把子菜单打开，取反会让紧随的点击
+               立即关掉它（走查实测）；收口走鼠标移出/Esc。 -->
+          <button role="menuitem" :aria-haspopup="true" :aria-expanded="openWithSubOpen" @click="toggleOpenWithSub(true)"><ExternalLink /> {{ t("openWithMenu") }}<ChevronRight class="wb-menu-sub-chevron" /></button>
           <div v-if="openWithSubOpen" class="wb-context-menu wb-context-submenu" role="menu">
             <button role="menuitem" @click="openWithSystemEntry(contextMenu.entry, contextMenu.side)">{{ t("sftpEdit.systemDefault") }}<Check v-if="!mappedEditorIdFor(contextMenu.entry.name)" class="wb-menu-check" /></button>
             <template v-if="availableExternalEditors.length">
