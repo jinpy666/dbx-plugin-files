@@ -1025,13 +1025,29 @@ async function retryAfterError() {
   }
 }
 
+/** 断连 pill 的归因：最后一次传输层失败发生在哪个连接上。双栏异连接时
+ *  pill 是全局状态（任一栏 list 失败都置位），点击重连必须修真实坏掉的
+ *  那条——只 reopen 主连接会修好没坏的一栏，坏着的一栏原地不动。 */
+const pillFailedConnectionId = ref<string>();
+
 /** 断连 pill 点击重连（FileToolbar）：与错误横幅重试同一条自愈链路——先请
  *  宿主补连（可能弹凭据框），随后重载双栏（无论补连成败：旧宿主缺 reopen
  *  方法时返回 false，直接重载由 load 弹出真实错误）。 */
 async function reconnectFromToolbar() {
-  if (await requestHostConnectionReopen(connectionId.value)) error.value = "";
-  await loadDirectory().catch(() => undefined);
-  if (dualPane.value) await loadRightDirectory().catch(() => undefined);
+  const target = pillFailedConnectionId.value ?? connectionId.value;
+  // 点击即翻「连接中」：pill 按钮此刻消失（disconnected 分支才渲染），
+  // 自带 in-flight 反馈并拦掉重复点击；链路终点由 fetchListing 复位。
+  connState.value = "connecting";
+  try {
+    if (await requestHostConnectionReopen(target)) error.value = "";
+    pillFailedConnectionId.value = undefined;
+    await loadDirectory().catch(() => undefined);
+    if (dualPane.value) await loadRightDirectory().catch(() => undefined);
+  } finally {
+    // load 的 catch 被吞（.catch(() => undefined)）时没有别人复位 pill；
+    // fetchListing 走到过则这里读到的已不是 connecting，不覆盖其结论。
+    if (connState.value === "connecting") connState.value = "disconnected";
+  }
 }
 
 // ---- host bridge ---------------------------------------------------------
@@ -1235,6 +1251,9 @@ const releasedChannels = new Set<string>();
 function handleBinary(event: DbxPluginBinaryEvent) {
   if (!event.channel.startsWith("files/download/")) return;
   if (releasedChannels.has(event.channel)) return;
+  // 溢出通道的迟到帧不再重新播种队列：溢出即判死，等下载循环的 finally
+  // 走 releaseFrames；继续入队只会让字节计数器从零重新膨胀一轮。
+  if (frameOverflow.has(event.channel)) return;
   const data = bridgeBinaryBytes(event, window.dbxPlugin.decodeBase64);
   if (data.byteLength < 8) return;
   const offset = Number(new DataView(data.buffer, data.byteOffset, 8).getBigUint64(0, false));
@@ -1335,7 +1354,10 @@ async function fetchListing(target: string, explicitConnectionId?: string, optio
     // truncated（issue #49）：rclone rc 无服务端分页，后端对非递归浏览在
     // 排序后封顶截断并显式标记；mock/旧宿主缺省视为未截断。
     const result = await call<{ entries: FileEntry[]; displayCharset?: string; truncated?: boolean }>("files/list", params);
-    if (hitsHost && version === hostContextVersion) connState.value = "connected";
+    if (hitsHost && version === hostContextVersion) {
+      connState.value = "connected";
+      pillFailedConnectionId.value = undefined;
+    }
     // FTP 显示解码（issue #32）：仅附加 displayName 供渲染；name/path 保持
     // 原始转义形式，所有操作语义不变。
     const charset = result.displayCharset ?? "";
@@ -1348,7 +1370,12 @@ async function fetchListing(target: string, explicitConnectionId?: string, optio
     // P2-3：pill 与单次业务失败解耦——仅网络/传输层失败置「已断开」；业务错误
     // （NotFound、权限、参数类）说明 sidecar 应答了连接，置「已连接」而非断开，
     // 也避免失败期间停留在「连接中」抖动。
-    if (hitsHost && version === hostContextVersion) connState.value = isTransportFailure(errorMessage(cause)) ? "disconnected" : "connected";
+    if (hitsHost && version === hostContextVersion) {
+      const failed = isTransportFailure(errorMessage(cause));
+      connState.value = failed ? "disconnected" : "connected";
+      // 归因到实际失败的连接，供断连 pill 的重连精确定位。
+      if (failed) pillFailedConnectionId.value = explicitConnectionId ?? connectionId.value;
+    }
     throw cause;
   }
 }
@@ -1676,6 +1703,15 @@ function closePreview() {
   void nextTick(() => {
     document.querySelector<HTMLElement>(`.wb-file-scroll[data-pane-id="${side}"]`)?.focus();
   });
+}
+
+/** 删除/重命名命中预览目标时关闭预览：浮窗继续展示已不存在的路径，随后
+ *  的预览内下载/保存只会以 NotFound 收场。走 closePreview 的脏草稿守卫
+ *  （未保存草稿先弹丢弃确认，与 context 切换同一语义）。 */
+function invalidatePreviewIfAffected(side: PaneSide, paths: string[]) {
+  if (!previewPath.value || previewSide.value !== side) return;
+  if (!paths.includes(previewPath.value)) return;
+  closePreview();
 }
 
 /** 焦点陷阱：Tab 在预览内循环（同 ConfirmDialog 实现）；defaultPrevented
@@ -2283,6 +2319,9 @@ async function onConfirm() {
           jobStarted = true;
         }
         showNotice(t("renamed"));
+        // 预览失效：被重命名的旧路径还开着预览时关掉（浮窗按 path 取数，
+        // 改名后旧路径已不存在）。
+        invalidatePreviewIfAffected(side, [entry.path]);
         break;
       }
       case "copy":
@@ -2349,6 +2388,8 @@ async function onConfirm() {
         } catch (cause) {
           deleteBatchError = cause;
         }
+        // 预览失效：被删条目还开着预览时关掉（含目录 purge 递归目标）。
+        invalidatePreviewIfAffected(side, targets.map((target) => target.path));
         break;
       }
       case "purge": {
@@ -2356,6 +2397,7 @@ async function onConfirm() {
         if (!target) return;
         await invokeConfirmed("files/purge", { path: target });
         showNotice(t("deleted"));
+        invalidatePreviewIfAffected(side, [target]);
         break;
       }
       case "check": {
@@ -3239,11 +3281,10 @@ async function downloadSelection(side: PaneSide = "left") {
 function onPreviewDownload(target: string | null) {
   if (!target) return;
   // 预览内下载必须落在打开预览的那一栏：双栏镜像目录下同名 path 在另一栏
-  // 是另一个连接上的另一个文件，不能按「右栏是否含该 path」猜 side。
+  // 是另一个连接上的另一个文件，不能按「右栏是否含该 path」猜 side，也
+  // 不能在预览栏缺失时退回另一栏（连接对不上 → 404 或下到别的文件）。
   const fromPreview = previewSide.value === "right" ? rightSorted.value : sortedEntries.value;
-  const fromOther = previewSide.value === "right" ? sortedEntries.value : rightSorted.value;
-  const entry = fromPreview.find((item) => item.path === target)
-    ?? fromOther.find((item) => item.path === target);
+  const entry = fromPreview.find((item) => item.path === target);
   if (entry) void downloadEntry(entry, previewSide.value);
 }
 
@@ -3733,9 +3774,11 @@ function closeBatchRename() {
  *  applying 时关抽屉会让剩余行继续在后台改名而用户以为已取消）。 */
 const batchRenameApplying = ref(false);
 
-async function onBatchRenameApplied(result: { ok: number; total: number }) {
+async function onBatchRenameApplied(result: { ok: number; total: number; renamedPaths?: string[] }) {
   refreshAuditPanel();
   showNotice(t("batchRenameApplied", { ok: result.ok, total: result.total }));
+  // 批量改名命中预览目标时关掉浮窗（旧路径已不存在）。
+  if (result.renamedPaths?.length) invalidatePreviewIfAffected(batchRenameSide.value, result.renamedPaths);
   if (batchRenameSide.value === "left") await loadDirectory().catch(() => undefined);
   else if (dualPane.value) await loadRightDirectory().catch(() => undefined);
   syncTreeAfterMutation(batchRenameSide.value);

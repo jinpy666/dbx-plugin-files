@@ -7,6 +7,9 @@
 type Translate = (key: string, values?: Record<string, string | number>) => string;
 
 const RULES: ReadonlyArray<{ pattern: RegExp; key: string }> = [
+  // 下载泵数据流异常（帧队列溢出 / 空帧）：内部英文串对七语用户不可读，
+  // 映射成「下载中断请重试」。先于网络类规则，两条串都不含网络词，仅防漂移。
+  { pattern: /download frame (?:queue overflow|carried no data)/i, key: "errDownloadStream" },
   // 连接未在 sidecar registry 注册：binding() 的 "Connection is not connected
   // (rclone engine)"、mock/MCP 路由的 "Unknown connectionId '…'; connect first"。
   // 双栏跨连接选择器指向宿主其它连接、或宿主切换激活连接的 connect 尚未完成。

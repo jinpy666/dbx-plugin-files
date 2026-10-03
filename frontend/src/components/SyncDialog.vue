@@ -5,9 +5,10 @@
 // SyncDialogOptions 交给父层发起 files/syncDir|copyDir|bisync；数值字段在
 // 组件内先夹紧范围（rc 对非法值静默忽略，夹紧是唯一防线）。路径提交
 // （change）时上抛 pair-change，父层据此刷新 bisync 状态查询。
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { FolderOpen, X } from "@lucide/vue";
 import { parentPath } from "../lib/api";
+import { trapTabKey } from "../lib/a11y";
 import DirectoryBrowser from "./DirectoryBrowser.vue";
 
 /** 确认载荷：空串/空数组/null = 不传该字段（保持 rclone 默认）。 */
@@ -170,11 +171,33 @@ function confirm() {
     bisyncResync: props.kind === "bisync" ? bisyncResync.value : false,
   });
 }
+
+// ---- 焦点管理（对齐 ConfirmDialog 三条约定）：打开即聚焦首个输入框（源
+//  路径）；Tab/Shift+Tab 在弹层内循环，不再 Tab 出「模态」操作被遮罩挡住
+//  的背景；卸载（确认/取消/Esc）后焦点归还打开前的触发元素。 ---------------
+const dialogEl = ref<HTMLElement>();
+let returnFocusTo: HTMLElement | null = null;
+
+onMounted(async () => {
+  returnFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  await nextTick();
+  dialogEl.value?.querySelector<HTMLInputElement>("input")?.focus();
+});
+
+onBeforeUnmount(() => {
+  returnFocusTo?.focus();
+  returnFocusTo = null;
+});
+
+function onTabKeydown(event: KeyboardEvent) {
+  if (event.key !== "Tab") return;
+  trapTabKey(event, dialogEl.value);
+}
 </script>
 
 <template>
   <div class="wb-mount-backdrop" role="dialog" aria-modal="true" :aria-label="t('syncOptionsTitle')" @click.self="!busy && emit('close')">
-    <div class="wb-mount-dialog wb-sync-dialog">
+    <div ref="dialogEl" class="wb-mount-dialog wb-sync-dialog" @keydown="onTabKeydown">
       <header>
         <strong>{{ kind === "bisync" ? t("transferKind.bisync") : kind === "syncDir" ? t("transferKind.syncDir") : t("transferKind.copyDir") }}</strong>
         <button class="wb-icon-button wb-icon-neutral" v-tip="t('close')" :disabled="busy" @click="emit('close')"><X /></button>

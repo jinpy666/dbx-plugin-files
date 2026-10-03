@@ -92,7 +92,7 @@ describe("BatchRenameDrawer", () => {
     expect(renames).toEqual([
       { connectionId: "conn-1", path: "/dir/a.txt", newPath: "/dir/z.txt" },
     ]);
-    expect(wrapper!.emitted("applied")).toEqual([[{ ok: 1, total: 1 }]]);
+    expect(wrapper!.emitted("applied")).toEqual([[{ ok: 1, total: 1, renamedPaths: ["/dir/a.txt"] }]]);
     expect(wrapper!.findAll("[data-test=plan-row]")[0].text()).toContain("batchRenameOk");
   });
 
@@ -111,7 +111,7 @@ describe("BatchRenameDrawer", () => {
     await wrapper!.get("[data-test=apply]").trigger("click");
     await flush();
     expect(wrapper!.findAll("[data-test=plan-row]")[0].text()).toContain("backend refused");
-    expect(wrapper!.emitted("applied")).toEqual([[{ ok: 0, total: 1 }]]);
+    expect(wrapper!.emitted("applied")).toEqual([[{ ok: 0, total: 1, renamedPaths: [] }]]);
     fail = false;
   });
 });

@@ -21,8 +21,11 @@ const emit = defineEmits<{
   (event: "close"): void;
   /** applying 状态回传：App 侧全局 Esc 兜底据此避开应用进行中的误关。 */
   (event: "update:applying", value: boolean): void;
-  /** 应用结束（无论成败）：App 侧负责汇总通知与目录刷新。 */
-  (event: "applied", result: { ok: number; total: number }): void;
+  /** 应用结束（无论成败）：App 侧负责汇总通知与目录刷新。total = 已尝试
+   *  行数——「取消剩余」时未尝试行不计入分母（此前 ok 3 of 50 的 50 是
+   *  计划数，47 行从未尝试却被读成失败）；renamedPaths = 改名成功的旧路径，
+   *  App 侧据此核对预览失效。 */
+  (event: "applied", result: { ok: number; total: number; renamedPaths: string[] }): void;
 }>();
 
 const find = ref("");
@@ -73,6 +76,7 @@ async function apply() {
   const targets = plan.value.rows.filter((row) => row.changed && !row.error);
   progress.value = { done: 0, total: targets.length };
   let ok = 0;
+  const renamedPaths: string[] = [];
   for (const row of targets) {
     if (cancelRequested.value) break;
     try {
@@ -85,6 +89,7 @@ async function apply() {
       });
       statuses.value = { ...statuses.value, [row.entry.path]: "ok" };
       ok += 1;
+      renamedPaths.push(row.entry.path);
     } catch (cause) {
       statuses.value = { ...statuses.value, [row.entry.path]: errorMessage(cause) };
     }
@@ -92,7 +97,7 @@ async function apply() {
   }
   applying.value = false;
   emit("update:applying", false);
-  emit("applied", { ok, total: progress.value.total });
+  emit("applied", { ok, total: progress.value.done, renamedPaths });
 }
 
 /** 焦点陷阱：Tab 在抽屉内循环（同 ConfirmDialog）。 */

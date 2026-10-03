@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { nextTick } from "vue";
 import { mount } from "@vue/test-utils";
 import FileTable from "./FileTable.vue";
@@ -353,6 +353,44 @@ describe("FileTable 媒体图标着色与空态（对标 rclone-dashboard）", (
   });
 });
 
+// —— 虚拟窗口：视口高度是响应式状态，ResizeObserver 报告变化后窗口切片即重算 ——
+describe("FileTable 虚拟窗口（视口高度响应式）", () => {
+  it("视口拉大后窗口切片随之扩大，底部不再留白到下一次 scroll", async () => {
+    let observerCallback: ResizeObserverCallback = () => {};
+    class RecordingResizeObserver {
+      constructor(cb: ResizeObserverCallback) {
+        observerCallback = cb;
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal("ResizeObserver", RecordingResizeObserver);
+    const many: FileEntry[] = Array.from({ length: 120 }, (_, i) => ({
+      name: `f${i}.txt`,
+      path: `/f${i}.txt`,
+      kind: "file",
+      size: i,
+    }));
+    const wrapper = mount(FileTable, {
+      props: { entries: many, selection: [], activePath: "", sort: { column: "name", direction: "asc" }, t: (key: string) => key },
+    });
+    const scrollEl = wrapper.get(".wb-file-scroll").element as HTMLElement;
+    // happy-dom 无真实布局：clientHeight 恒为 0，用 defineProperty 模拟高度变化。
+    const setHeight = (height: number) =>
+      Object.defineProperty(scrollEl, "clientHeight", { configurable: true, value: height });
+    setHeight(280);
+    observerCallback([], {} as ResizeObserver);
+    await nextTick();
+    expect(wrapper.findAll(".wb-file-row").length).toBe(Math.ceil(280 / 28) + 16);
+    setHeight(1120);
+    observerCallback([], {} as ResizeObserver);
+    await nextTick();
+    expect(wrapper.findAll(".wb-file-row").length).toBe(Math.ceil(1120 / 28) + 16);
+    wrapper.unmount();
+    vi.unstubAllGlobals();
+  });
+});
 // —— 列自定义（对标 WinSCP/Finder）：列宽拖拽 + 列显隐，持久化到 dbx-files.ui ——
 function pointerEvent(type: string, clientX: number): Event {
   // happy-dom 无需真 PointerEvent：处理器只读 clientX/button/currentTarget。

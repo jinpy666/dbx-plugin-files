@@ -59,12 +59,18 @@ const OVERSCAN = 8;
 const SKELETON_ROWS = 12;
 const scrollTop = ref(0);
 const viewport = ref<HTMLElement>();
+// 视口高度必须是响应式状态：clientHeight 是普通 DOM 属性，窗口变化不会让
+// visibleCount 自行失效；ResizeObserver 回调里同步写这里驱动重算。
+const viewportH = ref(0);
 let resizeObserver: ResizeObserver | undefined;
 
 // viewport 可能随条件渲染晚于 onMounted 出现：模板 ref 变化时重新挂观察器。
 watch(viewport, (el, previous) => {
   if (previous) resizeObserver?.unobserve(previous);
-  if (el) resizeObserver?.observe(el);
+  if (el) {
+    resizeObserver?.observe(el);
+    viewportH.value = el.clientHeight;
+  }
 });
 
 function onScroll() {
@@ -73,7 +79,7 @@ function onScroll() {
 
 const totalHeight = computed(() => Math.max(props.entries.length, props.loading ? SKELETON_ROWS : 0) * ROW_HEIGHT);
 const firstIndex = computed(() => Math.max(0, Math.floor(scrollTop.value / ROW_HEIGHT) - OVERSCAN));
-const visibleCount = computed(() => Math.ceil((viewport.value?.clientHeight ?? 480) / ROW_HEIGHT) + OVERSCAN * 2);
+const visibleCount = computed(() => Math.ceil((viewportH.value || 480) / ROW_HEIGHT) + OVERSCAN * 2);
 const visibleEntries = computed(() => props.entries.slice(firstIndex.value, firstIndex.value + visibleCount.value));
 
 watch(
@@ -270,11 +276,10 @@ onMounted(() => {
     columns.value = next;
   });
   document.addEventListener("pointerdown", onDocumentPointerDown, true);
-  // clientHeight 不是响应式依赖：窗口拉大后 visibleCount 不会自行失效，
-  // 列表底部会留白到下一次 scroll 才恢复。借 ResizeObserver 触碰 scrollTop
-  // 让窗口切片重新计算（值不变时 ref 写入也不触发，这里写回自身即可）。
+  // 窗口/面板尺寸变化时同步响应式视口高度，visibleCount 随之重算，
+  // 列表底部不再留白到下一次 scroll。
   resizeObserver = new ResizeObserver(() => {
-    if (viewport.value) scrollTop.value = viewport.value.scrollTop;
+    if (viewport.value) viewportH.value = viewport.value.clientHeight;
   });
   if (viewport.value) resizeObserver.observe(viewport.value);
 });
