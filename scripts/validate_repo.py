@@ -41,8 +41,11 @@ def check_backend_method_parity() -> int:
     for line in main_rs.splitlines():
         if "=>" not in line:
             continue
+        # 连字符入集：detect-apps / validate-open-app / remote-edit 等
+        # kebab-case 方法名曾对提取器不可见（后端方向漏检），与前端 spec
+        # 的 mock 提取器同批修复盲区。
         for literal in re.finditer(
-            r'"((?:connection|files|mcp)/[A-Za-z][A-Za-z/]*)"(?=\s*(?:\||=>))', line,
+            r'"((?:connection|files|mcp)/[A-Za-z][A-Za-z\-/]*)"(?=\s*(?:\||=>))', line,
         ):
             arms.add(literal.group(1))
 

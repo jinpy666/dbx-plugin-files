@@ -54,6 +54,7 @@ import type { SettingsSection } from "./components/SettingsPanel.vue";
 import SyncDialog, { type SyncDialogOptions } from "./components/SyncDialog.vue";
 import DesktopOnlyCard from "./components/DesktopOnlyCard.vue";
 import OpenWithDialog from "./components/OpenWithDialog.vue";
+import type { OpenWithConfirm } from "./components/OpenWithDialog.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
 import PathBrowseField from "./components/PathBrowseField.vue";
 import DropActionDialog from "./components/DropActionDialog.vue";
@@ -3673,9 +3674,10 @@ function closeOpenWithDialog() {
   openWithState.value = undefined;
 }
 
-/** 对话框确认：app 空串 = 系统默认应用。open RPC 立即返回会话，拉取/启动/
- * 回传进度经 files/remote-edit/state 事件回报（见 handleEvent）。 */
-async function onOpenWithConfirm(app: string) {
+/** 对话框确认：三选一通道（优先级 editorId > customCommand > app；空 app =
+ * 系统默认应用）。open RPC 立即返回会话，拉取/启动/回传进度经
+ * files/remote-edit/state 事件回报（见 handleEvent）。 */
+async function onOpenWithConfirm(payload: OpenWithConfirm) {
   const state = openWithState.value;
   if (!state) return;
   closeOpenWithDialog();
@@ -3684,7 +3686,9 @@ async function onOpenWithConfirm(app: string) {
     await call("files/remote-edit/open", {
       connectionId: state.connectionId,
       remotePath: state.entry.path,
-      ...(app ? { app } : {}),
+      ...(payload.editorId ? { editorId: payload.editorId } : {}),
+      ...(payload.customCommand ? { customCommand: payload.customCommand } : {}),
+      ...(payload.app ? { app: payload.app } : {}),
     });
   } catch (cause) {
     showError(cause);

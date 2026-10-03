@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 // 打开方式 UI 冒烟（远程编辑本地副本，FinalShell 式）：文件右键「Open with…」
-// → 选择应用对话框（预设 chips / 手输路径 / 系统默认）→ files/remote-edit/open
-// （app 透传或缺省）；sidecar files/remote-edit/state 事件 opened/synced 顶部
+// → 选择打开目标对话框（编辑器目录 chips / detect-apps 预设 / 手输路径 /
+// 自定义命令行 / 系统默认）→ files/remote-edit/open（editorId / customCommand /
+// app 透传或缺省）；sidecar files/remote-edit/state 事件 opened/synced 顶部
 // 提示、error 错误条。真实 App + mock 桥，不触达真实文件或应用。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, type VueWrapper } from "@vue/test-utils";
@@ -118,7 +119,7 @@ describe("open-with remote edit", () => {
     expect(wrapper!.find(".wb-notice").text()).toContain(workbenchMessage("en", "openWithOpening"));
   });
 
-  it("forwards a chosen preset as the app parameter", async () => {
+  it("forwards a chosen catalog editor as the editorId parameter", async () => {
     mountWorkbench();
     await settle();
     const spy = stubInvoke((method) =>
@@ -127,11 +128,37 @@ describe("open-with remote edit", () => {
     await openEntryMenu(fileEntry);
     await menuItem(workbenchMessage("en", "openWithMenu"))!.trigger("click");
     await settle();
+    // 编辑器目录 chips（files/local/editors/list）：点选 = editorId 通道，
+    // sidecar 端按目录解析（macOS open -a / argv 启动）。
     await wrapper!.findAll(".wb-preset-chip")[0]!.trigger("click");
     await wrapper!.find(".wb-dialog .wb-dialog-primary").trigger("click");
     await settle();
     const params = openWithCall(spy);
-    expect(params?.app).toBe("/Applications/wpsoffice.app");
+    expect(params?.editorId).toBe("vscode");
+    expect(params?.app).toBeUndefined();
+  });
+
+  it("forwards a custom command line as the customCommand parameter", async () => {
+    mountWorkbench();
+    await settle();
+    const spy = stubInvoke((method) =>
+      method === "files/remote-edit/open" ? { key: "k3", localPath: "/tmp/edit/report.txt" } : undefined,
+    );
+    await openEntryMenu(fileEntry);
+    await menuItem(workbenchMessage("en", "openWithMenu"))!.trigger("click");
+    await settle();
+    // 自定义命令行输入框是第二个 input：{file} 占位符由 sidecar 分词替换。
+    const inputs = wrapper!.findAll(".wb-dialog input");
+    (inputs[1]!.element as HTMLInputElement).value = "code --wait {file}";
+    await inputs[1]!.trigger("input");
+    await wrapper!.find(".wb-dialog .wb-dialog-primary").trigger("click");
+    await settle();
+    // 命令行先经 validate-open-app 的 command 分支预校验，再进 open。
+    expect(spy.mock.calls.find(([method]) => method === "files/local/validate-open-app")?.[1])
+      .toEqual({ command: "code --wait {file}" });
+    const params = openWithCall(spy);
+    expect(params?.customCommand).toBe("code --wait {file}");
+    expect(params?.app).toBeUndefined();
   });
 
   it("blocks confirm when the custom app path fails validation", async () => {

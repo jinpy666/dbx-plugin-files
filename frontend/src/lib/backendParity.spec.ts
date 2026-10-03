@@ -9,13 +9,13 @@
 // GOLDEN 与 backend/src/main.rs 分发臂的同步是人肉纪律：后端增删方法时
 // 必须同步此表。选择硬编码而非测试时读 main.rs 源码解析，是因为前端工程
 // 刻意不带 @types/node（浏览器目标），而加依赖要动锁文件；硬编码表让全部
-// 66 个方法在一处可评审，漂移时 diff 一眼可见。
+// 全部分发臂（含 kebab-case 方法名）在一处可评审，漂移时 diff 一眼可见。
 import { describe, expect, it } from "vitest";
 // Vite ?raw：编译期由 vite/client 类型声明为 string，运行时（vitest/vite-node）
 // 内联 mockHost.ts 源码文本——不需要 node:fs，也不引入 @types/node。
 import mockHostSource from "./mockHost.ts?raw";
 
-/** 后端 main.rs 全部分发臂（2026-10 提取基线，66 项）。 */
+/** 后端 main.rs 全部分发臂（含 kebab-case 方法名的提取基线）。 */
 const GOLDEN_BACKEND_METHODS: ReadonlySet<string> = new Set([
   "connection/connect",
   "connection/disconnect",
@@ -45,9 +45,14 @@ const GOLDEN_BACKEND_METHODS: ReadonlySet<string> = new Set([
   "files/listPaged",
   "files/listStream",
   "files/local/capabilities",
+  "files/local/detect-apps",
+  "files/local/editors/list",
   "files/local/exists",
   "files/local/open",
+  "files/local/open-with",
   "files/local/reveal",
+  "files/local/validate-directory",
+  "files/local/validate-open-app",
   "files/mkdir",
   "files/mount",
   "files/mount/refresh",
@@ -59,6 +64,9 @@ const GOLDEN_BACKEND_METHODS: ReadonlySet<string> = new Set([
   "files/quickPaths",
   "files/read",
   "files/readRange",
+  "files/remote-edit/close",
+  "files/remote-edit/open",
+  "files/remote-edit/status",
   "files/rename",
   "files/rmdir",
   "files/rmdirs",
@@ -88,7 +96,9 @@ const GOLDEN_BACKEND_METHODS: ReadonlySet<string> = new Set([
 /** mock 分支：mockHost.ts 的 `case "…"` 与 `method === "…"`（源码文本提取）。 */
 function mockMethods(): Set<string> {
   const methods = new Set<string>();
-  for (const match of mockHostSource.matchAll(/(?:case\s+|method\s*===\s*)"([a-zA-Z][a-zA-Z0-9]*(?:\/[a-zA-Z0-9]+)+)"/g)) {
+  // 连字符入集（detect-apps/validate-open-app/remote-edit 等 kebab 方法名）：
+  // 提取器历史上漏掉连字符方法，与 GOLDEN 双侧一起修复盲区。
+  for (const match of mockHostSource.matchAll(/(?:case\s+|method\s*===\s*)"([a-zA-Z][a-zA-Z0-9-]*(?:\/[a-zA-Z0-9-]+)+)"/g)) {
     methods.add(match[1]!);
   }
   return methods;

@@ -60,8 +60,15 @@ pub struct EditSession {
     pub connection_id: String,
     pub remote_path: String,
     pub local_path: String,
-    /// Validated external app path (`None` = OS default app).
+    /// Validated external app path (`None` = OS default app). With
+    /// `app_args`/`app_id` set this is the argv template's executable.
     pub app: Option<PathBuf>,
+    /// Catalog/custom-command channel (parity with dbx-plugin-ssh
+    /// `local/open-with`): `{file}`-template argv for `app`, or a macOS
+    /// `open -a` application id. Default values keep the plain app-path
+    /// launch (`app` alone → `open_in_app` rules).
+    pub app_args: Vec<String>,
+    pub app_id: Option<String>,
     pub status: &'static str,
     pub last_error: Option<String>,
     /// Last successful sync-back, unix epoch millis.
@@ -306,6 +313,12 @@ impl EditEngine {
                 if let Some(app) = &session.app {
                     entry["app"] = json!(app.to_string_lossy());
                 }
+                if let Some(app_id) = &session.app_id {
+                    entry["appId"] = json!(app_id);
+                }
+                if !session.app_args.is_empty() {
+                    entry["appArgs"] = json!(session.app_args);
+                }
                 if let Some(error) = &session.last_error {
                     entry["lastError"] = json!(error);
                 }
@@ -338,6 +351,8 @@ mod tests {
             remote_path: "/docs/a.txt".to_string(),
             local_path: "/tmp/a.txt".to_string(),
             app: None,
+            app_args: Vec::new(),
+            app_id: None,
             status: STATUS_WATCHING,
             last_error: None,
             last_sync_at: None,
@@ -463,6 +478,7 @@ mod tests {
         second.connection_id = "c2".to_string();
         second.created_at = 2;
         second.app = Some(PathBuf::from("/Applications/TextEdit.app"));
+        second.app_args = vec!["--wait".to_string(), "{file}".to_string()];
         engine.insert(second);
 
         let all = engine.snapshot(None);
@@ -471,8 +487,11 @@ mod tests {
         assert_eq!(all[0]["status"], json!(STATUS_SYNCING));
         assert_eq!(all[0]["lastSyncAt"], json!(42));
         assert_eq!(all[1]["app"], json!("/Applications/TextEdit.app"));
+        assert_eq!(all[1]["appArgs"], json!(["--wait", "{file}"]));
         assert!(all[0].get("lastError").is_none());
         assert!(all[0].get("baseline").is_none());
+        assert!(all[0].get("appArgs").is_none());
+        assert!(all[0].get("appId").is_none());
 
         let filtered = engine.snapshot(Some("c2"));
         assert_eq!(filtered.len(), 1);

@@ -282,6 +282,7 @@ body.wb-col-resizing { cursor: col-resize; user-select: none; -webkit-user-selec
 .wb-presets-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .wb-preset-chip { border: 1px solid var(--border); background: transparent; cursor: pointer; border-radius: 999px; padding: 3px 10px; color: var(--foreground); font-size: 11px; }
 .wb-preset-chip:hover { border-color: color-mix(in srgb, var(--primary) 55%, var(--border)); background: var(--accent); }
+.wb-preset-chip-active { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 15%, transparent); }
 /* 预览错误面板的动作行（外部打开引导 + 下载兜底）。 */
 .wb-preview-notice-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 /* 分块预览进度条（readRange 流式加载）：字节文案 + 进度 + 取消。 */
