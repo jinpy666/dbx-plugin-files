@@ -46,6 +46,10 @@ pub const STATUS_WATCHING: &str = "watching";
 pub const STATUS_SYNCING: &str = "syncing";
 pub const STATUS_ERROR: &str = "error";
 
+/// 保存回传状态事件值（ask 策略）：本地副本出现编辑器保存且待用户决议时
+/// 经 `files/remote-edit/state` 回报一次；决议走 `files/remote-edit/decide`。
+pub const STATE_MODIFIED: &str = "modified";
+
 /// Baseline stat snapshot of the local copy: `(size, mtime epoch millis)`.
 /// `None` means "never observed" (copy missing since creation).
 pub type FileStamp = (u64, i64);
@@ -60,8 +64,15 @@ pub struct EditSession {
     pub connection_id: String,
     pub remote_path: String,
     pub local_path: String,
-    /// Validated external app path (`None` = OS default app).
+    /// Validated external app path (`None` = OS default app). With
+    /// `app_args`/`app_id` set this is the argv template's executable.
     pub app: Option<PathBuf>,
+    /// Catalog/custom-command channel (parity with dbx-plugin-ssh
+    /// `local/open-with`): `{file}`-template argv for `app`, or a macOS
+    /// `open -a` application id. Default values keep the plain app-path
+    /// launch (`app` alone → `open_in_app` rules).
+    pub app_args: Vec<String>,
+    pub app_id: Option<String>,
     pub status: &'static str,
     pub last_error: Option<String>,
     /// Last successful sync-back, unix epoch millis.
@@ -75,6 +86,16 @@ pub struct EditSession {
     /// Set by `files/remote-edit/close`; the watcher closes on the next tick
     /// and an in-flight open skips app launch.
     pub closing: bool,
+    /// ask 回传策略（1:1 复刻 ssh uploadPolicy）：true = 保存后挂起等用户
+    /// 决议（`files/remote-edit/decide`），false = 保存即静默回传（默认）。
+    pub upload_ask: bool,
+    /// 用户对同一会话点过「总是上传」：后续保存绕过 ask 门禁直传。
+    pub always_upload: bool,
+    /// 一次保存正在等待决议：轮询保持但不重复触发（决议后的最新文件态
+    /// 由 decide 置位的 `sync_requested` 整体回传，与 ssh 单文件单挂起一致）。
+    pub pending_confirm: bool,
+    /// decide(upload/always) 置位：下一个 tick 无条件回传当前文件态。
+    pub sync_requested: bool,
 }
 
 /// Watcher tick outcome consumed by the main.rs watch loop.
@@ -84,6 +105,10 @@ pub enum WatchDecision {
     Continue,
     /// Local copy changed and settled: sync it back to the remote.
     Sync,
+    /// Local copy changed and settled, but the session runs the ask upload
+    /// policy without an "always upload" grant: surface a confirmation to
+    /// the user (`files/remote-edit/state` `modified`) and hold.
+    Ask,
     /// Local copy deleted (or close requested): drop the session.
     Close,
 }
@@ -100,6 +125,18 @@ pub fn tick_watch(session: &mut EditSession, current: Option<FileStamp>) -> Watc
         // The user deleted the local copy: nothing left to watch or sync.
         return WatchDecision::Close;
     };
+    // ask 门禁挂起中：一次保存只弹一次确认，轮询继续但不再触发；决议
+    // （upload/always → sync_requested，dismiss → 基线推进）解除挂起。
+    if session.pending_confirm {
+        return WatchDecision::Continue;
+    }
+    // decide 置位：无条件回传当前文件态（含 ask 挂起期间又落盘的新内容）。
+    if session.sync_requested {
+        session.sync_requested = false;
+        session.pending_stable = 0;
+        session.error_ticks = 0;
+        return WatchDecision::Sync;
+    }
     if session.status == STATUS_SYNCING {
         // Defensive: a sync is owned by the same single loop; never stack.
         return WatchDecision::Continue;
@@ -122,6 +159,11 @@ pub fn tick_watch(session: &mut EditSession, current: Option<FileStamp>) -> Watc
         if session.pending_stable >= STABLE_TICKS {
             session.pending_stable = 0;
             session.error_ticks = 0;
+            // ask 门禁：未获「总是上传」授权时挂起等决议，不自动回传。
+            if session.upload_ask && !session.always_upload {
+                session.pending_confirm = true;
+                return WatchDecision::Ask;
+            }
             return WatchDecision::Sync;
         }
     } else {
@@ -306,11 +348,23 @@ impl EditEngine {
                 if let Some(app) = &session.app {
                     entry["app"] = json!(app.to_string_lossy());
                 }
+                if let Some(app_id) = &session.app_id {
+                    entry["appId"] = json!(app_id);
+                }
+                if !session.app_args.is_empty() {
+                    entry["appArgs"] = json!(session.app_args);
+                }
                 if let Some(error) = &session.last_error {
                     entry["lastError"] = json!(error);
                 }
                 if let Some(synced) = session.last_sync_at {
                     entry["lastSyncAt"] = json!(synced);
+                }
+                if session.pending_confirm {
+                    entry["pendingConfirm"] = json!(true);
+                }
+                if session.always_upload {
+                    entry["alwaysUpload"] = json!(true);
                 }
                 entry
             })
@@ -338,6 +392,8 @@ mod tests {
             remote_path: "/docs/a.txt".to_string(),
             local_path: "/tmp/a.txt".to_string(),
             app: None,
+            app_args: Vec::new(),
+            app_id: None,
             status: STATUS_WATCHING,
             last_error: None,
             last_sync_at: None,
@@ -347,6 +403,10 @@ mod tests {
             error_ticks: 0,
             sync_seq: 0,
             closing: false,
+            upload_ask: false,
+            always_upload: false,
+            pending_confirm: false,
+            sync_requested: false,
         }
     }
 
@@ -451,6 +511,50 @@ mod tests {
         assert_eq!(watching.pending_stable, 0);
     }
 
+    /// ask 门禁（1:1 复刻 ssh uploadPolicy 的后端半边）：保存落定不直传，
+    /// 先 Ask 挂起；upload/always/dismiss 三条决议出路各归其位。
+    #[test]
+    fn tick_watch_ask_gate_and_decisions() {
+        let mut asked = session();
+        asked.upload_ask = true;
+        asked.baseline = Some((10, 100));
+        // 保存落定（两拍稳定）→ Ask（挂起等待决议），挂起期间不重复触发。
+        assert_eq!(tick_watch(&mut asked, Some((20, 200))), WatchDecision::Continue);
+        assert_eq!(tick_watch(&mut asked, Some((20, 200))), WatchDecision::Ask);
+        assert!(asked.pending_confirm);
+        assert_eq!(tick_watch(&mut asked, Some((20, 200))), WatchDecision::Continue);
+        assert_eq!(tick_watch(&mut asked, Some((30, 300))), WatchDecision::Continue);
+        // upload 决议（decide 同时清挂起并置 sync_requested）→ 下一 tick 直接
+        // Sync（同步的是最新文件态）。
+        asked.pending_confirm = false;
+        asked.sync_requested = true;
+        assert_eq!(tick_watch(&mut asked, Some((30, 300))), WatchDecision::Sync);
+        assert!(!asked.sync_requested);
+        assert!(!asked.pending_confirm);
+        // always 决议：后续保存绕过门禁直传。
+        asked.always_upload = true;
+        asked.baseline = Some((30, 300));
+        assert_eq!(tick_watch(&mut asked, Some((40, 400))), WatchDecision::Continue);
+        assert_eq!(tick_watch(&mut asked, Some((40, 400))), WatchDecision::Sync);
+
+        // dismiss 决议：基线推进到当前文件态（decide 分支写回）后不再触发。
+        let mut dismissed = session();
+        dismissed.upload_ask = true;
+        dismissed.baseline = Some((10, 100));
+        assert_eq!(tick_watch(&mut dismissed, Some((20, 200))), WatchDecision::Continue);
+        assert_eq!(tick_watch(&mut dismissed, Some((20, 200))), WatchDecision::Ask);
+        dismissed.pending_confirm = false;
+        dismissed.baseline = Some((20, 200));
+        assert_eq!(tick_watch(&mut dismissed, Some((20, 200))), WatchDecision::Continue);
+        assert_eq!(tick_watch(&mut dismissed, Some((20, 200))), WatchDecision::Continue);
+
+        // auto 策略（缺省）完全不受门禁影响：保存落定即 Sync。
+        let mut auto = session();
+        auto.baseline = Some((10, 100));
+        assert_eq!(tick_watch(&mut auto, Some((20, 200))), WatchDecision::Continue);
+        assert_eq!(tick_watch(&mut auto, Some((20, 200))), WatchDecision::Sync);
+    }
+
     #[test]
     fn snapshot_projects_camel_case_and_filters_by_connection() {
         let engine = EditEngine::new();
@@ -463,6 +567,7 @@ mod tests {
         second.connection_id = "c2".to_string();
         second.created_at = 2;
         second.app = Some(PathBuf::from("/Applications/TextEdit.app"));
+        second.app_args = vec!["--wait".to_string(), "{file}".to_string()];
         engine.insert(second);
 
         let all = engine.snapshot(None);
@@ -471,8 +576,25 @@ mod tests {
         assert_eq!(all[0]["status"], json!(STATUS_SYNCING));
         assert_eq!(all[0]["lastSyncAt"], json!(42));
         assert_eq!(all[1]["app"], json!("/Applications/TextEdit.app"));
+        assert_eq!(all[1]["appArgs"], json!(["--wait", "{file}"]));
         assert!(all[0].get("lastError").is_none());
         assert!(all[0].get("baseline").is_none());
+        assert!(all[0].get("appArgs").is_none());
+        assert!(all[0].get("appId").is_none());
+        assert!(all[0].get("pendingConfirm").is_none());
+        assert!(all[0].get("alwaysUpload").is_none());
+        // ask 挂起 / 总是上传授权按需投影。
+        let mut pending = session();
+        pending.key = "k3".to_string();
+        pending.created_at = 3;
+        pending.pending_confirm = true;
+        pending.always_upload = true;
+        engine.insert(pending);
+        let row = engine.snapshot(Some("c1"))[1].clone();
+        assert_eq!(row["pendingConfirm"], json!(true));
+        assert_eq!(row["alwaysUpload"], json!(true));
+        // 移除投影样本：find_for_path 的断言依赖 (c1, /docs/a.txt) 唯一。
+        engine.remove("k3");
 
         let filtered = engine.snapshot(Some("c2"));
         assert_eq!(filtered.len(), 1);

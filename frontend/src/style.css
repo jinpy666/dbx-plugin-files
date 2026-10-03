@@ -244,6 +244,16 @@ body.wb-col-resizing { cursor: col-resize; user-select: none; -webkit-user-selec
 .wb-settings-help, .wb-settings-default { margin: 0; color: var(--muted-foreground); font-size: 11px; overflow-wrap: anywhere; }
 .wb-settings-error { margin: 0; color: var(--destructive); font-size: 11px; overflow-wrap: anywhere; }
 .wb-settings-path-row { display: flex; align-items: center; gap: 6px; }
+/* 外部编辑器设置（ssh sftpEdit 复刻）：字段列布局 + 子菜单/勾选标识。 */
+.wb-editor-field { display: flex; flex-direction: column; gap: 4px; }
+.wb-editor-field select { width: 100%; border: 1px solid var(--border); border-radius: var(--radius); background: color-mix(in srgb, var(--background) 60%, var(--muted)); color: var(--foreground); padding: 5px 8px; }
+.wb-editor-field select option, .wb-settings-path-row select option { background: rgb(23 23 23); color: var(--foreground); }
+:root[data-theme="light"] .wb-editor-field select option, :root[data-theme="light"] .wb-settings-path-row select option { background: #fff; }
+.wb-menu-sub { position: relative; }
+.wb-context-submenu { position: absolute; left: calc(100% - 2px); top: -4px; min-width: 200px; max-height: 60vh; overflow-y: auto; }
+.wb-menu-sub-chevron { margin-left: auto; opacity: 0.6; }
+.wb-menu-check { margin-left: auto; color: var(--primary); }
+.wb-settings-path-row select { border: 1px solid var(--border); border-radius: var(--radius); background: color-mix(in srgb, var(--background) 60%, var(--muted)); color: var(--foreground); padding: 4px 8px; flex: 1; min-width: 0; }
 .wb-settings-path-row input { flex: 1 1 auto; min-width: 0; height: 26px; padding: 0 7px; font-size: 11px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--background); color: var(--foreground); }
 /* 挂载到本机：独立顶层弹窗（高于设置 55/预览 60/确认 65），内嵌本机目录
    浏览器（files/list + __local__），直接选目录后挂载。 */
@@ -282,6 +292,7 @@ body.wb-col-resizing { cursor: col-resize; user-select: none; -webkit-user-selec
 .wb-presets-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .wb-preset-chip { border: 1px solid var(--border); background: transparent; cursor: pointer; border-radius: 999px; padding: 3px 10px; color: var(--foreground); font-size: 11px; }
 .wb-preset-chip:hover { border-color: color-mix(in srgb, var(--primary) 55%, var(--border)); background: var(--accent); }
+.wb-preset-chip-active { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 15%, transparent); }
 /* 预览错误面板的动作行（外部打开引导 + 下载兜底）。 */
 .wb-preview-notice-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 /* 分块预览进度条（readRange 流式加载）：字节文案 + 进度 + 取消。 */
@@ -375,6 +386,11 @@ body.wb-col-resizing { cursor: col-resize; user-select: none; -webkit-user-selec
 .wb-dialog .wb-dialog-body .wb-dialog-danger-list { margin: 6px 0 0; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--destructive) 40%, transparent); border-radius: var(--radius); color: var(--destructive); }
 .wb-dialog .wb-dialog-body input, .wb-dialog .wb-dialog-body textarea { width: 100%; margin-top: 6px; border: 1px solid var(--border); border-radius: var(--radius); background: color-mix(in srgb, var(--background) 60%, var(--muted)); color: var(--foreground); padding: 5px 8px; }
 .wb-dialog .wb-dialog-body textarea { min-height: 150px; font-family: var(--mono-font-family); resize: vertical; }
+/* 自定义命令弹窗（打开方式子菜单）：提示段与勾选行的块级排布；checkbox
+   不吃全宽 input 规则（否则勾选框横贯整行）。 */
+.wb-dialog .wb-dialog-body > p.wb-settings-help { margin: 8px 0 0; }
+.wb-dialog .wb-dialog-body > label { display: flex; align-items: center; gap: 6px; margin-top: 8px; color: var(--foreground); }
+.wb-dialog .wb-dialog-body label input[type="checkbox"] { width: auto; margin: 0; flex: 0 0 auto; }
 /* R3-P2-4：弹层内行内校验提示（文件名非法等）。 */
 .wb-dialog .wb-dialog-warning { margin: 6px 0 0; color: var(--destructive); font-size: 12px; }
 /* ConfirmDialog 表单字段（右键操作共用）：标签-输入行-提示三段式，与

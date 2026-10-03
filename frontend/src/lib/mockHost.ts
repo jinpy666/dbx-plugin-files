@@ -858,10 +858,37 @@ export function installMockHost() {
         return { valid: true, path: dir };
       }
       case "files/local/validate-open-app": {
-        // mock 不探测真实文件系统：非空即通过，保持设置链路可走查。
+        // mock 不探测真实文件系统：非空即通过，保持设置链路可走查。command
+        // 分支（自定义命令行通道）同理——非空命令行即通过。
+        const command = str("command");
+        if (command) return { valid: true, command };
         const app = str("path");
         if (!app) throw new Error("Missing path");
         return { valid: true, path: app };
+      }
+      case "files/local/editors/list": {
+        // 编辑器目录（parity with 后端 local_editors）：?local=1 返回一组
+        // 固定条目（文本编辑器 + 办公套件，launch 规格与真实 sidecar 同形），
+        // web 宿主回空数组（对话框回落 detect-apps 预设）。
+        if (!demoLocal) return { platform: "web", editors: [] };
+        const text = [".txt", ".md", ".log", ".json", ".xml", ".yaml", ".ini", ".sh", ".py"];
+        const editors: Array<{ id: string; name: string; available: boolean; launch: Record<string, unknown>; suggestedExtensions: string[] }> = [
+          { id: "vscode", name: "Visual Studio Code", available: true, launch: demoPlatform === "macos" ? { kind: "openApp", appId: "Visual Studio Code" } : { kind: "exe", exe: "/usr/local/bin/code", args: ["{file}"] }, suggestedExtensions: text },
+          { id: "sublime", name: "Sublime Text", available: false, launch: demoPlatform === "macos" ? { kind: "openApp", appId: "Sublime Text" } : { kind: "exe", exe: "/usr/bin/subl", args: ["{file}"] }, suggestedExtensions: text },
+        ];
+        if (demoPlatform === "macos") {
+          editors.push({ id: "textedit", name: "TextEdit", available: true, launch: { kind: "openApp", appId: "TextEdit" }, suggestedExtensions: text });
+        }
+        if (demoPlatform === "windows") {
+          editors.push({ id: "notepad", name: "Notepad", available: true, launch: { kind: "exe", exe: "C:\\Windows\\System32\\notepad.exe", args: ["{file}"] }, suggestedExtensions: text });
+        }
+        return { platform: demoPlatform, editors };
+      }
+      case "files/local/open-with": {
+        // 用编辑器目录条目 / 自定义命令行打开已完成的下载：桌面 OS 能力。
+        if (!demoLocal) throw new Error("OS 能力，纯浏览器态不适用");
+        if (!str("path")) throw new Error("Missing path");
+        return { success: true };
       }
       case "files/mount": {
         const mountId = `mock-mount-${++mockMountSeq}`;
@@ -922,6 +949,17 @@ export function installMockHost() {
       }
       case "files/remote-edit/close": {
         if (!str("key")) throw new Error("Missing key");
+        return { success: true };
+      }
+      case "files/remote-edit/decide": {
+        // ask 回传策略决议（upload/always/dismiss）：mock 校验形状即成功，
+        // 真实链路由 sidecar 监视环消费（upload/always 置位回传、dismiss
+        // 推进基线）。
+        if (!str("key")) throw new Error("Missing key");
+        const action = str("action");
+        if (!["upload", "always", "dismiss"].includes(action)) {
+          throw new Error(`Unknown decide action '${action}'`);
+        }
         return { success: true };
       }
       case "files/unmount": {

@@ -33,6 +33,8 @@ import {
   RefreshCw,
   Search,
   AppWindow,
+  Check,
+  ChevronRight,
   Gauge,
   Scale,
   Share2,
@@ -53,8 +55,19 @@ import MountDialog from "./components/MountDialog.vue";
 import type { SettingsSection } from "./components/SettingsPanel.vue";
 import SyncDialog, { type SyncDialogOptions } from "./components/SyncDialog.vue";
 import DesktopOnlyCard from "./components/DesktopOnlyCard.vue";
-import OpenWithDialog from "./components/OpenWithDialog.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
+import {
+  defaultPatternFor,
+  loadEditorConfig,
+  newCustomEditorId,
+  resolveEditorForFile,
+  sanitizeEditorConfig,
+  saveEditorConfig,
+  type CustomEditor,
+  type EditorConfig,
+  type KnownEditor,
+  type ResolvedEditor,
+} from "./lib/editorRules";
 import PathBrowseField from "./components/PathBrowseField.vue";
 import DropActionDialog from "./components/DropActionDialog.vue";
 import FileConflictDialog from "./components/FileConflictDialog.vue";
@@ -129,10 +142,7 @@ type MenuAction =
   // 目录打包下载（files/archiveDownload，download/start 同形任务）
   | "archiveDownload"
   // 批量（多选右键，P-FILES 压缩轮 + parity-tools 批量重命名）
-  | "downloadSelected" | "copySelected" | "moveSelected" | "deleteSelected" | "compressSelected" | "archiveDownloadSelected" | "batchRenameSelected"
-  // 打开方式（远程编辑本地副本，FinalShell 式）：选应用 → 拉临时副本 →
-  // 本地保存自动回传远端
-  | "openWith";
+  | "downloadSelected" | "copySelected" | "moveSelected" | "deleteSelected" | "compressSelected" | "archiveDownloadSelected" | "batchRenameSelected";
 
 interface ConnectionSummary {
   name?: string;
@@ -497,6 +507,10 @@ function openSettings(category?: SettingsCategory) {
     void loadMounts();
     void loadShares();
   }
+  // 已知编辑器目录每次打开设置都重探（ssh 同行为）：本机安装状态可能已变化；
+  // 静默失败——旧 sidecar 缺方法时不该每次开设置都弹错误。
+  externalEditorsLoaded = false;
+  void ensureExternalEditors({ silent: true });
   void nextTick(() => document.querySelector<HTMLElement>(".wb-settings-nav .is-active")?.focus());
 }
 
@@ -1079,12 +1093,18 @@ function handleEvent(event: DbxPluginEvent) {
   // 此处只做窄化排除，后端事件走下方 method 分派。
   if (event.type === "env") return;
   if (event.method === "files/remote-edit/state") {
-    // 打开方式（远程编辑）会话状态：opened/synced 顶部提示，error 错误条。
-    const state = event.params as { remotePath?: string; state?: string; error?: string };
+    // 打开方式（远程编辑）会话状态：opened/synced 顶部提示，error 错误条；
+    // modified = ask 回传策略的保存待决议（排队弹三档确认）。
+    const state = event.params as { remotePath?: string; state?: string; error?: string; key?: string };
     const name = state.remotePath ? baseName(state.remotePath) : "";
     if (state.state === "opened") showNotice(t("remoteEditOpened", { name }));
     else if (state.state === "synced") showNotice(t("remoteEditSynced", { name }));
-    else if (state.state === "error") showError(new Error(t("remoteEditFailed", { error: state.error ?? "" })));
+    else if (state.state === "modified") {
+      const key = state.key ?? "";
+      if (key && !watchModifiedQueue.value.some((row) => row.key === key)) {
+        watchModifiedQueue.value = [...watchModifiedQueue.value, { key, name }];
+      }
+    } else if (state.state === "error") showError(new Error(t("remoteEditFailed", { error: state.error ?? "" })));
     return;
   }
   if (event.method === "files/list/chunk") {
@@ -3658,36 +3678,156 @@ async function onOpenAppPrefsChange(prefs: OpenAppPrefs) {
 // 用用户配置的外部应用打开已完成的下载：按扩展名映射或全局默认解析出 app；
 // sidecar 仍按完成历史白名单二次校验。未配置时提示去设置页，不静默降级成
 // 系统默认应用（那会让这个入口失去意义）。
-// ---- 打开方式（远程编辑本地副本，FinalShell 式）-----------------------------
-// 右键「打开方式…」：选系统默认 / 预设 / 手输应用后，sidecar 把文件拉到本机
-// 临时副本并启动应用；本地保存由 sidecar 监视循环自动回传远端原路径。
-// 目标连接在打开时固化——双栏下用右键所在栏的连接，而不是活动连接。
+// ---- 打开方式（远程编辑本地副本，FinalShell 式；1:1 复刻 ssh 子菜单流）----
+// 右键「打开方式」子菜单 = 系统默认 + sidecar 编辑器目录可用项 + 自定义编辑
+// 器 + 「自定义命令…」弹窗；选中即开（一次性，不写关联），关联/默认/回传
+// 策略管理在设置「打开方式」区。目标连接在打开时固化——双栏下用右键所在栏
+// 的连接，而不是活动连接。
+const editorConfig = ref<EditorConfig>(loadEditorConfig());
 
-const openWithState = ref<{ entry: FileEntry; connectionId: string }>();
-
-function openOpenWithDialog(entry: FileEntry, side: PaneSide) {
-  openWithState.value = { entry, connectionId: sideConnectionId(side) ?? connectionId.value };
+/** 覆盖写回编辑器配置（子菜单「记住为默认」/设置面板共用入口），净化后落存储。 */
+function updateEditorConfig(next: EditorConfig) {
+  editorConfig.value = sanitizeEditorConfig(next);
+  saveEditorConfig(editorConfig.value);
 }
 
-function closeOpenWithDialog() {
-  openWithState.value = undefined;
-}
-
-/** 对话框确认：app 空串 = 系统默认应用。open RPC 立即返回会话，拉取/启动/
- * 回传进度经 files/remote-edit/state 事件回报（见 handleEvent）。 */
-async function onOpenWithConfirm(app: string) {
-  const state = openWithState.value;
-  if (!state) return;
-  closeOpenWithDialog();
-  showNotice(t("openWithOpening"));
+// sidecar 编辑器目录（files/local/editors/list，进程内缓存；子菜单展开与
+// 设置打开时拉取，后者强制重探——本机安装状态可能已变化，与 ssh 同行为）。
+const externalEditors = ref<KnownEditor[]>([]);
+let externalEditorsLoaded = false;
+async function ensureExternalEditors(options?: { silent?: boolean }): Promise<KnownEditor[]> {
+  if (externalEditorsLoaded) return externalEditors.value;
   try {
+    const payload = await window.dbxPlugin.invoke<{ editors: KnownEditor[] }>(
+      "files/local/editors/list",
+    );
+    externalEditors.value = payload.editors ?? [];
+    externalEditorsLoaded = true;
+  } catch (cause) {
+    if (!options?.silent) showError(cause);
+  }
+  return externalEditors.value;
+}
+
+/** 子菜单可选项：只列本机真实可用的目录条目（不可用条目留给设置关联回退）。 */
+const availableExternalEditors = computed(() =>
+  externalEditors.value.filter((editor) => editor.available),
+);
+
+/** 当前文件按关联/默认解析到的编辑器 id（子菜单打勾标识；system 返回空串）。 */
+function mappedEditorIdFor(fileName: string): string {
+  const resolved = resolveEditorForFile(fileName, editorConfig.value, externalEditors.value);
+  return resolved.kind === "system" ? "" : resolved.editor.id;
+}
+
+/** 打开目标 → open RPC 参数：known 走 editorId、custom 走 customCommand、
+ * system 缺省（OS 默认应用）；三条路共用 sidecar 的下载副本 + 监视回传环。 */
+function openChannelParams(resolved: ResolvedEditor): Record<string, string> {
+  if (resolved.kind === "known") return { editorId: resolved.editor.id };
+  if (resolved.kind === "custom") return { customCommand: resolved.editor.command };
+  return {};
+}
+
+/** 子菜单/关联/默认统一入口：解析编辑器 → files/remote-edit/open（ask 策略
+ * 随配置下发）。open RPC 立即返回会话，拉取/启动/回传进度经
+ * files/remote-edit/state 事件回报（见 handleEvent）。 */
+async function openInExternalEditor(entry: FileEntry, side: PaneSide, override?: ResolvedEditor) {
+  // 目标连接在打开时固化（双栏下用右键所在栏的连接）。
+  const targetConnectionId = sideConnectionId(side) ?? connectionId.value;
+  contextMenu.value = undefined;
+  try {
+    await ensureExternalEditors();
+    const resolved = override ?? resolveEditorForFile(entry.name, editorConfig.value, externalEditors.value);
+    showNotice(t("openWithOpening"));
     await call("files/remote-edit/open", {
-      connectionId: state.connectionId,
-      remotePath: state.entry.path,
-      ...(app ? { app } : {}),
+      connectionId: targetConnectionId,
+      remotePath: entry.path,
+      ...openChannelParams(resolved),
+      ...(editorConfig.value.uploadPolicy === "ask" ? { uploadPolicy: "ask" } : {}),
     });
   } catch (cause) {
     showError(cause);
+  }
+}
+
+function openWithSystemEntry(entry: FileEntry, side: PaneSide) {
+  void openInExternalEditor(entry, side, { kind: "system" });
+}
+
+function openWithKnownEntry(entry: FileEntry, side: PaneSide, editor: KnownEditor) {
+  void openInExternalEditor(entry, side, { kind: "known", editor });
+}
+
+function openWithCustomEntry(entry: FileEntry, side: PaneSide, editor: CustomEditor) {
+  void openInExternalEditor(entry, side, { kind: "custom", editor });
+}
+
+// 子菜单开合状态：打开时惰性拉编辑器目录（同 ssh ensureExternalEditors）。
+const openWithSubOpen = ref(false);
+
+function toggleOpenWithSub(open: boolean) {
+  openWithSubOpen.value = open;
+  if (open) void ensureExternalEditors();
+}
+
+// 自定义编辑器命令弹窗：命令串由 sidecar argv 化执行（不过 shell），
+// 「记住为默认」写入 {pattern → customId} 关联（pattern 取文件扩展名掩码）。
+const customEditorOpen = ref(false);
+const customEditorEntry = ref<{ entry: FileEntry; side: PaneSide }>();
+const customEditorName = ref("");
+const customEditorCommand = ref("");
+const customEditorRemember = ref(true);
+const customEditorPattern = computed(() =>
+  customEditorEntry.value ? defaultPatternFor(customEditorEntry.value.entry.name) : "*",
+);
+
+function beginCustomEditorCommand(entry: FileEntry, side: PaneSide) {
+  contextMenu.value = undefined;
+  customEditorEntry.value = { entry, side };
+  customEditorName.value = "";
+  customEditorCommand.value = "";
+  customEditorRemember.value = true;
+  customEditorOpen.value = true;
+}
+
+async function commitCustomEditor() {
+  const state = customEditorEntry.value;
+  const command = customEditorCommand.value.trim();
+  if (!state || !command) return;
+  const id = newCustomEditorId();
+  const name = customEditorName.value.trim() || command.split(/\s+/)[0] || id;
+  const next = sanitizeEditorConfig(editorConfig.value);
+  next.customEditors = [...next.customEditors, { id, name, command }];
+  if (customEditorRemember.value) {
+    const pattern = defaultPatternFor(state.entry.name);
+    next.associations = [
+      ...next.associations.filter((assoc) => assoc.pattern.toLowerCase() !== pattern.toLowerCase()),
+      { pattern, customId: id },
+    ];
+  }
+  updateEditorConfig(next);
+  customEditorOpen.value = false;
+  await openInExternalEditor(state.entry, state.side, { kind: "custom", editor: { id, name, command } });
+}
+
+// ask 回传策略（后端 tick 挂起）：保存 modified 事件按会话排队，队头弹
+// 三档决议（总是上传/上传一次/取消），与 ssh 确认队列同形；决议经
+// files/remote-edit/decide 下发后出队露出下一条。
+const watchModifiedQueue = ref<Array<{ key: string; name: string }>>([]);
+const watchModifiedPrompt = computed(() => watchModifiedQueue.value[0] ?? null);
+const watchModifiedBusy = ref(false);
+
+async function decideWatchModified(action: "upload" | "always" | "dismiss") {
+  const head = watchModifiedPrompt.value;
+  if (!head || watchModifiedBusy.value) return;
+  watchModifiedBusy.value = true;
+  try {
+    await call("files/remote-edit/decide", { key: head.key, action });
+  } catch (cause) {
+    showError(cause);
+  } finally {
+    watchModifiedBusy.value = false;
+    watchModifiedQueue.value = watchModifiedQueue.value.slice(1);
   }
 }
 
@@ -3804,9 +3944,6 @@ function menuAction(action: MenuAction) {
       break;
     case "download":
       if (entry.kind === "file") void downloadEntry(entry, side);
-      break;
-    case "openWith":
-      openOpenWithDialog(entry, side);
       break;
     case "rename":
       startRename(entry, side);
@@ -4529,8 +4666,8 @@ function onDocumentKeydown(event: KeyboardEvent) {
     if (!syncDialogBusy.value) closeSyncDialog();
     return;
   }
-  if (openWithState.value) {
-    closeOpenWithDialog();
+  if (customEditorOpen.value) {
+    customEditorOpen.value = false;
     return;
   }
   if (previewPath.value) {
@@ -4969,15 +5106,55 @@ onBeforeUnmount(() => {
       @pair-change="onSyncPairChange"
     />
 
-    <!-- 打开方式：远程编辑本地副本（FinalShell 式），选默认/预设/手输应用 -->
-    <OpenWithDialog
-      v-if="openWithState"
-      :t="t"
-      :presets="appPresets"
-      :initial-app="resolveOpenApp(openAppPrefs, openWithState.entry.name)"
-      @close="closeOpenWithDialog"
-      @confirm="onOpenWithConfirm"
-    />
+    <!-- 自定义编辑器命令弹窗（1:1 复刻 ssh customCommand 弹窗）：命令串由
+         sidecar argv 化执行（不过 shell，{file} 占位符替换本地副本路径），
+         「记住为默认」写入 {pattern → customId} 关联（pattern 取扩展名掩码）。 -->
+    <div v-if="customEditorOpen" class="wb-dialog-backdrop" @click.self="customEditorOpen = false">
+      <div class="wb-dialog" role="dialog" aria-modal="true" :aria-label="t('sftpEdit.customCommandTitle')">
+        <header>{{ t("sftpEdit.customCommandTitle") }}</header>
+        <div class="wb-dialog-body">
+          <input
+            v-model="customEditorName"
+            spellcheck="false"
+            :placeholder="t('sftpEdit.customEditorNamePlaceholder')"
+            :aria-label="t('sftpEdit.customEditorNamePlaceholder')"
+          />
+          <input
+            v-model="customEditorCommand"
+            class="wb-mono"
+            spellcheck="false"
+            autofocus
+            :placeholder="t('sftpEdit.customEditorCommandPlaceholder')"
+            :aria-label="t('sftpEdit.customEditorCommandPlaceholder')"
+            @keydown.enter="commitCustomEditor"
+          />
+          <p class="wb-settings-help">{{ t("sftpEdit.customEditorCommandHint") }}</p>
+          <label>
+            <input v-model="customEditorRemember" type="checkbox" />
+            <span>{{ t("sftpEdit.rememberAssociation", { pattern: customEditorPattern }) }}</span>
+          </label>
+        </div>
+        <footer>
+          <button type="button" class="wb-dialog-cancel" @click="customEditorOpen = false">{{ t("cancel") }}</button>
+          <button type="button" class="wb-dialog-primary" :disabled="!customEditorCommand.trim()" @click="commitCustomEditor">{{ t("sftpEdit.customCommandRun") }}</button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- 外部编辑器保存回传确认（ask 策略，1:1 复刻 ssh 确认队列）：一次保存
+         只弹一次，按会话排队逐个决议；遮罩 = 本次保存不回传（dismiss）。 -->
+    <div v-if="watchModifiedPrompt" class="wb-dialog-backdrop" @click.self="decideWatchModified('dismiss')">
+      <div class="wb-dialog" role="alertdialog" aria-modal="true" :aria-label="t('sftpEdit.modifiedTitle')">
+        <header>{{ t("sftpEdit.modifiedTitle") }}</header>
+        <div class="wb-dialog-body">
+          <p style="margin: 0">{{ t("sftpEdit.modifiedMessage", { name: watchModifiedPrompt.name }) }}</p>
+        </div>
+        <footer>
+          <button type="button" class="wb-dialog-cancel" @click="decideWatchModified('always')">{{ t("sftpEdit.alwaysUpload") }}</button>
+          <button type="button" class="wb-dialog-primary" @click="decideWatchModified('upload')">{{ t("sftpEdit.uploadOnce") }}</button>
+        </footer>
+      </div>
+    </div>
 
     <!-- 独立设置弹窗（对标 ssh 插件 settings-modal）：左侧分类导航 + 右侧内容
          面板，Esc/遮罩/关闭钮均可关闭；Tab 焦点陷阱同预览弹窗。dock 只保留
@@ -5023,6 +5200,8 @@ onBeforeUnmount(() => {
               :open-app="openAppPrefs"
               :open-app-error="openAppError"
               :presets="appPresets"
+              :editor-config="editorConfig"
+              :editors="externalEditors"
               :bwlimit="bwlimitDraft"
               :bwlimit-error="bwlimitError"
               :conflict-policy="conflictPolicy"
@@ -5030,6 +5209,7 @@ onBeforeUnmount(() => {
               @save-conflict-policy="onConflictPolicySave"
               @save-open-app="onOpenAppPrefsChange"
               @save-bwlimit="onBwlimitSave"
+              @save-editor-config="updateEditorConfig"
             />
             <div v-else class="wb-settings-pane" :aria-busy="mountsLoading">
               <DesktopOnlyCard v-if="!canSaveLocal" :t="t" />
@@ -5109,8 +5289,29 @@ onBeforeUnmount(() => {
         <!-- 常用置顶：打开/预览/下载 → 编辑变换 → 分析校验 → 同步导入分享 → 维护 → 删除独立危险区 → 剪贴板。 -->
         <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('open')"><FolderOpen /> {{ t("openDirectory") }}</button>
         <button v-if="contextMenu.entry.kind === 'file' && !isArchivePath(contextMenu.entry.path)" role="menuitem" @click="menuAction('preview')"><Eye /> {{ t("preview") }}</button>
-        <!-- 打开方式（桌面端）：远程编辑本地副本，选默认/预设/手输应用 -->
-        <button v-if="contextMenu.entry.kind === 'file' && canSaveLocal && !isArchivePath(contextMenu.entry.path)" role="menuitem" @click="menuAction('openWith')"><ExternalLink /> {{ t("openWithMenu") }}</button>
+        <!-- 打开方式（1:1 复刻 ssh 子菜单流）：唯一入口——系统默认 + 编辑器
+             目录可用项 + 自定义编辑器 + 「自定义命令…」；选中即开（一次性，
+             不写关联），勾选标识当前关联/默认解析命中（右对齐），关联管理在
+             设置「打开方式」区。web/docker 的 sidecar 不在本机，canSaveLocal
+             未探测到前不渲染。 -->
+        <div v-if="contextMenu.entry.kind === 'file' && canSaveLocal && !isArchivePath(contextMenu.entry.path)" class="wb-menu-sub" role="none" @mouseenter="toggleOpenWithSub(true)" @mouseleave="toggleOpenWithSub(false)">
+          <!-- 点击恒为展开而非取反：hover 已把子菜单打开，取反会让紧随的点击
+               立即关掉它（走查实测）；收口走鼠标移出/Esc。 -->
+          <button role="menuitem" :aria-haspopup="true" :aria-expanded="openWithSubOpen" @click="toggleOpenWithSub(true)"><ExternalLink /> {{ t("openWithMenu") }}<ChevronRight class="wb-menu-sub-chevron" /></button>
+          <div v-if="openWithSubOpen" class="wb-context-menu wb-context-submenu" role="menu">
+            <button role="menuitem" @click="openWithSystemEntry(contextMenu.entry, contextMenu.side)">{{ t("sftpEdit.systemDefault") }}<Check v-if="!mappedEditorIdFor(contextMenu.entry.name)" class="wb-menu-check" /></button>
+            <template v-if="availableExternalEditors.length">
+              <hr />
+              <button v-for="editor in availableExternalEditors" :key="`known-${editor.id}`" role="menuitem" :title="editor.launch.kind === 'exe' ? editor.launch.exe : editor.launch.appId" @click="openWithKnownEntry(contextMenu.entry, contextMenu.side, editor)">{{ editor.name }}<Check v-if="mappedEditorIdFor(contextMenu.entry.name) === editor.id" class="wb-menu-check" /></button>
+            </template>
+            <template v-if="editorConfig.customEditors.length">
+              <hr />
+              <button v-for="editor in editorConfig.customEditors" :key="`custom-${editor.id}`" role="menuitem" :title="editor.command" @click="openWithCustomEntry(contextMenu.entry, contextMenu.side, editor)">{{ editor.name }}<Check v-if="mappedEditorIdFor(contextMenu.entry.name) === editor.id" class="wb-menu-check" /></button>
+            </template>
+            <hr />
+            <button role="menuitem" @click="beginCustomEditorCommand(contextMenu.entry, contextMenu.side)"><Pencil /> {{ t("sftpEdit.customCommand") }}</button>
+          </div>
+        </div>
         <button v-if="contextMenu.entry.kind === 'file' && isArchivePath(contextMenu.entry.path)" role="menuitem" @click="menuAction('archiveContents')"><Archive /> {{ t("archiveContents") }}</button>
         <button v-if="contextMenu.entry.kind === 'file'" role="menuitem" @click="menuAction('download')"><Download /> {{ t("download") }}</button>
         <!-- 打包下载（parity-tools）：目录条目的「压缩包下载」动作。 -->

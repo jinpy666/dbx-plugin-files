@@ -2135,3 +2135,99 @@ sccache 层移植主仓后经真实 runner 验证（355 次编译请求正常走
 sccache；zig shim 与 PKG_CONFIG_PATH 修复由 files Linux job 最先
 证明通过，随后 ssh Linux 同链路通过）。files/windows-x64 在主仓
 矩阵同批全绿（run 36799950921 部分窗口）。
+
+## 编辑器目录 + 打开方式三通道（对标 ssh 插件，2026-10-04）
+
+参考同级 dbx-plugin-ssh 的「本地编辑器打开 + 下载上传设置」设计做差异复刻。
+下载/上传设置侧（下载目录、同名冲突策略、bwlimit、remote-edit 回传环）此前
+批次已对齐；本批补齐剩余缺口——**编辑器目录与 editorId/自定义命令通道**：
+
+- **backend/src/local_editors.rs（新）**：逐平台知名编辑器目录（macOS
+  `/Applications` 探测 vscode/sublime/textedit/wps/msword/msexcel/msppt/
+  libreoffice；Windows 真实 .exe 路径含 WPS 版本化目录下钻与 notepad/
+  notepad++；Linux PATH 探测 code/subl/gedit/kate/soffice/wps/et/wpp），
+  每条带 `available`、`launch`（openApp|exe）、`suggestedExtensions`；探测
+  只走文件系统/PATH、绝不 spawn（EnvPaths/lister 注入可离台单测）。附
+  shlex 风格命令行分词（Windows 反斜杠字面量特例）与 `{file}` 占位符替换。
+- **`files/local/editors/list`**：目录 payload（不可用条目仍列出，偏好可后装
+  重解析）；**`files/local/open-with`**：editorId/自定义命令打开已完成下载，
+  与 `files/local/open` 同一条下载历史白名单，argv 启动、不经 shell。
+- **`files/remote-edit/open` 三通道**：打开目标优先级 editorId > customCommand
+  > app 路径 > 系统默认；EditSession 增加 `app_args`/`app_id`，启动统一走
+  `local_editors::launch_remote_edit`（openApp 仅 macOS，argv 带占位符替换）。
+- **`files/local/validate-open-app` command 分支**：命令行预校验（分词非空
+  即过；下载副本是昂贵前置，失败要早在启动前）。OpenWithDialog 消费目录
+  chips（选中态 aria-pressed）+ 新增自定义命令输入，确认载荷改为
+  `{ app, editorId?, customCommand? }`；i18n 七语补齐。
+- **防漂移 tripwire 盲区修复**：`validate_repo.py` 分发臂提取器与
+  backendParity.spec 的 mock 提取器字符类都不含连字符，detect-apps/
+  validate-open-app/remote-edit 等 kebab 方法名对双侧校验不可见。两侧同批
+  修复并补齐 GOLDEN（66→74 项，新增 editors/list、open-with 及此前不可见的
+  6 个 kebab 方法）；mock 实现 editors/list、open-with 与 validate command
+  分支。
+
+验证：`cargo test --locked` 495 全绿（local_editors 11 条新单测含目录探测/
+分词/占位符/白名单拒绝/启动分派）；`pnpm typecheck/test/build` 全绿（646
+测试，openWithRemoteEdit 新契约用例 editorId/customCommand 两通道）；
+`validate_repo.py` 74:74、`connection-forms/verify.mjs` PASS。剩余风险：
+open-with 暂无工作台直接调用方（传输面板「打开」仍走 app 路径偏好），
+作为脚本化/后续 UI 的目录通道存在。
+
+## 右键打开方式 1:1 复刻 ssh 子菜单流 + 设置区（2026-10-04 续）
+
+在上一批（编辑器目录 + 三通道 RPC）基础上，把交互体验对齐到 ssh 的完整形态：
+
+- **右键子菜单（唯一入口，对标 ssh ContextMenuSub）**：系统默认程序 →
+  编辑器目录可用项（title 显示 launch 路径）→ 自定义编辑器 → 「自定义命令…」，
+  当前关联/默认解析命中项右对齐打勾（`mappedEditorIdFor`）；选中即开
+  （一次性不写关联），`files/local/editors/list` 子菜单展开时惰性拉取。
+  原「打开方式」对话框流（OpenWithDialog）按 ssh 形态移除。
+- **自定义命令弹窗（对标 ssh customCommand 弹窗）**：名称（可选，缺省取
+  命令首词）+ 命令行（argv 化、不过 shell、{file} 占位符）+ 「记住为默认」
+  （写入 `{pattern → customId}` 关联，pattern 取扩展名掩码）+ 保存并打开。
+- **编辑器配置单键（lib/editorRules.ts，1:1 移植）**：EditorConfig
+  （默认编辑器/关联表/自定义编辑器/uploadPolicy）+ WinSCP 式关联解析
+  （精确文件名 > 更长扩展 > 列表序）+ 存储净化；prefsStore 白名单新增
+  `dbx-files.editor-config`。16 条纯函数单测（含存储往返）。
+- **设置「打开方式」区（对标 ssh sftpEdit 设置块）**：默认编辑器
+  （system/known:/custom: 哨兵编码）、保存回传策略 radio（auto/ask）、
+  关联表增删（pattern + 目标下拉）、自定义编辑器列表删除（关联一并清理、
+  默认指向回落）；草稿化 + 统一「保存更改」提交（dirty 含编辑器配置对比）。
+- **ask 回传策略全链**：`files/remote-edit/open` 增加 `uploadPolicy`
+  参数；EditSession 增加 `upload_ask/always_upload/pending_confirm/
+  sync_requested`，保存落定走 `WatchDecision::Ask`（一次保存只回报一次
+  `modified` 状态事件）；新 RPC `files/remote-edit/decide`
+  （upload 一次性回传 / always 记住授权直传 / dismiss 基线推进到当前文件
+  态）。前端 modified 事件按会话排队，队头弹三档决议弹窗（与 ssh 确认
+  队列同形）。remote_edit 8 条单测覆盖门禁/决议三出路/auto 不受影响。
+
+验证：`cargo test --locked` 496 全绿；`pnpm typecheck/test/build` 全绿
+（662 测试；openWithRemoteEdit 重写为子菜单流 5 用例：系统默认透传、
+editorId、自定义命令+记住为默认持久化、modified→decide 决议、state 事件
+提示/错误条）；`validate_repo.py` 75:75（新增 decide）；connection-forms
+verify PASS。剩余风险：ask 策略的「总是上传」授权按会话记忆（重启后重新
+询问），与 ssh 的 watchId 级记忆粒度一致但未跨会话持久化。
+
+## 打开方式走查批：浏览器截图验证 + 三处修复（2026-10-04 续 2）
+
+按工作区规范对新 UX 做浏览器走查（构建产物 `?mock=1&local=1&platform=macos`
+桌面模拟 + 截图），确认右键子菜单/自定义命令弹窗/设置编辑器区与 ssh 同构，
+端到端链路实测通过（自定义命令提交 → `files/remote-edit/open` 携
+customCommand+remotePath → 顶部提示；「记住为默认」后子菜单出现自定义编辑
+器且关联命中打勾切换；设置区关联添加/保存 dirty/「设置已保存」联动）。
+走查发现并修复三处问题：
+
+1. **子菜单触发点击取反 bug**：hover 已把子菜单打开，`@click` 再取反会让
+   紧随的点击立即关掉它——点击恒为展开，收口走鼠标移出/Esc。
+2. **自定义命令弹窗排版**：`.wb-dialog-body input` 全宽规则命中 checkbox
+   （勾选框横贯整行）+ hint 段内联 margin 与勾选行交叠——checkbox 排除
+   全宽规则，提示段/勾选行块级排布样式化。
+3. **`sftpEdit.settingsSection` 七语漏译**：设置区标题直接显示键名，七语
+   补齐（外部编辑器/Editores externos/…）。
+
+增强：设置打开时强制重探编辑器目录（ssh 同行为，静默失败不刷错误）——
+本机安装状态可能在中途变化。
+
+验证：`pnpm typecheck/test` 全绿（662）；build 通过。剩余说明：ask 决议
+弹窗复用同一 `.wb-dialog` 样式体系，视觉走查由决议流 spec 逻辑覆盖 +
+子菜单/弹窗截图背书，未单独截图。

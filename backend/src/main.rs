@@ -16,6 +16,7 @@
 
 mod archive;
 mod local_downloads;
+mod local_editors;
 mod mount;
 mod mcp;
 mod model;
@@ -2383,8 +2384,24 @@ impl Plugin {
             // Validate a user-configured external open-with app path without
             // launching it (issue #11). The settings panel calls this when
             // persisting the preference so a typo surfaces immediately;
-            // files/local/open repeats the check for stale prefs.
+            // files/local/open repeats the check for stale prefs. A
+            // `command` param instead validates a user-defined command line
+            // (custom editor channel, parity with dbx-plugin-ssh): it must
+            // tokenize to at least one argv element — existence is NOT
+            // required here (the launcher reports a failed spawn).
             "files/local/validate-open-app" => {
+                if let Some(command) = params
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    let tokens = local_editors::tokenize_command(command)?;
+                    if tokens.is_empty() {
+                        return Err("Custom editor requires a non-empty command".to_string());
+                    }
+                    return Ok(json!({ "valid": true, "command": command }));
+                }
                 let path = params
                     .get("path")
                     .and_then(Value::as_str)
@@ -2424,6 +2441,28 @@ impl Plugin {
                 local_downloads::open_validated(&history, std::path::Path::new(path), app)?;
                 Ok(json!({ "success": true }))
             }
+            // 平台感知的知名编辑器目录（parity with dbx-plugin-ssh
+            // `local/editors/list`）：VS Code/Sublime/TextEdit/Notepad/WPS
+            // 三组件/MS Office/LibreOffice，探测只走文件系统/PATH、绝不
+            // spawn。不可用条目仍然列出，历史保存的偏好之后装上编辑器也能
+            // 重新解析。
+            "files/local/editors/list" => Ok(local_editors::editors_list_payload()),
+            // 用知名编辑器（editorId）或用户自定义命令行（custom.command，
+            // 支持 {file} 占位符）打开已完成的本机下载：与 files/local/open
+            // 同一条下载历史白名单，绝不会成为任意路径执行原语。启动走
+            // argv 列表、绝不经过 shell（parity with dbx-plugin-ssh
+            // `local/open-with`）。
+            "files/local/open-with" => {
+                let path = params
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .ok_or("Missing path")?;
+                let spec = local_editors::launch_spec_from_params(&params)?;
+                let history = self.store.load_transfers();
+                local_editors::open_with_validated(&history, std::path::Path::new(path), &spec)?;
+                Ok(json!({ "success": true }))
+            }
             // ------------------------------------------------------------------
             // Remote-edit sessions (打开方式, FinalShell-style local editing):
             // `open` pulls one remote file into the per-connection temp
@@ -2443,13 +2482,54 @@ impl Plugin {
                             .to_string(),
                     );
                 }
-                let app = request
+                let app_channel = request
                     .app
                     .as_deref()
                     .map(str::trim)
-                    .filter(|app| !app.is_empty())
-                    .map(local_downloads::validate_open_app)
-                    .transpose()?;
+                    .filter(|app| !app.is_empty());
+                // 打开目标三选一（优先级递减）：编辑器目录条目 → 自定义命令
+                // 行 → 已校验应用路径；皆缺省 = 系统默认应用。目录条目带
+                // 可用性门禁，命令行分词失败/为空在这里就报错——下载副本是
+                // 昂贵前置操作，不能等启动阶段才失败。
+                let (app, app_args, app_id) =
+                    if let Some(editor_id) = request
+                        .editor_id
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|id| !id.is_empty())
+                    {
+                        match local_editors::editor_launch_spec(editor_id)? {
+                            local_editors::LaunchSpec::OpenApp { app_id } => {
+                                (None, Vec::new(), Some(app_id))
+                            }
+                            local_editors::LaunchSpec::Exe { exe, args } => {
+                                (Some(PathBuf::from(exe)), args, None)
+                            }
+                        }
+                    } else if let Some(command) = request
+                        .custom_command
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                    {
+                        let (exe, args) = local_editors::custom_launch_spec(command)?;
+                        (Some(PathBuf::from(exe)), args, None)
+                    } else {
+                        (
+                            app_channel
+                                .map(local_downloads::validate_open_app)
+                                .transpose()?,
+                            Vec::new(),
+                            None,
+                        )
+                    };
+                // 回传策略（1:1 复刻 ssh uploadPolicy）：仅 "ask" 生效，
+                // 其余值按 auto 处理（保存即静默回传）。
+                let upload_ask = request
+                    .upload_policy
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|policy| policy.eq_ignore_ascii_case("ask"));
                 let binding = self.rclone.binding(&request.connection_id)?;
                 // A watcher that can never sync back is a trap: gate the
                 // write up front, same message as the storage arms.
@@ -2503,7 +2583,12 @@ impl Plugin {
                         .find_for_path(&request.connection_id, &remote)
                 {
                     let key = session.key.clone();
-                    self.remote_edits.update(&key, |session| session.app = app.clone());
+                    self.remote_edits.update(&key, |session| {
+                        session.app = app.clone();
+                        session.app_args = app_args.clone();
+                        session.app_id = app_id.clone();
+                        session.upload_ask = upload_ask;
+                    });
                     if session.status == remote_edit::STATUS_DOWNLOADING
                         || session.status == remote_edit::STATUS_SYNCING
                     {
@@ -2523,6 +2608,8 @@ impl Plugin {
                         remote,
                         PathBuf::from(&session.local_path),
                         app,
+                        app_args,
+                        app_id,
                         session.baseline,
                         emitter,
                     ));
@@ -2539,6 +2626,8 @@ impl Plugin {
                     remote_path: remote.clone(),
                     local_path: local.display().to_string(),
                     app: app.clone(),
+                    app_args: app_args.clone(),
+                    app_id: app_id.clone(),
                     status: remote_edit::STATUS_DOWNLOADING,
                     last_error: None,
                     last_sync_at: None,
@@ -2548,6 +2637,10 @@ impl Plugin {
                     error_ticks: 0,
                     sync_seq: 0,
                     closing: false,
+                    upload_ask,
+                    always_upload: false,
+                    pending_confirm: false,
+                    sync_requested: false,
                 });
                 let emitter = emitter.clone();
                 tokio::spawn(remote_edit_open_task(
@@ -2560,6 +2653,8 @@ impl Plugin {
                     remote,
                     local.clone(),
                     app,
+                    app_args,
+                    app_id,
                     emitter,
                 ));
                 Ok(json!({ "key": key, "localPath": local.display().to_string() }))
@@ -2578,6 +2673,43 @@ impl Plugin {
                     .filter(|value| !value.is_empty())
                     .ok_or("Missing key")?;
                 if !self.remote_edits.request_close(key) {
+                    return Err(format!("Remote-edit session '{key}' was not found"));
+                }
+                Ok(json!({ "success": true }))
+            }
+            // ask 回传策略的用户决议（1:1 复刻 ssh 确认队列的 upload/always/
+            // dismiss 三档）：upload 一次性回传当前文件态、always 记住授权
+            // 后续保存直传、dismiss 把基线推进到当前文件态（本次保存不回传，
+            // 也不再重复触发）。
+            "files/remote-edit/decide" => {
+                let key = params
+                    .get("key")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .ok_or("Missing key")?;
+                let action = params
+                    .get("action")
+                    .and_then(Value::as_str)
+                    .ok_or("Missing action")?;
+                let applied = match action {
+                    "upload" => self.remote_edits.update(key, |session| {
+                        session.pending_confirm = false;
+                        session.sync_requested = true;
+                    }),
+                    "always" => self.remote_edits.update(key, |session| {
+                        session.pending_confirm = false;
+                        session.always_upload = true;
+                        session.sync_requested = true;
+                    }),
+                    "dismiss" => self.remote_edits.update(key, |session| {
+                        session.pending_confirm = false;
+                        session.baseline = remote_edit::snapshot_stat(std::path::Path::new(
+                            &session.local_path,
+                        ));
+                    }),
+                    other => return Err(format!("Unknown decide action '{other}'")),
+                };
+                if !applied {
                     return Err(format!("Remote-edit session '{key}' was not found"));
                 }
                 Ok(json!({ "success": true }))
@@ -4476,6 +4608,8 @@ async fn remote_edit_open_task(
     remote: String,
     local: PathBuf,
     app: Option<PathBuf>,
+    app_args: Vec<String>,
+    app_id: Option<String>,
     emitter: PluginEmitter,
 ) {
     // The initial pull is a regular download job (panel + history parity).
@@ -4550,7 +4684,9 @@ async fn remote_edit_open_task(
                 remote_edit_close_session(&edits, &emitter, &key, &local);
                 return;
             }
-            if let Err(error) = local_downloads::open_in_app(&local, app.as_deref()) {
+            if let Err(error) =
+                local_editors::launch_remote_edit(&local, app.as_deref(), &app_args, app_id.as_deref())
+            {
                 edits.update(&key, |session| {
                     session.status = remote_edit::STATUS_ERROR;
                     session.last_error = Some(error.clone());
@@ -4593,6 +4729,8 @@ async fn remote_edit_refresh_task(
     remote: String,
     local: PathBuf,
     app: Option<PathBuf>,
+    app_args: Vec<String>,
+    app_id: Option<String>,
     baseline: Option<remote_edit::FileStamp>,
     emitter: PluginEmitter,
 ) {
@@ -4646,7 +4784,7 @@ async fn remote_edit_refresh_task(
         remote_edit_close_session(&edits, &emitter, &key, &local);
         return;
     }
-    match local_downloads::open_in_app(&local, app.as_deref()) {
+    match local_editors::launch_remote_edit(&local, app.as_deref(), &app_args, app_id.as_deref()) {
         Ok(()) => remote_edit_emit_state(&edits, &emitter, &key, "opened", None),
         Err(error) => {
             edits.update(&key, |session| {
@@ -4687,6 +4825,10 @@ async fn remote_edit_watch_loop(
             remote_edit::WatchDecision::Close => {
                 remote_edit_close_session(&edits, &emitter, &key, &local);
                 return;
+            }
+            // ask 门禁：一次保存只回报一次 modified，等 files/remote-edit/decide。
+            remote_edit::WatchDecision::Ask => {
+                remote_edit_emit_state(&edits, &emitter, &key, remote_edit::STATE_MODIFIED, None);
             }
             remote_edit::WatchDecision::Sync => {
                 remote_edit_sync_back(

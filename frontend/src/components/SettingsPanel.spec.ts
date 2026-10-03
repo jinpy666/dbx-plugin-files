@@ -36,6 +36,8 @@ function mountPanel(section: "downloads" | "openWith" | "transfer", overrides: O
       saveDir: "",
       defaultSaveDir: "/Users/me/Downloads",
       openApp: { defaultApp: "", mappings: [] },
+      editorConfig: { associations: [], customEditors: [], uploadPolicy: "auto" },
+      editors: [],
       section,
       ...overrides,
     },

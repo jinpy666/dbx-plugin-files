@@ -413,6 +413,14 @@ function safeParse(raw: string): unknown {
 // 之后读写全同步。键常量集中在此声明后统一建 store。
 
 /** 本插件全部 UI 状态键（宿主 storage 无列键方法，水合需显式声明）。 */
-export const PREFS_STORE_KEYS = [UI_PREFS_KEY, DOWNLOAD_DIR_KEY, OPEN_APP_KEY, FAVORITES_KEY, CONFLICT_POLICY_KEY];
+export const PREFS_STORE_KEYS = [
+  UI_PREFS_KEY,
+  DOWNLOAD_DIR_KEY,
+  OPEN_APP_KEY,
+  FAVORITES_KEY,
+  CONFLICT_POLICY_KEY,
+  // 编辑器关联配置单键（editorRules.ts，1:1 复刻 ssh editorRules）。
+  "dbx-files.editor-config",
+];
 
 export const prefsStore = createPluginKvStore(PREFS_STORE_KEYS);

@@ -719,7 +719,10 @@ pub struct TaskRequest {
 
 /// `files/remote-edit/open`(打开方式):把一个远端文件拉到本机临时副本,
 /// 用系统默认或用户指定的外部应用打开,并由后台监视循环把编辑器保存回传
-/// 到原远端路径。`app` 是可选的已校验外部应用可执行文件绝对路径。
+/// 到原远端路径。打开目标三选一(优先级递减):`editorId`(sidecar 编辑器
+/// 目录条目)、`customCommand`(用户自定义命令行,支持 `{file}` 占位符,
+/// 分词后 argv 启动、不经 shell)、`app`(已校验的外部应用可执行文件
+/// 绝对路径);三者皆缺省 = 系统默认应用。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteEditOpenRequest {
@@ -727,6 +730,14 @@ pub struct RemoteEditOpenRequest {
     pub remote_path: String,
     #[serde(default)]
     pub app: Option<String>,
+    #[serde(default)]
+    pub editor_id: Option<String>,
+    #[serde(default)]
+    pub custom_command: Option<String>,
+    /// 回传策略（1:1 复刻 ssh uploadPolicy）：`"ask"` = 编辑器保存后挂起等
+    /// 用户决议（files/remote-edit/decide），缺省 auto = 保存即静默回传。
+    #[serde(default)]
+    pub upload_policy: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
