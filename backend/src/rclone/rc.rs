@@ -238,9 +238,12 @@ impl RcClient {
     /// Client variant for long-running transfers: no wall-clock timeout —
     /// a reqwest timeout spans the whole body, so staged uploads/pumped
     /// downloads of large files would die at 30s. Control-plane calls keep
-    /// the default client.
+    /// the default client. Connect stays bounded (same doctrine as
+    /// `build_unbounded_http`): a dead rcd must fail fast, not park the
+    /// caller on the OS connect stack forever.
     pub fn transfer_client(&self) -> RcClient {
         let http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(30))
             .build()
             .expect("reqwest client with static options always builds");
         RcClient {

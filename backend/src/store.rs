@@ -224,8 +224,16 @@ impl Store {
             .data_dir
             .join(format!("{file_name}.{}.tmp", uuid::Uuid::new_v4().simple()));
         let body = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
-        std::fs::write(&tmp, body).map_err(|error| format!("Failed to write {file_name}: {error}"))?;
-        std::fs::rename(&tmp, &path).map_err(|error| format!("Failed to finalize {file_name}: {error}"))
+        if let Err(error) = std::fs::write(&tmp, body) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("Failed to write {file_name}: {error}"));
+        }
+        std::fs::rename(&tmp, &path).map_err(|error| {
+            // 失败时清掉本次的临时文件：唯一 tmp 名不再被下次保存自愈，
+            // 崩溃残留除外，错误路径留下的垃圾必须当场回收。
+            let _ = std::fs::remove_file(&tmp);
+            format!("Failed to finalize {file_name}: {error}")
+        })
     }
 }
 

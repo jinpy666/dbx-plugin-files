@@ -175,7 +175,7 @@ impl Mcp {
                     },
                     {
                         "name": "files_mkdir",
-                        "description": "Create a directory (mkdir -p semantics). Executes directly and is audited with source 'mcp'.",
+                        "description": "Create a directory (mkdir -p semantics). On backends that cannot hold empty directories (object-storage buckets) an empty `.keep` placeholder file is written so the directory stays visible. Executes directly and is audited with source 'mcp'.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {

@@ -432,10 +432,16 @@ impl webdav_gateway::GatewaySource for EngineSource {
         Box::pin(async move {
             let policy = PathPolicy::from_parts(&root, lock_to_root, true, true);
             let resolved = policy.check_read(&path)?;
-            let _slot = GATEWAY_READ_SLOTS
-                .acquire()
-                .await
-                .map_err(|_| "gateway read slots closed".to_string())?;
+            // 读取闸是内存上限不是排队契约：卡死在远端存储上的读不该把
+            // 4 个槽位永久占满——限时获取，超时即拒绝（WebDAV 客户端会
+            // 重试），否则整个挂载看起来像冻住且只能卸载恢复。
+            let _slot = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                GATEWAY_READ_SLOTS.acquire(),
+            )
+            .await
+            .map_err(|_| "gateway read slots busy: too many concurrent reads".to_string())?
+            .map_err(|_| "gateway read slots closed".to_string())?;
             let response = client
                 .serve_get(&fs, &resolved.relative, None)
                 .await

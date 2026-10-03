@@ -336,11 +336,30 @@ pub fn reveal_in_file_manager(path: &Path) -> Result<(), String> {
             }
         }
         let parent = path.parent().unwrap_or(path);
-        return std::process::Command::new("open")
+        let mut child = std::process::Command::new("open")
             .arg(parent)
             .spawn()
-            .map(|_| ())
-            .map_err(|error| format!("Failed to launch Finder: {error}"));
+            .map_err(|error| format!("Failed to launch Finder: {error}"))?;
+        // 回退分支保持同一套限时等待 + 快速失败上抛：陈旧路径降级开父目录
+        // 没问题，但父目录也消失时不能无声报成功。
+        let deadline = Instant::now() + REVEAL_WAIT_TIMEOUT;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    if status.success() {
+                        return Ok(());
+                    }
+                    return Err("Finder exited with an error".to_string());
+                }
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        return Ok(());
+                    }
+                    std::thread::sleep(REVEAL_POLL_INTERVAL);
+                }
+                Err(error) => return Err(format!("Failed to launch Finder: {error}")),
+            }
+        }
     }
     if cfg!(windows) {
         let selected = format!("/select,{}", path.as_os_str().to_string_lossy());
