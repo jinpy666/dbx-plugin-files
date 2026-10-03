@@ -2172,3 +2172,38 @@ sccache；zig shim 与 PKG_CONFIG_PATH 修复由 files Linux job 最先
 `validate_repo.py` 74:74、`connection-forms/verify.mjs` PASS。剩余风险：
 open-with 暂无工作台直接调用方（传输面板「打开」仍走 app 路径偏好），
 作为脚本化/后续 UI 的目录通道存在。
+
+## 右键打开方式 1:1 复刻 ssh 子菜单流 + 设置区（2026-10-04 续）
+
+在上一批（编辑器目录 + 三通道 RPC）基础上，把交互体验对齐到 ssh 的完整形态：
+
+- **右键子菜单（唯一入口，对标 ssh ContextMenuSub）**：系统默认程序 →
+  编辑器目录可用项（title 显示 launch 路径）→ 自定义编辑器 → 「自定义命令…」，
+  当前关联/默认解析命中项右对齐打勾（`mappedEditorIdFor`）；选中即开
+  （一次性不写关联），`files/local/editors/list` 子菜单展开时惰性拉取。
+  原「打开方式」对话框流（OpenWithDialog）按 ssh 形态移除。
+- **自定义命令弹窗（对标 ssh customCommand 弹窗）**：名称（可选，缺省取
+  命令首词）+ 命令行（argv 化、不过 shell、{file} 占位符）+ 「记住为默认」
+  （写入 `{pattern → customId}` 关联，pattern 取扩展名掩码）+ 保存并打开。
+- **编辑器配置单键（lib/editorRules.ts，1:1 移植）**：EditorConfig
+  （默认编辑器/关联表/自定义编辑器/uploadPolicy）+ WinSCP 式关联解析
+  （精确文件名 > 更长扩展 > 列表序）+ 存储净化；prefsStore 白名单新增
+  `dbx-files.editor-config`。16 条纯函数单测（含存储往返）。
+- **设置「打开方式」区（对标 ssh sftpEdit 设置块）**：默认编辑器
+  （system/known:/custom: 哨兵编码）、保存回传策略 radio（auto/ask）、
+  关联表增删（pattern + 目标下拉）、自定义编辑器列表删除（关联一并清理、
+  默认指向回落）；草稿化 + 统一「保存更改」提交（dirty 含编辑器配置对比）。
+- **ask 回传策略全链**：`files/remote-edit/open` 增加 `uploadPolicy`
+  参数；EditSession 增加 `upload_ask/always_upload/pending_confirm/
+  sync_requested`，保存落定走 `WatchDecision::Ask`（一次保存只回报一次
+  `modified` 状态事件）；新 RPC `files/remote-edit/decide`
+  （upload 一次性回传 / always 记住授权直传 / dismiss 基线推进到当前文件
+  态）。前端 modified 事件按会话排队，队头弹三档决议弹窗（与 ssh 确认
+  队列同形）。remote_edit 8 条单测覆盖门禁/决议三出路/auto 不受影响。
+
+验证：`cargo test --locked` 496 全绿；`pnpm typecheck/test/build` 全绿
+（662 测试；openWithRemoteEdit 重写为子菜单流 5 用例：系统默认透传、
+editorId、自定义命令+记住为默认持久化、modified→decide 决议、state 事件
+提示/错误条）；`validate_repo.py` 75:75（新增 decide）；connection-forms
+verify PASS。剩余风险：ask 策略的「总是上传」授权按会话记忆（重启后重新
+询问），与 ssh 的 watchId 级记忆粒度一致但未跨会话持久化。

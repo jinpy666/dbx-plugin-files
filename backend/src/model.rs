@@ -734,6 +734,10 @@ pub struct RemoteEditOpenRequest {
     pub editor_id: Option<String>,
     #[serde(default)]
     pub custom_command: Option<String>,
+    /// 回传策略（1:1 复刻 ssh uploadPolicy）：`"ask"` = 编辑器保存后挂起等
+    /// 用户决议（files/remote-edit/decide），缺省 auto = 保存即静默回传。
+    #[serde(default)]
+    pub upload_policy: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

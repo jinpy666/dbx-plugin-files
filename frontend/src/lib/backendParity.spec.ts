@@ -65,6 +65,7 @@ const GOLDEN_BACKEND_METHODS: ReadonlySet<string> = new Set([
   "files/read",
   "files/readRange",
   "files/remote-edit/close",
+  "files/remote-edit/decide",
   "files/remote-edit/open",
   "files/remote-edit/status",
   "files/rename",

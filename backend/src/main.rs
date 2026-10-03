@@ -2523,6 +2523,13 @@ impl Plugin {
                             None,
                         )
                     };
+                // 回传策略（1:1 复刻 ssh uploadPolicy）：仅 "ask" 生效，
+                // 其余值按 auto 处理（保存即静默回传）。
+                let upload_ask = request
+                    .upload_policy
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|policy| policy.eq_ignore_ascii_case("ask"));
                 let binding = self.rclone.binding(&request.connection_id)?;
                 // A watcher that can never sync back is a trap: gate the
                 // write up front, same message as the storage arms.
@@ -2580,6 +2587,7 @@ impl Plugin {
                         session.app = app.clone();
                         session.app_args = app_args.clone();
                         session.app_id = app_id.clone();
+                        session.upload_ask = upload_ask;
                     });
                     if session.status == remote_edit::STATUS_DOWNLOADING
                         || session.status == remote_edit::STATUS_SYNCING
@@ -2629,6 +2637,10 @@ impl Plugin {
                     error_ticks: 0,
                     sync_seq: 0,
                     closing: false,
+                    upload_ask,
+                    always_upload: false,
+                    pending_confirm: false,
+                    sync_requested: false,
                 });
                 let emitter = emitter.clone();
                 tokio::spawn(remote_edit_open_task(
@@ -2661,6 +2673,43 @@ impl Plugin {
                     .filter(|value| !value.is_empty())
                     .ok_or("Missing key")?;
                 if !self.remote_edits.request_close(key) {
+                    return Err(format!("Remote-edit session '{key}' was not found"));
+                }
+                Ok(json!({ "success": true }))
+            }
+            // ask 回传策略的用户决议（1:1 复刻 ssh 确认队列的 upload/always/
+            // dismiss 三档）：upload 一次性回传当前文件态、always 记住授权
+            // 后续保存直传、dismiss 把基线推进到当前文件态（本次保存不回传，
+            // 也不再重复触发）。
+            "files/remote-edit/decide" => {
+                let key = params
+                    .get("key")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .ok_or("Missing key")?;
+                let action = params
+                    .get("action")
+                    .and_then(Value::as_str)
+                    .ok_or("Missing action")?;
+                let applied = match action {
+                    "upload" => self.remote_edits.update(key, |session| {
+                        session.pending_confirm = false;
+                        session.sync_requested = true;
+                    }),
+                    "always" => self.remote_edits.update(key, |session| {
+                        session.pending_confirm = false;
+                        session.always_upload = true;
+                        session.sync_requested = true;
+                    }),
+                    "dismiss" => self.remote_edits.update(key, |session| {
+                        session.pending_confirm = false;
+                        session.baseline = remote_edit::snapshot_stat(std::path::Path::new(
+                            &session.local_path,
+                        ));
+                    }),
+                    other => return Err(format!("Unknown decide action '{other}'")),
+                };
+                if !applied {
                     return Err(format!("Remote-edit session '{key}' was not found"));
                 }
                 Ok(json!({ "success": true }))
@@ -4776,6 +4825,10 @@ async fn remote_edit_watch_loop(
             remote_edit::WatchDecision::Close => {
                 remote_edit_close_session(&edits, &emitter, &key, &local);
                 return;
+            }
+            // ask 门禁：一次保存只回报一次 modified，等 files/remote-edit/decide。
+            remote_edit::WatchDecision::Ask => {
+                remote_edit_emit_state(&edits, &emitter, &key, remote_edit::STATE_MODIFIED, None);
             }
             remote_edit::WatchDecision::Sync => {
                 remote_edit_sync_back(

@@ -951,6 +951,17 @@ export function installMockHost() {
         if (!str("key")) throw new Error("Missing key");
         return { success: true };
       }
+      case "files/remote-edit/decide": {
+        // ask 回传策略决议（upload/always/dismiss）：mock 校验形状即成功，
+        // 真实链路由 sidecar 监视环消费（upload/always 置位回传、dismiss
+        // 推进基线）。
+        if (!str("key")) throw new Error("Missing key");
+        const action = str("action");
+        if (!["upload", "always", "dismiss"].includes(action)) {
+          throw new Error(`Unknown decide action '${action}'`);
+        }
+        return { success: true };
+      }
       case "files/unmount": {
         const mountId = str("mountId");
         if (mountId && !mockMounts.delete(mountId)) throw new Error("Mount not found");

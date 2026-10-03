@@ -3,6 +3,12 @@ import { computed, ref, watch } from "vue";
 import { FolderOpen, Plus, RotateCcw, X } from "@lucide/vue";
 import type { OpenAppMapping, OpenAppPrefs } from "../lib/prefs";
 import { CONFLICT_POLICIES, type ConflictPolicy } from "../lib/conflictPolicy";
+import {
+  sanitizeEditorConfig,
+  type EditorAssociation,
+  type EditorConfig,
+  type KnownEditor,
+} from "../lib/editorRules";
 import DesktopOnlyCard from "./DesktopOnlyCard.vue";
 import DirectoryBrowser from "./DirectoryBrowser.vue";
 import { persistDownloadDir } from "../lib/prefs";
@@ -34,6 +40,10 @@ const props = defineProps<{
   bwlimitError?: string;
   /** 传输同名冲突策略（上传预检 + 下载落盘；缺省 ask）。 */
   conflictPolicy?: ConflictPolicy;
+  /** 外部编辑器关联配置（1:1 复刻 ssh sftpEdit 设置区）。 */
+  editorConfig: EditorConfig;
+  /** sidecar 编辑器目录（files/local/editors/list；旧 sidecar 为空数组）。 */
+  editors: KnownEditor[];
 }>();
 
 const emit = defineEmits<{
@@ -41,6 +51,7 @@ const emit = defineEmits<{
   (event: "save-open-app", prefs: OpenAppPrefs): void;
   (event: "save-bwlimit", rate: string): void;
   (event: "save-conflict-policy", policy: ConflictPolicy): void;
+  (event: "save-editor-config", config: EditorConfig): void;
   /** 任一草稿与持久化值不一致时上抛，父层据此启用统一的「保存更改」。 */
   (event: "dirty", dirty: boolean): void;
 }>();
@@ -104,6 +115,108 @@ watch(() => props.saveDir, (value) => {
 // 会被父层过滤掉，若 watch 回写会把用户正在编辑的行清空。
 const appDraft = ref(props.openApp.defaultApp);
 const mappingDrafts = ref<OpenAppMapping[]>(props.openApp.mappings.map((mapping) => ({ ...mapping })));
+
+// ---- 外部编辑器关联草稿（1:1 复刻 ssh sftpEdit 设置区）--------------------
+// 配置整体草稿化、随主「保存更改」落库；sanitize 产出全新对象，不与父层
+// 共享引用。默认编辑器用 "system"/"known:<id>"/"custom:<id>" 哨兵编码
+// （与 ssh SettingsDialog 同形），保存时拆回 EditorConfig 字段。
+const editorConfigDraft = ref<EditorConfig>(sanitizeEditorConfig(props.editorConfig));
+const editorDefaultDraft = ref(editorDefaultValue(sanitizeEditorConfig(props.editorConfig)));
+const editorAssociationPatternDraft = ref("");
+const editorAssociationTargetDraft = ref("");
+
+type EditorTargetValue = "system" | `known:${string}` | `custom:${string}`;
+
+function editorDefaultValue(config: EditorConfig): EditorTargetValue {
+  return config.defaultCustomId
+    ? `custom:${config.defaultCustomId}`
+    : config.defaultEditorId
+      ? `known:${config.defaultEditorId}`
+      : /* 原生 select 不接受空串 value，用 "system" 哨兵表示系统默认 */ "system";
+}
+
+/** 可选目标：目录可用项（known）+ 自定义编辑器（custom）；不可用条目不进
+ * 新建关联的目标表，但既有关联行仍按名字展示（装回后可重新解析）。 */
+const editorTargetOptions = computed(() => [
+  ...props.editors
+    .filter((editor) => editor.available)
+    .map((editor) => ({ value: `known:${editor.id}` as const, label: editor.name })),
+  ...editorConfigDraft.value.customEditors.map((editor) => ({ value: `custom:${editor.id}` as const, label: editor.name })),
+]);
+
+function editorTargetName(target: string): string {
+  if (target.startsWith("custom:")) {
+    const id = target.slice(7);
+    return editorConfigDraft.value.customEditors.find((editor) => editor.id === id)?.name || id;
+  }
+  if (target.startsWith("known:")) {
+    const id = target.slice(6);
+    return props.editors.find((editor) => editor.id === id)?.name || id;
+  }
+  return target;
+}
+
+function associationTargetValue(assoc: EditorAssociation): string {
+  return assoc.customId ? `custom:${assoc.customId}` : assoc.editorId ? `known:${assoc.editorId}` : "";
+}
+
+function onAssociationPatternChange(event: Event) {
+  editorAssociationPatternDraft.value = (event.target as HTMLInputElement).value;
+}
+
+function onAssociationTargetChange(event: Event) {
+  editorAssociationTargetDraft.value = (event.target as HTMLSelectElement).value;
+}
+
+function addEditorAssociation() {
+  const pattern = editorAssociationPatternDraft.value.trim();
+  const target = editorAssociationTargetDraft.value;
+  if (!pattern || !target) return;
+  const assoc: EditorAssociation = target.startsWith("custom:")
+    ? { pattern, customId: target.slice("custom:".length) }
+    : { pattern, editorId: target.slice("known:".length) };
+  editorConfigDraft.value = { ...editorConfigDraft.value, associations: [...editorConfigDraft.value.associations, assoc] };
+  editorAssociationPatternDraft.value = "";
+  editorAssociationTargetDraft.value = "";
+}
+
+function removeEditorAssociation(index: number) {
+  editorConfigDraft.value = {
+    ...editorConfigDraft.value,
+    associations: editorConfigDraft.value.associations.filter((_, i) => i !== index),
+  };
+}
+
+/** 删除自定义编辑器：指向它的关联一并清理（ssh 同形），默认编辑器指向它时
+ * 回落系统默认。 */
+function removeCustomEditor(id: string) {
+  editorConfigDraft.value = {
+    ...editorConfigDraft.value,
+    customEditors: editorConfigDraft.value.customEditors.filter((editor) => editor.id !== id),
+    associations: editorConfigDraft.value.associations.filter((assoc) => assoc.customId !== id),
+  };
+  if (editorDefaultDraft.value === `custom:${id}`) editorDefaultDraft.value = "system";
+}
+
+/** 草稿 → 完整配置：默认编辑器哨兵拆回字段，净化后交给父层持久化。 */
+function composedEditorConfig(): EditorConfig {
+  const next = { ...editorConfigDraft.value };
+  if (editorDefaultDraft.value === "system") {
+    next.defaultEditorId = undefined;
+    next.defaultCustomId = undefined;
+  } else if (editorDefaultDraft.value.startsWith("custom:")) {
+    next.defaultCustomId = editorDefaultDraft.value.slice("custom:".length);
+    next.defaultEditorId = undefined;
+  } else if (editorDefaultDraft.value.startsWith("known:")) {
+    next.defaultEditorId = editorDefaultDraft.value.slice("known:".length);
+    next.defaultCustomId = undefined;
+  }
+  return sanitizeEditorConfig(next);
+}
+
+function sameEditorConfig(a: EditorConfig, b: EditorConfig): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
 
 const fileTransfer = computed(() => window.dbxPlugin?.fileTransfer);
 const canPickDirectory = computed(() => typeof fileTransfer.value?.pickDirectory === "function");
@@ -187,7 +300,12 @@ const dirty = computed(() => {
     return composedBwlimit.value !== (props.bwlimit ?? "") || conflictDraft.value !== (props.conflictPolicy ?? "ask");
   }
   if (props.section === "downloads") return draft.value !== (props.saveDir ?? "");
-  if (props.section === "openWith") return !sameOpenApp(normalizeOpenApp(), props.openApp);
+  if (props.section === "openWith") {
+    return (
+      !sameOpenApp(normalizeOpenApp(), props.openApp) ||
+      !sameEditorConfig(composedEditorConfig(), sanitizeEditorConfig(props.editorConfig))
+    );
+  }
   return false;
 });
 
@@ -206,7 +324,10 @@ async function save() {
     return;
   }
   if (props.section === "openWith") {
-    if (canSaveLocal.value) emit("save-open-app", normalizeOpenApp());
+    if (canSaveLocal.value) {
+      emit("save-open-app", normalizeOpenApp());
+      emit("save-editor-config", composedEditorConfig());
+    }
     return;
   }
 }
@@ -371,6 +492,90 @@ defineExpose({ save });
           ><X /></button>
         </div>
         <button class="wb-link-button" type="button" @click="addMapping"><Plus /> {{ t("addMapping") }}</button>
+
+        <!-- 外部编辑器关联（1:1 复刻 ssh sftpEdit 设置区）：默认编辑器、保存
+             回传策略、关联表与自定义编辑器管理；自定义编辑器的添加入口在
+             右键「打开方式 → 自定义命令…」（与 ssh 同形），此处只做管理。 -->
+        <div class="wb-settings-heading">
+          <strong>{{ t("sftpEdit.settingsSection") }}</strong>
+        </div>
+        <label class="wb-editor-field">
+          <span class="wb-muted">{{ t("sftpEdit.defaultEditorTitle") }}</span>
+          <select v-model="editorDefaultDraft" :aria-label="t('sftpEdit.defaultEditorTitle')">
+            <option value="system">{{ t("sftpEdit.defaultEditorSystem") }}</option>
+            <option v-for="option in editorTargetOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+          </select>
+        </label>
+        <p class="wb-settings-help">{{ t("sftpEdit.defaultEditorHint") }}</p>
+
+        <span class="wb-muted">{{ t("sftpEdit.uploadPolicyTitle") }}</span>
+        <div class="wb-conflict-options" role="radiogroup" :aria-label="t('sftpEdit.uploadPolicyTitle')">
+          <label class="wb-conflict-option">
+            <input v-model="editorConfigDraft.uploadPolicy" type="radio" name="files-editor-upload-policy" value="auto" />
+            <span>{{ t("sftpEdit.uploadPolicy.auto") }}</span>
+          </label>
+          <label class="wb-conflict-option">
+            <input v-model="editorConfigDraft.uploadPolicy" type="radio" name="files-editor-upload-policy" value="ask" />
+            <span>{{ t("sftpEdit.uploadPolicy.ask") }}</span>
+          </label>
+        </div>
+        <p class="wb-settings-help">{{ t("sftpEdit.uploadPolicyHint") }}</p>
+
+        <div class="wb-settings-heading">
+          <strong>{{ t("sftpEdit.associationsTitle") }}</strong>
+        </div>
+        <p v-if="!editorConfigDraft.associations.length" class="wb-settings-help">{{ t("sftpEdit.noAssociations") }}</p>
+        <div v-for="(assoc, index) in editorConfigDraft.associations" :key="`${assoc.pattern}-${index}`" class="wb-settings-path-row">
+          <span class="wb-mono" style="flex: 0 0 auto">{{ assoc.pattern }}</span>
+          <span class="wb-muted" style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">→ {{ editorTargetName(associationTargetValue(assoc)) }}</span>
+          <button
+            class="wb-icon-button wb-icon-neutral"
+            type="button"
+            :title="t('removeMapping')"
+            v-tip="t('removeMapping')"
+            @click="removeEditorAssociation(index)"
+          ><X /></button>
+        </div>
+        <div class="wb-settings-path-row">
+          <input
+            class="wb-mono"
+            :value="editorAssociationPatternDraft"
+            spellcheck="false"
+            style="flex: 0 0 130px"
+            :placeholder="t('sftpEdit.associationPatternPlaceholder')"
+            :aria-label="t('sftpEdit.associationPatternPlaceholder')"
+            @change="onAssociationPatternChange"
+          />
+          <select :value="editorAssociationTargetDraft" :aria-label="t('sftpEdit.associationTargetPlaceholder')" @change="onAssociationTargetChange">
+            <option value="" disabled>{{ t("sftpEdit.associationTargetPlaceholder") }}</option>
+            <option v-for="option in editorTargetOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+          </select>
+          <button
+            class="wb-icon-button wb-icon-neutral"
+            type="button"
+            :title="t('sftpEdit.addAssociation')"
+            v-tip="t('sftpEdit.addAssociation')"
+            :disabled="!editorAssociationPatternDraft.trim() || !editorAssociationTargetDraft"
+            @click="addEditorAssociation"
+          ><Plus /></button>
+        </div>
+        <p class="wb-settings-help">{{ t("sftpEdit.associationsHint") }}</p>
+
+        <div class="wb-settings-heading">
+          <strong>{{ t("sftpEdit.customEditorsTitle") }}</strong>
+        </div>
+        <p v-if="!editorConfigDraft.customEditors.length" class="wb-settings-help">{{ t("sftpEdit.noCustomEditors") }}</p>
+        <div v-for="editor in editorConfigDraft.customEditors" :key="editor.id" class="wb-settings-path-row">
+          <span style="flex: 0 0 auto">{{ editor.name }}</span>
+          <span class="wb-mono wb-muted" style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ editor.command }}</span>
+          <button
+            class="wb-icon-button wb-icon-neutral"
+            type="button"
+            :title="t('removeMapping')"
+            v-tip="t('removeMapping')"
+            @click="removeCustomEditor(editor.id)"
+          ><X /></button>
+        </div>
       </template>
       <DesktopOnlyCard v-else :t="t" />
     </div>

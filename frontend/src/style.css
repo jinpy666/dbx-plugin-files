@@ -244,6 +244,16 @@ body.wb-col-resizing { cursor: col-resize; user-select: none; -webkit-user-selec
 .wb-settings-help, .wb-settings-default { margin: 0; color: var(--muted-foreground); font-size: 11px; overflow-wrap: anywhere; }
 .wb-settings-error { margin: 0; color: var(--destructive); font-size: 11px; overflow-wrap: anywhere; }
 .wb-settings-path-row { display: flex; align-items: center; gap: 6px; }
+/* 外部编辑器设置（ssh sftpEdit 复刻）：字段列布局 + 子菜单/勾选标识。 */
+.wb-editor-field { display: flex; flex-direction: column; gap: 4px; }
+.wb-editor-field select { width: 100%; border: 1px solid var(--border); border-radius: var(--radius); background: color-mix(in srgb, var(--background) 60%, var(--muted)); color: var(--foreground); padding: 5px 8px; }
+.wb-editor-field select option, .wb-settings-path-row select option { background: rgb(23 23 23); color: var(--foreground); }
+:root[data-theme="light"] .wb-editor-field select option, :root[data-theme="light"] .wb-settings-path-row select option { background: #fff; }
+.wb-menu-sub { position: relative; }
+.wb-context-submenu { position: absolute; left: calc(100% - 2px); top: -4px; min-width: 200px; max-height: 60vh; overflow-y: auto; }
+.wb-menu-sub-chevron { margin-left: auto; opacity: 0.6; }
+.wb-menu-check { margin-left: auto; color: var(--primary); }
+.wb-settings-path-row select { border: 1px solid var(--border); border-radius: var(--radius); background: color-mix(in srgb, var(--background) 60%, var(--muted)); color: var(--foreground); padding: 4px 8px; flex: 1; min-width: 0; }
 .wb-settings-path-row input { flex: 1 1 auto; min-width: 0; height: 26px; padding: 0 7px; font-size: 11px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--background); color: var(--foreground); }
 /* 挂载到本机：独立顶层弹窗（高于设置 55/预览 60/确认 65），内嵌本机目录
    浏览器（files/list + __local__），直接选目录后挂载。 */

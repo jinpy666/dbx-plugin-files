@@ -1,9 +1,11 @@
 // @vitest-environment happy-dom
-// 打开方式 UI 冒烟（远程编辑本地副本，FinalShell 式）：文件右键「Open with…」
-// → 选择打开目标对话框（编辑器目录 chips / detect-apps 预设 / 手输路径 /
-// 自定义命令行 / 系统默认）→ files/remote-edit/open（editorId / customCommand /
-// app 透传或缺省）；sidecar files/remote-edit/state 事件 opened/synced 顶部
-// 提示、error 错误条。真实 App + mock 桥，不触达真实文件或应用。
+// 打开方式 UI 冒烟（1:1 复刻 ssh 子菜单流，FinalShell 式远程编辑）：文件右键
+// 「Open with…」子菜单（系统默认 / 编辑器目录 / 自定义编辑器 / 自定义命令弹窗
+// 带「记住为默认」）→ files/remote-edit/open（editorId / customCommand /
+// 缺省透传）；ask 回传策略的 modified 事件 → 三档决议弹窗（总是上传/上传
+// 一次/取消）→ files/remote-edit/decide；sidecar files/remote-edit/state
+// 事件 opened/synced 顶部提示、error 错误条。真实 App + mock 桥，不触达真实
+// 文件或应用。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, type VueWrapper } from "@vue/test-utils";
 import { nextTick } from "vue";
@@ -13,6 +15,7 @@ import { installMockHost } from "./lib/mockHost";
 import { workbenchMessage } from "./lib/i18n";
 import { vTip } from "./lib/tooltip";
 import { saveUiPrefs } from "./lib/prefs";
+import { loadEditorConfig } from "./lib/editorRules";
 import type { FileEntry } from "./lib/api";
 
 let wrapper: VueWrapper | undefined;
@@ -68,8 +71,13 @@ function menuItem(label: string) {
   return wrapper!.findAll("[role=menuitem]").find((item) => item.text() === label);
 }
 
-// stubInvoke 按方法名分流：对话框确认前会先走 validate-open-app（mock 恒
-// 通过），不能让它消费掉 spy 的 open 结果。
+/** 展开右键「打开方式」子菜单（ssh 同形：触发项 + 悬停/点选展开）。 */
+async function openSubmenu() {
+  await menuItem(workbenchMessage("en", "openWithMenu"))!.trigger("click");
+  await settle();
+}
+
+// stubInvoke 按方法名分流：让测试捕获目标 RPC，其余走真实 mock。
 function stubInvoke(handler: (method: string) => unknown) {
   const raw = window.dbxPlugin.invoke.bind(window.dbxPlugin);
   return vi.spyOn(window.dbxPlugin, "invoke").mockImplementation(((
@@ -96,27 +104,32 @@ function openWithCall(spy: ReturnType<typeof stubInvoke>) {
   return entry?.[1] as Record<string, unknown> | undefined;
 }
 
-describe("open-with remote edit", () => {
-  it("opens the dialog from the context menu and calls remote-edit/open with the system default app", async () => {
+describe("open-with remote edit (submenu flow)", () => {
+  it("lists catalog editors in the submenu and opens via the system default", async () => {
     mountWorkbench();
     await settle();
     const spy = stubInvoke((method) =>
       method === "files/remote-edit/open" ? { key: "k1", localPath: "/tmp/edit/report.txt" } : undefined,
     );
     await openEntryMenu(fileEntry);
-    await menuItem(workbenchMessage("en", "openWithMenu"))!.trigger("click");
-    await settle();
-    // 对话框先出现：macos 预设 chips + 手输路径框，尚未发起 open。
-    expect(wrapper!.find(".wb-dialog").exists()).toBe(true);
-    expect(wrapper!.findAll(".wb-preset-chip").length).toBeGreaterThan(0);
+    // 子菜单触发项存在但尚未展开，open 未发起。
+    expect(menuItem(workbenchMessage("en", "openWithMenu"))).toBeTruthy();
     expect(openWithCall(spy)).toBeUndefined();
-    // 输入留空 = 系统默认应用（不带 app 参数）。
-    await wrapper!.find(".wb-dialog .wb-dialog-primary").trigger("click");
+    await openSubmenu();
+    // 编辑器目录条目（macos 目录：vscode/textedit 可用；sublime 不可用隐藏）。
+    expect(menuItem("Visual Studio Code")).toBeTruthy();
+    expect(menuItem("TextEdit")).toBeTruthy();
+    expect(menuItem("Sublime Text")).toBeUndefined();
+    // 系统默认程序：open 不带任何打开目标参数。
+    await menuItem(workbenchMessage("en", "sftpEdit.systemDefault"))!.trigger("click");
     await settle();
     const params = openWithCall(spy);
     expect(params?.remotePath).toBe(fileEntry.path);
+    expect(params?.editorId).toBeUndefined();
+    expect(params?.customCommand).toBeUndefined();
     expect(params?.app).toBeUndefined();
-    expect(wrapper!.find(".wb-notice").text()).toContain(workbenchMessage("en", "openWithOpening"));
+    // 选中即关菜单（ssh 同形：一次性打开，不写关联）。
+    expect(wrapper!.find("[role=menu]").exists()).toBe(false);
   });
 
   it("forwards a chosen catalog editor as the editorId parameter", async () => {
@@ -126,60 +139,69 @@ describe("open-with remote edit", () => {
       method === "files/remote-edit/open" ? { key: "k2", localPath: "/tmp/edit/report.txt" } : undefined,
     );
     await openEntryMenu(fileEntry);
-    await menuItem(workbenchMessage("en", "openWithMenu"))!.trigger("click");
-    await settle();
-    // 编辑器目录 chips（files/local/editors/list）：点选 = editorId 通道，
-    // sidecar 端按目录解析（macOS open -a / argv 启动）。
-    await wrapper!.findAll(".wb-preset-chip")[0]!.trigger("click");
-    await wrapper!.find(".wb-dialog .wb-dialog-primary").trigger("click");
+    await openSubmenu();
+    await menuItem("Visual Studio Code")!.trigger("click");
     await settle();
     const params = openWithCall(spy);
     expect(params?.editorId).toBe("vscode");
     expect(params?.app).toBeUndefined();
   });
 
-  it("forwards a custom command line as the customCommand parameter", async () => {
+  it("saves a custom command with 'remember as default' and opens via customCommand", async () => {
     mountWorkbench();
     await settle();
     const spy = stubInvoke((method) =>
       method === "files/remote-edit/open" ? { key: "k3", localPath: "/tmp/edit/report.txt" } : undefined,
     );
     await openEntryMenu(fileEntry);
-    await menuItem(workbenchMessage("en", "openWithMenu"))!.trigger("click");
+    await openSubmenu();
+    await menuItem(workbenchMessage("en", "sftpEdit.customCommand"))!.trigger("click");
     await settle();
-    // 自定义命令行输入框是第二个 input：{file} 占位符由 sidecar 分词替换。
-    const inputs = wrapper!.findAll(".wb-dialog input");
-    (inputs[1]!.element as HTMLInputElement).value = "code --wait {file}";
-    await inputs[1]!.trigger("input");
+    // 自定义命令弹窗：命令必填，名称缺省取命令首词；记住为默认默认勾选。
+    const dialog = wrapper!.find(".wb-dialog");
+    expect(dialog.exists()).toBe(true);
+    const inputs = dialog.findAll("input");
+    await inputs[0]!.setValue("My Code");
+    await inputs[1]!.setValue("code --wait {file}");
+    expect((inputs[2]!.element as HTMLInputElement).checked).toBe(true);
     await wrapper!.find(".wb-dialog .wb-dialog-primary").trigger("click");
     await settle();
-    // 命令行先经 validate-open-app 的 command 分支预校验，再进 open。
-    expect(spy.mock.calls.find(([method]) => method === "files/local/validate-open-app")?.[1])
-      .toEqual({ command: "code --wait {file}" });
     const params = openWithCall(spy);
     expect(params?.customCommand).toBe("code --wait {file}");
-    expect(params?.app).toBeUndefined();
+    expect(params?.editorId).toBeUndefined();
+    // 「记住为默认」写入 {pattern → customId} 关联 + 自定义编辑器（配置持久化）。
+    const config = loadEditorConfig();
+    expect(config.customEditors).toHaveLength(1);
+    expect(config.customEditors[0]!.command).toBe("code --wait {file}");
+    expect(config.associations).toEqual([{ pattern: "*.txt", customId: config.customEditors[0]!.id }]);
   });
 
-  it("blocks confirm when the custom app path fails validation", async () => {
+  it("queues ask-policy modified events and decides via files/remote-edit/decide", async () => {
     mountWorkbench();
     await settle();
-    const spy = stubInvoke((method) => {
-      if (method === "files/local/validate-open-app") throw new Error("External app is not accessible: nope");
-      return undefined;
+    const spy = stubInvoke((method) =>
+      method === "files/remote-edit/decide" ? { success: true } : undefined,
+    );
+    host.emitEvent("files/remote-edit/state", {
+      key: "k9",
+      connectionId: "mock-conn",
+      remotePath: "/docs/report.txt",
+      localPath: "/tmp/edit/report.txt",
+      state: "modified",
     });
-    await openEntryMenu(fileEntry);
-    await menuItem(workbenchMessage("en", "openWithMenu"))!.trigger("click");
-    await settle();
-    const input = wrapper!.find(".wb-dialog input");
-    ;(input.element as HTMLInputElement).value = "/nope/app";
-    await input.trigger("input");
+    await nextTick();
+    // 队头决议弹窗：三档 = 总是上传 / 上传一次(primary) / 遮罩取消。
+    expect(wrapper!.find(".wb-dialog").exists()).toBe(true);
+    expect(wrapper!.find(".wb-dialog").text()).toContain(
+      workbenchMessage("en", "sftpEdit.modifiedMessage", { name: "report.txt" }),
+    );
     await wrapper!.find(".wb-dialog .wb-dialog-primary").trigger("click");
     await settle();
-    // 校验失败：错误就地展示，open 不发起，对话框保持打开。
-    expect(wrapper!.find(".wb-dialog .wb-dialog-warning").text()).toContain("not accessible");
-    expect(openWithCall(spy)).toBeUndefined();
-    expect(wrapper!.find(".wb-dialog").exists()).toBe(true);
+    const decide = spy.mock.calls.find(([method]) => method === "files/remote-edit/decide");
+    // call() 会自动并入 connectionId（与 workbench 其余 RPC 同形）。
+    expect(decide?.[1]).toMatchObject({ key: "k9", action: "upload" });
+    // 决议后出队：弹窗关闭；后续保存再排队弹下一条。
+    expect(wrapper!.find(".wb-dialog").exists()).toBe(false);
   });
 
   it("surfaces sidecar remote-edit/state events as notices and an error banner", async () => {
