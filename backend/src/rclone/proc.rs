@@ -29,11 +29,23 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const PROBE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 /// Everything needed to talk to a running rcd (owned by [`RcdHandle`]).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RcdEndpoint {
     pub base_url: String,
     pub user: String,
     pub pass: String,
+}
+
+impl std::fmt::Debug for RcdEndpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // 与 RcdSpawnInfo 同口径：derive(Debug) 会让一行 `{:?}` 把 rc 密码
+        // 带进日志（RcdHandle 的 Debug 打印 endpoint，连带此处）。
+        f.debug_struct("RcdEndpoint")
+            .field("base_url", &self.base_url)
+            .field("user", &self.user)
+            .field("pass", &"[redacted]")
+            .finish()
+    }
 }
 
 /// Environment overrides applied to an rcd child for one proxy group.

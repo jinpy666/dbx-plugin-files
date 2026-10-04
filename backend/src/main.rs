@@ -1305,6 +1305,8 @@ impl Plugin {
                 let size = rclone::bytes_channel::remote_size(&client, &fs, &remote)
                     .await?
                     .unwrap_or(0);
+                // task_id 先于 staging 生成：`.part` 名要掺它的指纹。
+                let task_id = uuid::Uuid::new_v4().to_string();
                 let staging = if request.save_to_local {
                     // Geometry: validate the preference dir, .part staging
                     // under the downloads base, pre-created so an unwritable
@@ -1322,11 +1324,14 @@ impl Plugin {
                         |key| std::env::var_os(key),
                         &Store::default_dir(),
                     );
+                    // Staging 名掺任务指纹（0.1.89 review）：只按远端文件名
+                    // 命名时，两个并发 saveToLocal 的同名 `.part` 会互相截断
+                    // 对方已写入的前缀——字节数巧合一致时混合内容能通过
+                    // promote 的 size 校验（静默数据损坏）。
                     let staging = base.join(format!(
-                        "{}.part",
-                        local_downloads::sanitize_file_name(remote_file_name(
-                            &request.remote_path
-                        ))
+                        "{}.{}.part",
+                        local_downloads::sanitize_file_name(remote_file_name(&request.remote_path)),
+                        download_staging_marker(&task_id)
                     ));
                     if let Some(parent) = staging.parent() {
                         std::fs::create_dir_all(parent)
@@ -1341,7 +1346,6 @@ impl Plugin {
                 // 同名冲突策略：只认 "overwrite"；rename 是默认，ask 由前端经
                 // files/local/exists 预检后解析成这两档再下发。
                 let overwrite = request.conflict.as_deref() == Some("overwrite");
-                let task_id = uuid::Uuid::new_v4().to_string();
                 let cancel = Arc::new(AtomicBool::new(false));
                 let pump_done = Arc::new(AtomicBool::new(false));
                 let job = transfers::TransferJob {
@@ -1853,7 +1857,10 @@ impl Plugin {
                 }
                 let binding = self.rclone.binding(&request.connection_id)?;
                 ensure_binding_writable(&binding)?;
-                let client = self.rclone.client_for_binding(&binding).await?;
+                // 服务端拉取整个 URL 再上传目标，耗时不受本侧控制——与
+                // files/write/archive/sync 作业同口径走 transfer client
+                // （30s 控制面总超时会掐死大资源/慢源，rcd 侧作业还在继续）。
+                let client = self.rclone.client_for_binding(&binding).await?.transfer_client();
                 let fs = rclone::call_fs(&binding);
                 let dir_remote = rclone_gate(
                     &binding.root,
@@ -3090,7 +3097,7 @@ impl Plugin {
         }
         let mut local_path = None;
         if let Some(staging) = &slot.staging {
-            match promote_rclone_staging(staging, slot.size, slot.overwrite) {
+            match promote_rclone_staging(staging, task_id, slot.size, slot.overwrite) {
                 Ok(path) => {
                     if let Some(job) = rclone_lock(&self.rclone.jobs).get_mut(task_id) {
                         job.local_path = Some(path.clone());
@@ -4554,10 +4561,16 @@ fn remote_file_name(remote_path: &str) -> &str {
         .unwrap_or(remote_path)
 }
 
+/// 下载 staging 名的任务指纹段（task_id 前 12 位）：两个并发 saveToLocal 的
+/// 同名 `.part` 互不截断（见 files/download start 处注释）。
+fn download_staging_marker(task_id: &str) -> &str {
+    &task_id[..task_id.len().min(12)]
+}
+
 /// Renames the finished `.part` staging file to its final collision-free
 /// name after verifying the staged byte count matches `size` — byte-for-byte
 /// the `JobTable::promote_staging` semantics.
-fn promote_rclone_staging(staging: &std::path::Path, size: u64, overwrite: bool) -> Result<String, String> {
+fn promote_rclone_staging(staging: &std::path::Path, task_id: &str, size: u64, overwrite: bool) -> Result<String, String> {
     let staged = std::fs::metadata(staging)
         .map_err(|error| format!("Failed to stat staging file: {error}"))?
         .len();
@@ -4571,6 +4584,9 @@ fn promote_rclone_staging(staging: &std::path::Path, size: u64, overwrite: bool)
         .file_name()
         .and_then(|name| name.to_str())
         .and_then(|name| name.strip_suffix(".part"))
+        // start 侧掺的任务指纹：从最终名里剥掉（剥不掉 = 旧文件名形态，原样用）。
+        .and_then(|name| name.strip_suffix(download_staging_marker(task_id)))
+        .and_then(|name| name.strip_suffix('.'))
         .unwrap_or("download");
     let final_path = local_downloads::finalize_download_path(base, name, overwrite);
     // overwrite 档：Windows 的 rename 在目标存在时失败，先移除旧文件（短窗口
