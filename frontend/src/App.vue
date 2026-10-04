@@ -528,11 +528,17 @@ const settingsCategory = ref<SettingsCategory>(
     : "downloads",
 );
 const settingsOverlayEl = ref<HTMLElement>();
+// 设置弹窗焦点归还（0.1.89 review）：打开前记触发元素，关闭时归还——
+// 否则焦点落 body，Tab 会落到被遮罩挡住的背景控件。
+let settingsReturnFocus: HTMLElement | null = null;
 
 function openSettings(category?: SettingsCategory) {
   // 不带参（工具栏齿轮）= 回到上次停留的分类；显式传参（挂载/下载入口）按意图直达。
   settingsDirty.value = false;
   settingsCategory.value = category ?? (prefs.settingsCategory ?? "downloads");
+  if (!settingsOpen.value) {
+    settingsReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  }
   settingsOpen.value = true;
   if (category === "mounts") {
     void loadMounts();
@@ -547,6 +553,8 @@ function openSettings(category?: SettingsCategory) {
 
 function closeSettings() {
   settingsOpen.value = false;
+  settingsReturnFocus?.focus();
+  settingsReturnFocus = null;
 }
 
 watch(settingsCategory, (category) => {
@@ -1195,22 +1203,27 @@ function handleEvent(event: DbxPluginEvent) {
     // 仍给出可操作的兜底提示，避免移动失败时只在传输面板里静默结束。
     if (progress.state === "failed") showError(progress.error ? new Error(progress.error) : { key: "transferFailed" });
     // P-FILES ①b：transport=job 的 copy/move/rename 在终态后自动刷新目录。
-    if (job && awaitingRefresh.has(job.jobId) && !isActive(job.state)) {
-      awaitingRefresh.delete(job.jobId);
-      // 失败/取消时不要用一次成功的目录刷新把错误条清掉；只有真正完成
-      // 的 copy/move/rename 才需要同步两侧目录。
-      if (job.state === "completed") {
-        // 用户导航在途时让位：自动补拉会取到更新的序号令牌，把用户在途
-        // 导航的响应判为过期丢弃，视图被无声拉回旧目录（0.1.89 review）。
-        if (!loading.value) void loadDirectory().catch(() => undefined);
-        if (dualPane.value && !rightLoading.value) void loadRightDirectory().catch(() => undefined);
-        // 传输/改名可能落在任一侧目录：两侧树都同步（不可见侧零网络标 stale）。
-        syncTreeAfterMutation("left");
-        syncTreeAfterMutation("right");
-      }
-      refreshAuditPanel();
-    }
+    if (job && awaitingRefresh.has(job.jobId) && !isActive(job.state)) settleAwaitedRefresh(job);
   }
+}
+
+/** 终态结算（进度事件与 5s 轮询两条路径共用）：目录补拉 + 树同步 + 审计刷新。
+ * 事件丢失（sidecar/宿主重启窗口）时由轮询兜底结算——否则 awaitingRefresh
+ * 既不补拉目录也永不清理（L2 悬挂）。 */
+function settleAwaitedRefresh(job: TransferJob): void {
+  awaitingRefresh.delete(job.jobId);
+  // 失败/取消时不要用一次成功的目录刷新把错误条清掉；只有真正完成
+  // 的 copy/move/rename 才需要同步两侧目录。
+  if (job.state === "completed") {
+    // 用户导航在途时让位：自动补拉会取到更新的序号令牌，把用户在途
+    // 导航的响应判为过期丢弃，视图被无声拉回旧目录（0.1.89 review）。
+    if (!loading.value) void loadDirectory().catch(() => undefined);
+    if (dualPane.value && !rightLoading.value) void loadRightDirectory().catch(() => undefined);
+    // 传输/改名可能落在任一侧目录：两侧树都同步（不可见侧零网络标 stale）。
+    syncTreeAfterMutation("left");
+    syncTreeAfterMutation("right");
+  }
+  refreshAuditPanel();
 }
 
 // -- MCP UI intent 通道（M2，shared/frontend/uiIntent 公共层） -----------------
@@ -1334,10 +1347,23 @@ const frameWaiters = new Map<string, FrameWaiter[]>();
  * 无上限的积压会把 webview 内存顶到接近文件体积。超限即判该通道溢出、
  * 立刻以错误掐断下载（fail-fast），不静默吞帧制造必然的超时。 */
 const FRAME_QUEUE_MAX_BYTES = 64 * 1024 * 1024;
+/** 上传在途未确认字节窗口（与下载帧队列上限同量级，M-7）：sendBinary
+ * 即发即忘，超限即暂停泵，以 sidecar 权威进度为信用（见上传泵内注释）。 */
+const UPLOAD_INFLIGHT_WINDOW_BYTES = 64 * 1024 * 1024;
+const UPLOAD_BACKPRESSURE_POLL_MS = 100;
 const frameOverflow = new Set<string>();
 /** 已释放（取消/完成）的下载通道：sidecar 在处理 cancel 前仍在推的帧
- * 直接丢弃——无 waiter 的迟到帧会逐帧重建 queue 且永远无人消费。 */
-const releasedChannels = new Set<string>();
+ * 直接丢弃——无 waiter 的迟到帧会逐帧重建 queue 且永远无人消费。
+ * 墓碑带时间戳并在每次释放时清扫（L1）：通道名每次下载唯一，旧墓碑
+ * 不会有新帧命中，60s 后留着只是缓慢增长。 */
+const releasedChannels = new Map<string, number>();
+const RELEASED_CHANNEL_TOMBSTONE_MS = 60_000;
+
+function sweepReleasedChannels(now: number): void {
+  for (const [channel, releasedAt] of releasedChannels) {
+    if (now - releasedAt > RELEASED_CHANNEL_TOMBSTONE_MS) releasedChannels.delete(channel);
+  }
+}
 
 function handleBinary(event: DbxPluginBinaryEvent) {
   if (!event.channel.startsWith("files/download/")) return;
@@ -1416,7 +1442,8 @@ function waitForFrame(channel: string, offset: number, timeoutMs = 30_000): Prom
 }
 
 function releaseFrames(channel: string) {
-  releasedChannels.add(channel);
+  sweepReleasedChannels(Date.now());
+  releasedChannels.set(channel, Date.now());
   frameQueue.delete(channel);
   frameQueueBytes.delete(channel);
   frameOverflow.delete(channel);
@@ -3081,6 +3108,16 @@ async function uploadSource(item: UploadQueueItem, target: UploadTarget) {
       payload.set(chunk, 8);
       await window.dbxPlugin.sendBinary(`files/upload/${taskId}`, payload);
       offset += chunk.byteLength;
+      // M-7 背压窗口（0.1.89 review）：sendBinary 即发即忘（issue#6-5），
+      // 没有窗口时 GB 级文件按内存速度入队，整个文件都可能缓冲进宿主桥
+      // 队列（下载侧有 FRAME_QUEUE_MAX_BYTES 对称防线，上传侧此前没有）。
+      // 以 sidecar 权威进度为信用：在途未确认超限即暂停读盘/入队，等进度
+      // 事件或 5s 轮询推进。桥彻底断死时窗口不会自行打开——取消检查点
+      // 每轮仍生效，upload/finish 的 30min 超时兜底。
+      while (offset - (tracker.jobs[taskId]?.transferred ?? 0) > UPLOAD_INFLIGHT_WINDOW_BYTES) {
+        if (cancelFlag.canceled) break;
+        await new Promise((resolve) => setTimeout(resolve, UPLOAD_BACKPRESSURE_POLL_MS));
+      }
       // issue#6-5：上传进度以 sidecar 收到的权威字节为准（节流事件 + 5s 轮询
       // 兜底），不再上报本地已入队的 offset——宿主 sendBinary 即发即忘，本地
       // offset 按内存速度跑到 100%（视频里 265 MiB/s 的假速度），真实网络
@@ -4077,6 +4114,26 @@ const customEditorRemember = ref(true);
 const customEditorPattern = computed(() =>
   customEditorEntry.value ? defaultPatternFor(customEditorEntry.value.entry.name) : "*",
 );
+// 焦点约定（ScheduleDialog/SyncDialog 同款，0.1.89 review）：打开聚焦命令
+// 输入框（HTML autofocus 对 v-if 插入的节点不可靠）；Tab 在弹层内循环；
+// 关闭（确认/取消/Esc/遮罩）后归还焦点到触发元素。
+const customEditorEl = ref<HTMLElement | null>(null);
+const customEditorCommandEl = ref<HTMLInputElement | null>(null);
+let customEditorReturnFocus: HTMLElement | null = null;
+watch(customEditorOpen, async (open) => {
+  if (open) {
+    customEditorReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    await nextTick();
+    customEditorCommandEl.value?.focus();
+  } else {
+    customEditorReturnFocus?.focus();
+    customEditorReturnFocus = null;
+  }
+});
+function onCustomEditorKeydown(event: KeyboardEvent): void {
+  if (event.key !== "Tab") return;
+  trapTabKey(event, customEditorEl.value);
+}
 
 function beginCustomEditorCommand(entry: FileEntry, side: PaneSide) {
   contextMenu.value = undefined;
@@ -4909,6 +4966,14 @@ async function initialize() {
     if (pollingDisabled) return;
     tracker
       .refresh(invokeAdapter, connectionId.value)
+      .then(() => {
+        // 终态事件丢失的兜底（L2）：轮询已以 sidecar 为权威刷新 job 状态，
+        // 在途等待集合里已终态的条目在此结算。
+        for (const jobId of [...awaitingRefresh]) {
+          const job = tracker.jobs[jobId];
+          if (job && !isActive(job.state)) settleAwaitedRefresh(job);
+        }
+      })
       .catch((cause) => {
         if (isMethodMissing(cause)) pollingDisabled = true;
       });
@@ -5442,7 +5507,7 @@ onBeforeUnmount(() => {
          sidecar argv 化执行（不过 shell，{file} 占位符替换本地副本路径），
          「记住为默认」写入 {pattern → customId} 关联（pattern 取扩展名掩码）。 -->
     <div v-if="customEditorOpen" class="wb-dialog-backdrop" @click.self="customEditorOpen = false">
-      <div class="wb-dialog" role="dialog" aria-modal="true" :aria-label="t('sftpEdit.customCommandTitle')">
+      <div ref="customEditorEl" class="wb-dialog" role="dialog" aria-modal="true" :aria-label="t('sftpEdit.customCommandTitle')" @keydown="onCustomEditorKeydown">
         <header>{{ t("sftpEdit.customCommandTitle") }}</header>
         <div class="wb-dialog-body">
           <input
@@ -5453,9 +5518,9 @@ onBeforeUnmount(() => {
           />
           <input
             v-model="customEditorCommand"
+            ref="customEditorCommandEl"
             class="wb-mono"
             spellcheck="false"
-            autofocus
             :placeholder="t('sftpEdit.customEditorCommandPlaceholder')"
             :aria-label="t('sftpEdit.customEditorCommandPlaceholder')"
             @keydown.enter="commitCustomEditor"
