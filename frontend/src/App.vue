@@ -118,6 +118,7 @@ import { isNarrowViewport } from "./lib/responsive";
 import { resolveUploadTarget, type UploadTarget } from "./lib/uploadTarget";
 import { MENU_ITEM_SELECTOR, onMenuArrowKeys, onTablistArrowKeys, trapTabKey } from "./lib/a11y";
 import { isConnectionNotReadyMessage, isNotFoundMessage, isTransportFailure } from "./lib/friendlyError";
+import { decideBootRestoreRetry } from "./lib/bootRestoreRetry";
 import { createNavGuard } from "./lib/navGuard";
 import { resolveToolbarTarget } from "./lib/toolbarTarget";
 import { validateFileName } from "./lib/fileName";
@@ -1024,7 +1025,7 @@ async function writeClipboardText(text: string, successNotice: I18nInput, failur
   }
 }
 
-function showError(cause: unknown, side: PaneSide | "global" = "global") {
+function showError(cause: unknown, side: PaneSide | "global" = "global", options: { persist?: boolean } = {}) {
   errorSide.value = side;
   notice.value = "";
   window.clearTimeout(noticeTimer);
@@ -1045,6 +1046,10 @@ function showError(cause: unknown, side: PaneSide | "global" = "global") {
   }
   // 审计快赢#1：错误横幅 3s 自动消失来不及读完，延长到 8s；role=alert 保证
   // 屏幕阅读器即时播报（横幅条件渲染，插入即触发播报）。
+  // persist：boot 恢复自愈窗口耗尽的落点（#144 同源）——恢复页凭据不可用时
+  // 横幅不自动消失（8s 自动消失后用户面对空列表毫无信号），保留重试/关闭
+  // 出口等宿主恢复；用户操作（点重试/关闭或后续成功加载清横幅）才移除。
+  if (options.persist) return;
   errorTimer = window.setTimeout(() => (error.value = ""), 8000);
 }
 
@@ -1936,7 +1941,47 @@ async function beginPaneConnectionSwitch(side: PaneSide, previous: string, reloa
  * `anyFailure`：不限错误类型（issue #68 的同 id 重开事件入口用——宿主主动
  * 重开了连接，失败栏位无论因何失败都应借事件重拉一次）。
  */
+/** boot 恢复自愈窗口运行中（initialize 的首拉链路独占）：事件驱动的
+ * recoverPaneListing 让位，避免与窗口轮询重复 reopen/reload。 */
+let bootHealActive = false;
+
+/**
+ * boot 恢复（页面刷新/宿主重启后宿主恢复的工作台 tab）首拉失败的有界自愈
+ * 窗口（#144 同源，对标 ssh connectRetry 的 BOOT_RESTORE 窗位）：web/docker
+ * 部署下宿主对恢复 tab 的 connect 重放（凭据重推）可能晚于恢复页首个
+ * files/* 数秒落地，issue #68 的一次性 reopen+重试在重放晚到时把恢复页留在
+ * 空列表上。每轮请宿主补连（host.reopenConnection）后按当前路径重拉，1s
+ * 固定节奏至多 12 轮；非暂时态失败（认证/权限等）或窗口耗尽即止——耗尽时
+ * 落持久横幅（showError persist），保留重试出口由 retryAfterError 接续。
+ */
+async function healBootRestore(side: PaneSide, cause: unknown) {
+  if (bootHealActive) return;
+  bootHealActive = true;
+  try {
+    for (let attempt = 0; ; attempt++) {
+      const decision = decideBootRestoreRetry({ attempt });
+      if (decision.kind === "fail") {
+        showError(cause, side, { persist: true });
+        return;
+      }
+      const id = sideConnectionId(side) ?? connectionId.value;
+      await requestHostConnectionReopen(id);
+      const outcome = await (side === "left"
+        ? loadDirectory(paneDirPath("left")).then(() => true as const, (reloadCause: unknown) => ({ ok: false as const, cause: reloadCause }))
+        : loadRightDirectory(paneDirPath("right")).then(() => true as const, (reloadCause: unknown) => ({ ok: false as const, cause: reloadCause })));
+      if (outcome === true) return;
+      if (!isConnectionNotReadyMessage(errorMessage(outcome.cause))) return;
+      await new Promise((resolve) => setTimeout(resolve, decision.delayMs));
+    }
+  } finally {
+    bootHealActive = false;
+  }
+}
+
 async function recoverPaneListing(side: PaneSide, cause: unknown, options: { anyFailure?: boolean } = {}) {
+  // boot 恢复窗口在跑时让位：窗口轮询已在重复 reopen+重拉，事件驱动的
+  // 单发自愈只会重复劳动（窗口耗尽后横幅持久，事件重开仍可触发本入口）。
+  if (bootHealActive) return;
   if (!options.anyFailure && !isConnectionNotReadyMessage(errorMessage(cause))) return;
   const id = sideConnectionId(side) ?? connectionId.value;
   if (!(await requestHostConnectionReopen(id))) return;
@@ -4751,10 +4796,11 @@ async function initialize() {
   await loadCapabilities();
   if (version === hostContextVersion) {
     // issue #68：面板首开（安装/升级/容器重启/刷新后宿主尚未重建连接）首拉
-    // 报「连接未注册」时不再静默吞掉，走同一套自愈（请宿主补连后重拉）。
-    await loadDirectory("/").catch((cause) => recoverPaneListing("left", cause));
+    // 报「连接未注册」时不再静默吞掉。#144 同源升级：单发自愈改为有界自愈
+    // 窗口（1s×12s），吸收宿主 connect 重放晚到的时序差。
+    await loadDirectory("/").catch((cause) => healBootRestore("left", cause));
     if (version === hostContextVersion) {
-      if (dualPane.value) await loadRightDirectory("/").catch((cause) => recoverPaneListing("right", cause));
+      if (dualPane.value) await loadRightDirectory("/").catch((cause) => healBootRestore("right", cause));
       await loadQuickPaths("left");
       if (leftSideTab.value === "tree") void followTreePath("left", paneDirPath("left"));
       if (dualPane.value) {
