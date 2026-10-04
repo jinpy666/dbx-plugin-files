@@ -1925,6 +1925,7 @@ async function healBootRestore(side: PaneSide, cause: unknown) {
   bootHealActive = true;
   try {
     for (let attempt = 0; ; attempt++) {
+      const attemptStarted = Date.now();
       const decision = decideBootRestoreRetry({ attempt });
       if (decision.kind === "fail") {
         showError(cause, side, { persist: true });
@@ -1936,8 +1937,19 @@ async function healBootRestore(side: PaneSide, cause: unknown) {
         ? loadDirectory(paneDirPath("left")).then(() => true as const, (reloadCause: unknown) => ({ ok: false as const, cause: reloadCause }))
         : loadRightDirectory(paneDirPath("right")).then(() => true as const, (reloadCause: unknown) => ({ ok: false as const, cause: reloadCause })));
       if (outcome === true) return;
+      // 非暂时态（权限/不存在/认证类）重试无意义：维持原样退出（横幅已由
+      // load 弹出，8s 自动消失），不升级为持久横幅。
       if (!isBootRestoreTransient(errorMessage(outcome.cause))) return;
-      await new Promise((resolve) => setTimeout(resolve, decision.delayMs));
+      // 下一轮决策带上本轮重拉的墙钟时长：真超时/真拨号（≥8s，如存储停机
+      // 时 files/list 挂满操作超时）不是启动竞态，立即落持久横幅而非把恢复
+      // 页按在分钟级的骨架屏上（E2E 实证）。
+      const next = decideBootRestoreRetry({ attempt: decision.attempt, attemptMs: Date.now() - attemptStarted });
+      if (next.kind === "fail") {
+        showError(outcome.cause, side, { persist: true });
+        return;
+      }
+      cause = outcome.cause;
+      await new Promise((resolve) => setTimeout(resolve, next.delayMs));
     }
   } finally {
     bootHealActive = false;
