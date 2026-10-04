@@ -27,6 +27,8 @@ function mountToolbar(overrides: Partial<ToolbarProps> = {}) {
       connState: "connected",
       showMount: false,
       canMount: false,
+      showOpenInHost: false,
+      canOpenInHost: false,
       bwlimit: null,
       starred: false,
       t,

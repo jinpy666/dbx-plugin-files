@@ -66,8 +66,18 @@ export function seedMockLocalDownload(path: string): void {
   localDownloadFiles.add(path);
 }
 
+// 最近一次安装实例的 openFilesystem 调用记录（installMockHost 时清空，避免
+// 跨用例串扰）：App.openInHostFileManager.spec 断言 providerId/uri 用。
+const openFilesystemCalls: Array<{ providerId: string; context: { uri: string } }> = [];
+
+/** 读取 openFilesystem mock 的调用记录（只读视图，测试断言专用）。 */
+export function mockOpenFilesystemCalls(): ReadonlyArray<{ providerId: string; context: { uri: string } }> {
+  return openFilesystemCalls;
+}
+
 export function installMockHost() {
   if (window.dbxPlugin) return;
+  openFilesystemCalls.length = 0;
   const params = new URLSearchParams(window.location.search);
   const delayMs = Number(params.get("delay") ?? "250");
   // 流式列表（files/listStream P1）演示参数：批次大小/批间隔可调（对齐 &delay=
@@ -1448,6 +1458,11 @@ export function installMockHost() {
     saveFile: async (options: { fileName: string }) => ({
       path: (options.fileName || "download.bin").split(/[\\/]/).pop() || "download.bin",
     }),
+    // 宿主 openFilesystem mock（filesystem-provider 交接，能力探测命中路径）：
+    // 只记录 providerId/uri 供测试断言，恒应答成功——mock 不真正打开文件管理器。
+    openFilesystem: async (providerId: string, context: { uri: string }) => {
+      openFilesystemCalls.push({ providerId, context });
+    },
     // 宿主 host.storage mock（Host API 1.2，pluginHostBridge storage 命名空间同形）：
     // 值为任意 JSON，get 未命中返回 null，set(undefined) 归一化为 null。
     capabilities: { storage: true },
