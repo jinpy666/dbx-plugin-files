@@ -207,7 +207,7 @@ fn build_unbounded_http() -> reqwest::Client {
 }
 
 /// Client bound to one rcd instance (base URL + session credential).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RcClient {
     http: reqwest::Client,
     /// Same envelope, no total wall-clock timeout: listings assemble their
@@ -218,6 +218,17 @@ pub struct RcClient {
     base_url: String,
     user: String,
     pass: String,
+}
+
+impl std::fmt::Debug for RcClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // 与 RcdEndpoint 同口径：pass 不进任何 `{:?}` 输出。
+        f.debug_struct("RcClient")
+            .field("base_url", &self.base_url)
+            .field("user", &self.user)
+            .field("pass", &"[redacted]")
+            .finish()
+    }
 }
 
 impl RcClient {

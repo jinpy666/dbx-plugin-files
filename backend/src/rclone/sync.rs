@@ -555,9 +555,10 @@ async fn poll_job(
     callback: Arc<Mutex<Box<dyn FnMut(SyncEvent) + Send>>>,
 ) {
     let emit = |event: SyncEvent| {
-        if let Ok(mut handler) = callback.lock() {
-            handler(event);
-        }
+        // 投毒容错（与 take_canceled 同论证）：锁中毒后静默丢终态/取消事件，
+        // wiring 侧会悬挂在等一个永不到来的终态。
+        let mut handler = callback.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        handler(event);
     };
     let mut throttle = Throttle::default();
     let mut poll_errors: u32 = 0;

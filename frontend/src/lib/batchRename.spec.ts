@@ -79,4 +79,12 @@ describe("buildRenamePlan", () => {
     const plan = buildRenamePlan([entry("a.txt"), entry("b.txt")], { ...base, numbering: true, numberingStart: 9 });
     expect(plan.rows.map((row) => row.newName)).toEqual(["a.txt-009", "b.txt-010"]);
   });
+
+  it("flags case/NFC variants of existing names as collisions", () => {
+    // 大小写不敏感目标（APFS/Windows/SMB）上 `report.pdf` → `Report.PDF`
+    // 是覆盖已有文件；NFC/NFD 变体（macOS 输入 vs APFS 存储）同理。
+    const plan = buildRenamePlan([entry("report.pdf")], { ...base, find: "report", replace: "Report" }, ["Report.PDF"]);
+    expect(plan.rows[0].error).toBe("batchRenameErrorExists");
+    expect(plan.applicable).toBe(0);
+  });
 });

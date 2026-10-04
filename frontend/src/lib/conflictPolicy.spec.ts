@@ -52,6 +52,20 @@ describe("resolveUploadNames", () => {
     const resolved = resolveUploadNames(items, new Set(["a.txt"]), "rename");
     expect(resolved.map((entry) => entry.name)).toEqual(["x.txt"]);
   });
+
+  it("treats case/NFC variants of existing names as collisions", () => {
+    // 大小写不敏感目标（APFS/Windows/SMB）上 `report.pdf` 撞 `Report.PDF`
+    // 是覆盖；rename 档必须让位而不是「预检无冲突」直接写入。
+    const resolved = resolveUploadNames([item("report.pdf")], new Set(["Report.PDF"]), "rename");
+    expect(resolved[0].name).toBe("report (1).pdf");
+  });
+
+  it("renames batch-internal case variants against each other", () => {
+    const items = [item("report.pdf"), item("Report.PDF")];
+    const resolved = resolveUploadNames(items, new Set(), "rename");
+    // 让位名沿用该项自身的大小写形态（stem = 最后一个点之前）。
+    expect(resolved.map((entry) => entry.name)).toEqual(["report.pdf", "Report (1).PDF"]);
+  });
 });
 
 describe("groupByRemoteDir", () => {

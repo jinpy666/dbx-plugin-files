@@ -66,7 +66,7 @@ function onTabKeydown(event: KeyboardEvent) {
 
 <template>
   <div v-if="open" class="wb-dialog-backdrop" @click.self="emit('cancel')">
-    <div ref="dialogEl" class="wb-dialog" role="dialog" aria-modal="true" @keydown="onTabKeydown">
+    <div ref="dialogEl" class="wb-dialog" role="dialog" aria-modal="true" :aria-label="title" @keydown="onTabKeydown">
       <header>{{ title }}</header>
       <div class="wb-dialog-body">
         <p style="margin: 0">{{ message }}</p>

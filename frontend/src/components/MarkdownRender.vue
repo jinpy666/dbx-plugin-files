@@ -38,6 +38,8 @@ function renderInline(raw: string): string {
   working = working.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (match, label: string, href: string) => {
     const scheme = (/^([a-z][a-z0-9+.-]*):/i.exec(href)?.[1] ?? "").toLowerCase();
     if (scheme && scheme !== "http" && scheme !== "https" && scheme !== "mailto") return match;
+    // 无 scheme 的协议相对地址（`//evil.com`）同样是外链跳板，按回退原文约定保留。
+    if (!scheme && href.startsWith("//")) return match;
     return `<a class="wb-md-link" href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`;
   });
   // 粗体先于斜体（** 消费后剩余单星对才按斜体处理）。
@@ -183,8 +185,16 @@ function renderMarkdown(text: string): string {
   return renderBlocks(text.replace(/\r\n?/g, "\n").replace(/\u0000/g, "").split("\n"));
 }
 
+// 超阈值降级为源码面（0.1.89 review M3）：parsed computed 对数万行做逐行
+// 多趟正则再单串 v-html 注入，2MiB 文档会冻结主线程数百毫秒到秒级，且每次
+// 打开都重付。阈值下行为不变（length 是 UTF-16 单元数，对 CJK 高估 ≤2 倍，
+// 只影响降级边界不改变语义）。
+const RENDER_INLINE_MAX_CHARS = 256 * 1024;
+const tooLargeToRender = computed(() => props.text.length > RENDER_INLINE_MAX_CHARS);
+
 const parsed = computed<{ html: string; failed: boolean }>(() => {
   try {
+    if (tooLargeToRender.value) return { html: "", failed: false };
     return { html: renderMarkdown(props.text), failed: false };
   } catch {
     return { html: "", failed: true };
@@ -204,6 +214,8 @@ watch(
   <div class="wb-md-render" data-test="md-render">
     <!-- 解析异常兜底：插值输出原文（Vue 自动转义），PreviewPane 同时回退源码视图。 -->
     <pre v-if="parsed.failed" class="wb-md-render-failed">{{ text }}</pre>
+    <!-- 超大文档降级：源码面等价展示（pre 同样插值转义），不付全量同步渲染的主线程冻结。 -->
+    <pre v-else-if="tooLargeToRender" data-test="md-render-too-large">{{ text }}</pre>
     <div v-else class="wb-md-body" v-html="parsed.html"></div>
   </div>
 </template>

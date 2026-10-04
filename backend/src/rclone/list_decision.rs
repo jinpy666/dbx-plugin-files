@@ -63,7 +63,7 @@ impl DecisionCache {
     /// `true` = 记忆中的巨型目录，跳过 rc 快路径直通流式。
     /// miss/过期/未达阈值一律 `false`（保守：软超时兜底）。
     pub fn escalate_hint(&self, connection_id: &str, path: &str) -> bool {
-        let mut inner = self.inner.lock().expect("decision cache poisoned");
+        let mut inner = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let key = (connection_id.to_string(), path.to_string());
         let Some(entry) = inner.map.get(&key).copied() else {
             return false;
@@ -80,7 +80,7 @@ impl DecisionCache {
     /// 成功完成的列举回写（done 帧的全量计数）。任何计数都记录——
     /// 「已知不大」的记忆同样消除下一次的决策犹豫成本。
     pub fn record(&self, connection_id: &str, path: &str, count: u64) {
-        let mut inner = self.inner.lock().expect("decision cache poisoned");
+        let mut inner = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let key = (connection_id.to_string(), path.to_string());
         inner.map.insert(key.clone(), Entry { count, at: Instant::now() });
         touch(&mut inner, key);
@@ -91,7 +91,7 @@ impl DecisionCache {
 
     /// 精确失效（单 key）。
     pub fn invalidate(&self, connection_id: &str, path: &str) {
-        let mut inner = self.inner.lock().expect("decision cache poisoned");
+        let mut inner = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let key = (connection_id.to_string(), path.to_string());
         inner.map.remove(&key);
         inner.order.retain(|k| *k != key);
