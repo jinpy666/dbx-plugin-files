@@ -24,10 +24,10 @@ describe("friendlyError", () => {
     );
     // 宿主侧/dev-host 的同族 registry miss（#144 恢复自愈的暂时态）。
     expect(friendlyError("Connection is not active; reopen it from DBX", t)).toBe(
-      "该连接尚未在后台建立:请稍候重试,或先在宿主应用中将其切换为当前连接。",
+      "该连接尚未在后台建立:请关闭本页签,然后在 DBX 左侧连接列表重新打开该连接。",
     );
     expect(friendlyError("Connection not found", t)).toBe(
-      "该连接尚未在后台建立:请稍候重试,或先在宿主应用中将其切换为当前连接。",
+      "该连接尚未在后台建立:请关闭本页签,然后在 DBX 左侧连接列表重新打开该连接。",
     );
   });
 
