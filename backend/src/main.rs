@@ -23,6 +23,7 @@ mod model;
 mod policy;
 mod remote_edit;
 mod rclone;
+mod scheduler;
 mod store;
 mod transfers;
 
@@ -98,6 +99,10 @@ struct Plugin {
     list_streams: Arc<rclone::list_stream::ListStreams>,
     /// P2 升级决策缓存（已知巨型目录直通流式；写操作失效钩子见各写分支）。
     list_cache: Arc<rclone::list_decision::DecisionCache>,
+    /// 计划任务引擎（`files/schedule/*`）：cron 驱动的 dir/bisync/check
+    /// 作业。执行复用下方三个 start_* 入口（同一作业镜像），详见
+    /// scheduler 模块文档。
+    scheduler: Arc<scheduler::Scheduler>,
 }
 
 impl Plugin {
@@ -162,6 +167,92 @@ impl Plugin {
                 Arc::clone(&sync_jobs),
             )),
         });
+        // 计划任务引擎：作业启动钩子逐字复用 workbench/MCP 的 start_* 入口
+        // （同一 sync_jobs 镜像 → files/transfer/status 单一查询面、取消走
+        // 同一条 files/transfer/cancel 臂）。emitter 槽位由请求路径刷新，
+        // 后台运行据此推送进度/终态事件。
+        let scheduler_emitter: scheduler::EmitterSlot =
+            Arc::new(std::sync::Mutex::new(None));
+        let hooks = scheduler::JobHooks {
+            start_dir_job: {
+                let engine = Arc::clone(&rclone);
+                let sync_jobs = Arc::clone(&sync_jobs);
+                let emitter = Arc::clone(&scheduler_emitter);
+                Arc::new(move |request: model::DirJobRequest, sync: bool| {
+                    let engine = Arc::clone(&engine);
+                    let sync_jobs = Arc::clone(&sync_jobs);
+                    let emitter = Arc::clone(&emitter);
+                    Box::pin(async move {
+                        let held = emitter
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .clone();
+                        rclone_start_dir_job(
+                            engine,
+                            sync_jobs,
+                            &request,
+                            sync,
+                            false,
+                            held.as_ref(),
+                        )
+                        .await
+                    })
+                })
+            },
+            start_bisync_job: {
+                let engine = Arc::clone(&rclone);
+                let sync_jobs = Arc::clone(&sync_jobs);
+                let store = Arc::clone(&store);
+                let emitter = Arc::clone(&scheduler_emitter);
+                Arc::new(move |request: model::BisyncStartRequest| {
+                    let engine = Arc::clone(&engine);
+                    let sync_jobs = Arc::clone(&sync_jobs);
+                    let store = Arc::clone(&store);
+                    let emitter = Arc::clone(&emitter);
+                    Box::pin(async move {
+                        let held = emitter
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .clone();
+                        rclone_start_bisync_job(
+                            engine,
+                            sync_jobs,
+                            store,
+                            &request,
+                            held.as_ref(),
+                        )
+                        .await
+                    })
+                })
+            },
+            start_check_job: {
+                let engine = Arc::clone(&rclone);
+                let sync_jobs = Arc::clone(&sync_jobs);
+                let emitter = Arc::clone(&scheduler_emitter);
+                Arc::new(move |request: model::CheckRequest| {
+                    let engine = Arc::clone(&engine);
+                    let sync_jobs = Arc::clone(&sync_jobs);
+                    let emitter = Arc::clone(&emitter);
+                    Box::pin(async move {
+                        let held = emitter
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .clone();
+                        rclone_start_check_job(engine, sync_jobs, &request, held.as_ref())
+                            .await
+                    })
+                })
+            },
+        };
+        let scheduler = scheduler::Scheduler::new(
+            Arc::clone(&rclone),
+            Arc::clone(&sync_jobs),
+            Arc::clone(&store),
+            hooks,
+            Arc::clone(&scheduler_emitter),
+        );
+        scheduler.start();
+        mcp.attach_scheduler(Arc::clone(&scheduler));
         let mcp = Arc::new(mcp);
         Ok(Self {
             runtime,
@@ -175,6 +266,7 @@ impl Plugin {
             remote_edits: remote_edit::EditEngine::new(),
             list_streams,
             list_cache,
+            scheduler,
         })
     }
 
@@ -2729,6 +2821,55 @@ impl Plugin {
             // Unknown/unrouted methods keep the historical "Method not
             // found" phrasing — the smoke suite's SKIP semantics and MCP
             // clients match on it.
+            // ------------------------------------------------------------------
+            // Scheduled tasks (`files/schedule/*`): cron-driven backup jobs.
+            // Definitions persist in schedules.json; runs land in the same
+            // dir-job mirror (transfer panel) and runs.json history.
+            // ------------------------------------------------------------------
+            "files/schedule/list" => Ok(json!({ "tasks": self.scheduler.list() })),
+            "files/schedule/create" => {
+                let request: scheduler::model::ScheduleCreateRequest = parse(params)?;
+                let task = self.scheduler.create(request)?;
+                Ok(json!({ "task": serde_json::to_value(task).unwrap_or(Value::Null) }))
+            }
+            "files/schedule/update" => {
+                let request: scheduler::model::ScheduleUpdateRequest = parse(params)?;
+                let task = self.scheduler.update(request)?;
+                Ok(json!({ "task": serde_json::to_value(task).unwrap_or(Value::Null) }))
+            }
+            "files/schedule/delete" => {
+                let request: scheduler::model::ScheduleTaskRequest = parse(params)?;
+                let removed = self.scheduler.delete(&request.id)?;
+                Ok(json!({ "removed": removed }))
+            }
+            "files/schedule/history" => {
+                let request: scheduler::model::ScheduleHistoryRequest = parse(params)?;
+                let runs = self
+                    .scheduler
+                    .history(request.id.as_deref(), request.limit.unwrap_or(100));
+                Ok(json!({ "runs": runs }))
+            }
+            "files/schedule/runNow" => {
+                let request: scheduler::model::ScheduleTaskRequest = parse(params)?;
+                let scheduler = Arc::clone(&self.scheduler);
+                let run = scheduler.run_now(&request.id)?;
+                Ok(json!({ "run": serde_json::to_value(run).unwrap_or(Value::Null) }))
+            }
+            "files/schedule/cancel" => {
+                // Zero-duplicated stop logic: route the live run's jobId
+                // through the shared transfer-cancel arm (single-flight
+                // settle, Canceled terminal, panel event).
+                let request: scheduler::model::ScheduleTaskRequest = parse(params)?;
+                let job_id = self.scheduler.cancel(&request.id)?;
+                // Box::pin: re-dispatching the shared arm from inside this
+                // async fn needs a boxed future (E0733).
+                return Box::pin(self.handle_request_via_rclone(
+                    "files/transfer/cancel",
+                    json!({ "taskId": job_id }),
+                    emitter,
+                ))
+                .await;
+            }
             _ => Err(format!("Method not found: {method}")),
         }
     }
@@ -2987,6 +3128,9 @@ impl Plugin {
     ) -> Result<Value, String> {
         // The rclone engine is the only engine: every request is routed
         // through it (storage methods) or answered inline (support methods).
+        // The scheduler's background runs emit through this slot too — keep
+        // the latest handle (cheap clone) so UI events survive emitter churn.
+        self.scheduler.set_emitter(emitter.clone());
         self.runtime
             .block_on(self.handle_request_via_rclone(method, params, emitter))
     }

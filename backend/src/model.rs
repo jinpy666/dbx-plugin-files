@@ -740,7 +740,7 @@ pub struct RemoteEditOpenRequest {
     pub upload_policy: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirJobRequest {
     pub source_connection_id: String,
@@ -940,7 +940,7 @@ pub struct ServeListRequest {
 /// `resync` 为首次/修复初始化（按 `resyncMode` 决定冲突侧，默认 newer，
 /// 破坏性——两侧都收敛到所选基准）。状态文件持久化在插件数据目录的
 /// `bisync-workdir/` 下，跨 rcd 重启存活。
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BisyncStartRequest {
     pub source_connection_id: String,

@@ -56,6 +56,9 @@ import type { SettingsSection } from "./components/SettingsPanel.vue";
 import SyncDialog, { type SyncDialogOptions } from "./components/SyncDialog.vue";
 import DesktopOnlyCard from "./components/DesktopOnlyCard.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
+import SchedulesPanel from "./components/SchedulesPanel.vue";
+import ScheduleDialog, { type ScheduleDraft } from "./components/ScheduleDialog.vue";
+import { schedulesApi, type ScheduleRun, type ScheduleTask } from "./lib/schedules";
 import {
   defaultPatternFor,
   loadEditorConfig,
@@ -255,6 +258,21 @@ const leftConnections = computed(() => [
 ]);
 /** 右栏连接面：""=与左栏同连接（跟随宿主当前连接）+ 宿主其它连接。 */
 const rightConnections = computed(() => [{ id: "", name: t("sameConnection") }, ...targetConnections.value]);
+/** 计划任务可选连接：本地 + 当前连接 + 宿主其它连接（去重、剔除空 id）。 */
+const scheduleConnections = computed(() => {
+  const seen = new Set<string>();
+  const list: Array<{ id: string; label: string }> = [];
+  for (const entry of [
+    { id: LOCAL_CONNECTION_ID, label: t("localFiles") },
+    { id: connectionId.value, label: connectionLabel.value || connectionId.value },
+    ...targetConnections.value.map((item) => ({ id: item.id, label: item.name })),
+  ]) {
+    if (!entry.id || seen.has(entry.id)) continue;
+    seen.add(entry.id);
+    list.push(entry);
+  }
+  return list;
+});
 
 // ---- 快速目录（tiny-rdm quick paths 对标）------------------------------------
 // §8.1：后端按协议/根约束/stat 过滤后返回候选（根目录 + fs 协议的用户目录族）；
@@ -415,7 +433,16 @@ function navigateQuickPath(side: PaneSide, targetPath: string) {
 // 右侧 dock（transfers/audit/connection）不持久化，默认收起；settings 已拆为
 // 独立弹窗（对标 ssh 插件 settings-modal），不再占 dock 页签。
 const dockOpen = ref(false);
-const dockTab = ref<"transfers" | "audit" | "connection" | "stats">("transfers");
+const dockTab = ref<"transfers" | "audit" | "connection" | "stats" | "schedules">("transfers");
+// ---- 计划任务（scheduler dock 页签，files/schedule/*）------------------------
+// 任务列表/运行历史以 sidecar 推送（files/schedule/changed|run）为主，打开
+// 页签与动作后拉取兜底；旧 sidecar（无此方法族）静默降级为空态。
+const scheduleTasks = ref<ScheduleTask[]>([]);
+const scheduleRuns = ref<ScheduleRun[]>([]);
+const scheduleDialogOpen = ref(false);
+const scheduleDialogTask = ref<ScheduleTask | null>(null);
+const scheduleBusy = ref(false);
+const scheduleDeleteTarget = ref<ScheduleTask | null>(null);
 const auditRef = ref<InstanceType<typeof AuditPanel>>();
 
 // ---- 独立设置弹窗（对标 ssh 插件 settings-modal）：左导航分类 + 内容面板 --------
@@ -1117,6 +1144,23 @@ function handleEvent(event: DbxPluginEvent) {
       : null;
     if (session) session.handleChunk(chunk);
     else pendingChunks.push(chunk);
+    return;
+  }
+  if (event.method === "files/schedule/changed") {
+    // 任务快照整体替换（sidecar 是唯一权威）；运行历史低频补拉。
+    const payload = event.params as { tasks?: ScheduleTask[] };
+    scheduleTasks.value = payload.tasks ?? [];
+    void schedulesApi
+      .history(undefined, 200)
+      .then((res) => {
+        scheduleRuns.value = res.runs ?? [];
+      })
+      .catch(() => undefined);
+    return;
+  }
+  if (event.method === "files/schedule/run") {
+    const payload = event.params as { run?: ScheduleRun };
+    if (payload.run) upsertScheduleRun(payload.run);
     return;
   }
   if (event.method === "files/transfer/progress") {
@@ -3348,6 +3392,104 @@ async function cancelTransfer(jobId: string) {
 /** 清理传输历史（P-FILES ⑥）：sidecar 清持久化历史 + 内存完成态 job，本地同步清。
  * 审计中#15：清空不可恢复，接入 ConfirmDialog 二次确认（transferHistoryConfirmOpen）。 */
 const transferHistoryConfirmOpen = ref(false);
+
+// ---- 计划任务动作（files/schedule/*）----------------------------------------
+async function refreshSchedules() {
+  try {
+    const [list, history] = await Promise.all([
+      schedulesApi.list(),
+      schedulesApi.history(undefined, 200),
+    ]);
+    scheduleTasks.value = list.tasks ?? [];
+    scheduleRuns.value = history.runs ?? [];
+  } catch (cause) {
+    // 旧 sidecar 无 files/schedule/*：页签保持空态，不弹错误。
+    if (!isMethodMissing(cause)) showError(cause);
+  }
+}
+
+/** files/schedule/run 事件的运行记录合并（running 先到，终态原位覆盖）。 */
+function upsertScheduleRun(run: ScheduleRun): void {
+  const index = scheduleRuns.value.findIndex((entry) => entry.runId === run.runId);
+  if (index >= 0) scheduleRuns.value.splice(index, 1, run);
+  else scheduleRuns.value = [run, ...scheduleRuns.value];
+}
+
+function openScheduleCreate(): void {
+  scheduleDialogTask.value = null;
+  scheduleDialogOpen.value = true;
+}
+
+function openScheduleEdit(task: ScheduleTask): void {
+  scheduleDialogTask.value = task;
+  scheduleDialogOpen.value = true;
+}
+
+async function onScheduleConfirm(draft: ScheduleDraft): Promise<void> {
+  scheduleBusy.value = true;
+  try {
+    if (draft.id) {
+      const existing = scheduleTasks.value.find((task) => task.id === draft.id);
+      await schedulesApi.update({ ...(existing ?? ({} as ScheduleTask)), ...draft });
+    } else {
+      await schedulesApi.create(draft);
+    }
+    showNotice(t("scheduleSavedNotice", { name: draft.name }));
+    scheduleDialogOpen.value = false;
+    // 推送事件(changed)为主,这里再拉一次兜底:事件丢失/旧宿主不吃影子时面板仍一致。
+    void refreshSchedules();
+  } catch (cause) {
+    showError(cause);
+  } finally {
+    scheduleBusy.value = false;
+  }
+}
+
+async function onScheduleDelete(task: ScheduleTask): Promise<void> {
+  const name = task.name;
+  scheduleDeleteTarget.value = null;
+  try {
+    await schedulesApi.remove(task.id);
+    showNotice(t("scheduleDeletedNotice", { name }));
+  } catch (cause) {
+    showError(cause);
+  }
+}
+
+async function onScheduleRunNow(task: ScheduleTask): Promise<void> {
+  try {
+    await schedulesApi.runNow(task.id);
+    showNotice(t("scheduleRunStartedNotice", { name: task.name }));
+    void refreshSchedules();
+  } catch (cause) {
+    showError(cause);
+  }
+}
+
+async function onScheduleCancelRun(task: ScheduleTask): Promise<void> {
+  try {
+    await schedulesApi.cancel(task.id);
+    showNotice(t("scheduleCancelNotice", { name: task.name }));
+  } catch (cause) {
+    showError(cause);
+  }
+}
+
+/** 启停开关：乐观更新，失败回滚（update 是全量替换，直接回传任务对象）。 */
+async function onScheduleToggle(task: ScheduleTask, enabled: boolean): Promise<void> {
+  const previous = task.enabled;
+  task.enabled = enabled;
+  try {
+    await schedulesApi.update({ ...task, enabled });
+  } catch (cause) {
+    task.enabled = previous;
+    showError(cause);
+  }
+}
+
+watch(dockTab, (tab) => {
+  if (tab === "schedules") void refreshSchedules();
+});
 async function clearTransferHistory() {
   try {
     await call("files/transfers/clear", {});
@@ -5000,6 +5142,7 @@ onBeforeUnmount(() => {
           <button role="tab" :aria-selected="dockTab === 'stats'" :tabindex="dockTab === 'stats' ? 0 : -1" :class="{ 'is-active': dockTab === 'stats' }" @click="dockTab = 'stats'">{{ t("statsPanel") }}</button>
           <button role="tab" :aria-selected="dockTab === 'audit'" :tabindex="dockTab === 'audit' ? 0 : -1" :class="{ 'is-active': dockTab === 'audit' }" @click="dockTab = 'audit'">{{ t("auditPanel") }}</button>
           <button role="tab" :aria-selected="dockTab === 'connection'" :tabindex="dockTab === 'connection' ? 0 : -1" :class="{ 'is-active': dockTab === 'connection' }" @click="dockTab = 'connection'">{{ t("connectionPanel") }}</button>
+          <button role="tab" :aria-selected="dockTab === 'schedules'" :tabindex="dockTab === 'schedules' ? 0 : -1" :class="{ 'is-active': dockTab === 'schedules' }" @click="dockTab = 'schedules'">{{ t("schedulesPanel") }}</button>
         </div>
         <div class="wb-dock-body">
           <TransferPanel
@@ -5023,6 +5166,19 @@ onBeforeUnmount(() => {
             :t="t"
           />
           <AuditPanel v-else-if="dockTab === 'audit'" ref="auditRef" :t="t" />
+          <SchedulesPanel
+            v-else-if="dockTab === 'schedules'"
+            :tasks="scheduleTasks"
+            :runs="scheduleRuns"
+            :locale="locale"
+            :t="t"
+            @create="openScheduleCreate"
+            @edit="openScheduleEdit"
+            @delete="scheduleDeleteTarget = $event"
+            @run-now="onScheduleRunNow"
+            @cancel-run="onScheduleCancelRun"
+            @toggle="onScheduleToggle"
+          />
           <div v-else style="display: flex; flex-direction: column; gap: 10px">
             <div class="wb-transfer-item">
               <div class="wb-transfer-title"><strong>{{ connectionLabel }}</strong></div>
@@ -5464,6 +5620,29 @@ onBeforeUnmount(() => {
       :cancel-label="t('cancel')"
       @confirm="transferHistoryConfirmOpen = false; clearTransferHistory()"
       @cancel="transferHistoryConfirmOpen = false"
+    />
+
+    <!-- 计划任务创建/编辑（scheduler dock 页签入口）。 -->
+    <ScheduleDialog
+      v-if="scheduleDialogOpen"
+      :task="scheduleDialogTask"
+      :connections="scheduleConnections"
+      :locale="locale"
+      :t="t"
+      :busy="scheduleBusy"
+      @close="scheduleDialogOpen = false"
+      @confirm="onScheduleConfirm"
+    />
+    <!-- 计划任务删除二次确认（运行历史保留）。 -->
+    <ConfirmDialog
+      :open="Boolean(scheduleDeleteTarget)"
+      :title="t('scheduleDeleteTitle')"
+      :body="t('scheduleDeleteBody', { name: scheduleDeleteTarget?.name ?? '' })"
+      :danger="true"
+      :confirm-label="t('scheduleDelete')"
+      :cancel-label="t('cancel')"
+      @confirm="onScheduleDelete(scheduleDeleteTarget!)"
+      @cancel="scheduleDeleteTarget = null"
     />
 
     <!-- 审计#7：脏草稿关闭确认——danger 态首焦点落「继续编辑」（安全项），

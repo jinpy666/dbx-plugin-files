@@ -293,6 +293,13 @@ impl Mcp {
             // -- directory sync (§8.4 via MCP) -------------------------------------
             "files_sync" => self.files_sync_rclone(self.storage_route()?, emitter, arguments).await,
 
+            // -- scheduled tasks (cron-driven backup jobs) -------------------------
+            "schedule_list" => self.schedule_list(),
+            "schedule_history" => self.schedule_history(arguments),
+            "schedule_create" => self.schedule_create(arguments),
+            "schedule_run_now" => self.schedule_run_now(arguments).await,
+            "schedule_delete" => self.schedule_delete(arguments),
+
             other => Err(unknown_tool_message(other)),
         }
     }
@@ -1134,4 +1141,178 @@ fn segment_match(pattern: &str, text: &str) -> bool {
         }
     }
     inner(&pattern, &text)
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled tasks (`schedule_*` tools): cron-driven backup jobs. Writes use
+// the same two-phase confirmToken discipline as files_delete/purge; the
+// engine-side create() validation refuses read-only targets, invalid crons
+// and retention-without-backup-dir, so a preview can never hide a doomed
+// task. Definitions persist in schedules.json; runs surface through
+// schedule_history and the shared transfer mirror.
+// ---------------------------------------------------------------------------
+impl Mcp {
+    fn scheduler_route(
+        &self,
+    ) -> Result<std::sync::Arc<crate::scheduler::Scheduler>, String> {
+        self.scheduler
+            .clone()
+            .ok_or_else(|| "schedule tools require the scheduler, which is not attached                              in this session"
+                .to_string())
+    }
+
+    fn schedule_list(&self) -> Result<Value, String> {
+        let tasks = self.scheduler_route()?.list();
+        let count = tasks.len();
+        Ok(json!({ "tasks": tasks, "count": count }))
+    }
+
+    fn schedule_history(&self, arguments: &Value) -> Result<Value, String> {
+        let id = optional_str(arguments, "id")?;
+        let limit = arguments
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(100)
+            .clamp(1, 500) as u32;
+        let runs = self.scheduler_route()?.history(id, limit);
+        let count = runs.len();
+        Ok(json!({ "runs": runs, "count": count }))
+    }
+
+    fn schedule_create(&self, arguments: &Value) -> Result<Value, String> {
+        let bare = arguments_without_token(arguments);
+        let Some(token) = arguments
+            .get("confirmToken")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        else {
+            // Preview: parse shape-only so the user sees exactly what would
+            // be created; engine-side validation still runs on confirm.
+            let request: crate::scheduler::model::ScheduleCreateRequest =
+                serde_json::from_value(bare.clone())
+                    .map_err(|error| format!("Invalid request parameters: {error}"))?;
+            let preview = json!({
+                "name": request.name,
+                "kind": request.kind,
+                "source": format!("{}:{}", request.source_connection_id, request.source_path),
+                "target": format!(
+                    "{}:{}",
+                    request.target_connection_id.clone().unwrap_or_else(|| request.source_connection_id.clone()),
+                    request.target_path
+                ),
+                "cron": request.cron,
+                "enabled": request.enabled.unwrap_or(true),
+                "options": request.options,
+            });
+            let (confirm_token, expires_at) = self.confirm_begin(&bare);
+            return Ok(json!({
+                "preview": preview,
+                "confirmToken": confirm_token,
+                "expiresAt": iso_millis(expires_at as i64),
+                "note": "nothing created yet; repeat the same arguments with \
+                         confirmToken to create",
+            }));
+        };
+        self.confirm_verify(token, &bare)?;
+        let request: crate::scheduler::model::ScheduleCreateRequest =
+            serde_json::from_value(bare)
+                .map_err(|error| format!("Invalid request parameters: {error}"))?;
+        let scheduler = self.scheduler_route()?;
+        let task = scheduler.create(request)?;
+        let store = self.storage_route()?.store.clone();
+        audit_mcp_id(
+            &store,
+            &task.source_connection_id,
+            "files/schedule/create",
+            &format!("{}:{} -> {}:{}", task.source_connection_id, task.source_path, task.target_connection_id, task.target_path),
+            "ok",
+        );
+        Ok(json!({ "task": task }))
+    }
+
+    async fn schedule_run_now(&self, arguments: &Value) -> Result<Value, String> {
+        let bare = arguments_without_token(arguments);
+        let id = bare
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or("missing required argument: id")?
+            .to_string();
+        let scheduler = self.scheduler_route()?;
+        let Some(token) = arguments
+            .get("confirmToken")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        else {
+            let task = scheduler
+                .list()
+                .into_iter()
+                .find(|task| task.id == id)
+                .ok_or("Schedule task was not found")?;
+            let preview = json!({
+                "taskId": task.id,
+                "name": task.name,
+                "kind": task.kind,
+                "source": format!("{}:{}", task.source_connection_id, task.source_path),
+                "target": format!("{}:{}", task.target_connection_id, task.target_path),
+                "enabled": task.enabled,
+            });
+            let (confirm_token, expires_at) = self.confirm_begin(&bare);
+            return Ok(json!({
+                "preview": preview,
+                "confirmToken": confirm_token,
+                "expiresAt": iso_millis(expires_at as i64),
+                "note": "nothing started yet; repeat the same arguments with \
+                         confirmToken to run now",
+            }));
+        };
+        self.confirm_verify(token, &bare)?;
+        let run = scheduler.run_now(&id)?;
+        let store = self.storage_route()?.store.clone();
+        audit_mcp_id(&store, &id, "files/schedule/runNow", &run.run_id, "ok");
+        Ok(json!({
+            "run": run,
+            "note": "run started; poll schedule_history for the outcome, or the \
+                     transfers jobId via files/transfer/status",
+        }))
+    }
+
+    fn schedule_delete(&self, arguments: &Value) -> Result<Value, String> {
+        let bare = arguments_without_token(arguments);
+        let id = bare
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or("missing required argument: id")?
+            .to_string();
+        let scheduler = self.scheduler_route()?;
+        let Some(token) = arguments
+            .get("confirmToken")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        else {
+            let task = scheduler
+                .list()
+                .into_iter()
+                .find(|task| task.id == id)
+                .ok_or("Schedule task was not found")?;
+            let (confirm_token, expires_at) = self.confirm_begin(&bare);
+            return Ok(json!({
+                "preview": { "taskId": task.id, "name": task.name, "kind": task.kind },
+                "confirmToken": confirm_token,
+                "expiresAt": iso_millis(expires_at as i64),
+                "note": "nothing deleted yet; repeat the same arguments with \
+                         confirmToken to delete (run history is kept)",
+            }));
+        };
+        self.confirm_verify(token, &bare)?;
+        let removed = scheduler.delete(&id)?;
+        if removed {
+            let store = self.storage_route()?.store.clone();
+            audit_mcp_id(&store, &id, "files/schedule/delete", &id, "ok");
+        }
+        Ok(json!({ "removed": removed }))
+    }
 }

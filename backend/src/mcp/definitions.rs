@@ -139,6 +139,68 @@ impl Mcp {
                     "required": ["sourceConnectionId", "sourcePath", "targetConnectionId", "targetPath"],
                 },
             },
+            {
+                "name": "schedule_list",
+                "description": "List the plugin's scheduled tasks (cron-driven backup jobs over rclone sync/copy/bisync). Read-only; each task carries its cron, source/target pair, enabled flag, last run status and next fire time (unix epoch millis).",
+                "inputSchema": { "type": "object", "properties": {} },
+            },
+            {
+                "name": "schedule_history",
+                "description": "Run history of scheduled tasks, newest first (status success|failed|canceled|skipped, bytes, files, error, snapshot of the transfers jobId). Read-only.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Task id; omit for all tasks' history" },
+                        "limit": { "type": "integer", "description": "Newest-first result cap (default 100, max 500)" },
+                    },
+                },
+            },
+            {
+                "name": "schedule_create",
+                "description": "Create a scheduled backup task (two-phase: the first call without confirmToken returns a preview plus a one-time confirmToken (60s) and writes nothing — repeat the same arguments with the token to create). kind: sync (mirror; target needs write+delete), copy (additive) or bisync (bidirectional; first run auto-resyncs). cron is a five-field expression validated server-side. Target connections must be writable; read-only targets are refused.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string", "description": "Unique task name" },
+                        "kind": { "type": "string", "enum": ["sync", "copy", "bisync"] },
+                        "sourceConnectionId": { "type": "string" },
+                        "sourcePath": { "type": "string", "description": "Source directory path" },
+                        "targetConnectionId": { "type": "string", "description": "Omit = same as source" },
+                        "targetPath": { "type": "string" },
+                        "cron": { "type": "string", "description": "Five-field cron, e.g. '30 3 * * *' = daily 03:30 local" },
+                        "enabled": { "type": "boolean", "default": true },
+                        "options": {
+                            "type": "object",
+                            "description": "rclone options (camelCase, same names as files_sync) plus backupDir+suffix (versioned backup), retentionDays (prune backupDir entries older than N days), verifyAfter (post-run check job)",
+                        },
+                    },
+                    "required": ["name", "kind", "sourceConnectionId", "sourcePath", "targetPath", "cron"],
+                },
+            },
+            {
+                "name": "schedule_run_now",
+                "description": "Trigger one immediate run of a scheduled task (two-phase preview/confirm like schedule_create). Single-flight: refused while the task already has a live run. The run executes as an async job — poll schedule_history (or the transfers jobId via files/transfer/status).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Task id from schedule_list" },
+                        "confirmToken": { "type": "string", "description": "One-time token from the preview call; arguments must be unchanged" },
+                    },
+                    "required": ["id"],
+                },
+            },
+            {
+                "name": "schedule_delete",
+                "description": "Delete a scheduled task (two-phase preview/confirm). Its run history is kept; a live run keeps going and still finalizes.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Task id from schedule_list" },
+                        "confirmToken": { "type": "string", "description": "One-time token from the preview call; arguments must be unchanged" },
+                    },
+                    "required": ["id"],
+                },
+            },
         ])
         .as_array()
         .cloned()

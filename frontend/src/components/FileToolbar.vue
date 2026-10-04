@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { Activity, CircleGauge, Columns2, Download, FolderPlus, FolderUp, Gauge, HardDrive, ScrollText, Settings, Star, Trash2, Upload, Plug } from "@lucide/vue";
+import { Activity, CalendarClock, CircleGauge, Columns2, Download, FolderPlus, FolderUp, Gauge, HardDrive, ScrollText, Settings, Star, Trash2, Upload, Plug } from "@lucide/vue";
 
 // 全局动作栏：路径/面包屑/过滤等栏内控件已下沉到各栏 wb-pane-header
 // （双栏对称性修复），这里只承载跨栏的全局操作。
@@ -9,7 +9,7 @@ const props = defineProps<{
   busy: boolean;
   hasSelection: boolean;
   dockOpen: boolean;
-  dockTab: "transfers" | "audit" | "connection" | "stats";
+  dockTab: "transfers" | "audit" | "connection" | "stats" | "schedules";
   dualPane: boolean;
   /** 顶栏 identity（对标 ssh 工具栏左侧）：连接名/色条/只读徽章 + 状态 pill。 */
   connectionName: string;
@@ -37,7 +37,7 @@ const emit = defineEmits<{
   (event: "delete"): void;
   /** 审计#17：工具栏只保留一个 dock 开关。tab 省略即切换「当前页签」的
    * 开/关；带 tab 时语义不变（打开指定页签）——App 层兼容两种调用。 */
-  (event: "toggle-dock", tab?: "transfers" | "audit" | "connection" | "stats"): void;
+  (event: "toggle-dock", tab?: "transfers" | "audit" | "connection" | "stats" | "schedules"): void;
   (event: "toggle-dual-pane"): void;
   /** 本地挂载（对标 ssh 工具栏动作 icon）：挂载活动栏当前目录。 */
   (event: "mount"): void;
@@ -64,6 +64,7 @@ const DOCK_ICONS = {
   audit: ScrollText,
   connection: Plug,
   stats: Activity,
+  schedules: CalendarClock,
 } as const;
 
 const DOCK_TIP_KEYS: Record<keyof typeof DOCK_ICONS, string> = {
@@ -71,6 +72,7 @@ const DOCK_TIP_KEYS: Record<keyof typeof DOCK_ICONS, string> = {
   audit: "auditPanel",
   connection: "connectionPanel",
   stats: "statsPanel",
+  schedules: "schedulesPanel",
 };
 
 const dockIcon = computed(() => DOCK_ICONS[props.dockTab]);

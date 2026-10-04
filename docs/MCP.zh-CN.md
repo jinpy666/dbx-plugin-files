@@ -205,7 +205,7 @@ handlers)`（公共层单点维护，插件不各抄一份）。
   anchor?}`，sidecar 缓存最新快照；`files_ui_state` 不带 intentId 时返回。
 - 未知/已过期 intentId 回报报业务错误（-32000）。
 
-## 工具一览（13 个）
+## 工具一览（18 个，含 schedule_* 5 个）
 
 `mcp/tools` 可带可选 `{connectionId}`：该连接配置为只读（表单
 `read_only` ∥ 宿主标准 read_only；delete 类另受 `allow_delete` 约束）
@@ -228,6 +228,15 @@ connectionId 时全量列出（调用时仍有只读门拒绝，纵深防御）�
 | `files_delete` | `connectionId`、`path` 必填；`confirmToken?` | 强制两阶段，见下节 |
 | `files_purge` | `connectionId`、`path` 必填；`confirmToken?` | 强制两阶段；**拒绝连接根与 `/`**（§8.2 红线，与工作台同源判定） |
 | `files_sync` | `sourceConnectionId`、`sourcePath`、`targetConnectionId`、`targetPath` 必填；`sync?`（缺省 false）、`dryRun?`（缺省 false）、`maxDelete?` | 跨连接目录同步/复制（§8.4，委托 `files/syncDir|copyDir` 入队，增量 size+mtime 对比跳过未变文件）。`sync:true` 镜像删除——**目标上源里没有的文件会被删除**（rclone sync 语义；目标须 `allow_delete`，dryRun 也不例外）。`dryRun:true` 只规划对比：不复制不删除，产出一次摘要事件，**建议任何 `sync:true` 前先跑一次**。`maxDelete` 限制镜像删除数量，超出即熔断中止。返回 `{jobId}`，轮询 `files/transfer/status`。异步 job 走 DBX 事件通道：仅工作台/桥可用，**stdio 模式显式拒绝**。双连接工具不受单一连接只读清单过滤影响（只读/删除门在调用时按目标连接执行，与工作台同源） |
+| `schedule_list` | – | 计划任务清单（cron 驱动的定时备份任务，行为契约见 `docs/SCHEDULER.zh-CN.md`）；`{tasks, count}` |
+| `schedule_history` | `id?`、`limit?`（缺省 100，clamp 1..500） | 运行历史最新在前：`{runs, count}`，`status: running\|success\|failed\|canceled\|skipped` |
+| `schedule_create` | `name/kind(sync\|copy\|bisync)/sourceConnectionId/sourcePath/targetPath/cron` 必填；`targetConnectionId?`（缺省同源）、`enabled?`、`options?`（`files_sync` 同名选项 + `backupDir/suffix` 版本化、`retentionDays` 保留策略、`verifyAfter` 运行后校验） | **两阶段** preview → confirmToken；引擎侧校验（cron 五字段、目标可写可删门、retention 需 backupDir、重名）在 confirm 时执行。审计 `source:"mcp"` |
+| `schedule_run_now` | `id` 必填；`confirmToken?` | **两阶段**；单飞约束与手动运行一致（在途即拒绝）。返回 `{run}`（running），结果轮询 `schedule_history`。审计 `source:"mcp"` |
+| `schedule_delete` | `id` 必填；`confirmToken?` | **两阶段**；任务删除后运行历史保留，在途运行继续并照常结算。审计 `source:"mcp"` |
+
+schedule_* 五个工具不携带 connectionId（作用于插件级任务表），stdio
+清单原样透出；两阶段 confirmToken 与 `files_delete` 同一套（60s 一次性，
+参数必须原样重发）。
 
 ## 写路径与两阶段确认（§4）
 
