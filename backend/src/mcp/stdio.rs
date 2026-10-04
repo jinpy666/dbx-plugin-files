@@ -547,6 +547,23 @@ impl StdioServer {
         if STDIO_UI_TOOLS.contains(&name) {
             return Err(unavailable_message(name));
         }
+        // Degradation matrix stdio row for the `schedule_*` family: the cron
+        // scheduler is a product of the resident plugin sidecar (its tick
+        // loop, run bookkeeping and event channel live there), and a
+        // standalone stdio session deliberately never starts it. Answer with
+        // an explicit UNAVAILABLE instead of letting the call fall through to
+        // "scheduler not attached" — tools/list does advertise this family,
+        // so a caller selecting one must get an actionable reason, not an
+        // unknown-tool miss (0.1.88 review: the pre-fix gate rejected them as
+        // unregistered even though tools/list offered them).
+        if SCHEDULER_TOOLS.contains(&name) {
+            return Err(format!(
+                "UNAVAILABLE: cron 定时任务运行在 DBX 常驻插件进程内，standalone stdio 会话不启动调度器。\
+                 tool '{name}' manages cron-driven backup tasks owned by the resident DBX sidecar; \
+                 create/manage tasks via the DBX app's Schedules dock tab, or call this tool \
+                 through the DBX MCP bridge (dbx_call_plugin_tool)."
+            ));
+        }
         // Unknown tool names must fail as "Unknown tool" BEFORE the
         // connection-resolution guidance: otherwise `prepare_arguments`
         // would answer an unregistered name with "Missing required

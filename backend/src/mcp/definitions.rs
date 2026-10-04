@@ -313,7 +313,13 @@ impl Mcp {
             let Some(name) = tool.get("name").and_then(Value::as_str) else {
                 continue;
             };
-            if STDIO_UI_TOOLS.contains(&name) || !needs_connection_id(name) {
+            // `schedule_*` tools take no connection argument (the scheduler
+            // is session-state); rewriting their schema would advertise a
+            // connectionId/connection pair they silently ignore.
+            if STDIO_UI_TOOLS.contains(&name)
+                || SCHEDULER_TOOLS.contains(&name)
+                || !needs_connection_id(name)
+            {
                 continue;
             }
             let Some(schema) = tool.get_mut("inputSchema").and_then(Value::as_object_mut) else {

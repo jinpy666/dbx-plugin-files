@@ -377,27 +377,34 @@ pub fn reveal_in_file_manager(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("Failed to launch file manager: {error}"))
 }
 
+/// Pure platform dispatch behind `open_in_default_app`, unit-testable on
+/// every host (same pattern as `app_launch_command`). Windows must NOT go
+/// through `cmd /C start`: the downloaded file name is remote-controlled,
+/// Rust's argv quoting does not wrap a path just because it contains `&`,
+/// and cmd would split `C:\dir\a&calc.exe` into two commands at the `&`.
+/// `explorer <path>` opens the default association with no shell parsing.
+pub fn default_app_launch_command(platform: &str, path: &Path) -> (OsString, Vec<OsString>) {
+    match platform {
+        "macos" => (OsString::from("open"), vec![path.as_os_str().to_os_string()]),
+        "windows" => (
+            OsString::from("explorer"),
+            vec![path.as_os_str().to_os_string()],
+        ),
+        _ => (
+            OsString::from("xdg-open"),
+            vec![path.as_os_str().to_os_string()],
+        ),
+    }
+}
+
 /// Opens a downloaded file with the operating system's default application.
 pub fn open_in_default_app(path: &Path) -> Result<(), String> {
     if !path.is_file() {
         return Err("Downloaded file no longer exists".to_string());
     }
-    if cfg!(target_os = "macos") {
-        return std::process::Command::new("open")
-            .arg(path)
-            .spawn()
-            .map(|_| ())
-            .map_err(|error| format!("Failed to open downloaded file: {error}"));
-    }
-    if cfg!(windows) {
-        return std::process::Command::new("cmd")
-            .args(["/C", "start", "", &path.to_string_lossy()])
-            .spawn()
-            .map(|_| ())
-            .map_err(|error| format!("Failed to open downloaded file: {error}"));
-    }
-    std::process::Command::new("xdg-open")
-        .arg(path)
+    let (program, args) = default_app_launch_command(platform_name(), path);
+    std::process::Command::new(&program)
+        .args(&args)
         .spawn()
         .map(|_| ())
         .map_err(|error| format!("Failed to open downloaded file: {error}"))
@@ -742,6 +749,29 @@ mod tests {
             assert_eq!(program, app.as_os_str().to_os_string());
             assert!(args.is_empty());
         }
+    }
+
+    #[test]
+    fn default_app_launch_command_never_routes_windows_through_cmd_start() {
+        // 0.1.88 review：下载文件名完全由远端控制，`cmd /C start "" <path>`
+        // 在路径含 `&` 且无空格时会被 cmd 当命令分隔符拆开（Rust 的 argv
+        // 引号包裹不含 `&`），等于对受控名开放命令注入。Windows 分支必须
+        // 走 explorer（按关联打开、无 shell 解析），且路径恒为单个 argv。
+        for path_text in [
+            r"C:\Downloads\report&calc.exe",
+            r"C:\Downloads\evil.pdf&mshta http://x",
+            r"C:\Downloads\plain file name.pdf",
+        ] {
+            let path = Path::new(path_text);
+            let (program, args) = default_app_launch_command("windows", path);
+            assert_eq!(program, OsString::from("explorer"));
+            assert_eq!(args, vec![path.as_os_str().to_os_string()]);
+        }
+        // 其余平台仍是 launcher + 单参数路径，回归保护。
+        let (program, args) =
+            default_app_launch_command("macos", Path::new("/Downloads/a&b.pdf"));
+        assert_eq!(program, OsString::from("open"));
+        assert_eq!(args, vec![OsString::from("/Downloads/a&b.pdf")]);
     }
 
     #[test]

@@ -116,7 +116,7 @@ mod tools;
 
 pub use tools::{RcloneRoute, SyncJobStarter};
 pub(crate) use tools::unknown_tool_message;
-use tools::ALL_TOOL_NAMES;
+use tools::{ALL_TOOL_NAMES, SCHEDULER_TOOLS};
 #[cfg(test)]
 use tools::{normalized_format, UI_TOOLS, WRITE_TOOLS};
 #[cfg(test)]
