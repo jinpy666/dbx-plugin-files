@@ -871,6 +871,14 @@ mod tests {
         );
     }
 
+    /// 协议路径形态:policy 门拒反斜杠(协议路径约定 `/`),Windows 的
+    /// tempdir 原生路径(`C:\Users\…`)须归一为 `C:/Users/…` 才能过
+    /// create 校验——与真实链路一致(文件浏览器下发的是 rclone lsjson 的
+    /// 正斜杠路径),故仅测试数据需要这步换算。
+    fn protocol_path(path: &std::path::Path) -> String {
+        path.to_str().expect("utf-8 temp path").replace('\\', "/")
+    }
+
     fn harness() -> Harness {
         let dir = tempfile::tempdir().expect("store tempdir");
         let src = tempfile::tempdir().expect("src tempdir");
@@ -1004,7 +1012,7 @@ mod tests {
     #[tokio::test]
     async fn scheduled_run_completes_records_history_and_advances_next_run() {
         let h = harness();
-        let request = task_request("nightly", ScheduleKind::Sync, h.src.path().to_str().unwrap(), h.dst.path().to_str().unwrap());
+        let request = task_request("nightly", ScheduleKind::Sync, &protocol_path(h.src.path()), &protocol_path(h.dst.path()));
         let task = h.scheduler.create(request).expect("create");
         h.scheduler.test_set_due(&task.id);
         h.scheduler.process_due();
@@ -1028,7 +1036,7 @@ mod tests {
     #[tokio::test]
     async fn manual_run_is_single_flight_and_forces_disabled_tasks() {
         let h = harness();
-        let mut request = task_request("held", ScheduleKind::Copy, h.src.path().to_str().unwrap(), h.dst.path().to_str().unwrap());
+        let mut request = task_request("held", ScheduleKind::Copy, &protocol_path(h.src.path()), &protocol_path(h.dst.path()));
         request.enabled = Some(false);
         let task = h.scheduler.create(request).expect("create disabled");
         h.hold.store(true, Ordering::SeqCst);
@@ -1062,7 +1070,7 @@ mod tests {
     #[tokio::test]
     async fn bisync_first_run_resyncs_once_then_runs_plain() {
         let h = harness();
-        let request = task_request("pair", ScheduleKind::Bisync, h.src.path().to_str().unwrap(), h.dst.path().to_str().unwrap());
+        let request = task_request("pair", ScheduleKind::Bisync, &protocol_path(h.src.path()), &protocol_path(h.dst.path()));
         let task = h.scheduler.create(request).expect("create bisync");
         h.scheduler.run_now(&task.id).expect("first run");
         wait_for(|| {
@@ -1133,7 +1141,7 @@ mod tests {
     #[tokio::test]
     async fn verify_after_failure_downgrades_to_success_with_warning() {
         let h = harness();
-        let mut request = task_request("verified", ScheduleKind::Sync, h.src.path().to_str().unwrap(), h.dst.path().to_str().unwrap());
+        let mut request = task_request("verified", ScheduleKind::Sync, &protocol_path(h.src.path()), &protocol_path(h.dst.path()));
         request.options.verify_after = true;
         let task = h.scheduler.create(request).expect("create");
         h.check_fail.store(true, Ordering::SeqCst);
@@ -1153,7 +1161,7 @@ mod tests {
     #[tokio::test]
     async fn retention_requires_backup_dir_and_delete_rejects_running_task() {
         let h = harness();
-        let mut request = task_request("pruned", ScheduleKind::Sync, h.src.path().to_str().unwrap(), h.dst.path().to_str().unwrap());
+        let mut request = task_request("pruned", ScheduleKind::Sync, &protocol_path(h.src.path()), &protocol_path(h.dst.path()));
         request.options.retention_days = Some(7);
         let error = h.scheduler.create(request).expect_err("retention without backup_dir rejected");
         assert!(error.contains("retentionDays requires backupDir"), "{error}");
