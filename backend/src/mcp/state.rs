@@ -252,6 +252,9 @@ pub struct Mcp {
     pub(crate) cursors: Mutex<LruTable<CursorSession>>,
     pub(crate) confirms: Mutex<HashMap<String, ConfirmEntry>>,
     pub(crate) rclone: Option<std::sync::Arc<super::tools::RcloneRoute>>,
+    /// Schedule engine route (`schedule_*` tools): attached by the storage
+    /// sidecar at startup, like the rclone route.
+    pub(crate) scheduler: Option<std::sync::Arc<crate::scheduler::Scheduler>>,
 }
 
 impl Mcp {
@@ -266,6 +269,7 @@ impl Mcp {
             cursors: Mutex::new(LruTable::new(DEFAULT_MAX_CURSOR_SESSIONS)),
             confirms: Mutex::new(HashMap::new()),
             rclone: None,
+            scheduler: None,
         }
     }
 
@@ -278,6 +282,12 @@ impl Mcp {
     /// The rclone route when the sidecar runs the rclone engine.
     pub(crate) fn rclone_route(&self) -> Option<&super::tools::RcloneRoute> {
         self.rclone.as_deref()
+    }
+
+    /// Wires the schedule engine (`schedule_*` tools): called by `main.rs`
+    /// at startup, before the `Arc` wrap.
+    pub fn attach_scheduler(&mut self, scheduler: std::sync::Arc<crate::scheduler::Scheduler>) {
+        self.scheduler = Some(scheduler);
     }
 
     /// True when `connection_id` resolves in the rclone registry (stdio

@@ -93,12 +93,13 @@ describe("standalone settings dialog", () => {
     wrapper!.getComponent(FileToolbar).vm.$emit("toggle-dock", "transfers");
     await settle();
     const tabs = wrapper!.get(".wb-dock-tabs").findAll('[role="tab"]');
-    expect(tabs).toHaveLength(4);
+    expect(tabs).toHaveLength(5);
     expect(tabs.map((tab) => tab.text())).toEqual([
       workbenchMessage("en", "transferPanel"),
       workbenchMessage("en", "statsPanel"),
       workbenchMessage("en", "auditPanel"),
       workbenchMessage("en", "connectionPanel"),
+      workbenchMessage("en", "schedulesPanel"),
     ]);
   });
 

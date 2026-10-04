@@ -409,6 +409,11 @@ export function installMockHost() {
   // 与 backend/src/main.rs::audit_list_response 同形：{entries:[{at,action,
   // connectionId,path,result}]}，最新在前；limit clamp 1..=1000（缺省 100）。
   const auditLog: Array<{ at: string; action: string; connectionId: string; path: string; result: string }> = [];
+  // 计划任务（files/schedule/*）内存面：任务表 + 运行历史（环形 500）。
+  // mock 不真正跑 cron,只维护形状一致的记录供 UI 走查。
+  let scheduleSeq = 0;
+  const scheduleTasks = new Map<string, Record<string, unknown>>();
+  const scheduleRuns: Array<Record<string, unknown>> = [];
   function recordAudit(action: string, path: string, connectionId: unknown, result = "ok") {
     auditLog.push({ at: new Date().toISOString(), action, connectionId: connectionIdOf(connectionId), path, result });
   }
@@ -781,6 +786,91 @@ export function installMockHost() {
         }
         return { rate: mockBwlimit };
       }
+      case "files/schedule/list":
+        return { tasks: [...scheduleTasks.values()] };
+      case "files/schedule/create": {
+        const name = str("name");
+        if (!name.trim()) throw new Error("Schedule task name must not be empty");
+        if ([...scheduleTasks.values()].some((task) => task.name === name.trim())) {
+          throw new Error(`Schedule task name '${name.trim()}' is already in use`);
+        }
+        const cron = str("cron");
+        if (cron.trim().split(/\s+/).length !== 5) {
+          throw new Error("Invalid cron expression (5 fields: minute hour day month weekday)");
+        }
+        const task: Record<string, unknown> = {
+          id: `sched-${++scheduleSeq}`,
+          name: name.trim(),
+          kind: p.kind ?? "sync",
+          sourceConnectionId: p.sourceConnectionId ?? p.connectionId,
+          sourcePath: p.sourcePath ?? "/",
+          targetConnectionId: p.targetConnectionId ?? p.sourceConnectionId ?? p.connectionId,
+          targetPath: p.targetPath ?? "/",
+          cron,
+          enabled: p.enabled ?? true,
+          options: p.options ?? {},
+          bisyncResyncDone: false,
+          createdAt: Date.now(),
+          lastRunAt: null,
+          lastRunStatus: null,
+          nextRunAt: Date.now() + 60_000,
+        };
+        scheduleTasks.set(String(task.id), task);
+        recordAudit("files/schedule/create", String(task.sourcePath), task.sourceConnectionId);
+        emit("files/schedule/changed", { tasks: [...scheduleTasks.values()] });
+        return { task };
+      }
+      case "files/schedule/update": {
+        const id = str("id");
+        const existing = scheduleTasks.get(id);
+        if (!existing) throw new Error("Schedule task was not found");
+        const task = { ...existing, ...p, id };
+        scheduleTasks.set(id, task);
+        emit("files/schedule/changed", { tasks: [...scheduleTasks.values()] });
+        return { task };
+      }
+      case "files/schedule/delete": {
+        const id = str("id");
+        const removed = scheduleTasks.delete(id);
+        if (removed) {
+          recordAudit("files/schedule/delete", id, p.connectionId);
+          emit("files/schedule/changed", { tasks: [...scheduleTasks.values()] });
+        }
+        return { removed };
+      }
+      case "files/schedule/history": {
+        const id = typeof p.id === "string" && p.id ? p.id : undefined;
+        const limit = typeof p.limit === "number" ? Math.min(Math.max(p.limit, 1), 500) : 100;
+        const runs = scheduleRuns.filter((run) => !id || run.taskId === id);
+        return { runs: runs.slice().reverse().slice(0, limit) };
+      }
+      case "files/schedule/runNow": {
+        const id = str("id");
+        const task = scheduleTasks.get(id);
+        if (!task) throw new Error("Schedule task was not found");
+        const run = {
+          runId: `schedrun-${++scheduleSeq}`,
+          taskId: id,
+          jobId: null,
+          trigger: "manual",
+          status: "success",
+          startedAt: Date.now(),
+          finishedAt: Date.now(),
+          bytes: 0,
+          files: 0,
+          error: null,
+        };
+        scheduleRuns.push(run);
+        if (scheduleRuns.length > 500) scheduleRuns.shift();
+        task.lastRunAt = run.startedAt;
+        task.lastRunStatus = "success";
+        emit("files/schedule/run", { run });
+        emit("files/schedule/changed", { tasks: [...scheduleTasks.values()] });
+        return { run };
+      }
+      case "files/schedule/cancel":
+        str("id");
+        return { success: true };
       case "files/transfers/list":
       case "files/transfers/clear": {
         const connection = payload.connectionId;

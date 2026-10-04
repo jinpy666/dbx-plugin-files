@@ -12,6 +12,10 @@
 //! - `prefs.json`      — UI preferences, non-sensitive, whole-object rewrite;
 //! - `transfers.json`  — finished transfer history, ring-capped at
 //!   `model::TRANSFER_HISTORY_LIMIT` (200);
+//! - `schedules.json`  — schedule task definitions (scheduler), whole-list
+//!   atomic rewrite;
+//! - `runs.json`       — schedule run history, ring-capped at
+//!   `scheduler::model::SCHEDULE_RUN_HISTORY_LIMIT` (500);
 //! - `audit.jsonl`     — append-only write-op audit log, one JSON object per
 //!   line: `{"time":"RFC3339","connectionId","action","target","result"[,"source"]}`.
 //!
@@ -28,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::model::TRANSFER_HISTORY_LIMIT;
+use crate::scheduler::model::{RunRecord, ScheduleTask, SCHEDULE_RUN_HISTORY_LIMIT};
 
 /// Plugin id used at every level of the data-dir layout below.
 const PLUGIN_ID: &str = "io.dbx.files";
@@ -172,6 +177,51 @@ impl Store {
             .map(|_| true)
     }
 
+    // -- schedules.json / runs.json -----------------------------------------
+
+    /// Loads schedule tasks; missing or unparsable file → empty (the
+    /// scheduler then starts with zero tasks, never with an error).
+    pub fn load_schedules(&self) -> Vec<ScheduleTask> {
+        self.read_json("schedules.json")
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default()
+    }
+
+    /// Rewrites `schedules.json` atomically (tmp file + rename).
+    pub fn save_schedules(&self, tasks: &[ScheduleTask]) -> Result<(), String> {
+        self.write_json_atomic(
+            "schedules.json",
+            &serde_json::to_value(tasks).map_err(|error| error.to_string())?,
+        )
+    }
+
+    /// Loads the run history ring (oldest first). Missing file → empty.
+    pub fn load_runs(&self) -> Vec<RunRecord> {
+        self.read_json("runs.json")
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default()
+    }
+
+    /// Appends a run record — or updates it in place when the `run_id`
+    /// already exists (a claimed `running` record finalized on the terminal
+    /// event) — and ring-truncates to the newest
+    /// `SCHEDULE_RUN_HISTORY_LIMIT` entries.
+    pub fn record_run(&self, record: RunRecord) -> Result<(), String> {
+        let mut runs = self.load_runs();
+        match runs.iter_mut().find(|run| run.run_id == record.run_id) {
+            Some(slot) => *slot = record,
+            None => runs.push(record),
+        }
+        if runs.len() > SCHEDULE_RUN_HISTORY_LIMIT {
+            let drop = runs.len() - SCHEDULE_RUN_HISTORY_LIMIT;
+            runs.drain(..drop);
+        }
+        self.write_json_atomic(
+            "runs.json",
+            &serde_json::to_value(runs).map_err(|error| error.to_string())?,
+        )
+    }
+
     // -- audit.jsonl --------------------------------------------------------
 
     /// Appends one audit line. Never rewrites the file.
@@ -215,7 +265,7 @@ impl Store {
         serde_json::from_str(&content).ok()
     }
 
-    fn write_json_atomic(&self, file_name: &str, value: &Value) -> Result<(), String> {
+    pub(crate) fn write_json_atomic(&self, file_name: &str, value: &Value) -> Result<(), String> {
         let path = self.data_dir.join(file_name);
         // Unique tmp name: concurrent savers of the same file (e.g. the
         // prefs RPC vs. a background bwlimit persist) must not interleave on
@@ -503,6 +553,66 @@ mod tests {
         assert_eq!(store.clear_transfers(None).unwrap(), 1);
         assert!(store.load_transfers().is_empty());
         assert_eq!(store.clear_transfers(None).unwrap(), 0, "idempotent");
+    }
+
+    #[test]
+    fn schedules_roundtrip_and_broken_file_defaults_empty() {
+        let (store, dir) = store();
+        assert!(store.load_schedules().is_empty(), "missing file → empty");
+        let task = ScheduleTask {
+            id: "t1".into(),
+            name: "nightly".into(),
+            kind: crate::scheduler::model::ScheduleKind::Sync,
+            source_connection_id: "c1".into(),
+            source_path: "/data".into(),
+            target_connection_id: "c1".into(),
+            target_path: "/mirror".into(),
+            cron: "0 3 * * *".into(),
+            enabled: true,
+            options: Default::default(),
+            bisync_resync_done: false,
+            created_at: 42,
+            last_run_at: None,
+            last_run_status: None,
+            next_run_at: None,
+        };
+        store.save_schedules(&[task.clone()]).unwrap();
+        assert_eq!(store.load_schedules(), vec![task.clone()]);
+        // Corrupt store degrades to empty, never a scheduler panic.
+        std::fs::write(dir.path().join("schedules.json"), "{oops").unwrap();
+        assert!(store.load_schedules().is_empty());
+    }
+
+    #[test]
+    fn run_history_rings_and_finalizes_in_place() {
+        let (store, _dir) = store();
+        let record = |index: usize, status: &str| RunRecord {
+            run_id: format!("r{index}"),
+            task_id: "t1".into(),
+            job_id: None,
+            trigger: "schedule".into(),
+            status: status.into(),
+            started_at: Some(1_000 + index as u64),
+            finished_at: None,
+            bytes: 0,
+            files: None,
+            error: None,
+        };
+        for index in 0..(SCHEDULE_RUN_HISTORY_LIMIT + 10) {
+            store.record_run(record(index, "running")).unwrap();
+        }
+        let runs = store.load_runs();
+        assert_eq!(runs.len(), SCHEDULE_RUN_HISTORY_LIMIT, "ring cap");
+        assert_eq!(runs.first().unwrap().run_id, "r10", "oldest dropped");
+        // Finalizing a claimed record updates it in place instead of appending.
+        let mut done = record(SCHEDULE_RUN_HISTORY_LIMIT + 9, "success");
+        done.finished_at = Some(9_999);
+        done.bytes = 5;
+        store.record_run(done).unwrap();
+        let runs = store.load_runs();
+        assert_eq!(runs.len(), SCHEDULE_RUN_HISTORY_LIMIT, "no duplicate row");
+        assert_eq!(runs.last().unwrap().status, "success");
+        assert_eq!(runs.last().unwrap().bytes, 5);
     }
 
     #[test]
