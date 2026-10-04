@@ -49,6 +49,11 @@ describe("isTransportFailure", () => {
     expect(isTransportFailure("mock backend failure for /error-dir")).toBe(false);
     expect(isTransportFailure("Method not found: files/list")).toBe(false);
   });
+
+  it("matches rclone rcd cold-start transport errors as transient", () => {
+    // E2E 实证（web 容器重启后恢复页首拉）：rcd respawn 窗口的失败形状。
+    expect(isTransportFailure("rc transport error: error sending request for url (http://127.0.0.1:44235/config/create) [connection closed before message completed]")).toBe(true);
+  });
 });
 
 describe("isNotFoundMessage", () => {
