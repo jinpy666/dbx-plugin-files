@@ -220,6 +220,9 @@ const capabilities = ref<FileCapabilities | undefined>();
 const capabilitiesLoading = ref(false);
 // namespace 连接（根目录直接列出桶）：路径栏根 crumb 与新建动作换桶语义。
 const bucketRootLabel = computed(() => (capabilities.value?.bucketNamespace ? t("bucketRootLabel") : ""));
+// 根 crumb 按栏取值：本地 __local__ 栏是本地 fs 空间，不因宿主当前连接是
+// namespace 连接而在面包屑显示「桶」（双栏左=本地时出现「桶 / Users / …」）。
+const leftRootLabel = computed(() => (sideConnectionId("left") === LOCAL_CONNECTION_ID ? "" : bucketRootLabel.value));
 const initialized = ref(false);
 
 // ---- 目标栏（右栏，A-FILES ①）---------------------------------------------
@@ -727,8 +730,10 @@ const pendingPaneTransfer = ref<{ from: PaneSide; move: boolean; list: FileEntry
 const confirmFieldSpec = computed(() => {
   switch (confirmKind.value) {
     case "newFolder": {
-      // namespace 列根（确认侧所在栏）：占位随桶语义。
-      const bucketRoot = capabilities.value?.bucketNamespace && paneDirPath(confirmSide.value) === "/";
+      // namespace 列根（确认侧所在栏）：占位随桶语义；本地栏不随宿主连接换桶。
+      const bucketRoot = capabilities.value?.bucketNamespace
+        && sideConnectionId(confirmSide.value) !== LOCAL_CONNECTION_ID
+        && paneDirPath(confirmSide.value) === "/";
       const key = bucketRoot ? "newBucketPlaceholder" : "newFolderPlaceholder";
       return { label: t(key), placeholder: t(key) };
     }
@@ -949,6 +954,13 @@ async function enterLocalPaneIfAtRoot() {
 }
 
 watch(dualPane, async (on) => {
+  // 双栏开关改变左栏生效连接（单栏恒为宿主当前连接；双栏按左栏选择路由，
+  // 「同连接」除外）：生效连接变化时整树重建（同 onLeftConnectionChange），
+  // 否则 tree tab 继续展示上一数据源的缓存子树（远端桶/本地目录）。
+  if (leftConnectionId.value) {
+    treeGenerations.left += 1;
+    leftTree.value = createTreeRoot("/", "/");
+  }
   if (on) {
     // 两栏独立首载，远端不等待本地 quick paths 探测；右栏默认 tree
     // 不会触发 rightSideTab watcher（值没有发生变化），所以这里显式跟随定位。
@@ -965,6 +977,8 @@ watch(dualPane, async (on) => {
     await loadDirectory("/").catch(() => undefined);
     void loadQuickPaths("left");
   }
+  // 整树重建后统一走跟随定位（与 onLeftConnectionChange/updateHostContext 同法）。
+  if (leftSideTab.value === "tree") void followTreePath("left", paneDirPath("left"));
 });
 watch(targetConnectionId, () => {
   if (dualPane.value) void loadQuickPaths("right");
@@ -2028,7 +2042,10 @@ function checkConfirmName(): boolean {
 function startNewFolder(side: PaneSide = "left") {
   // namespace 连接列根：这里的新建目录其实是建桶（mkdir 语义同一入口，
   // 引擎在 namespace 根上的 mkdir 即建桶——engine/bucket_ns 冒烟钉死）。
-  const bucketRoot = capabilities.value?.bucketNamespace && paneDirPath(side) === "/";
+  // 本地栏不因宿主当前连接是 namespace 连接而换桶语义。
+  const bucketRoot = capabilities.value?.bucketNamespace
+    && sideConnectionId(side) !== LOCAL_CONNECTION_ID
+    && paneDirPath(side) === "/";
   openConfirm("newFolder", { title: { key: bucketRoot ? "newBucketTitle" : "newFolderTitle" }, draft: "", side });
 }
 
@@ -4991,7 +5008,7 @@ onBeforeUnmount(() => {
               <button class="wb-icon-button wb-icon-neutral" v-tip="t('up')" :disabled="!path || path === '/'" @click="onToolbarNavigate(parentPath(path))"><ArrowUp /></button>
               <button class="wb-icon-button wb-icon-neutral" v-tip="t('refresh')" :disabled="loading" @click="markActiveSide('left'); refreshDirectory()"><RefreshCw :class="{ 'wb-spin': loading }" /></button>
               <div class="wb-path-toolbar">
-                <PathField :path="path" :display-charset="paneDisplayCharset('left')" :root-label="bucketRootLabel" :t="t" @navigate="onToolbarNavigate" />
+                <PathField :path="path" :display-charset="paneDisplayCharset('left')" :root-label="leftRootLabel" :t="t" @navigate="onToolbarNavigate" />
                 <span class="wb-search-box">
                   <Search class="wb-search-icon" aria-hidden="true" />
                   <input
