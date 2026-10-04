@@ -4,7 +4,7 @@
 // 保留策略、运行后校验、过滤器）。cron 在此做即时校验与下次运行预览，
 // 后端 create/update 仍是唯一权威校验。kind=bisync 时两侧都必须可写可删，
 // 由后端拒绝；这里只在 UI 上给出提示。
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { FolderOpen, X } from "@lucide/vue";
 import { formatTime } from "../lib/api";
 import { trapTabKey } from "../lib/a11y";
@@ -153,17 +153,34 @@ function confirm(): void {
     name: name.value.trim(),
     kind: kind.value,
     sourceConnectionId: sourceConnectionId.value,
-    sourcePath: sourcePath.value,
+    sourcePath: sourcePath.value.trim(),
     targetConnectionId: targetConnectionId.value,
-    targetPath: targetPath.value,
+    targetPath: targetPath.value.trim(),
     cron: cron.value.trim(),
     enabled: enabled.value,
     options,
   });
 }
 
+// 焦点约定（SyncDialog 同款，0.1.89 review）：打开聚焦首个输入框；
+//  Tab/Shift+Tab 在弹层内循环，不再 Tab 出「模态」操作被遮罩挡住的背景；
+//  卸载（确认/取消/Esc）后焦点归还打开前的触发元素。
 const dialogEl = ref<HTMLElement | null>(null);
+let returnFocusTo: HTMLElement | null = null;
+
+onMounted(async () => {
+  returnFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  await nextTick();
+  dialogEl.value?.querySelector<HTMLInputElement>("input")?.focus();
+});
+
+onBeforeUnmount(() => {
+  returnFocusTo?.focus();
+  returnFocusTo = null;
+});
+
 function onTabKeydown(event: KeyboardEvent): void {
+  if (event.key !== "Tab") return;
   trapTabKey(event, dialogEl.value);
 }
 </script>

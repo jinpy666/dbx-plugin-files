@@ -3604,8 +3604,11 @@ async function onScheduleToggle(task: ScheduleTask, enabled: boolean): Promise<v
   }
 }
 
-watch(dockTab, (tab) => {
-  if (tab === "schedules") void refreshSchedules();
+// dockOpen 一并依赖（0.1.89 review）：schedules 页签开着时关掉 dock 再重
+// 开，dockTab 值不变、单看它的 watch 不触发，面板会展示陈旧列表——事件
+// 通道丢失/旧宿主不吃影子时没有兜底，重开即重拉。
+watch([dockOpen, dockTab], ([, tab]) => {
+  if (dockOpen.value && tab === "schedules") void refreshSchedules();
 });
 async function clearTransferHistory() {
   try {

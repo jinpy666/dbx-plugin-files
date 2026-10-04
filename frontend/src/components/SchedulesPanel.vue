@@ -122,7 +122,13 @@ function runMeta(run: ScheduleRun): string {
       </div>
       <div class="wb-transfer-meta">
         <span>{{ kindLabel(task) }} · {{ cronLabel(task) }}</span>
-        <button type="button" class="wb-schedule-expander" @click="toggleHistory(task)">
+        <button
+          type="button"
+          class="wb-schedule-expander"
+          :aria-expanded="expandedId === task.id"
+          :aria-controls="`schedule-runs-${task.id}`"
+          @click="toggleHistory(task)"
+        >
           {{ expandedId === task.id ? t("scheduleHideHistory") : t("scheduleShowHistory") }}
         </button>
       </div>
@@ -143,7 +149,7 @@ function runMeta(run: ScheduleRun): string {
         </span>
       </div>
 
-      <div v-if="expandedId === task.id" class="wb-schedule-runs">
+      <div v-if="expandedId === task.id" :id="`schedule-runs-${task.id}`" class="wb-schedule-runs">
         <div v-if="!taskRuns(task).length" class="wb-muted" style="padding: 2px 0">{{ t("scheduleNoRuns") }}</div>
         <div v-for="run in taskRuns(task)" :key="run.runId" class="wb-schedule-run">
           <component
