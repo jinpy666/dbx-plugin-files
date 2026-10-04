@@ -6,6 +6,8 @@
  * - "overwrite"：直接替换同名文件。
  */
 
+import { nameCollisionKey } from "./nameCollision";
+
 export type ConflictPolicy = "ask" | "rename" | "overwrite";
 
 export const CONFLICT_POLICIES: readonly ConflictPolicy[] = ["ask", "rename", "overwrite"];
@@ -37,9 +39,10 @@ export function groupByRemoteDir<T extends UploadQueueItem>(items: readonly T[])
 }
 
 /**
- * 取 `name` 在 `taken`（已占用名字集合）之外的第一个可用名，形如
- * `report (1).pdf`；扩展名前插入，无扩展名/点文件保持整体作 stem。找到的
- * 新名字会写回 `taken`，同批多个改名互不重复；与撞名原文件保持原有名字占用。
+ * 取 `name` 在 `taken`（已占用名字的**归一化键**集合，见 nameCollisionKey）
+ * 之外的第一个可用名，形如 `report (1).pdf`；扩展名前插入，无扩展名/点文件
+ * 保持整体作 stem。找到的新名字会以键写回 `taken`，同批多个改名互不重复
+ * （含大小写/NFC 变体互撞）。
  */
 export function nextAvailableName(name: string, taken: Set<string>): string {
   const dot = name.lastIndexOf(".");
@@ -48,21 +51,23 @@ export function nextAvailableName(name: string, taken: Set<string>): string {
   const ext = name.slice(split);
   for (let index = 1; index <= 999; index += 1) {
     const candidate = `${stem} (${index})${ext}`;
-    if (!taken.has(candidate)) {
-      taken.add(candidate);
+    if (!taken.has(nameCollisionKey(candidate))) {
+      taken.add(nameCollisionKey(candidate));
       return candidate;
     }
   }
   const stamp = Date.now();
   const candidate = `${stem}-${stamp}${ext}`;
-  taken.add(candidate);
+  taken.add(nameCollisionKey(candidate));
   return candidate;
 }
 
 /**
  * 冲突解析（上传方向）：`existing` 是目标目录已有名字集合。rename/overwrite
  * 档纯本地计算；ask 档由调用方先弹窗再传 mode 进来（undefined = 用户取消，
- * 整批放弃）。同批文件之间的名字互撞也一并规避。
+ * 整批放弃）。同批文件之间的名字互撞也一并规避。撞名判定按 nameCollisionKey
+ * 归一化：大小写不敏感目标上 `Report.pdf` 撞 `Report.PDF` 是覆盖，rename 档
+ * 必须让位（taken 集合内保存的是归一化键）。
  */
 export function resolveUploadNames<T extends UploadQueueItem>(
   items: readonly T[],
@@ -70,11 +75,21 @@ export function resolveUploadNames<T extends UploadQueueItem>(
   mode: "rename" | "overwrite",
 ): T[] {
   if (mode === "overwrite") return [...items];
-  // taken = 已有名字 ∪ 同批原名：既防止改名撞到目录里其他文件，也防止
-  // 改成同批另一个文件的原名。
-  const taken = new Set<string>(existing);
-  for (const item of items) taken.add(item.name);
-  return items.map((item) =>
-    existing.has(item.name) ? { ...item, name: nextAvailableName(item.name, taken) } : item,
-  );
+  // taken = 已有名字 ∪ 同批原名（键形态）：改名候选既不撞目录里其他文件，
+  // 也不撞同批另一个文件的原名——含大小写/NFC 变体。冲突判定则对「目录
+  // 已有 + 批内已出现」两个键集：批内大小写变体在不敏感目标上互为覆盖，
+  // 后到者同样要让位。
+  const existingKeys = new Set([...existing].map(nameCollisionKey));
+  const taken = new Set<string>([...existing, ...items.map((item) => item.name)].map(nameCollisionKey));
+  const seen = new Set<string>();
+  return items.map((item) => {
+    const key = nameCollisionKey(item.name);
+    if (!existingKeys.has(key) && !seen.has(key)) {
+      seen.add(key);
+      return item;
+    }
+    const renamed = nextAvailableName(item.name, taken);
+    seen.add(nameCollisionKey(renamed));
+    return { ...item, name: renamed };
+  });
 }

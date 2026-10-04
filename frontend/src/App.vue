@@ -508,7 +508,7 @@ function onSettingsGripPointerdown(event: PointerEvent) {
     window.removeEventListener("pointerup", onUp);
     window.removeEventListener("pointercancel", onCancel);
     prefs.settingsWin = settingsWin.value;
-    saveUiPrefs({ ...prefs, settingsWin: settingsWin.value });
+    saveUiPrefs({ ...loadUiPrefs(), settingsWin: settingsWin.value });
   };
   // 系统手势打断拖拽时 pointercancel 收尾，避免 window 级监听滞留（0.1.81 扫描）。
   const onCancel = () => onUp();
@@ -560,7 +560,7 @@ function closeSettings() {
 watch(settingsCategory, (category) => {
   // 记忆上次停留的分类（重开设置回到原地）；同步回快照避免下次打开读旧值。
   prefs.settingsCategory = category;
-  saveUiPrefs({ ...prefs, settingsCategory: category });
+  saveUiPrefs({ ...loadUiPrefs(), settingsCategory: category });
   if (category === "mounts") settingsDirty.value = false;
   if (category === "transfer") void loadBwlimit();
   if (category === "mounts") {
@@ -938,6 +938,9 @@ function mountToolbarTarget() {
 watch([sort, leftSideTab, rightSideTab, leftSideCollapsed, rightSideCollapsed], () => {
   // 合并进快照再整体写入：这里曾用"只含本组键的新对象"覆盖，抹掉
   // previewWin/settingsWin/settingsCategory 等其他键（跨键互踩 bug）。
+  // 0.1.89 review H2：写盘一律「新鲜读取 + 显式补丁」——快照（{...prefs}）
+  // 含的是挂载期旧值，FileTable/AuditPanel 经 RMW 写入的 columns/
+  // auditActionFilter 会被这里整对象回写覆盖（用户列宽静默回滚）。
   Object.assign(prefs, {
     sort: sort.value,
     leftSideTab: leftSideTab.value,
@@ -945,7 +948,14 @@ watch([sort, leftSideTab, rightSideTab, leftSideCollapsed, rightSideCollapsed], 
     leftSideCollapsed: leftSideCollapsed.value,
     rightSideCollapsed: rightSideCollapsed.value,
   });
-  saveUiPrefs({ ...prefs });
+  saveUiPrefs({
+    ...loadUiPrefs(),
+    sort: sort.value,
+    leftSideTab: leftSideTab.value,
+    rightSideTab: rightSideTab.value,
+    leftSideCollapsed: leftSideCollapsed.value,
+    rightSideCollapsed: rightSideCollapsed.value,
+  });
 }, { deep: true });
 
 // tree tab 可见时目录树跟随本栏目录（issue #66）：目录变化沿路径链自动展开
@@ -1785,7 +1795,7 @@ function onPreviewGripPointerdown(event: PointerEvent) {
     window.removeEventListener("pointercancel", onCancel);
     if (previewWin.value) {
       prefs.previewWin = previewWin.value;
-      saveUiPrefs({ ...prefs, previewWin: previewWin.value });
+      saveUiPrefs({ ...loadUiPrefs(), previewWin: previewWin.value });
     }
   };
   // 同 settings grip：pointercancel 收尾（0.1.81 扫描）。
