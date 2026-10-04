@@ -81,7 +81,9 @@ const dockTipKey = computed(() => DOCK_TIP_KEYS[props.dockTab]);
 const fileInput = ref<HTMLInputElement>();
 
 function pickFiles() {
-  if (window.dbxPlugin.fileTransfer) {
+  // 桥晚到时（waitForHostApi 尚未就绪）window.dbxPlugin 可能是 undefined：
+  // 判空走本地文件选择器兜底，而不是 TypeError。
+  if (window.dbxPlugin?.fileTransfer) {
     emit("upload", null);
     return;
   }
