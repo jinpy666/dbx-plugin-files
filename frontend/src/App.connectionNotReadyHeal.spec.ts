@@ -7,6 +7,9 @@
 // ② 错误横幅「重试」不再裸重发——未注册类失败先请宿主补连再重放；
 // ③ 宿主重开**同一**连接（connectionId 不变的 context 事件）时，栏位横幅若为
 //    未注册类，借事件补一轮自愈（8s 去抖防 reopen 引发的事件成环）。
+// #144（web/docker 刷新后恢复的工作台无法自愈）升级：①的单发自愈改为有界
+// 自愈窗口（1s×12s，吸收宿主 connect 重放晚到的时序差），窗口耗尽落持久
+// 横幅保留重试出口；not-active/not-found 同族文案一并识别为暂时态。
 // mock 宿主不校验注册表，用 invoke/request 拦截注入真实后端的错误形状。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, type VueWrapper } from "@vue/test-utils";
@@ -124,13 +127,65 @@ describe("connection-not-ready 自愈入口（issue #68）", () => {
     expect(banner().exists()).toBe(false);
   });
 
+  it("boot restore window keeps polling until the host's late connect replay lands", async () => {
+    // #144 同源：宿主 connect 重放晚于恢复页首个 files/* 落地（数秒）。
+    // 重放未到时窗口按 1s 节奏轮询（reopen + 重拉），重放落地后下一轮收尾。
+    bridge.reopenResolves = true;
+    bridge.reopenRegisters = false;
+    mountWorkbench();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await nextTick();
+    // 前 6 轮（0s/1s/2s/3s/4s/5s 触发）reopen 过 6 次，横幅随失败刷新仍在。
+    expect(bridge.reopenCalls).toBe(6);
+    expect(banner().exists()).toBe(true);
+
+    // 第 6 秒宿主补上注册：下一轮重拉成功，不再轮询，横幅清空。
+    bridge.reopenRegisters = true;
+    await vi.advanceTimersByTimeAsync(3_000);
+    await nextTick();
+    expect(bridge.reopenCalls).toBe(7);
+    expect(banner().exists()).toBe(false);
+
+    // 收尾后窗口已停：再走 20s 也不会继续轮询。
+    const calls = bridge.reopenCalls;
+    await vi.advanceTimersByTimeAsync(20_000);
+    await nextTick();
+    expect(bridge.reopenCalls).toBe(calls);
+  });
+
+  it("boot restore window exhaustion leaves a persistent banner with a retry exit", async () => {
+    // 宿主 connect 重放始终未落地：窗口耗尽（12 轮）后落**持久**横幅——
+    // 8s 自动消失后用户将面对空列表毫无信号，横幅必须保留重试/关闭出口。
+    bridge.reopenResolves = true;
+    bridge.reopenRegisters = false;
+    mountWorkbench();
+    await vi.advanceTimersByTimeAsync(13_000);
+    await nextTick();
+
+    expect(bridge.reopenCalls).toBe(12);
+    expect(banner().exists()).toBe(true);
+    expect(banner().text()).toContain(workbenchMessage("en", "errConnectionNotReady"));
+
+    // 持久：远超 8s 自动消失窗口横幅仍在。
+    await vi.advanceTimersByTimeAsync(20_000);
+    await nextTick();
+    expect(banner().exists()).toBe(true);
+
+    // 出口可用：宿主恢复后点「重试」走同一条自愈链路收尾。
+    bridge.reopenRegisters = true;
+    await bannerRetryButton().trigger("click");
+    await settle();
+    expect(banner().exists()).toBe(false);
+  });
+
   it("banner retry asks the host to reconnect before replaying", async () => {
     bridge.reopenResolves = false;
     mountWorkbench();
     await settle();
-
-    // 初始自愈被宿主 connect 失败挡下，横幅滞留。
-    expect(bridge.reopenCalls).toBe(1);
+    // boot 窗口跑完（reopen 全失败，12 轮耗尽），横幅持久滞留。
+    await vi.advanceTimersByTimeAsync(13_000);
+    await nextTick();
+    expect(bridge.reopenCalls).toBe(12);
     expect(banner().exists()).toBe(true);
 
     // 宿主恢复后，用户点横幅「重试」：重放失败属未注册类 → 先补连再重放。
@@ -138,7 +193,7 @@ describe("connection-not-ready 自愈入口（issue #68）", () => {
     await bannerRetryButton().trigger("click");
     await settle();
 
-    expect(bridge.reopenCalls).toBe(2);
+    expect(bridge.reopenCalls).toBe(13);
     expect(banner().exists()).toBe(false);
   });
 
@@ -146,30 +201,31 @@ describe("connection-not-ready 自愈入口（issue #68）", () => {
     // 宿主 reopen「成功」但不重推 lifecycle：ensureConnected 短路的真实形态。
     bridge.reopenRegisters = false;
     mountWorkbench();
-    await settle();
+    await vi.advanceTimersByTimeAsync(13_000);
+    await nextTick();
 
-    // 初始自愈跑过一轮，但注册表仍空，栏位横幅停在未注册错误上。
-    expect(bridge.reopenCalls).toBe(1);
+    // boot 窗口耗尽（12 轮 reopen），注册表仍空，栏位横幅停在未注册错误上。
+    expect(bridge.reopenCalls).toBe(12);
     expect(banner().exists()).toBe(true);
     expect(banner().text()).toContain(workbenchMessage("en", "errConnectionNotReady"));
 
     // 宿主重开同一连接：context 的 connectionId 不变，事件仍须触发补自愈。
     driver!.setContext({ connectionId: "mock-conn", connection: { name: "Mock Storage", protocol: "fs" } });
     await settle();
-    expect(bridge.reopenCalls).toBe(2);
+    expect(bridge.reopenCalls).toBe(13);
     expect(banner().exists()).toBe(true);
 
     // 去抖：横幅存活期（8s）内的后续同 id 事件不再重复自愈。
     driver!.setContext({ connectionId: "mock-conn", connection: { name: "Mock Storage", protocol: "fs" } });
     await settle();
-    expect(bridge.reopenCalls).toBe(2);
+    expect(bridge.reopenCalls).toBe(13);
 
     // 去抖窗口过后、宿主真正补上注册：事件驱动的自愈收尾成功。
     await vi.advanceTimersByTimeAsync(8_000);
     bridge.reopenRegisters = true;
     driver!.setContext({ connectionId: "mock-conn", connection: { name: "Mock Storage", protocol: "fs" } });
     await settle();
-    expect(bridge.reopenCalls).toBe(3);
+    expect(bridge.reopenCalls).toBe(14);
     expect(banner().exists()).toBe(false);
   });
 
@@ -182,6 +238,41 @@ describe("connection-not-ready 自愈入口（issue #68）", () => {
     driver!.setContext({ connectionId: "mock-conn", connection: { name: "Mock Storage", protocol: "fs" } });
     await settle();
     expect(bridge.reopenCalls).toBe(0);
+    expect(banner().exists()).toBe(false);
+  });
+
+  it("boot restore window also absorbs rcd cold-start transport errors", async () => {
+    // E2E 实证（#144 第二形态）：容器重启后恢复页首拉撞 rclone rcd respawn
+    // 窗口（"rc transport error … connection closed"）。该形态同样数秒内
+    // 自愈——窗口轮询把宿主补连/重拉跑过去后成功。
+    const bridged = window.dbxPlugin!;
+    const originalInvoke = bridged.invoke.bind(bridged);
+    let failedCalls = 4;
+    Object.defineProperty(window, "dbxPlugin", {
+      value: {
+        ...bridged,
+        invoke: (method: string, params?: Record<string, unknown>) => {
+          if (
+            bridge.registered &&
+            failedCalls > 0 &&
+            method.startsWith("files/") &&
+            !method.startsWith("files/transfers") &&
+            (params as { connectionId?: unknown } | undefined)?.connectionId === "mock-conn"
+          ) {
+            failedCalls -= 1;
+            return Promise.reject(new Error("rc transport error: error sending request for url (http://127.0.0.1:44235/config/create) [connection closed before message completed]"));
+          }
+          return originalInvoke(method, params);
+        },
+      },
+      configurable: true,
+    });
+    mountWorkbench();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await nextTick();
+
+    // 前 4 次 listing 失败（rcd 冷启动），窗口轮询第 5 次成功，横幅清空。
+    expect(failedCalls).toBe(0);
     expect(banner().exists()).toBe(false);
   });
 });
