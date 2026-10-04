@@ -241,10 +241,12 @@ fn canceled_jobs() -> &'static Mutex<HashSet<(String, u64)>> {
 }
 
 fn take_canceled(group: &str, jobid: u64) -> bool {
+    // Poison-tolerant like the crate's other locks: silently dropping a
+    // cancel marker here would let an already-canceled job report Completed.
     canceled_jobs()
         .lock()
-        .map(|mut jobs| jobs.remove(&(group.to_string(), jobid)))
-        .unwrap_or(false)
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&(group.to_string(), jobid))
 }
 
 /// `fs` + relative path composition (live-verified): the sub-path is part
@@ -513,10 +515,12 @@ pub async fn start_job(
 /// Stopping an already-finished or expired job is a no-op success.
 pub async fn stop_job(client: &RcClient, handle: &SyncJobHandle) -> Result<(), String> {
     // Mark before the remote stop: the poll loop then cannot race a terminal
-    // event past the cancel.
-    if let Ok(mut jobs) = canceled_jobs().lock() {
-        jobs.insert((handle.group.clone(), handle.jobid));
-    }
+    // event past the cancel. Poison-tolerant: a lock poisoned by a panicked
+    // poll task must not silently drop the cancel marker.
+    canceled_jobs()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert((handle.group.clone(), handle.jobid));
     match bounded_call(client, "job/stop", &serde_json::json!({ "jobid": handle.jobid })).await
     {
         Ok(_) => Ok(()),

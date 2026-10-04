@@ -10,17 +10,20 @@
 //! day-of-month or the day-of-week matches, but only when both restricted
 //! fields agree"): when BOTH dom and dow are restricted the day matches on
 //! EITHER; when one is `*` only the restricted one decides; both `*` = every
-//! day. `next_after` walks day-by-day (month mismatches jump a whole month,
-//! so the 400-day cap costs at most a few hundred cheap iterations) and scans
-//! the matching day minute-by-minute; nonexistent local times inside a DST
-//! spring-forward gap are skipped rather than guessed.
+//! day. `next_after` walks day-by-day (month mismatches jump a whole month)
+//! and scans the matching day minute-by-minute; nonexistent local times
+//! inside a DST spring-forward gap are skipped rather than guessed — the
+//! walk continues to the next candidate, so a fire time that lands in the
+//! gap on one day never silences the schedule.
 
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDateTime, TimeZone, Timelike};
 
-/// Day-walk ceiling: any fireable expression fires within a year, so a
-/// generous 400 steps also terminates never-firing shapes (`0 0 31 2 *`)
-/// after ~33 years of month jumps.
-const MAX_DAY_STEPS: u32 = 400;
+/// Day-walk ceiling. The widest legal gap a fireable shape produces is the
+/// dom-only leap day across a non-leap century edge (`0 0 29 2 *`:
+/// 2096-02-29 → 2104-02-29, ~8 years ≈ 330 steps); 20_000 keeps a wide
+/// safety margin and still terminates never-firing shapes (`0 0 31 2 *`)
+/// in a cheap pure memory loop.
+const MAX_DAY_STEPS: u32 = 20_000;
 
 /// One parsed cron expression. Bits are set at the value's own index
 /// (minute bit 7 == minute 7), so `contains` is a single AND.
@@ -69,6 +72,17 @@ impl CronExpr {
     /// Next fire strictly after `from` (minute resolution, local time), or
     /// `None` when nothing fires within the cap.
     pub fn next_after(&self, from: DateTime<Local>) -> Option<DateTime<Local>> {
+        self.next_after_in(&Local, from)
+    }
+
+    /// Timezone-parameterized core of [`CronExpr::next_after`]; exposed for
+    /// tests, which need a synthetic zone with a DST gap (`Local` cannot be
+    /// re-zoned in-process).
+    pub(crate) fn next_after_in<T: TimeZone>(
+        &self,
+        tz: &T,
+        from: DateTime<T>,
+    ) -> Option<DateTime<T>> {
         let mut naive = truncate_to_minute(from.naive_local())? + Duration::minutes(1);
         for _ in 0..MAX_DAY_STEPS {
             let date = naive.date();
@@ -82,7 +96,14 @@ impl CronExpr {
                 continue;
             }
             if let Some(found) = self.scan_day(naive) {
-                return to_local(found);
+                if let Some(zoned) = tz.from_local_datetime(&found).earliest() {
+                    return Some(zoned);
+                }
+                // DST spring-forward gap: this wall-clock time does not
+                // exist today. Skip it and keep scanning — a fire minute
+                // inside the gap must silence that one fire, not the task.
+                naive = found + Duration::minutes(1);
+                continue;
             }
             naive = date.succ_opt()?.and_hms_opt(0, 0, 0)?;
         }
@@ -111,8 +132,9 @@ impl CronExpr {
     }
 
     /// Minute-scan one matching day from `start` (which sits inside it) to
-    /// midnight; returns the first matching naive local timestamp. DST-gap
-    /// minutes (conversion returns None) are skipped, not guessed.
+    /// midnight; returns the first matching naive local timestamp. Conversion
+    /// to a zoned instant (and DST-gap skipping) happens in
+    /// [`CronExpr::next_after_in`].
     fn scan_day(&self, start: NaiveDateTime) -> Option<NaiveDateTime> {
         let date = start.date();
         let mut cursor = start;
@@ -143,11 +165,6 @@ fn first_of_next_month(date: chrono::NaiveDate) -> Option<NaiveDateTime> {
         (date.year(), date.month() + 1)
     };
     chrono::NaiveDate::from_ymd_opt(year, month, 1)?.and_hms_opt(0, 0, 0)
-}
-
-/// Naive local timestamp → zoned `DateTime<Local>`; `None` only in a DST gap.
-fn to_local(naive: NaiveDateTime) -> Option<DateTime<Local>> {
-    Local.from_local_datetime(&naive).earliest()
 }
 
 /// One comma-separated field → bitmask over `min..=max`. `*` spans the full
@@ -375,6 +392,113 @@ mod tests {
         assert_eq!(
             next("0 0 1 1 *", local(2026, 12, 31, 12, 0)),
             Some(local(2027, 1, 1, 0, 0))
+        );
+    }
+
+    // -- DST spring-forward gap ---------------------------------------------
+    //
+    // `Local` cannot be re-zoned in-process, so the gap semantics are pinned
+    // against a synthetic zone whose 02:00–02:59 on 2026-03-08 does not exist.
+
+    #[derive(Debug, Clone, Copy)]
+    struct GapTz;
+
+    impl TimeZone for GapTz {
+        type Offset = chrono::FixedOffset;
+        fn offset_from_local_datetime(
+            &self,
+            local: &NaiveDateTime,
+        ) -> chrono::LocalResult<chrono::FixedOffset> {
+            let offset = chrono::FixedOffset::east_opt(8 * 3600).expect("fixed offset");
+            let gap_day = chrono::NaiveDate::from_ymd_opt(2026, 3, 8).expect("date");
+            if local.date() == gap_day && local.hour() == 2 {
+                chrono::LocalResult::None
+            } else {
+                chrono::LocalResult::Single(offset)
+            }
+        }
+        fn offset_from_utc_datetime(&self, _utc: &NaiveDateTime) -> chrono::FixedOffset {
+            chrono::FixedOffset::east_opt(8 * 3600).expect("fixed offset")
+        }
+        fn from_offset(offset: &chrono::FixedOffset) -> Self {
+            let _ = offset;
+            GapTz
+        }
+        fn offset_from_local_date(
+            &self,
+            date: &chrono::NaiveDate,
+        ) -> chrono::LocalResult<chrono::FixedOffset> {
+            let naive = date.and_hms_opt(12, 0, 0).expect("noon");
+            self.offset_from_local_datetime(&naive)
+        }
+        fn offset_from_utc_date(&self, _date: &chrono::NaiveDate) -> chrono::FixedOffset {
+            chrono::FixedOffset::east_opt(8 * 3600).expect("fixed offset")
+        }
+    }
+
+    fn gap_tz_time(y: i32, m: u32, d: u32, h: u32, min: u32) -> DateTime<GapTz> {
+        GapTz
+            .with_ymd_and_hms(y, m, d, h, min, 0)
+            .single()
+            .expect("test time sits outside the synthetic gap")
+    }
+
+    fn next_in(expr: &str, from: DateTime<GapTz>) -> Option<DateTime<GapTz>> {
+        CronExpr::parse(expr)
+            .expect("valid test expression")
+            .next_after_in(&GapTz, from)
+    }
+
+    #[test]
+    fn dst_gap_candidate_skips_to_the_next_day_instead_of_dying() {
+        // 02:30 does not exist on 2026-03-08; the schedule must move on to
+        // the next day's fire rather than return None (which used to silence
+        // the task permanently — hydrate/claim persist the None).
+        assert_eq!(
+            next_in("30 2 * * *", gap_tz_time(2026, 3, 8, 0, 0)),
+            Some(gap_tz_time(2026, 3, 9, 2, 30))
+        );
+    }
+
+    #[test]
+    fn dst_gap_scan_finds_a_later_candidate_on_the_same_day() {
+        // `0 2-3 * * *`: the 02:00 candidate is in the gap, the 03:00 one is
+        // real — the day must not be abandoned after the skipped candidate.
+        assert_eq!(
+            next_in("0 2-3 * * *", gap_tz_time(2026, 3, 8, 0, 0)),
+            Some(gap_tz_time(2026, 3, 8, 3, 0))
+        );
+    }
+
+    #[test]
+    fn gap_minute_range_is_skipped_minute_by_minute() {
+        // The whole 02:xx hour is missing; `30 2-3 * * *` still lands on the
+        // 03:30 fire the same day.
+        assert_eq!(
+            next_in("30 2-3 * * *", gap_tz_time(2026, 3, 8, 0, 0)),
+            Some(gap_tz_time(2026, 3, 8, 3, 30))
+        );
+    }
+
+    #[test]
+    fn leap_day_crosses_the_non_leap_century_gap() {
+        // 2096-02-29 is the last leap day before 2104 (2100 is not a leap
+        // year) — an 8-year wall, the widest gap a legal expression can
+        // legally produce; the walk must survive it.
+        assert_eq!(
+            next("0 0 29 2 *", local(2096, 3, 1, 12, 0)),
+            Some(local(2104, 2, 29, 0, 0))
+        );
+    }
+
+    #[test]
+    fn dom_dow_both_restricted_fires_every_matching_february_weekday() {
+        // `0 0 29 2 1` is NOT a once-in-decades shape: both fields being
+        // restricted ORs them, so every February Monday fires too. From
+        // 2016-03-01 the next fire is simply the first Monday of Feb 2017.
+        assert_eq!(
+            next("0 0 29 2 1", local(2016, 3, 1, 12, 0)),
+            Some(local(2017, 2, 6, 0, 0))
         );
     }
 }

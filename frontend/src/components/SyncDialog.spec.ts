@@ -259,4 +259,20 @@ describe("SyncDialog bisync mode", () => {
     expect(box.attributes("disabled")).toBeUndefined();
     incremental.unmount();
   });
+
+  it("resets the auto-checked resync when the pair resolves from new to synced", async () => {
+    // 弹窗打开时状态尚未取回（null），解析为 new → 自动勾上 resync；
+    // 用户随后改路径、状态解析为已同步对 → 必须复位，否则确认会对
+    // 不需要 resync 的对发起破坏性重建。
+    const wrapper = bisyncDialog(null);
+    let checkbox = wrapper.find('input[type="checkbox"]');
+    expect((checkbox.element as HTMLInputElement).checked).toBe(false);
+    await wrapper.setProps({ bisyncState: "new" });
+    checkbox = wrapper.find('input[type="checkbox"]');
+    expect((checkbox.element as HTMLInputElement).checked).toBe(true);
+    await wrapper.setProps({ bisyncState: "synced" });
+    checkbox = wrapper.find('input[type="checkbox"]');
+    expect((checkbox.element as HTMLInputElement).checked).toBe(false);
+    wrapper.unmount();
+  });
 })

@@ -819,7 +819,7 @@ impl Mcp {
 /// Every registered tool name, for the unknown-tool self-correction hint
 /// (ssh `TOOL_NAMES` / ldap `available:` parity). Kept in one place so the
 /// hint can never drift from the dispatch table.
-pub(crate) const ALL_TOOL_NAMES: [&str; 13] = [
+pub(crate) const ALL_TOOL_NAMES: [&str; 18] = [
     "files_ui_focus",
     "files_ui_search",
     "files_ui_select",
@@ -833,6 +833,23 @@ pub(crate) const ALL_TOOL_NAMES: [&str; 13] = [
     "files_delete",
     "files_purge",
     "files_sync",
+    "schedule_list",
+    "schedule_history",
+    "schedule_create",
+    "schedule_run_now",
+    "schedule_delete",
+];
+
+/// The `schedule_*` family. These tools dispatch only when the cron
+/// scheduler is attached, which is the resident plugin sidecar — standalone
+/// stdio sessions never run the tick loop, so stdio answers them with an
+/// explicit UNAVAILABLE (see `stdio.rs`) instead of "Unknown tool".
+pub(crate) const SCHEDULER_TOOLS: [&str; 5] = [
+    "schedule_list",
+    "schedule_history",
+    "schedule_create",
+    "schedule_run_now",
+    "schedule_delete",
 ];
 
 /// Actionable error for an unregistered tool name: a separator/case variant
@@ -1157,8 +1174,10 @@ impl Mcp {
     ) -> Result<std::sync::Arc<crate::scheduler::Scheduler>, String> {
         self.scheduler
             .clone()
-            .ok_or_else(|| "schedule tools require the scheduler, which is not attached                              in this session"
-                .to_string())
+            .ok_or_else(|| {
+                "schedule tools require the scheduler, which is not attached in this session"
+                    .to_string()
+            })
     }
 
     fn schedule_list(&self) -> Result<Value, String> {

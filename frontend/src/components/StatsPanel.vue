@@ -97,7 +97,7 @@ const chart = computed(() => {
         <path :d="chart.line" class="wb-stats-line" />
       </svg>
       <div v-else class="wb-stats-chart-empty wb-muted">{{ t("statsChartEmpty") }}</div>
-      <div class="wb-stats-chart-axis"><span>-5m</span><span>now</span></div>
+      <div class="wb-stats-chart-axis"><span>{{ t("statsChartAxisWindow") }}</span><span>{{ t("statsChartAxisNow") }}</span></div>
     </div>
     <div class="wb-stats-cards">
       <div class="wb-stats-cell">

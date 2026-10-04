@@ -34,6 +34,19 @@ use serde_json::Value;
 use crate::model::TRANSFER_HISTORY_LIMIT;
 use crate::scheduler::model::{RunRecord, ScheduleTask, SCHEDULE_RUN_HISTORY_LIMIT};
 
+/// Process-wide write lock for the store's read-modify-write JSON files
+/// (`runs.json` today; `transfers.json` keeps its own equivalent via
+/// main.rs `history_write_lock`). Atomic rename keeps every individual
+/// write intact but cannot stop two interleaved load→mutate→save sequences
+/// from dropping one side's update. `record_run` takes this internally; a
+/// caller that spans a wider sequence over the same file (e.g. hydrate's
+/// load→settle→rewrite) must hold it across the whole sequence.
+pub(crate) fn persist_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Plugin id used at every level of the data-dir layout below.
 const PLUGIN_ID: &str = "io.dbx.files";
 
@@ -207,6 +220,11 @@ impl Store {
     /// event) — and ring-truncates to the newest
     /// `SCHEDULE_RUN_HISTORY_LIMIT` entries.
     pub fn record_run(&self, record: RunRecord) -> Result<(), String> {
+        // The load→mutate→write sequence runs on the request thread (manual
+        // runNow), the scheduler thread (claim) and the scheduler runtime
+        // (finalize/mid-run update) concurrently; without the lock the last
+        // writer's stale snapshot erases the others' records.
+        let _persist = persist_lock();
         let mut runs = self.load_runs();
         match runs.iter_mut().find(|run| run.run_id == record.run_id) {
             Some(slot) => *slot = record,
@@ -261,8 +279,36 @@ impl Store {
     // -- internals ----------------------------------------------------------
 
     fn read_json(&self, file_name: &str) -> Option<Value> {
-        let content = std::fs::read_to_string(self.data_dir.join(file_name)).ok()?;
-        serde_json::from_str(&content).ok()
+        let path = self.data_dir.join(file_name);
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            // Missing file is a fresh install, not an error. Unreadable
+            // file: treated as absent (the write side fails loudly if the
+            // cause persists, e.g. a read-only data dir).
+            Err(_) => return None,
+        };
+        match serde_json::from_str(&content) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                // Quarantine instead of treating as empty: the caller would
+                // otherwise start from an empty table and the next save
+                // would silently overwrite the user's only copy (schedules
+                // .json was the worst case — every task lost for good).
+                // Renaming keeps the bytes recoverable by hand.
+                let quarantine =
+                    self.data_dir.join(format!("{file_name}.corrupt-{}", unix_millis_now()));
+                match std::fs::rename(&path, &quarantine) {
+                    Ok(()) => eprintln!(
+                        "[io.dbx.files] {file_name} was corrupt ({error}); quarantined as {} and treated as empty",
+                        quarantine.display()
+                    ),
+                    Err(rename_error) => eprintln!(
+                        "[io.dbx.files] {file_name} is corrupt ({error}) and could not be quarantined: {rename_error}"
+                    ),
+                }
+                None
+            }
+        }
     }
 
     pub(crate) fn write_json_atomic(&self, file_name: &str, value: &Value) -> Result<(), String> {
@@ -613,6 +659,29 @@ mod tests {
         assert_eq!(runs.len(), SCHEDULE_RUN_HISTORY_LIMIT, "no duplicate row");
         assert_eq!(runs.last().unwrap().status, "success");
         assert_eq!(runs.last().unwrap().bytes, 5);
+    }
+
+    /// A corrupt JSON file is quarantined (renamed aside, bytes preserved)
+    /// instead of being treated as empty — otherwise the next save silently
+    /// overwrites the user's only copy (schedules.json = every task lost).
+    #[test]
+    fn corrupt_json_file_is_quarantined_not_overwritten() {
+        let (store, dir) = store();
+        std::fs::write(dir.path().join("schedules.json"), "{ not json").unwrap();
+        assert!(store.load_schedules().is_empty(), "corrupt file loads as empty");
+        let quarantined = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .find(|entry| entry.file_name().to_string_lossy().starts_with("schedules.json.corrupt-"))
+            .expect("quarantine copy exists");
+        assert_eq!(
+            std::fs::read_to_string(quarantined.path()).unwrap(),
+            "{ not json",
+            "original bytes preserved"
+        );
+        // The live path is gone: the next save starts a fresh file instead
+        // of clobbering the user's only copy.
+        assert!(!dir.path().join("schedules.json").exists());
     }
 
     #[test]

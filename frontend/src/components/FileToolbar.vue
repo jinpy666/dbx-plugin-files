@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { Activity, CalendarClock, CircleGauge, Columns2, Download, FolderPlus, FolderUp, Gauge, HardDrive, ScrollText, Settings, Star, Trash2, Upload, Plug } from "@lucide/vue";
 
 // 全局动作栏：路径/面包屑/过滤等栏内控件已下沉到各栏 wb-pane-header
@@ -81,7 +81,9 @@ const dockTipKey = computed(() => DOCK_TIP_KEYS[props.dockTab]);
 const fileInput = ref<HTMLInputElement>();
 
 function pickFiles() {
-  if (window.dbxPlugin.fileTransfer) {
+  // 桥晚到时（waitForHostApi 尚未就绪）window.dbxPlugin 可能是 undefined：
+  // 判空走本地文件选择器兜底，而不是 TypeError。
+  if (window.dbxPlugin?.fileTransfer) {
     emit("upload", null);
     return;
   }
@@ -138,6 +140,13 @@ const bwlimitTip = computed(() =>
 
 function toggleBwlimitMenu() {
   bwlimitOpen.value = !bwlimitOpen.value;
+  // 打开即把焦点移入首个菜单项（0.1.89 review）：此前焦点留在触发钮上，
+  // 菜单容器的 Esc 处理永远收不到键盘事件，键盘用户没有关闭出口。
+  if (bwlimitOpen.value) {
+    void nextTick(() => {
+      bwlimitWrap.value?.querySelector<HTMLButtonElement>("[role=menuitem]")?.focus();
+    });
+  }
 }
 
 function closeBwlimitMenu() {
@@ -207,7 +216,8 @@ const statsDockOpen = computed(() => props.dockOpen && props.dockTab === "stats"
       ><Star /></button>
       <!-- 限速（rclone 令牌桶）常驻开关：is-active=限速中，按钮随限速值内联显示
            当前速率；点击弹快捷菜单（预设/关闭/自定义），替代旧「仅生效时可见」的徽标。 -->
-      <span ref="bwlimitWrap" class="wb-bwlimit-wrap">
+      <!-- Esc 绑在 wrap（覆盖触发钮+菜单）兜底：焦点移入失败时键盘仍有出口。 -->
+      <span ref="bwlimitWrap" class="wb-bwlimit-wrap" @keydown.esc.stop="closeBwlimitMenu">
         <button
           class="wb-icon-button wb-bwlimit-toggle"
           v-tip="bwlimitTip"
@@ -216,7 +226,7 @@ const statsDockOpen = computed(() => props.dockOpen && props.dockTab === "stats"
           aria-haspopup="menu"
           @click="toggleBwlimitMenu"
         ><CircleGauge /><span v-if="bwlimit" class="wb-bwlimit-rate">{{ bwlimit }}</span></button>
-        <div v-if="bwlimitOpen" class="wb-bwlimit-menu" role="menu" @keydown.esc.stop="closeBwlimitMenu">
+        <div v-if="bwlimitOpen" class="wb-bwlimit-menu" role="menu">
           <div class="wb-bwlimit-menu-title">{{ t("bwlimitLabel") }}</div>
           <div class="wb-bwlimit-menu-current">{{ bwlimit ?? t("bwlimitUnlimited") }}</div>
           <button v-for="preset in BWLIMIT_PRESETS" :key="preset.value" role="menuitem" type="button" :class="{ 'is-current': bwlimit === preset.value }" @click="applyBwlimit(preset.value)">{{ preset.label }}</button>

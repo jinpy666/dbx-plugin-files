@@ -851,6 +851,9 @@ function sortRouted(side: PaneSide, column: SortColumn) {
 function openContextMenu(side: PaneSide, payload: { entry: FileEntry; x: number; y: number }) {
   markActiveSide(side);
   captureMenuOrigin();
+  // 「打开方式」子菜单的展开态跨右键会话复位（0.1.89 review）：否则上次
+  // 展开后关掉菜单，下一次右键任意文件子菜单直接处于展开态。
+  openWithSubOpen.value = false;
   contextMenu.value = { ...payload, side, selection: [...(side === "left" ? selection.value : rightSelection.value)] };
 }
 /** 多选菜单的条目集（批量打包下载「全为目录」门控据此计算）。 */
@@ -1194,8 +1197,10 @@ function handleEvent(event: DbxPluginEvent) {
       // 失败/取消时不要用一次成功的目录刷新把错误条清掉；只有真正完成
       // 的 copy/move/rename 才需要同步两侧目录。
       if (job.state === "completed") {
-        void loadDirectory().catch(() => undefined);
-        if (dualPane.value) void loadRightDirectory().catch(() => undefined);
+        // 用户导航在途时让位：自动补拉会取到更新的序号令牌，把用户在途
+        // 导航的响应判为过期丢弃，视图被无声拉回旧目录（0.1.89 review）。
+        if (!loading.value) void loadDirectory().catch(() => undefined);
+        if (dualPane.value && !rightLoading.value) void loadRightDirectory().catch(() => undefined);
         // 传输/改名可能落在任一侧目录：两侧树都同步（不可见侧零网络标 stale）。
         syncTreeAfterMutation("left");
         syncTreeAfterMutation("right");
@@ -1984,6 +1989,13 @@ async function healBootRestore(side: PaneSide, cause: unknown) {
       }
       const id = sideConnectionId(side) ?? connectionId.value;
       await requestHostConnectionReopen(id);
+      // 用户导航在途时让位（0.1.89 review）：自愈重拉会取到更新的序号令
+      // 牌，把用户在途导航判为过期。按固定节奏空转（attempt 照常推进），
+      // 窗口耗尽照常收敛，导航结束后下一轮重拉继续。
+      if (side === "left" ? loading.value : rightLoading.value) {
+        await new Promise((resolve) => setTimeout(resolve, decision.delayMs));
+        continue;
+      }
       const outcome = await (side === "left"
         ? loadDirectory(paneDirPath("left")).then(() => true as const, (reloadCause: unknown) => ({ ok: false as const, cause: reloadCause }))
         : loadRightDirectory(paneDirPath("right")).then(() => true as const, (reloadCause: unknown) => ({ ok: false as const, cause: reloadCause })));
@@ -2012,6 +2024,8 @@ async function recoverPaneListing(side: PaneSide, cause: unknown, options: { any
   // 单发自愈只会重复劳动（窗口耗尽后横幅持久，事件重开仍可触发本入口）。
   if (bootHealActive) return;
   if (!options.anyFailure && !isConnectionNotReadyMessage(errorMessage(cause))) return;
+  // 用户导航在途时让位（同 boot 窗口）：自愈重拉不得覆盖在途导航的序号。
+  if (side === "left" ? loading.value : rightLoading.value) return;
   const id = sideConnectionId(side) ?? connectionId.value;
   if (!(await requestHostConnectionReopen(id))) return;
   // 重拉该栏**当前路径**（而非固定根目录）：issue #68 的宿主重开事件与
@@ -3521,7 +3535,15 @@ async function onScheduleConfirm(draft: ScheduleDraft): Promise<void> {
   try {
     if (draft.id) {
       const existing = scheduleTasks.value.find((task) => task.id === draft.id);
-      await schedulesApi.update({ ...(existing ?? ({} as ScheduleTask)), ...draft });
+      if (!existing) {
+        // 任务在编辑期间已被并发删除（面板推送整体替换）：update 是全量
+        // 替换，缺 createdAt/bisyncResyncDone 等运行时字段只会换来一条
+        // 后端拒绝，直接提示用户任务已不存在。
+        showError({ key: "scheduleTaskMissing" });
+        scheduleDialogOpen.value = false;
+        return;
+      }
+      await schedulesApi.update({ ...existing, ...draft });
     } else {
       await schedulesApi.create(draft);
     }
@@ -3573,13 +3595,20 @@ async function onScheduleToggle(task: ScheduleTask, enabled: boolean): Promise<v
   try {
     await schedulesApi.update({ ...task, enabled });
   } catch (cause) {
-    task.enabled = previous;
+    // 乐观写落在面板对象上；若期间 files/schedule/changed 推送整体替换了
+    // scheduleTasks，按 id 重找存活行回滚（写回死对象等于没回滚），随后
+    // 再拉一次以服务端为准。
+    (scheduleTasks.value.find((row) => row.id === task.id) ?? task).enabled = previous;
+    void refreshSchedules();
     showError(cause);
   }
 }
 
-watch(dockTab, (tab) => {
-  if (tab === "schedules") void refreshSchedules();
+// dockOpen 一并依赖（0.1.89 review）：schedules 页签开着时关掉 dock 再重
+// 开，dockTab 值不变、单看它的 watch 不触发，面板会展示陈旧列表——事件
+// 通道丢失/旧宿主不吃影子时没有兜底，重开即重拉。
+watch([dockOpen, dockTab], ([, tab]) => {
+  if (dockOpen.value && tab === "schedules") void refreshSchedules();
 });
 async function clearTransferHistory() {
   try {
@@ -4898,6 +4927,21 @@ function onDocumentKeydown(event: KeyboardEvent) {
   // 不关闭——半途关闭会让用户不知道任务是否已发起。
   if (syncDialogOpen.value) {
     if (!syncDialogBusy.value) closeSyncDialog();
+    return;
+  }
+  // 计划任务编辑弹窗同语义：保存请求在途不关闭。
+  if (scheduleDialogOpen.value) {
+    if (!scheduleBusy.value) scheduleDialogOpen.value = false;
+    return;
+  }
+  if (watchModifiedPrompt.value) {
+    // Esc = 放弃本次询问（与遮罩点击同语义），不替用户做上传决定。
+    void decideWatchModified("dismiss");
+    return;
+  }
+  // 计划任务删除确认（独立 ConfirmDialog 实例）：先于通用 confirm 收。
+  if (scheduleDeleteTarget.value) {
+    scheduleDeleteTarget.value = null;
     return;
   }
   if (customEditorOpen.value) {

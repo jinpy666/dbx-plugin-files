@@ -4,7 +4,7 @@
 // 保留策略、运行后校验、过滤器）。cron 在此做即时校验与下次运行预览，
 // 后端 create/update 仍是唯一权威校验。kind=bisync 时两侧都必须可写可删，
 // 由后端拒绝；这里只在 UI 上给出提示。
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { FolderOpen, X } from "@lucide/vue";
 import { formatTime } from "../lib/api";
 import { trapTabKey } from "../lib/a11y";
@@ -91,8 +91,10 @@ const nextRunPreview = computed(() => {
   const next = nextRunAfter(cron.value);
   return next ? formatTime(next.toISOString()) : null;
 });
+// 源=目标（trim 后相等）对三种 kind 都无意义——bisync 会自配对，与
+// SyncDialog 的前置拦截保持同一语义，而不是等 rc 报错。
 const sameTarget = computed(
-  () => kind.value !== "bisync" && sourceConnectionId.value === targetConnectionId.value && sourcePath.value.trim() === targetPath.value.trim(),
+  () => sourceConnectionId.value === targetConnectionId.value && sourcePath.value.trim() === targetPath.value.trim(),
 );
 const canConfirm = computed(
   () =>
@@ -127,32 +129,58 @@ function confirm(): void {
     const list = text.split(",").map((entry) => entry.trim()).filter(Boolean);
     return list.length ? list : undefined;
   };
+  // v-model.number 在输入框清空时回落为字符串 ""，手输可能给出小数/负数；
+  // 后端字段是 Option<u64>/Option<u32>，这里统一归一：非有限非负整数按
+  // 「未设置」处理，而不是把脏值原样下发导致 serde 拒收、保存失败。
+  const numeric = (value: number | string | null | undefined): number | undefined => {
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+      return Math.floor(value);
+    }
+    return undefined;
+  };
   const options: ScheduleOptions = {
     dryRun: dryRun.value || undefined,
-    maxDelete: maxDelete.value ?? undefined,
+    maxDelete: numeric(maxDelete.value),
     include: patterns(include.value),
     exclude: patterns(exclude.value),
     backupDir: backupDir.value.trim() || undefined,
     suffix: suffix.value.trim() || undefined,
     verifyAfter: verifyAfter.value,
-    retentionDays: retentionDays.value ?? undefined,
+    retentionDays: numeric(retentionDays.value),
   };
   emit("confirm", {
     id: props.task?.id,
     name: name.value.trim(),
     kind: kind.value,
     sourceConnectionId: sourceConnectionId.value,
-    sourcePath: sourcePath.value,
+    sourcePath: sourcePath.value.trim(),
     targetConnectionId: targetConnectionId.value,
-    targetPath: targetPath.value,
+    targetPath: targetPath.value.trim(),
     cron: cron.value.trim(),
     enabled: enabled.value,
     options,
   });
 }
 
+// 焦点约定（SyncDialog 同款，0.1.89 review）：打开聚焦首个输入框；
+//  Tab/Shift+Tab 在弹层内循环，不再 Tab 出「模态」操作被遮罩挡住的背景；
+//  卸载（确认/取消/Esc）后焦点归还打开前的触发元素。
 const dialogEl = ref<HTMLElement | null>(null);
+let returnFocusTo: HTMLElement | null = null;
+
+onMounted(async () => {
+  returnFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  await nextTick();
+  dialogEl.value?.querySelector<HTMLInputElement>("input")?.focus();
+});
+
+onBeforeUnmount(() => {
+  returnFocusTo?.focus();
+  returnFocusTo = null;
+});
+
 function onTabKeydown(event: KeyboardEvent): void {
+  if (event.key !== "Tab") return;
   trapTabKey(event, dialogEl.value);
 }
 </script>

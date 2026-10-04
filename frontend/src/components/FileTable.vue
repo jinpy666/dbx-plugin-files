@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Check, Database, Folder, FolderOpen, FolderPlus, SearchX } from "@lucide/vue";
 import { formatBytes, formatTime, type FileEntry } from "../lib/api";
 import { fileIcon, fileIconClass } from "../lib/fileIcons";
@@ -129,6 +129,15 @@ function onListKeydown(event: KeyboardEvent) {
     event.preventDefault();
     nav.value = { index: props.entries.length - 1, anchor: 0 };
     emit("update:selection", props.entries.map((entry) => entry.path));
+    return;
+  }
+  // Shift+F10：键盘呼出列显隐菜单——表头右键没有键盘落点（非可聚焦元
+  // 素），列表聚焦时此处是它的键盘等价入口（0.1.89 review）。
+  if (event.shiftKey && event.key === "F10") {
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = viewport.value?.getBoundingClientRect();
+    openColumnMenuAt(rect ? rect.right - 210 : 200, rect ? rect.top + 40 : 80);
     return;
   }
   const navKeys: Record<string, "up" | "down" | "home" | "end"> = { ArrowUp: "up", ArrowDown: "down", Home: "home", End: "end" };
@@ -293,15 +302,30 @@ onBeforeUnmount(() => {
 });
 
 // 列显隐菜单：表头右键弹出（沿用 wb-context-menu 视觉），外部按下 / Esc 关闭。
+// 键盘路径（0.1.89 review）：列表聚焦时 Shift+F10 同样可呼出；菜单打开即
+// 聚焦首个可用项，Esc 关闭并把焦点归还列表——否则菜单只能鼠标可达。
+function openColumnMenuAt(x: number, y: number) {
+  columnMenu.value = {
+    x: Math.min(x, Math.max(0, window.innerWidth - 200)),
+    y: Math.min(y, Math.max(0, window.innerHeight - 140)),
+  };
+}
+
 function openColumnMenu(event: MouseEvent) {
-  const x = Math.min(event.clientX, Math.max(0, window.innerWidth - 200));
-  const y = Math.min(event.clientY, Math.max(0, window.innerHeight - 140));
-  columnMenu.value = { x, y };
+  openColumnMenuAt(event.clientX, event.clientY);
 }
 
 function closeColumnMenu() {
   columnMenu.value = null;
+  viewport.value?.focus();
 }
+
+watch(columnMenu, (menu) => {
+  if (!menu) return;
+  void nextTick(() => {
+    columnMenuEl.value?.querySelector<HTMLButtonElement>("[role=menuitemcheckbox]:not([disabled])")?.focus();
+  });
+});
 
 function toggleColumn(key: ColumnKey) {
   if (key === "name") return; // 名称列不可隐藏

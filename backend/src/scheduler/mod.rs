@@ -47,6 +47,11 @@ const RUN_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const MAX_CONCURRENT_RUNS: usize = 2;
 /// Retention prune ceiling per run (prune failure never fails the run).
 const RETENTION_TIMEOUT: Duration = Duration::from_secs(120);
+/// Hard ceiling for one scheduled/manual run (job watch; the post-run
+/// verify gets its own pass through the same bound). A run that outlives it
+/// is finalized as failed and releases its concurrency slot — without the
+/// bound, two hung jobs permanently starve every other task.
+const MAX_RUN_DURATION: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Shared emitter slot: created by `main.rs` next to the job hooks (both
 /// read the same slot — background dir jobs push transfer progress through
@@ -73,6 +78,15 @@ pub struct JobHooks {
 /// Poison-tolerant std-Mutex lock (same discipline as `rclone_lock`).
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Persist failures are logged, never dropped silently: a read-only or full
+/// data dir must be diagnosable from the sidecar log — otherwise tasks look
+/// saved, then "vanish" after the next restart.
+fn warn_persist(what: &str, result: Result<(), String>) {
+    if let Err(error) = result {
+        eprintln!("[io.dbx.files] scheduler: failed to persist {what}: {error}");
+    }
 }
 
 pub struct Scheduler {
@@ -108,6 +122,22 @@ struct Inner {
 
 /// Snapshot read of one job's current record (see [`Inner::job_view`]).
 type JobView = Box<dyn Fn(&str) -> Option<transfers::TransferJob> + Send + Sync>;
+
+/// Removes the task's single-flight marker on every exit path — including a
+/// panic unwind, which a plain trailing `running.remove` misses and which
+/// would wedge the task behind "already has a run in progress" until the
+/// next restart. Send-safe across awaits: the lock is taken transiently
+/// inside [`Drop::drop`], never held over a poll/sleep.
+struct RunningGuard {
+    inner: Arc<Inner>,
+    task_id: String,
+}
+
+impl Drop for RunningGuard {
+    fn drop(&mut self) {
+        lock(&self.inner.running).remove(&self.task_id);
+    }
+}
 
 impl Scheduler {
     pub fn new(
@@ -215,6 +245,10 @@ impl Scheduler {
                 None
             };
         }
+        // runs.json load→settle→rewrite spans more than one record_run, so
+        // the store's persist lock is held across the whole sequence (same
+        // file-writer discipline as record_run's internal guard).
+        let _persist = store::persist_lock();
         let mut runs = self.inner.store.load_runs();
         let mut settled = false;
         for run in runs.iter_mut().filter(|run| run.status == "running") {
@@ -224,12 +258,13 @@ impl Scheduler {
             settled = true;
         }
         *lock(&self.inner.tasks) = tasks.clone();
-        let _ = self.inner.store.save_schedules(&tasks);
+        warn_persist("schedules.json", self.inner.store.save_schedules(&tasks));
         if settled {
             if let Ok(value) = serde_json::to_value(runs) {
                 let _ = self.inner.store.write_json_atomic("runs.json", &value);
             }
         }
+        drop(_persist);
     }
 
     async fn tick_loop(self: Arc<Self>) {
@@ -357,6 +392,15 @@ impl Scheduler {
             };
             let enabled = request.enabled.unwrap_or(task.enabled);
             let cron_changed = task.cron.trim() != request.cron.trim();
+            // A bisync pair that moved (paths/connections/kind) has no prior
+            // listing on the new pair — the resync stamp must reset with it,
+            // or every later run starts in plain mode and rclone rejects it
+            // for a missing listing until the user intervenes by hand.
+            let pair_changed = task.kind != request.kind
+                || task.source_connection_id != request.source_connection_id
+                || task.source_path != request.source_path
+                || task.target_connection_id != target_connection_id
+                || task.target_path != request.target_path;
             task.name = name;
             task.kind = request.kind;
             task.source_connection_id = request.source_connection_id;
@@ -367,6 +411,9 @@ impl Scheduler {
             if enabled != task.enabled || cron_changed {
                 task.next_run_at =
                     Self::initial_next_run(&task.cron, enabled, store::unix_millis_now());
+            }
+            if pair_changed {
+                task.bisync_resync_done = false;
             }
             task.enabled = enabled;
             task.options = request.options;
@@ -482,7 +529,7 @@ impl Scheduler {
         if scheduled {
             self.persist_tasks();
         }
-        let _ = self.inner.store.record_run(run.clone());
+        warn_persist("run record", self.inner.store.record_run(run.clone()));
         self.emit(
             "files/schedule/run",
             json!({ "run": serde_json::to_value(&run).unwrap_or(Value::Null) }),
@@ -505,26 +552,44 @@ impl Scheduler {
             None => {
                 eprintln!("[io.dbx.files] scheduler runtime unavailable: run of '{}' dropped", task.name);
                 lock(&self.inner.running).remove(&task.id);
+                // The claim already recorded this run as `running`; leaving
+                // it that way would keep it there until the next restart's
+                // hydrate settles it. Terminalize it here, matching the
+                // dropped run.
+                let mut failed = run;
+                failed.status = "failed".to_string();
+                failed.error = Some("scheduler runtime unavailable".to_string());
+                failed.finished_at = Some(store::unix_millis_now());
+                warn_persist("run record", self.inner.store.record_run(failed.clone()));
+                self.emit(
+                    "files/schedule/run",
+                    json!({ "run": serde_json::to_value(&failed).unwrap_or(Value::Null) }),
+                );
             }
         }
     }
 
     /// Drives one run end-to-end: pre-flight, job start, terminal poll,
-    /// post-run hooks, history/mirror/audit finalization.
+    /// post-run hooks, history/mirror/audit finalization. The
+    /// [`RunningGuard`] installed up front clears the single-flight marker
+    /// on every exit path, panic unwind included.
     async fn execute_run(self, task: ScheduleTask, mut run: RunRecord) {
+        let _running_guard = RunningGuard {
+            inner: Arc::clone(&self.inner),
+            task_id: task.id.clone(),
+        };
         // The gate is never closed; an Err here cannot happen and must not
         // lose the run record — bail with a failed record if it ever does.
         if self.inner.gate.acquire().await.is_err() {
             run.status = "failed".to_string();
             run.error = Some("scheduler run gate closed".to_string());
             run.finished_at = Some(store::unix_millis_now());
-            let _ = self.inner.store.record_run(run.clone());
-            lock(&self.inner.running).remove(&task.id);
+            warn_persist("run record", self.inner.store.record_run(run.clone()));
             return;
         }
         self.drive_run(&task, &mut run).await;
         run.finished_at = Some(store::unix_millis_now());
-        let _ = self.inner.store.record_run(run.clone());
+        warn_persist("run record", self.inner.store.record_run(run.clone()));
         {
             let mut tasks = lock(&self.inner.tasks);
             if let Some(task_row) = tasks.iter_mut().find(|row| row.id == task.id) {
@@ -550,7 +615,6 @@ impl Scheduler {
             result: result.to_string(),
             source: Some("scheduler".to_string()),
         });
-        lock(&self.inner.running).remove(&task.id);
     }
 
     async fn drive_run(&self, task: &ScheduleTask, run: &mut RunRecord) {
@@ -587,7 +651,7 @@ impl Scheduler {
             }
         };
         run.job_id = Some(job_id.clone());
-        let _ = self.inner.store.record_run(run.clone());
+        warn_persist("run record", self.inner.store.record_run(run.clone()));
         let (status, error, bytes) = self.await_job_terminal(&job_id).await;
         match status {
             transfers::JobStatus::Completed => {
@@ -636,7 +700,16 @@ impl Scheduler {
     /// Polls the shared jobs mirror until the job reaches a terminal state.
     /// Terminal entries persist in the mirror, so a vanished id means the
     /// engine lost it (rcd restart) — reported as a failure, never success.
+    ///
+    /// The poll is additionally bounded by [`MAX_RUN_DURATION`]: a job that
+    /// never terminates (backend black hole, half-dead rc) must not pin its
+    /// concurrency slot and the task's single-flight marker forever — two
+    /// such jobs used to starve the whole scheduler, and queued runs (no
+    /// `job_id` yet) could not even be canceled. The underlying transfer is
+    /// left running on purpose: it stays visible and cancellable in the
+    /// transfers panel (`files/transfer/cancel`).
     async fn await_job_terminal(&self, job_id: &str) -> (transfers::JobStatus, Option<String>, u64) {
+        let deadline = tokio::time::Instant::now() + MAX_RUN_DURATION;
         loop {
             tokio::time::sleep(self.inner.run_poll).await;
             let job = (lock(&self.inner.job_view))(job_id);
@@ -644,11 +717,35 @@ impl Scheduler {
                 Some(job) if job.status.is_terminal() => {
                     return (job.status, job.error.clone(), job.transferred_bytes);
                 }
-                Some(_) => continue,
+                Some(_) => {
+                    if tokio::time::Instant::now() >= deadline {
+                        return (
+                            transfers::JobStatus::Failed,
+                            Some(format!(
+                                "run exceeded its maximum duration ({MAX_RUN_DURATION:?}) and \
+                                 was released by the scheduler; the underlying transfer may \
+                                 still be running — cancel it from the transfers panel",
+                            )),
+                            0,
+                        );
+                    }
+                }
                 None => {
+                    // A record can vanish because the user removed it (or
+                    // cleared the panel) inside the poll window while it was
+                    // finishing — confirm once more after a poll beat before
+                    // declaring engine loss, so a run that actually landed is
+                    // not misfiled as failed.
+                    tokio::time::sleep(self.inner.run_poll).await;
+                    if (lock(&self.inner.job_view))(job_id).is_some() {
+                        continue;
+                    }
                     return (
                         transfers::JobStatus::Failed,
-                        Some("job record vanished from the engine (rcd restarted?)".to_string()),
+                        Some(
+                            "job record vanished from the engine (rcd restarted, or the run was removed from the transfers panel while finishing)"
+                                .to_string(),
+                        ),
                         0,
                     );
                 }
@@ -692,8 +789,17 @@ impl Scheduler {
             return Ok(());
         };
         let binding = self.inner.engine.binding(&task.target_connection_id)?;
-        let policy = crate::policy::PathPolicy::from_parts(&binding.root, binding.lock_to_root, false, true);
-        let backup_rel = crate::policy::PathPolicy::check_write(&policy, backup_dir)?.relative;
+        // Retention prunes real data, so the connection-level delete gate
+        // applies exactly as it does to a workbench delete — the flags used
+        // to be hard-coded permissive here, silently bypassing
+        // allow_delete=false connections.
+        let policy = crate::policy::PathPolicy::from_parts(
+            &binding.root,
+            binding.lock_to_root,
+            binding.read_only,
+            binding.allow_delete,
+        );
+        let backup_rel = crate::policy::PathPolicy::check_delete(&policy, backup_dir)?.relative;
         let client = self.inner.engine.client_for_binding(&binding).await?;
         let body = json!({
             "fs": rclone::call_fs(&binding),
@@ -725,7 +831,15 @@ impl Scheduler {
         cron_expr: &str,
         options: &model::ScheduleOptions,
     ) -> Result<(), String> {
-        cron::CronExpr::parse(cron_expr)?;
+        let expr = cron::CronExpr::parse(cron_expr)?;
+        // A cron that can never fire (`0 0 31 2 *`) would persist as an
+        // enabled task that silently never runs; reject it up front.
+        if expr.next_fire_millis(store::unix_millis_now()).is_none() {
+            return Err(
+                "cron expression never fires (no matching time within the search horizon)"
+                    .to_string(),
+            );
+        }
         let source = engine.binding(source_connection_id)?;
         let target = engine.binding(target_connection_id)?;
         match kind {
@@ -768,6 +882,15 @@ impl Scheduler {
         if options.retention_days.is_some() && options.backup_dir.as_deref().map(str::trim).filter(|value| !value.is_empty()).is_none() {
             return Err("retentionDays requires backupDir (there is nothing to prune without a versioned backup directory)".to_string());
         }
+        // Retention deletes from the backup dir, so a connection that forbids
+        // deletion can never satisfy the option (the runtime prune gate would
+        // fail every run — reject the combination here instead).
+        if options.retention_days.is_some() && !target.allow_delete {
+            return Err(
+                "Schedule target connection disallows deletes; retention pruning needs delete access"
+                    .to_string(),
+            );
+        }
         Ok(())
     }
 
@@ -782,7 +905,7 @@ impl Scheduler {
 
     fn persist_tasks(&self) {
         let tasks = lock(&self.inner.tasks).clone();
-        let _ = self.inner.store.save_schedules(&tasks);
+        warn_persist("schedules.json", self.inner.store.save_schedules(&tasks));
     }
 
     fn emit(&self, method: &str, params: Value) {
@@ -1097,6 +1220,84 @@ mod tests {
         assert_eq!(calls[0].mode.as_deref(), Some("resync"), "first ever run resyncs");
         assert_eq!(calls[1].mode.as_deref(), Some("run"), "later runs go plain");
         assert!(h.scheduler.list()[0].bisync_resync_done, "stamp persisted");
+    }
+
+    #[tokio::test]
+    async fn update_moving_the_bisync_pair_resets_the_resync_stamp() {
+        let h = harness();
+        let request = task_request("pair", ScheduleKind::Bisync, &protocol_path(h.src.path()), &protocol_path(h.dst.path()));
+        let task = h.scheduler.create(request).expect("create bisync");
+        h.scheduler.run_now(&task.id).expect("first run");
+        wait_for(|| {
+            h.scheduler
+                .history(Some(&task.id), 5)
+                .first()
+                .is_some_and(|run| run.status == "success")
+        })
+        .await;
+        assert!(h.scheduler.list()[0].bisync_resync_done, "stamp set by the first run");
+
+        // A rename must NOT reset the stamp (same pair, same listing).
+        let renamed = ScheduleUpdateRequest {
+            id: task.id.clone(),
+            name: "pair-renamed".to_string(),
+            kind: ScheduleKind::Bisync,
+            source_connection_id: rclone::LOCAL_CONNECTION_ID.to_string(),
+            source_path: protocol_path(h.src.path()),
+            target_connection_id: None,
+            target_path: protocol_path(h.dst.path()),
+            cron: "* * * * *".to_string(),
+            enabled: Some(true),
+            options: Default::default(),
+        };
+        h.scheduler.update(renamed).expect("rename update");
+        assert!(
+            h.scheduler.list()[0].bisync_resync_done,
+            "rename keeps the resync stamp"
+        );
+
+        // Moving the pair (target path) invalidates the old listing: the
+        // stamp must reset so the next run resyncs again — otherwise every
+        // later run dies on a missing listing until hand-held.
+        let moved = ScheduleUpdateRequest {
+            id: task.id.clone(),
+            name: "pair-renamed".to_string(),
+            kind: ScheduleKind::Bisync,
+            source_connection_id: rclone::LOCAL_CONNECTION_ID.to_string(),
+            source_path: protocol_path(h.src.path()),
+            target_connection_id: None,
+            target_path: format!("{}/moved-pair", protocol_path(h.dst.path())),
+            cron: "* * * * *".to_string(),
+            enabled: Some(true),
+            options: Default::default(),
+        };
+        h.scheduler.update(moved).expect("move update");
+        assert!(
+            !h.scheduler.list()[0].bisync_resync_done,
+            "moved pair resets the resync stamp"
+        );
+        // Key the wait on the run_now return value (the claim record): a
+        // status-only wait can be satisfied by the PREVIOUS run's success
+        // before the new run's future is ever polled.
+        let rerun = h.scheduler.run_now(&task.id).expect("run after move");
+        wait_for(|| {
+            h.scheduler
+                .history(Some(&task.id), 5)
+                .first()
+                .is_some_and(|run| run.run_id == rerun.run_id && run.status == "success")
+        })
+        .await;
+        let calls = h.bisync_calls.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            2,
+            "two bisync starts: the original run and the run on the moved pair"
+        );
+        assert_eq!(
+            calls[1].mode.as_deref(),
+            Some("resync"),
+            "the run on the moved pair resyncs again"
+        );
     }
 
     #[tokio::test]

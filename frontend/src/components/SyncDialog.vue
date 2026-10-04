@@ -71,12 +71,16 @@ const targetPath = ref(props.defaultTarget);
 const dryRun = ref(false);
 const bisyncResync = ref(false);
 // 首次运行（无状态）：resync 是唯一入口，直接勾上且不可取消。状态是弹窗
-// 打开后异步取回的（初始 null），prop 晚到必须用 watch 兜住。
+// 打开后异步取回的（初始 null），prop 晚到必须用 watch 兜住。自动勾上的
+// resync 只对「尚无状态」的路径对成立：用户在等待期改了路径、状态解析为
+// 已同步对时必须复位，否则确认会对不需要 resync 的对发起破坏性重建。
 if (props.kind === "bisync" && props.bisyncState === "new") bisyncResync.value = true;
 watch(
   () => props.bisyncState,
-  (state) => {
-    if (props.kind === "bisync" && state === "new") bisyncResync.value = true;
+  (state, previous) => {
+    if (props.kind !== "bisync") return;
+    if (state === "new" && previous !== "new") bisyncResync.value = true;
+    if (previous === "new" && state !== "new") bisyncResync.value = false;
   },
 );
 const include = ref("");

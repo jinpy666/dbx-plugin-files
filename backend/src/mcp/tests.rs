@@ -2002,6 +2002,51 @@ fn unknown_tool_suggests_variants_and_lists_discovery() {
     assert!(error.contains("files_scan_digest"), "{error}");
 }
 
+/// 对称性门（0.1.88 review 阻断项回归）：`tools/list` 宣传的每一个工具名
+/// 都必须被 `ALL_TOOL_NAMES` 认识——否则 stdio 会把宣传过的名字当
+/// "Unknown tool" 拒掉（修复前 schedule_* 正是这么死的，而旧 parity 测试
+/// 拿漂移后的清单验证它自己，永远抓不到）。schedule 家族另须在 stdio 面
+/// 给出显式 UNAVAILABLE（常驻调度器不在 stdio 会话运行），而非未知工具。
+#[test]
+fn tools_list_surface_matches_registry_and_schedule_stdio_is_unavailable() {
+    let mcp = mcp();
+    let listed: Vec<String> = mcp.stdio_tool_list()["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(listed.len(), ALL_TOOL_NAMES.len(), "listed={listed:?}");
+    for name in ALL_TOOL_NAMES {
+        assert!(listed.iter().any(|candidate| candidate == name), "{name} missing from stdio tools/list");
+    }
+    // 家族常量互为子集：单源数组装下了 UI UNAVAILABLE 面与 schedule 面。
+    for name in STDIO_UI_TOOLS.iter().chain(SCHEDULER_TOOLS.iter()) {
+        assert!(ALL_TOOL_NAMES.contains(name), "{name} not in ALL_TOOL_NAMES");
+    }
+    // schedule 家族在 stdio 分发面是 UNAVAILABLE，绝不是 Unknown tool。
+    let (server, _dir) = stdio_server();
+    let error = stdio_error(
+        &server,
+        "tools/call",
+        json!({ "name": "schedule_list", "arguments": {} }),
+    );
+    assert!(error.contains("UNAVAILABLE"), "{error}");
+    assert!(!error.contains("Unknown tool"), "{error}");
+    assert!(error.contains("schedule_list"), "{error}");
+    // tools/list 不给 schedule 工具写 connectionId/connection（会话态工具）。
+    let schedule = mcp.stdio_tool_list()["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "schedule_create")
+        .unwrap()
+        .clone();
+    let properties = schedule["inputSchema"]["properties"].as_object().unwrap();
+    assert!(!properties.contains_key("connectionId"), "{properties:?}");
+    assert!(!properties.contains_key("connection"), "{properties:?}");
+}
+
 #[test]
 fn unknown_intent_id_error_guides_caller() {
     let (server, _dir) = stdio_server();
