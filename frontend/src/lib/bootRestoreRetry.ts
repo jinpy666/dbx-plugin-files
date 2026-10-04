@@ -15,10 +15,20 @@ export const BOOT_RESTORE_RETRY_MAX = 12;
 export const BOOT_RESTORE_RETRY_DELAY_MS = 1000;
 
 /**
- * 决定 boot 恢复自愈的下一步。`attempt` 是已消耗的重试轮数（0 = 首轮）。
- * 决策保持纯函数，窗口边界与节奏可单测（ssh 同款收口）。
+ * 单轮重拉已经跑了这么久是真实超时/真拨号（files/list 操作超时默认 30s），
+ * 不是自愈能吸收的启动竞态——继续轮询只是把恢复页按在分钟级的骨架屏上
+ * （E2E 实证：存储停机时窗口被 12×30s 拉长），按 ssh
+ * OPEN_RETRY_FAST_FAIL_WINDOW_MS 同语义判失败。
  */
-export function decideBootRestoreRetry(options: { attempt: number }): BootRestoreRetryDecision {
+export const BOOT_RESTORE_FAST_FAIL_MS = 8000;
+
+/**
+ * 决定 boot 恢复自愈的下一步。`attempt` 是已消耗的重试轮数（0 = 首轮），
+ * `attemptMs` 是刚失败那轮重拉的墙钟时长。决策保持纯函数，窗口边界与
+ * 节奏可单测（ssh 同款收口）。
+ */
+export function decideBootRestoreRetry(options: { attempt: number; attemptMs?: number }): BootRestoreRetryDecision {
+  if ((options.attemptMs ?? 0) >= BOOT_RESTORE_FAST_FAIL_MS) return { kind: "fail" };
   if (options.attempt >= BOOT_RESTORE_RETRY_MAX) return { kind: "fail" };
   return { kind: "retry", attempt: options.attempt + 1, delayMs: BOOT_RESTORE_RETRY_DELAY_MS };
 }
