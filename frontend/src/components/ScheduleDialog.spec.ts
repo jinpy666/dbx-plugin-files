@@ -126,4 +126,44 @@ describe("ScheduleDialog", () => {
     await selects[0].setValue("c2"); // 切换源连接
     expect((selects[1].element as HTMLSelectElement).value).toBe("c2");
   });
+
+  it("blocks a same-connection same-path pair in bisync mode too", async () => {
+    const wrapper = mountDialog();
+    await wrapper.get('input[aria-label="scheduleNameLabel"]').setValue("task");
+    // 切到 bisync：同连接同路径会自配对，必须与 sync/copy 一样前置拦截。
+    const kinds = wrapper.findAll('input[name="schedule-kind"]');
+    await kinds[2].setValue();
+    await wrapper.get('input[aria-label="syncSourceLabel"]').setValue("/same");
+    await wrapper.get('input[aria-label="scheduleTargetLabel"]').setValue("/same");
+    expect(wrapper.text()).toContain("destMustDiffer");
+    expect((wrapper.get(".wb-dialog-primary").element as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("normalizes cleared and out-of-range numeric inputs instead of leaking them", async () => {
+    const wrapper = mountDialog();
+    await wrapper.get('input[aria-label="scheduleNameLabel"]').setValue("task");
+    await wrapper.get('input[aria-label="syncSourceLabel"]').setValue("/data");
+    await wrapper.get('input[aria-label="scheduleTargetLabel"]').setValue("/mirror");
+    await wrapper.get("details summary").trigger("click");
+    const advanced = wrapper.get("details");
+    const inputs = advanced.findAll("input");
+    // [2]=retentionDays、[3]=maxDelete（v-model.number 清空后回落为 ""）。
+    await inputs[2].setValue("");
+    await inputs[3].setValue("-3");
+    await wrapper.get(".wb-dialog-primary").trigger("click");
+    const [draft] = wrapper.emitted("confirm")![0] as unknown as Array<Record<string, unknown>>;
+    const options = draft.options as Record<string, unknown>;
+    // 清空与负数都按「未设置」处理，不再把 ""/-3 原样下发导致后端拒收。
+    expect(options.retentionDays).toBeUndefined();
+    expect(options.maxDelete).toBeUndefined();
+
+    // 有效小数向下取整、0 是合法的 maxDelete（禁删），不得被吞掉。
+    await inputs[2].setValue("7.9");
+    await inputs[3].setValue("0");
+    await wrapper.get(".wb-dialog-primary").trigger("click");
+    const [next] = wrapper.emitted("confirm")![1] as unknown as Array<Record<string, unknown>>;
+    const nextOptions = next.options as Record<string, unknown>;
+    expect(nextOptions.retentionDays).toBe(7);
+    expect(nextOptions.maxDelete).toBe(0);
+  });
 });

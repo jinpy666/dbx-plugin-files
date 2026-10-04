@@ -4900,6 +4900,21 @@ function onDocumentKeydown(event: KeyboardEvent) {
     if (!syncDialogBusy.value) closeSyncDialog();
     return;
   }
+  // 计划任务编辑弹窗同语义：保存请求在途不关闭。
+  if (scheduleDialogOpen.value) {
+    if (!scheduleBusy.value) scheduleDialogOpen.value = false;
+    return;
+  }
+  if (watchModifiedPrompt.value) {
+    // Esc = 放弃本次询问（与遮罩点击同语义），不替用户做上传决定。
+    void decideWatchModified("dismiss");
+    return;
+  }
+  // 计划任务删除确认（独立 ConfirmDialog 实例）：先于通用 confirm 收。
+  if (scheduleDeleteTarget.value) {
+    scheduleDeleteTarget.value = null;
+    return;
+  }
   if (customEditorOpen.value) {
     customEditorOpen.value = false;
     return;

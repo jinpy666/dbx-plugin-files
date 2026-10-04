@@ -91,8 +91,10 @@ const nextRunPreview = computed(() => {
   const next = nextRunAfter(cron.value);
   return next ? formatTime(next.toISOString()) : null;
 });
+// 源=目标（trim 后相等）对三种 kind 都无意义——bisync 会自配对，与
+// SyncDialog 的前置拦截保持同一语义，而不是等 rc 报错。
 const sameTarget = computed(
-  () => kind.value !== "bisync" && sourceConnectionId.value === targetConnectionId.value && sourcePath.value.trim() === targetPath.value.trim(),
+  () => sourceConnectionId.value === targetConnectionId.value && sourcePath.value.trim() === targetPath.value.trim(),
 );
 const canConfirm = computed(
   () =>
@@ -127,15 +129,24 @@ function confirm(): void {
     const list = text.split(",").map((entry) => entry.trim()).filter(Boolean);
     return list.length ? list : undefined;
   };
+  // v-model.number 在输入框清空时回落为字符串 ""，手输可能给出小数/负数；
+  // 后端字段是 Option<u64>/Option<u32>，这里统一归一：非有限非负整数按
+  // 「未设置」处理，而不是把脏值原样下发导致 serde 拒收、保存失败。
+  const numeric = (value: number | string | null | undefined): number | undefined => {
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+      return Math.floor(value);
+    }
+    return undefined;
+  };
   const options: ScheduleOptions = {
     dryRun: dryRun.value || undefined,
-    maxDelete: maxDelete.value ?? undefined,
+    maxDelete: numeric(maxDelete.value),
     include: patterns(include.value),
     exclude: patterns(exclude.value),
     backupDir: backupDir.value.trim() || undefined,
     suffix: suffix.value.trim() || undefined,
     verifyAfter: verifyAfter.value,
-    retentionDays: retentionDays.value ?? undefined,
+    retentionDays: numeric(retentionDays.value),
   };
   emit("confirm", {
     id: props.task?.id,

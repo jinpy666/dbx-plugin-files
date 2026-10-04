@@ -5,9 +5,8 @@
 // 断言其 ⊆ en 字典键集合（其余六语由 i18n.spec 的齐平测试保证同集合）。
 // 动态键（t(`transferKind.${job.kind}`) 这类模板串）不在扫描范围，
 // 由对应命名空间键 + 七语齐平测试兜底。
+// 源码经 vite 的 ?raw glob 内联（frontend 无 @types/node，不用 node:fs）。
 
-import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { messages } from "./i18n";
 
@@ -22,34 +21,26 @@ function flatten(prefix: string, value: unknown, out: Set<string>): Set<string> 
   return out;
 }
 
-function collectSourceFiles(dir: string, out: string[] = []): string[] {
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      collectSourceFiles(full, out);
-    } else if (/\.(ts|vue)$/.test(entry.name) && !entry.name.endsWith(".spec.ts")) {
-      out.push(full);
-    }
-  }
-  return out;
-}
+const sources = import.meta.glob("/src/**/*.{ts,vue}", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+}) as Record<string, string>;
 
 describe("every literal t() key exists in the dictionary", () => {
   it("source t(\"...\") literals ⊆ en key set", () => {
     const dictionary = flatten("", messages.en, new Set<string>());
-    const srcRoot = join(__dirname, "..");
-    const files = collectSourceFiles(srcRoot);
+    const files = Object.entries(sources).filter(([path]) => !path.endsWith(".spec.ts"));
     expect(files.length).toBeGreaterThan(50);
 
     const missing: string[] = [];
     // t('key') / t("key")，含模板属性里的 v-tip="t('key')"、:placeholder="t('key')"。
     const literal = /\bt\(\s*(['"])([^'"\n`]+)\1/g;
-    for (const file of files) {
-      const content = readFileSync(file, "utf8");
+    for (const [path, content] of files) {
       for (const match of content.matchAll(literal)) {
         const key = match[2];
         if (!dictionary.has(key)) {
-          missing.push(`${file.replace(srcRoot + "/", "")}:${key}`);
+          missing.push(`${path}:${key}`);
         }
       }
     }
