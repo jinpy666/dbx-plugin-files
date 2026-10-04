@@ -152,6 +152,11 @@ EXPECTED_TOOLS = [
     "files_delete",
     "files_purge",
     "files_sync",
+    "schedule_list",
+    "schedule_history",
+    "schedule_create",
+    "schedule_run_now",
+    "schedule_delete",
 ]
 
 WRITE_TOOLS = ["files_write", "files_mkdir", "files_rename", "files_delete", "files_purge"]
@@ -280,7 +285,7 @@ def m1_settings(client: SidecarClient) -> str:
     return "defaults 5s/16KiB; partial update; invalid refused"
 
 
-@scenario("M2", "mcp/tools lists the 13 files tools with schemas")
+@scenario("M2", "mcp/tools lists the 18 files tools with schemas")
 def m2_tools(client: SidecarClient) -> str:
     tools = client.request("mcp/tools")["tools"]
     names = [tool["name"] for tool in tools]
@@ -1099,7 +1104,7 @@ def s1_stdio_handshake(_client: SidecarClient) -> str:
         assert "Parse error" in message["error"]["message"], message
     finally:
         session.close()
-    return ("initialize 2024-11-05 + io.dbx.files; 13 tools + inline connection schema; "
+    return ("initialize 2024-11-05 + io.dbx.files; 18 tools + inline connection schema; "
             "unknown method -32601; invalid params -32602; tool error isError; parse error -32700")
 
 
@@ -1552,7 +1557,7 @@ def t5_pipelining(_client: SidecarClient) -> str:
 
         assert answers[ids["ping"]].get("result") == {}, answers[ids["ping"]]
         tools = answers[ids["tools"]]
-        assert len(tools["result"]["tools"]) == 13, str(tools)[:200]
+        assert len(tools["result"]["tools"]) == 18, str(tools)[:200]
         quick = answers[ids["quick"]]
         assert "paths" in json.loads(quick["result"]["content"][0]["text"]), quick
         write = answers[ids["write"]]
