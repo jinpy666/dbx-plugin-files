@@ -22,6 +22,13 @@ describe("friendlyError", () => {
     expect(friendlyError("Unknown connectionId 'x'; connect first", t)).toBe(
       "该连接尚未在后台建立:请稍候重试,或先在宿主应用中将其切换为当前连接。",
     );
+    // 宿主侧/dev-host 的同族 registry miss（#144 恢复自愈的暂时态）。
+    expect(friendlyError("Connection is not active; reopen it from DBX", t)).toBe(
+      "该连接尚未在后台建立:请稍候重试,或先在宿主应用中将其切换为当前连接。",
+    );
+    expect(friendlyError("Connection not found", t)).toBe(
+      "该连接尚未在后台建立:请稍候重试,或先在宿主应用中将其切换为当前连接。",
+    );
   });
 
   it("keeps unknown messages verbatim (fallback to raw)", () => {
@@ -57,6 +64,14 @@ describe("isConnectionNotReadyMessage", () => {
     expect(isConnectionNotReadyMessage("Connection is not connected (rclone engine)")).toBe(true);
     expect(isConnectionNotReadyMessage("dial tcp: connection refused")).toBe(false);
     expect(isConnectionNotReadyMessage("NotFound: /x")).toBe(false);
+  });
+
+  it("detects host-side inactive/not-found registry misses as transient", () => {
+    // ssh 引擎同款 + dev-host 文案：boot 恢复自愈窗口必须把它们当暂时态。
+    expect(isConnectionNotReadyMessage("Connection is not active; reopen it from DBX")).toBe(true);
+    expect(isConnectionNotReadyMessage("connection is not active")).toBe(true);
+    expect(isConnectionNotReadyMessage("Connection not found")).toBe(true);
+    expect(isConnectionNotReadyMessage("Plugin backend is not running")).toBe(false);
   });
 });
 
