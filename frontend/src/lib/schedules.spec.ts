@@ -95,4 +95,15 @@ describe("run helpers", () => {
     expect(lastFinishedRun(runs, "t1")?.runId).toBe("r2");
     expect(lastFinishedRun(runs, "t2")).toBeUndefined();
   });
+
+  it("lastFinishedRun keys on startedAt when arrival order betrays it", () => {
+    // 乱序 upsert（迟到帧/并发终态）下不把正确性押在数组顺序上：按
+    // startedAt 取最大，同刻数缺省按先到。
+    const unordered: ScheduleRun[] = [
+      { runId: "new", taskId: "t9", trigger: "schedule", status: "success", bytes: 5, startedAt: 900 },
+      { runId: "old", taskId: "t9", trigger: "schedule", status: "failed", bytes: 0, startedAt: 100 },
+    ];
+    expect(lastFinishedRun(unordered, "t9")?.runId).toBe("new");
+    expect(lastFinishedRun([...unordered].reverse(), "t9")?.runId).toBe("new");
+  });
 });

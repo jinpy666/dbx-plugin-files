@@ -66,6 +66,38 @@ def check_backend_method_parity() -> int:
     return len(golden)
 
 
+# 连接未就绪家族错误串是 #144 自愈链路的跨语言契约：Rust 侧产出与 TS 侧
+# friendlyError/isConnectionNotReadyMessage 的正则必须同步演进——任一侧单独
+# 改名（哪怕是改善措辞），自愈静默退化为手动重试且无测试报警（组件测试用
+# mock 注入字符串，拦不住真实后端文案漂移）。这里双侧 grep 钉住同批 token。
+ERROR_CONTRACT_PAIRS = [
+    # (Rust 产出字面量, friendlyError.ts 侧正则片段, 说明)
+    ("Connection is not connected", "connection is not connected", "engine registry miss"),
+    ("Unknown connectionId", "unknown connectionid", "stdio/MCP routing miss"),
+    ("rc transport error", "rc transport error", "rcd 冷启动/被杀 respawn 的传输失败形状"),
+]
+
+
+def check_error_contract_parity() -> None:
+    """自愈判定所依赖的错误串在 Rust 产出侧与 TS 识别侧必须同时存在。"""
+    rust_text = ""
+    for relative in ("backend/src/rclone/mod.rs", "backend/src/mcp/stdio.rs", "backend/src/rclone/rc.rs"):
+        rust_text += (ROOT / relative).read_text(encoding="utf-8")
+    ts_text = (ROOT / "frontend/src/lib/friendlyError.ts").read_text(encoding="utf-8")
+    for rust_literal, ts_fragment, what in ERROR_CONTRACT_PAIRS:
+        if rust_literal not in rust_text:
+            fail(
+                f"error contract: Rust literal {rust_literal!r} ({what}) no longer produced — "
+                "update frontend/src/lib/friendlyError.ts in the same change or the heal chain "
+                "(connectionNotReady / transport pill) silently degrades"
+            )
+        if ts_fragment.lower() not in ts_text.lower():
+            fail(
+                f"error contract: friendlyError.ts no longer matches {ts_fragment!r} ({what}) — "
+                f"the Rust side still produces {rust_literal!r}; keep both sides in sync"
+            )
+
+
 def main() -> int:
     manifest_path = ROOT / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -112,9 +144,11 @@ def main() -> int:
             fail(f"missing required path: {relative}")
 
     method_count = check_backend_method_parity()
+    check_error_contract_parity()
 
     print(f"PASS repository identity: {manifest['id']} {version}; standalone paths and vendored SDK present")
     print(f"PASS backend method parity: {method_count} dispatch arms == GOLDEN_BACKEND_METHODS")
+    print(f"PASS error contract parity: {len(ERROR_CONTRACT_PAIRS)} heal-chain error literals pinned on both sides")
     return 0
 
 
