@@ -40,9 +40,11 @@ export function friendlyError(message: string, t: Translate): string {
   return raw;
 }
 
-/** 传输/网络层失败（连接 pill 置 disconnected 的唯一依据，P2-3）。 */
+/** 传输/网络层失败（连接 pill 置 disconnected 的唯一依据，P2-3）。"rc
+ * transport error"/"connection closed" 是 rclone rcd 冷启动/被杀 respawn
+ * 期的失败形状（E2E 实证：web 容器重启后恢复页首拉撞 rcd 重启窗口）。 */
 export function isTransportFailure(message: string): boolean {
-  return /connection refused|no such host|network error|connection reset|broken pipe|unreachable|i\/o timeout|timed? ?out|timeout|deadline exceeded|econn(aborted|refused|reset)/i.test(
+  return /connection refused|no such host|network error|connection reset|broken pipe|unreachable|i\/o timeout|timed? ?out|timeout|deadline exceeded|econn(aborted|refused|reset)|rc transport error|connection closed/i.test(
     String(message ?? ""),
   );
 }

@@ -1902,6 +1902,16 @@ async function beginPaneConnectionSwitch(side: PaneSide, previous: string, reloa
 let bootHealActive = false;
 
 /**
+ * boot 恢复自愈窗口继续的条件：连接未注册类（registry miss，宿主 connect
+ * 重放晚到）与传输层失败（rcd 冷启动/被杀后的 respawn 窗口，"rc transport
+ * error"/"connection closed"——E2E 实证恢复页首拉的第二种暂时态）都可能在
+ * 数秒内自愈；其余（权限/不存在/认证类）重试无意义，立即放弃。
+ */
+function isBootRestoreTransient(message: string): boolean {
+  return isConnectionNotReadyMessage(message) || isTransportFailure(message);
+}
+
+/**
  * boot 恢复（页面刷新/宿主重启后宿主恢复的工作台 tab）首拉失败的有界自愈
  * 窗口（#144 同源，对标 ssh connectRetry 的 BOOT_RESTORE 窗位）：web/docker
  * 部署下宿主对恢复 tab 的 connect 重放（凭据重推）可能晚于恢复页首个
@@ -1926,7 +1936,7 @@ async function healBootRestore(side: PaneSide, cause: unknown) {
         ? loadDirectory(paneDirPath("left")).then(() => true as const, (reloadCause: unknown) => ({ ok: false as const, cause: reloadCause }))
         : loadRightDirectory(paneDirPath("right")).then(() => true as const, (reloadCause: unknown) => ({ ok: false as const, cause: reloadCause })));
       if (outcome === true) return;
-      if (!isConnectionNotReadyMessage(errorMessage(outcome.cause))) return;
+      if (!isBootRestoreTransient(errorMessage(outcome.cause))) return;
       await new Promise((resolve) => setTimeout(resolve, decision.delayMs));
     }
   } finally {

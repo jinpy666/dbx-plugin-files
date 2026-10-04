@@ -240,4 +240,39 @@ describe("connection-not-ready 自愈入口（issue #68）", () => {
     expect(bridge.reopenCalls).toBe(0);
     expect(banner().exists()).toBe(false);
   });
+
+  it("boot restore window also absorbs rcd cold-start transport errors", async () => {
+    // E2E 实证（#144 第二形态）：容器重启后恢复页首拉撞 rclone rcd respawn
+    // 窗口（"rc transport error … connection closed"）。该形态同样数秒内
+    // 自愈——窗口轮询把宿主补连/重拉跑过去后成功。
+    const bridged = window.dbxPlugin!;
+    const originalInvoke = bridged.invoke.bind(bridged);
+    let failedCalls = 4;
+    Object.defineProperty(window, "dbxPlugin", {
+      value: {
+        ...bridged,
+        invoke: (method: string, params?: Record<string, unknown>) => {
+          if (
+            bridge.registered &&
+            failedCalls > 0 &&
+            method.startsWith("files/") &&
+            !method.startsWith("files/transfers") &&
+            (params as { connectionId?: unknown } | undefined)?.connectionId === "mock-conn"
+          ) {
+            failedCalls -= 1;
+            return Promise.reject(new Error("rc transport error: error sending request for url (http://127.0.0.1:44235/config/create) [connection closed before message completed]"));
+          }
+          return originalInvoke(method, params);
+        },
+      },
+      configurable: true,
+    });
+    mountWorkbench();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await nextTick();
+
+    // 前 4 次 listing 失败（rcd 冷启动），窗口轮询第 5 次成功，横幅清空。
+    expect(failedCalls).toBe(0);
+    expect(banner().exists()).toBe(false);
+  });
 });
