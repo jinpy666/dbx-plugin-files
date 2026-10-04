@@ -118,6 +118,9 @@ interface DbxPluginApi {
   saveFile?(options: { fileName: string; contentType?: string }, data: Uint8Array | ArrayBuffer | string): Promise<{ path: string } | null>;
   readonly workbenchState?: { set(state: Record<string, unknown>): Promise<void> };
   readonly clipboard?: { readText(): Promise<string>; writeText(text: string): Promise<void> };
+  /** 宿主为指定连接重放完整 connect 生命周期（Host API 沙箱桥内置，内部即
+   * host.reopenConnection 请求；旧宿主缺该方法时回退 request 路由）。 */
+  reopenConnection?(connectionId: string): Promise<void>;
 }
 
 interface Window {
