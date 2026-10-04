@@ -1182,7 +1182,10 @@ function handleEvent(event: DbxPluginEvent) {
   }
   if (event.method === "files/schedule/run") {
     const payload = event.params as { run?: ScheduleRun };
-    if (payload.run) upsertScheduleRun(payload.run);
+    if (payload.run) {
+      upsertScheduleRun(payload.run);
+      surfaceScheduleRunOutcome(payload.run);
+    }
     return;
   }
   if (event.method === "files/transfer/progress") {
@@ -3520,6 +3523,25 @@ function upsertScheduleRun(run: ScheduleRun): void {
   else scheduleRuns.value = [run, ...scheduleRuns.value];
 }
 
+// 计划任务终态可见性（0.1.89 review）：failed/skipped 只落 dock 页签等于
+// 静默失败——对备份功能是最危险的形态（用户以为有备份）。与传输失败同
+// 语义升全局错误条；同一任务的连续同状态失败只提醒一次（成功即清），
+// 防止分钟级 cron 在断连时刷屏。
+const scheduleRunNoticeSeen = new Map<string, string>();
+function surfaceScheduleRunOutcome(run: ScheduleRun): void {
+  if (run.status !== "failed" && run.status !== "skipped") {
+    scheduleRunNoticeSeen.delete(run.taskId);
+    return;
+  }
+  if (scheduleRunNoticeSeen.get(run.taskId) === run.status) return;
+  scheduleRunNoticeSeen.set(run.taskId, run.status);
+  const name = scheduleTasks.value.find((task) => task.id === run.taskId)?.name ?? run.taskId;
+  showError({
+    key: run.status === "failed" ? "scheduleRunFailedNotice" : "scheduleRunSkippedNotice",
+    values: { name, error: run.error ?? "" },
+  });
+}
+
 function openScheduleCreate(): void {
   scheduleDialogTask.value = null;
   scheduleDialogOpen.value = true;
@@ -3606,9 +3628,22 @@ async function onScheduleToggle(task: ScheduleTask, enabled: boolean): Promise<v
 
 // dockOpen 一并依赖（0.1.89 review）：schedules 页签开着时关掉 dock 再重
 // 开，dockTab 值不变、单看它的 watch 不触发，面板会展示陈旧列表——事件
-// 通道丢失/旧宿主不吃影子时没有兜底，重开即重拉。
-watch([dockOpen, dockTab], ([, tab]) => {
-  if (dockOpen.value && tab === "schedules") void refreshSchedules();
+// 通道丢失/旧宿主不吃影子时没有兜底，重开即重拉。另加低频兜底轮询：
+// sidecar 的 schedule 事件槽只存最近一个请求方，web/docker 多页签共享
+// sidecar 时本页签收不到推送会静默陈旧（60s 成本可忽略）。
+let schedulesFallbackTimer: ReturnType<typeof setInterval> | null = null;
+watch([dockOpen, dockTab], ([open, tab]) => {
+  if (open && tab === "schedules") {
+    void refreshSchedules();
+    if (schedulesFallbackTimer === null) {
+      schedulesFallbackTimer = setInterval(() => void refreshSchedules(), 60_000);
+    }
+    return;
+  }
+  if (schedulesFallbackTimer !== null) {
+    clearInterval(schedulesFallbackTimer);
+    schedulesFallbackTimer = null;
+  }
 });
 async function clearTransferHistory() {
   try {
@@ -5029,6 +5064,11 @@ onBeforeUnmount(() => {
   window.clearTimeout(noticeTimer);
   window.clearTimeout(errorTimer);
   window.clearInterval(pollTimer);
+  // schedules 页签兜底轮询（EmitterSlot 单槽的多页签兜底）随卸载停止。
+  if (schedulesFallbackTimer !== null) {
+    clearInterval(schedulesFallbackTimer);
+    schedulesFallbackTimer = null;
+  }
   // 在途流式列表会话：卸载时 best-effort 取消，sidecar 不再白做枚举。
   abandonStream("left");
   abandonStream("right");

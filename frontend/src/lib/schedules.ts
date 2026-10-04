@@ -252,7 +252,14 @@ export function isTaskRunning(runs: readonly ScheduleRun[], taskId: string): boo
   return runs.some((run) => run.taskId === taskId && run.status === "running");
 }
 
-/** 面板结果徽章用的运行状态归一：任务行取最近一笔终态。 */
+/** 面板结果徽章用的运行状态归一：任务行取最近一笔终态。按 startedAt 取
+ * 最大而非依赖数组顺序——history 契约是新在前，但自防御不把正确性押在
+ * 调用方维持顺序上（乱序 upsert 时 find 取错会让徽章显示旧结果）。 */
 export function lastFinishedRun(runs: readonly ScheduleRun[], taskId: string): ScheduleRun | undefined {
-  return runs.find((run) => run.taskId === taskId && run.status !== "running");
+  return runs
+    .filter((run) => run.taskId === taskId && run.status !== "running")
+    .reduce<ScheduleRun | undefined>(
+      (latest, run) => (latest === undefined || (run.startedAt ?? 0) > (latest.startedAt ?? 0) ? run : latest),
+      undefined,
+    );
 }
