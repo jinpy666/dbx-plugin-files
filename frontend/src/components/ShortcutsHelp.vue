@@ -2,7 +2,7 @@
 // 快捷键速查弹层（parity-tools）：汇总文件浏览器全部键盘快捷键，按
 // 浏览/选择/操作分组。`?` 触发（App 全局 keydown）、Esc/遮罩/关闭钮关闭；
 // 焦点陷阱沿用 ConfirmDialog 的 trapTabKey 方案。
-import { nextTick, onMounted, ref } from "vue";
+import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { X } from "@lucide/vue";
 import { trapTabKey } from "../lib/a11y";
 
@@ -64,9 +64,19 @@ function onKeydown(event: KeyboardEvent) {
   if (event.key === "Tab") trapTabKey(event, overlayEl.value);
 }
 
+// 焦点约定（ConfirmDialog/ScheduleDialog 同款，0.1.89 review）：打开前记
+// 触发元素，关闭（Esc/遮罩/关闭钮）后归还——否则焦点落 body。
+let returnFocusTo: HTMLElement | null = null;
+
 onMounted(async () => {
+  returnFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   await nextTick();
   overlayEl.value?.focus();
+});
+
+onBeforeUnmount(() => {
+  returnFocusTo?.focus();
+  returnFocusTo = null;
 });
 </script>
 

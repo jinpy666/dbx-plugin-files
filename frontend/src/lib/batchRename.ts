@@ -1,6 +1,7 @@
 // 批量重命名计划计算（纯函数，BatchRenameDrawer 消费/单测直测）。
 // 变换次序：查找替换（普通/正则/忽略大小写）→ 前缀 → 后缀 → 序号后缀（-001 式）。
 
+import { nameCollisionKey } from "./nameCollision";
 import type { FileEntry } from "./api";
 
 export interface RenamePlanOptions {
@@ -75,11 +76,15 @@ export function transformName(name: string, options: RenamePlanOptions, sequence
  * - 新名为空 → empty；
  * - 与另一行的计划名称重复（按计划顺序先到先得）→ duplicate；
  * - 目录中已存在同名项（对「选中集 + 目录全名」预检，名称有变化才判）→ exists。
+ * 重复/已存在判定按 nameCollisionKey 归一化：大小写不敏感目标上把
+ * `report.pdf` 改成 `Report.PDF` 是覆盖已有文件，必须拦下。
  */
 export function buildRenamePlan(entries: readonly FileEntry[], options: RenamePlanOptions, siblingNames: readonly string[] = []): RenamePlan {
   const invalidRegex = Boolean(options.regex && options.find && !validRegex(options.find));
   const plannedNames = new Set<string>();
-  const existingNames = new Set([...entries.map((entry) => entry.name), ...siblingNames]);
+  const existingNames = new Set(
+    [...entries.map((entry) => entry.name), ...siblingNames].map(nameCollisionKey),
+  );
   const rows: RenamePlanRow[] = [];
   let applicable = 0;
   let sequence = isFiniteInteger(Math.trunc(options.numberingStart)) ? Math.trunc(options.numberingStart) : 0;
@@ -89,11 +94,12 @@ export function buildRenamePlan(entries: readonly FileEntry[], options: RenamePl
     const changed = newName !== entry.name;
     let error: RenamePlanError = "";
     if (!invalidRegex) {
+      const newKey = nameCollisionKey(newName);
       if (!newName) error = "batchRenameErrorEmpty";
-      else if (plannedNames.has(newName)) error = "batchRenameErrorDuplicate";
-      else if (changed && existingNames.has(newName)) error = "batchRenameErrorExists";
+      else if (plannedNames.has(newKey)) error = "batchRenameErrorDuplicate";
+      else if (changed && existingNames.has(newKey)) error = "batchRenameErrorExists";
+      if (!error) plannedNames.add(newKey);
     }
-    if (!error) plannedNames.add(newName);
     if (changed && !error) applicable += 1;
     rows.push({ entry, oldName: entry.name, newName, changed, error });
   }

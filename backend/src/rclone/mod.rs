@@ -254,7 +254,18 @@ impl RcloneEngine {
             .client_for(&key, env.as_ref())
             .await?;
         if respawned {
-            self.replay_group_registrations(&client, &key).await?;
+            // Replay 失败必须让组回炉（0.1.89 review H1）：新 handle 已在
+            // supervisor 表里，失败即返回会让「活 rcd + 未注册 remote」的组
+            // 永久短路 respawn/replay 路径——整组连接持续 unknown remote，
+            // 直到用户手动重连或 rcd 再次崩溃。shutdown 后下次调用重新走
+            // spawn → 健康检查 → replay 的完整链路，失败可自愈。
+            if let Err(error) = self.replay_group_registrations(&client, &key).await {
+                self.supervisor.lock().await.shutdown_group(&key);
+                return Err(format!(
+                    "rcd group '{key}' respawned but replaying its connections failed ({error}); \
+                     group reset — the next call respawns and replays again"
+                ));
+            }
         }
         Ok(client)
     }
@@ -363,7 +374,14 @@ impl RcloneEngine {
             .client_for(&key, env.as_ref())
             .await?;
         if respawned {
-            self.replay_group_registrations(&client, &key).await?;
+            // 与 client_for_binding 同口径：失败回炉，下次调用重走完整链路。
+            if let Err(error) = self.replay_group_registrations(&client, &key).await {
+                self.supervisor.lock().await.shutdown_group(&key);
+                return Err(format!(
+                    "rcd group '{key}' respawned but replaying its connections failed ({error}); \
+                     group reset — the next call respawns and replays again"
+                ));
+            }
         }
         Ok(client)
     }
@@ -527,7 +545,10 @@ impl RcloneEngine {
             };
             if respawned {
                 if let Err(error) = self.replay_group_registrations(&client, &route_key).await {
-                    eprintln!("rclone keepalive: {error}");
+                    // 与 client_for_binding 同口径：replay 失败的活组会永久
+                    // 短路 respawn/replay 路径，回炉让下次 sweep 重试。
+                    self.supervisor.lock().await.shutdown_group(&route_key);
+                    eprintln!("rclone keepalive: {error} (group '{route_key}' reset for a fresh respawn)");
                 }
             }
         }

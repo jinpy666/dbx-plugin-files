@@ -334,6 +334,9 @@ async function loadViaRead(resolution: PreviewResolution) {
 function finishChunkPreview(resolution: PreviewResolution) {
   chunkActive.value = false;
   const blob = new Blob(parts as BlobPart[], { type: resolution.mime ?? "application/octet-stream" });
+  // 成功收口后释放分片（0.1.89 review）：Blob 已自持数据，parts 继续被模块
+  // 级变量持有等于双倍内存（256MiB 文件峰值 ~512MiB）；失败续传路径不受影响。
+  parts = [];
   if (resolution.previewStrategy === "image") {
     mode.value = "image";
     if (typeof URL !== "undefined" && typeof URL.createObjectURL === "function") {
@@ -366,10 +369,13 @@ async function resumeChunkLoad() {
   chunkCancelRequested.value = false;
   chunkActive.value = true;
   loading.value = true;
+  const token = loadToken;
   try {
     await runChunkLoop(resolution.value, Math.min(loadedBytes.value, totalBytes.value), loadToken);
   } finally {
-    loading.value = false;
+    // 续传在途时用户切换文件：新 load() 拿走新 token，旧续传不再熄灭新文件
+    // 的 loading 骨架（中间态闪烁，L7）。
+    if (token === loadToken) loading.value = false;
   }
 }
 

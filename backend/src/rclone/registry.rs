@@ -730,8 +730,11 @@ pub async fn test_connection(
 ) -> Result<(), String> {
     let (backend_type, parameters, obscure) = params_for(connection)?;
     // Distinct from connect()'s remote so a test never clobbers a live
-    // connection registered under the same connection id.
-    let name = format!("{}_test", remote_name(&connection.id));
+    // connection registered under the same connection id. 掺每次调用的随机
+    // 段（0.1.89 review）：同名并发测试（UI 双击 / UI+MCP 并行）此前共享
+    // `{name}_test`，A 的 config_delete 会拆掉 B 刚建的远端，B 收到假阴性。
+    let test_suffix = uuid::Uuid::new_v4().simple().to_string();
+    let name = format!("{}_test_{}", remote_name(&connection.id), &test_suffix[..8]);
     // roots travel inside the fs string (see module docs); empty fs roots
     // must still be absolute for the local backend. Bucket-based protocols
     // get the bucket field folded in front of the root (issue #53).
@@ -864,9 +867,18 @@ pub async fn disconnect(
 ///
 /// Process-local by design: rclone remotes live in rcd's per-process temp
 /// config, so the registry dies with the sidecar exactly like the remotes do.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Registry {
     entries: Mutex<HashMap<String, RegistryEntry>>,
+}
+
+impl std::fmt::Debug for Registry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // entries 的 binding.proxy / registration.parameters 均可能内嵌
+        // 凭据：只报条数，不展开。
+        let count = self.entries.lock().map(|entries| entries.len()).unwrap_or(0);
+        f.debug_struct("Registry").field("entries", &count).finish()
+    }
 }
 
 /// The exact `config/create` inputs for one registered remote, kept so a
@@ -875,12 +887,24 @@ pub struct Registry {
 /// embed credentials — rclone itself persists them in rcd's 0600 temp
 /// config, so holding them in sidecar memory is the same trust level.
 /// Never written to logs, events, or any persisted output.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RemoteRegistration {
     pub name: String,
     pub backend_type: String,
     pub parameters: Value,
     pub obscure: bool,
+}
+
+impl std::fmt::Debug for RemoteRegistration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // parameters 可能内嵌凭据（doc 明令不入日志）：Debug 一律脱敏。
+        f.debug_struct("RemoteRegistration")
+            .field("name", &self.name)
+            .field("backend_type", &self.backend_type)
+            .field("parameters", &"[redacted]")
+            .field("obscure", &self.obscure)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
