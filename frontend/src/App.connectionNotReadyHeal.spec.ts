@@ -275,4 +275,30 @@ describe("connection-not-ready 自愈入口（issue #68）", () => {
     expect(failedCalls).toBe(0);
     expect(banner().exists()).toBe(false);
   });
+
+  it("prefers the direct reopenConnection bridge over the legacy request route", async () => {
+    // 新宿主（Host API 沙箱桥内置 reopenConnection）：直连方法优先，不再走
+    // request 路由（对标 ssh requestHostReopenConnection）。
+    bridge.registered = false;
+    const bridged = window.dbxPlugin!;
+    const directCalls: string[] = [];
+    Object.defineProperty(window, "dbxPlugin", {
+      value: {
+        ...bridged,
+        reopenConnection: (id: string) => {
+          directCalls.push(id);
+          bridge.registered = true;
+          return Promise.resolve();
+        },
+      },
+      configurable: true,
+    });
+    mountWorkbench();
+    await settle();
+
+    // 自愈走直连方法且只调一次；request 路由的 host.reopenConnection 未被调用。
+    expect(directCalls).toEqual(["mock-conn"]);
+    expect(bridge.reopenCalls).toBe(0);
+    expect(banner().exists()).toBe(false);
+  });
 });

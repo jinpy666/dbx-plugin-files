@@ -1895,6 +1895,13 @@ async function requestHostConnectionReopen(id: string): Promise<boolean> {
   const resolved = !id || id === LOCAL_CONNECTION_ID ? connectionId.value : id;
   if (!resolved || resolved === LOCAL_CONNECTION_ID) return false;
   try {
+    // 直连方法优先（Host API 沙箱桥内置 reopenConnection，内部即
+    // host.reopenConnection，对标 ssh requestHostReopenConnection）；
+    // 旧宿主缺该方法时回退 request 路由，仍缺则由 isHostMethodMissing 兜底。
+    if (window.dbxPlugin?.reopenConnection) {
+      await window.dbxPlugin.reopenConnection(resolved);
+      return true;
+    }
     await window.dbxPlugin?.request?.("host.reopenConnection", { connectionId: resolved });
     return true;
   } catch (cause) {
