@@ -119,6 +119,10 @@ impl ScheduleTask {
             transfers: options.transfers,
             checkers: options.checkers,
             retries: options.retries,
+            // 通用 Scheduler 任务旋钮：计划任务 UI 暂不暴露，保持缺省。
+            checksum: None,
+            ignore_existing: None,
+            ignore_times: None,
         }
     }
 

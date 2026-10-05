@@ -1403,6 +1403,227 @@
       "label": "Files Workbench",
       "description": "Dual-pane browsing of local and remote storage: copy, move, and drag files between panes, with directory sync and zip archives in the same view.",
       "icon": "assets/plugin.svg"
+    },
+    {
+      "type": "task-provider",
+      "id": "io.dbx.files.tasks",
+      "label": "Files Tasks",
+      "connection_providers": ["io.dbx.files.connection"],
+      "capabilities": ["run", "cancel", "logs", "progress", "artifacts"],
+      "triggers": [
+        {
+          "id": "sync",
+          "label": "Directory sync",
+          "mode": "run",
+          "risk": "high",
+          "fields": [
+            {
+              "key": "source_path",
+              "label": "Source path",
+              "type": "text",
+              "binding": "config",
+              "required": true,
+              "default": "",
+              "placeholder": "/data",
+              "description": "Directory to sync from, on the source storage connection."
+            },
+            {
+              "key": "destination_path",
+              "label": "Destination path",
+              "type": "text",
+              "binding": "config",
+              "required": true,
+              "default": "",
+              "placeholder": "/backup/data",
+              "description": "Directory to sync into, on the destination storage connection."
+            },
+            {
+              "key": "source_connection_id",
+              "label": "Source connection id",
+              "type": "text",
+              "binding": "config",
+              "default": "",
+              "placeholder": "(task connection)",
+              "description": "Storage connection id of the source; leave empty to use the connection this task is bound to."
+            },
+            {
+              "key": "destination_connection_id",
+              "label": "Destination connection id",
+              "type": "text",
+              "binding": "config",
+              "default": "",
+              "placeholder": "(source connection)",
+              "description": "Storage connection id of the destination; leave empty to use the source connection. Both sides must share one storage engine instance (proxy group)."
+            },
+            {
+              "key": "delete_extra",
+              "label": "Delete extra destination files",
+              "type": "boolean",
+              "binding": "config",
+              "default": true,
+              "description": "Mirror semantics: destination files missing at the source are deleted (rclone sync). Turn off to keep them (rclone copy semantics)."
+            },
+            {
+              "key": "recursive",
+              "label": "Recursive",
+              "type": "boolean",
+              "binding": "config",
+              "default": true,
+              "description": "Include subdirectories. When off, only the top-level files of the source directory travel."
+            },
+            {
+              "key": "overwrite",
+              "label": "Overwrite changed files",
+              "type": "boolean",
+              "binding": "config",
+              "default": true,
+              "description": "Replace destination files that differ from the source. When off, existing destination files are never touched (rclone --ignore-existing)."
+            },
+            {
+              "key": "checksum",
+              "label": "Compare by checksum",
+              "type": "boolean",
+              "binding": "config",
+              "default": false,
+              "description": "Decide changes by file hash instead of size and modification time (rclone --checksum); slower, but catches edits with preserved timestamps."
+            },
+            {
+              "key": "resume",
+              "label": "Resume interrupted runs",
+              "type": "boolean",
+              "binding": "config",
+              "default": true,
+              "description": "Skip files already present at the destination with a matching size/checksum (rclone's delta check), so an interrupted run continues where it stopped. When off, every file is re-transferred (rclone --ignore-times)."
+            },
+            {
+              "key": "concurrency",
+              "label": "Parallel transfers",
+              "type": "number",
+              "binding": "config",
+              "default": 4,
+              "description": "Files transferred in parallel (rclone --transfers, 1-32)."
+            },
+            {
+              "key": "dry_run",
+              "label": "Dry run",
+              "type": "boolean",
+              "binding": "config",
+              "default": false,
+              "description": "Compare only: report what would be copied, overwritten or deleted without writing anything."
+            }
+          ]
+        },
+        {
+          "id": "copy",
+          "label": "Copy",
+          "mode": "run",
+          "risk": "medium",
+          "fields": [
+            {
+              "key": "mode",
+              "label": "What to copy",
+              "type": "select",
+              "binding": "config",
+              "default": "file",
+              "options": [
+                { "label": "Single file", "value": "file" },
+                { "label": "Directory", "value": "directory" }
+              ],
+              "description": "Copy one file (destination path includes the file name) or a whole directory tree (server-side, recursive)."
+            },
+            {
+              "key": "source_path",
+              "label": "Source path",
+              "type": "text",
+              "binding": "config",
+              "required": true,
+              "default": "",
+              "placeholder": "/data/report.pdf or /data",
+              "description": "File or directory to copy from, on the source storage connection."
+            },
+            {
+              "key": "destination_path",
+              "label": "Destination path",
+              "type": "text",
+              "binding": "config",
+              "required": true,
+              "default": "",
+              "placeholder": "/backup/report.pdf or /backup/data",
+              "description": "Full target path (single file mode) or target directory (directory mode), on the destination storage connection."
+            },
+            {
+              "key": "source_connection_id",
+              "label": "Source connection id",
+              "type": "text",
+              "binding": "config",
+              "default": "",
+              "placeholder": "(task connection)",
+              "description": "Storage connection id of the source; leave empty to use the connection this task is bound to."
+            },
+            {
+              "key": "destination_connection_id",
+              "label": "Destination connection id",
+              "type": "text",
+              "binding": "config",
+              "default": "",
+              "placeholder": "(source connection)",
+              "description": "Storage connection id of the destination; leave empty to use the source connection. Both sides must share one storage engine instance (proxy group)."
+            },
+            {
+              "key": "recursive",
+              "label": "Recursive",
+              "type": "boolean",
+              "binding": "config",
+              "default": true,
+              "visible_when": { "field": "mode", "one_of": ["directory"] },
+              "description": "Include subdirectories. When off, only the top-level files of the source directory travel."
+            },
+            {
+              "key": "overwrite",
+              "label": "Overwrite existing files",
+              "type": "boolean",
+              "binding": "config",
+              "default": true,
+              "description": "Replace files that already exist at the destination. When off, existing destination files are never touched (rclone --ignore-existing; single-file copies fail with 'destination already exists')."
+            },
+            {
+              "key": "checksum",
+              "label": "Compare by checksum",
+              "type": "boolean",
+              "binding": "config",
+              "default": false,
+              "description": "Decide changes by file hash instead of size and modification time (rclone --checksum)."
+            },
+            {
+              "key": "resume",
+              "label": "Resume interrupted runs",
+              "type": "boolean",
+              "binding": "config",
+              "default": true,
+              "visible_when": { "field": "mode", "one_of": ["directory"] },
+              "description": "Skip files already present at the destination with a matching size/checksum, so an interrupted run continues where it stopped. When off, every file is re-transferred (rclone --ignore-times)."
+            },
+            {
+              "key": "concurrency",
+              "label": "Parallel transfers",
+              "type": "number",
+              "binding": "config",
+              "default": 4,
+              "visible_when": { "field": "mode", "one_of": ["directory"] },
+              "description": "Files transferred in parallel (rclone --transfers, 1-32)."
+            },
+            {
+              "key": "dry_run",
+              "label": "Dry run",
+              "type": "boolean",
+              "binding": "config",
+              "default": false,
+              "visible_when": { "field": "mode", "one_of": ["directory"] },
+              "description": "Compare only: report what would be copied without writing anything."
+            }
+          ]
+        }
+      ]
     }
   ],
   "localizations": {
@@ -1698,6 +1919,64 @@
         "io.dbx.files.workbench": {
           "label": "文件工作台",
           "description": "本地与远端双栏对照浏览：跨栏复制、移动与拖拽传输，同步与 zip 归档同屏完成。"
+        },
+        "io.dbx.files.tasks": {
+          "label": "文件任务",
+          "description": "供调度器使用的存储同步与复制任务：由 rclone 同步引擎原生执行，支持进度、取消、中断续传与产物报告。",
+          "fields": {
+            "source_path": {
+              "label": "源路径",
+              "description": "来源存储连接上的文件或目录。"
+            },
+            "destination_path": {
+              "label": "目标路径",
+              "description": "目标存储连接上的文件或目录。"
+            },
+            "source_connection_id": {
+              "label": "源连接 ID",
+              "description": "来源存储连接 ID；留空使用任务绑定的连接。"
+            },
+            "destination_connection_id": {
+              "label": "目标连接 ID",
+              "description": "目标存储连接 ID；留空使用源连接。两侧须属同一存储引擎实例（代理组）。"
+            },
+            "delete_extra": {
+              "label": "删除目标多余文件",
+              "description": "镜像语义：目标端源里不存在的文件会被删除（rclone sync）。关闭则保留（rclone copy 语义）。"
+            },
+            "recursive": {
+              "label": "递归",
+              "description": "包含子目录。关闭时仅传输源目录顶层文件。"
+            },
+            "overwrite": {
+              "label": "覆盖已变更文件",
+              "description": "替换目标端与源不一致的文件。关闭则绝不改动已存在的目标文件（rclone --ignore-existing）。"
+            },
+            "checksum": {
+              "label": "按校验和比较",
+              "description": "以文件哈希而非大小+修改时间判断差异（rclone --checksum）。"
+            },
+            "resume": {
+              "label": "中断续传",
+              "description": "跳过目标端已存在且大小/校验和一致的文件，中断的运行从停下的位置继续。关闭则全部重新传输（rclone --ignore-times）。"
+            },
+            "concurrency": {
+              "label": "并行传输数",
+              "description": "同时传输的文件数（rclone --transfers，1-32）。"
+            },
+            "dry_run": {
+              "label": "试运行",
+              "description": "仅比对：报告将要复制、覆盖或删除的内容，不实际写入。"
+            },
+            "mode": {
+              "label": "复制对象",
+              "description": "复制单个文件（目标路径含文件名）或整个目录树（服务端递归）。",
+              "options": {
+                "file": "单个文件",
+                "directory": "目录"
+              }
+            }
+          }
         }
       }
     },
@@ -1993,6 +2272,64 @@
         "io.dbx.files.workbench": {
           "label": "檔案工作台",
           "description": "本機與遠端雙欄對照瀏覽：跨欄複製、移動與拖曳傳輸，同步與 zip 封存同屏完成。"
+        },
+        "io.dbx.files.tasks": {
+          "label": "檔案任務",
+          "description": "供排程器使用的儲存同步與複製任務：由 rclone 同步引擎原生執行，支援進度、取消、中斷續傳與產物報告。",
+          "fields": {
+            "source_path": {
+              "label": "來源路徑",
+              "description": "來源儲存連線上的檔案或目錄。"
+            },
+            "destination_path": {
+              "label": "目標路徑",
+              "description": "目標儲存連線上的檔案或目錄。"
+            },
+            "source_connection_id": {
+              "label": "來源連線 ID",
+              "description": "來源儲存連線 ID；留空使用任務綁定的連線。"
+            },
+            "destination_connection_id": {
+              "label": "目標連線 ID",
+              "description": "目標儲存連線 ID；留空使用來源連線。兩側須屬同一儲存引擎實例（代理組）。"
+            },
+            "delete_extra": {
+              "label": "刪除目標多餘檔案",
+              "description": "鏡像語義：目標端來源裡不存在的檔案會被刪除（rclone sync）。關閉則保留（rclone copy 語義）。"
+            },
+            "recursive": {
+              "label": "遞迴",
+              "description": "包含子目錄。關閉時僅傳輸來源目錄頂層檔案。"
+            },
+            "overwrite": {
+              "label": "覆寫已變更檔案",
+              "description": "取代目標端與來源不一致的檔案。關閉則絕不更動已存在的目標檔案（rclone --ignore-existing）。"
+            },
+            "checksum": {
+              "label": "依校驗和比較",
+              "description": "以檔案雜湊而非大小+修改時間判斷差異（rclone --checksum）。"
+            },
+            "resume": {
+              "label": "中斷續傳",
+              "description": "跳過目標端已存在且大小/校驗和一致的檔案，中斷的執行從停下的位置繼續。關閉則全部重新傳輸（rclone --ignore-times）。"
+            },
+            "concurrency": {
+              "label": "並行傳輸數",
+              "description": "同時傳輸的檔案數（rclone --transfers，1-32）。"
+            },
+            "dry_run": {
+              "label": "試運行",
+              "description": "僅比對：報告將要複製、覆寫或刪除的內容，不實際寫入。"
+            },
+            "mode": {
+              "label": "複製對象",
+              "description": "複製單一檔案（目標路徑含檔名）或整個目錄樹（伺服器端遞迴）。",
+              "options": {
+                "file": "單一檔案",
+                "directory": "目錄"
+              }
+            }
+          }
         }
       }
     },
@@ -2288,6 +2625,64 @@
         "io.dbx.files.workbench": {
           "label": "Files Workbench",
           "description": "Dual-pane browsing of local and remote storage: copy, move, and drag files between panes, with directory sync and zip archives in the same view."
+        },
+        "io.dbx.files.tasks": {
+          "label": "Files Tasks",
+          "description": "Scheduled storage sync and copy tasks for the Scheduler: executed natively by the rclone sync engine with progress, cancel, resume, and artifact reporting.",
+          "fields": {
+            "source_path": {
+              "label": "Source path",
+              "description": "File or directory on the source storage connection."
+            },
+            "destination_path": {
+              "label": "Destination path",
+              "description": "File or directory on the destination storage connection."
+            },
+            "source_connection_id": {
+              "label": "Source connection id",
+              "description": "Storage connection id of the source; leave empty to use the connection this task is bound to."
+            },
+            "destination_connection_id": {
+              "label": "Destination connection id",
+              "description": "Storage connection id of the destination; leave empty to use the source connection. Both sides must share one storage engine instance (proxy group)."
+            },
+            "delete_extra": {
+              "label": "Delete extra destination files",
+              "description": "Mirror semantics: destination files missing at the source are deleted (rclone sync). Turn off to keep them (rclone copy semantics)."
+            },
+            "recursive": {
+              "label": "Recursive",
+              "description": "Include subdirectories. When off, only the top-level files of the source directory travel."
+            },
+            "overwrite": {
+              "label": "Overwrite changed files",
+              "description": "Replace destination files that differ from the source. When off, existing destination files are never touched (rclone --ignore-existing)."
+            },
+            "checksum": {
+              "label": "Compare by checksum",
+              "description": "Decide changes by file hash instead of size and modification time (rclone --checksum)."
+            },
+            "resume": {
+              "label": "Resume interrupted runs",
+              "description": "Skip files already present at the destination with a matching size/checksum, so an interrupted run continues where it stopped. When off, every file is re-transferred (rclone --ignore-times)."
+            },
+            "concurrency": {
+              "label": "Parallel transfers",
+              "description": "Files transferred in parallel (rclone --transfers, 1-32)."
+            },
+            "dry_run": {
+              "label": "Dry run",
+              "description": "Compare only: report what would be copied, overwritten or deleted without writing anything."
+            },
+            "mode": {
+              "label": "What to copy",
+              "description": "Copy one file (destination path includes the file name) or a whole directory tree (server-side, recursive).",
+              "options": {
+                "file": "Single file",
+                "directory": "Directory"
+              }
+            }
+          }
         }
       }
     },
@@ -2583,6 +2978,64 @@
         "io.dbx.files.workbench": {
           "label": "Mesa de trabajo de archivos",
           "description": "Navegación dual de almacenamiento local y remoto: copia, mueve y arrastra archivos entre paneles, con sincronización de directorios y archivos zip en la misma vista."
+        },
+        "io.dbx.files.tasks": {
+          "label": "Tareas de archivos",
+          "description": "Tareas programadas de sincronización y copia de almacenamiento para el planificador: las ejecuta de forma nativa el motor de sincronización rclone, con progreso, cancelación, reanudación e informes de artefactos.",
+          "fields": {
+            "source_path": {
+              "label": "Ruta de origen",
+              "description": "Archivo o directorio en la conexión de almacenamiento de origen."
+            },
+            "destination_path": {
+              "label": "Ruta de destino",
+              "description": "Archivo o directorio en la conexión de almacenamiento de destino."
+            },
+            "source_connection_id": {
+              "label": "Id. de conexión de origen",
+              "description": "Id. de la conexión de almacenamiento de origen; déjelo vacío para usar la conexión de la tarea."
+            },
+            "destination_connection_id": {
+              "label": "Id. de conexión de destino",
+              "description": "Id. de la conexión de almacenamiento de destino; déjelo vacío para usar la conexión de origen. Ambos lados deben compartir una misma instancia del motor (grupo proxy)."
+            },
+            "delete_extra": {
+              "label": "Eliminar archivos sobrantes en el destino",
+              "description": "Semántica espejo: los archivos del destino ausentes en el origen se eliminan (rclone sync). Desactívelo para conservarlos (semántica de rclone copy)."
+            },
+            "recursive": {
+              "label": "Recursivo",
+              "description": "Incluir subdirectorios. Si está desactivado, solo viajan los archivos del primer nivel del directorio de origen."
+            },
+            "overwrite": {
+              "label": "Sobrescribir archivos modificados",
+              "description": "Reemplaza los archivos del destino que difieran del origen. Si está desactivado, los archivos existentes nunca se tocan (rclone --ignore-existing)."
+            },
+            "checksum": {
+              "label": "Comparar por checksum",
+              "description": "Decide los cambios por hash del archivo en lugar de tamaño y fecha de modificación (rclone --checksum)."
+            },
+            "resume": {
+              "label": "Reanudar ejecuciones interrumpidas",
+              "description": "Omite los archivos ya presentes en el destino con tamaño/checksum coincidente, de modo que una ejecución interrumpida continúa donde se detuvo. Si está desactivado, se retransmite todo (rclone --ignore-times)."
+            },
+            "concurrency": {
+              "label": "Transferencias en paralelo",
+              "description": "Archivos transferidos en paralelo (rclone --transfers, 1-32)."
+            },
+            "dry_run": {
+              "label": "Simulación",
+              "description": "Solo comparar: informa lo que se copiaría, sobrescribiría o eliminaría sin escribir nada."
+            },
+            "mode": {
+              "label": "Qué copiar",
+              "description": "Copiar un archivo (la ruta de destino incluye el nombre) o un árbol de directorios completo (del lado del servidor, recursivo).",
+              "options": {
+                "file": "Un solo archivo",
+                "directory": "Directorio"
+              }
+            }
+          }
         }
       }
     },
@@ -2878,6 +3331,64 @@
         "io.dbx.files.workbench": {
           "label": "Banco di lavoro file",
           "description": "Navigazione a doppio pannello di archiviazione locale e remota: copia, sposta e trascina file tra i pannelli, con sincronizzazione delle directory e archivi zip nella stessa vista."
+        },
+        "io.dbx.files.tasks": {
+          "label": "Attività file",
+          "description": "Attività pianificate di sincronizzazione e copia dello storage per lo Scheduler: eseguite in modo nativo dal motore di sincronizzazione rclone, con avanzamento, annullamento, ripresa e report degli artefatti.",
+          "fields": {
+            "source_path": {
+              "label": "Percorso di origine",
+              "description": "File o directory sulla connessione di storage di origine."
+            },
+            "destination_path": {
+              "label": "Percorso di destinazione",
+              "description": "File o directory sulla connessione di storage di destinazione."
+            },
+            "source_connection_id": {
+              "label": "ID connessione di origine",
+              "description": "ID della connessione di storage di origine; lasciare vuoto per usare la connessione a cui è associata l'attività."
+            },
+            "destination_connection_id": {
+              "label": "ID connessione di destinazione",
+              "description": "ID della connessione di storage di destinazione; lasciare vuoto per usare la connessione di origine. Entrambi i lati devono condividere la stessa istanza del motore (gruppo proxy)."
+            },
+            "delete_extra": {
+              "label": "Elimina file extra nella destinazione",
+              "description": "Semantica mirror: i file di destinazione assenti dall'origine vengono eliminati (rclone sync). Disattivare per conservarli (semantica rclone copy)."
+            },
+            "recursive": {
+              "label": "Ricorsivo",
+              "description": "Include le sottodirectory. Quando disattivato, viaggiano solo i file di primo livello della directory di origine."
+            },
+            "overwrite": {
+              "label": "Sovrascrivi file modificati",
+              "description": "Sostituisce i file di destinazione che differiscono dall'origine. Quando disattivato, i file esistenti non vengono mai toccati (rclone --ignore-existing)."
+            },
+            "checksum": {
+              "label": "Confronta per checksum",
+              "description": "Determina le modifiche tramite hash del file invece di dimensioni e data di modifica (rclone --checksum)."
+            },
+            "resume": {
+              "label": "Riprendi esecuzioni interrotte",
+              "description": "Salta i file già presenti nella destinazione con dimensione/checksum corrispondente, così un'esecuzione interrotta continua da dove si era fermata. Quando disattivato, ogni file viene ritrasmesso (rclone --ignore-times)."
+            },
+            "concurrency": {
+              "label": "Trasferimenti in parallelo",
+              "description": "File trasferiti in parallelo (rclone --transfers, 1-32)."
+            },
+            "dry_run": {
+              "label": "Prova a vuoto",
+              "description": "Solo confronto: riporta cosa verrebbe copiato, sovrascritto o eliminato senza scrivere nulla."
+            },
+            "mode": {
+              "label": "Cosa copiare",
+              "description": "Copia un singolo file (il percorso di destinazione include il nome) o un intero albero di directory (lato server, ricorsivo).",
+              "options": {
+                "file": "Singolo file",
+                "directory": "Directory"
+              }
+            }
+          }
         }
       }
     },
@@ -3173,6 +3684,64 @@
         "io.dbx.files.workbench": {
           "label": "ファイルワークベンチ",
           "description": "ローカルとリモートを並べて閲覧するデュアルペイン：ペイン間でファイルをコピー・移動・ドラッグでき、ディレクトリ同期や zip アーカイブも同じ画面で。"
+        },
+        "io.dbx.files.tasks": {
+          "label": "ファイルタスク",
+          "description": "スケジューラ向けのストレージ同期・コピータスク：rclone 同期エンジンがネイティブに実行し、進捗・キャンセル・中断からの再開・成果物レポートに対応。",
+          "fields": {
+            "source_path": {
+              "label": "元パス",
+              "description": "元ストレージ接続上のファイルまたはディレクトリ。"
+            },
+            "destination_path": {
+              "label": "先パス",
+              "description": "先ストレージ接続上のファイルまたはディレクトリ。"
+            },
+            "source_connection_id": {
+              "label": "元接続 ID",
+              "description": "元ストレージ接続の ID。空欄でタスクに紐づく接続を使用。"
+            },
+            "destination_connection_id": {
+              "label": "先接続 ID",
+              "description": "先ストレージ接続の ID。空欄で元接続を使用。両側は同一ストレージエンジンインスタンス（プロキシーグループ）を共有する必要があります。"
+            },
+            "delete_extra": {
+              "label": "先にある余分なファイルを削除",
+              "description": "ミラー動作：先側にあって元にないファイルを削除します（rclone sync）。オフにすると保持します（rclone copy 動作）。"
+            },
+            "recursive": {
+              "label": "再帰",
+              "description": "サブディレクトリを含めます。オフの場合は元ディレクトリの直下のファイルのみ転送します。"
+            },
+            "overwrite": {
+              "label": "変更されたファイルを上書き",
+              "description": "元と異なる先側のファイルを置き換えます。オフの場合、既存の先側ファイルには一切触れません（rclone --ignore-existing）。"
+            },
+            "checksum": {
+              "label": "チェックサムで比較",
+              "description": "サイズと更新時刻ではなくファイルハッシュで変更を判定します（rclone --checksum）。"
+            },
+            "resume": {
+              "label": "中断した実行を再開",
+              "description": "先側に既にありサイズ/チェックサムが一致するファイルをスキップし、中断した実行は続きから再開します。オフにすると全ファイルを再転送します（rclone --ignore-times）。"
+            },
+            "concurrency": {
+              "label": "並列転送数",
+              "description": "同時に転送するファイル数（rclone --transfers、1-32）。"
+            },
+            "dry_run": {
+              "label": "ドライラン",
+              "description": "比較のみ：何がコピー・上書き・削除されるかを報告し、書き込みは行いません。"
+            },
+            "mode": {
+              "label": "コピー対象",
+              "description": "単一ファイル（先パスにファイル名を含む）またはディレクトリツリー全体（サーバー側で再帰）をコピーします。",
+              "options": {
+                "file": "単一ファイル",
+                "directory": "ディレクトリ"
+              }
+            }
+          }
         }
       }
     },
@@ -3468,6 +4037,64 @@
         "io.dbx.files.workbench": {
           "label": "Bancada de arquivos",
           "description": "Navegação em painel duplo de armazenamento local e remoto: copie, mova e arraste arquivos entre os painéis, com sincronização de diretórios e arquivos zip na mesma tela."
+        },
+        "io.dbx.files.tasks": {
+          "label": "Tarefas de arquivos",
+          "description": "Tarefas agendadas de sincronização e cópia de armazenamento para o agendador: executadas nativamente pelo motor de sincronização rclone, com progresso, cancelamento, retomada e relatório de artefatos.",
+          "fields": {
+            "source_path": {
+              "label": "Caminho de origem",
+              "description": "Arquivo ou diretório na conexão de armazenamento de origem."
+            },
+            "destination_path": {
+              "label": "Caminho de destino",
+              "description": "Arquivo ou diretório na conexão de armazenamento de destino."
+            },
+            "source_connection_id": {
+              "label": "ID da conexão de origem",
+              "description": "ID da conexão de armazenamento de origem; deixe vazio para usar a conexão à qual a tarefa está vinculada."
+            },
+            "destination_connection_id": {
+              "label": "ID da conexão de destino",
+              "description": "ID da conexão de armazenamento de destino; deixe vazio para usar a conexão de origem. Ambos os lados devem compartilhar a mesma instância do motor (grupo de proxy)."
+            },
+            "delete_extra": {
+              "label": "Excluir arquivos extras no destino",
+              "description": "Semântica espelho: arquivos do destino ausentes na origem são excluídos (rclone sync). Desative para mantê-los (semântica do rclone copy)."
+            },
+            "recursive": {
+              "label": "Recursivo",
+              "description": "Incluir subdiretórios. Quando desativado, apenas os arquivos do primeiro nível do diretório de origem viajam."
+            },
+            "overwrite": {
+              "label": "Sobrescrever arquivos alterados",
+              "description": "Substitui arquivos do destino que diferirem da origem. Quando desativado, arquivos existentes nunca são tocados (rclone --ignore-existing)."
+            },
+            "checksum": {
+              "label": "Comparar por checksum",
+              "description": "Decide as alterações pelo hash do arquivo em vez de tamanho e data de modificação (rclone --checksum)."
+            },
+            "resume": {
+              "label": "Retomar execuções interrompidas",
+              "description": "Pula arquivos já presentes no destino com tamanho/checksum correspondente, para que uma execução interrompida continue de onde parou. Quando desativado, todos os arquivos são retransmitidos (rclone --ignore-times)."
+            },
+            "concurrency": {
+              "label": "Transferências em paralelo",
+              "description": "Arquivos transferidos em paralelo (rclone --transfers, 1-32)."
+            },
+            "dry_run": {
+              "label": "Simulação",
+              "description": "Apenas comparar: informa o que seria copiado, sobrescrito ou excluído sem gravar nada."
+            },
+            "mode": {
+              "label": "O que copiar",
+              "description": "Copiar um único arquivo (o caminho de destino inclui o nome) ou uma árvore de diretórios inteira (no servidor, recursiva).",
+              "options": {
+                "file": "Arquivo único",
+                "directory": "Diretório"
+              }
+            }
+          }
         }
       }
     }

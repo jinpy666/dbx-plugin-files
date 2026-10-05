@@ -166,6 +166,9 @@ pub(crate) fn parse_rclone_sync_request(arguments: &Value) -> Result<RcloneSyncR
             transfers: None,
             checkers: None,
             retries: None,
+            checksum: None,
+            ignore_existing: None,
+            ignore_times: None,
         },
     })
 }

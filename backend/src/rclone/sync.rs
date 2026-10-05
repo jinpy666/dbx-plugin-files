@@ -178,6 +178,21 @@ pub struct SyncJobParams {
     pub transfers: Option<u32>,
     pub checkers: Option<u32>,
     pub retries: Option<u32>,
+    /// `--checksum`: decide changes by file hash instead of size+modtime
+    /// (catches edits with preserved timestamps; slower). Copy/Sync/Move
+    /// only — assembled in the same block as update/existing/immutable,
+    /// whose snake_case rc reshaping was live-verified v1.75.1.
+    pub checksum: bool,
+    /// `--ignore-existing`: files already present at the destination are
+    /// never replaced (skipped without even transferring). Copy/Sync/Move
+    /// only. This is the "overwrite = off" knob of the scheduler task
+    /// provider.
+    pub ignore_existing: bool,
+    /// `--ignore-times`: re-transfers every file regardless of destination
+    /// state (no delta). Copy/Sync/Move only. This is the "resume = off"
+    /// knob of the scheduler task provider — the default (false) is
+    /// rclone's size/hash delta, i.e. checksum/size-based resume.
+    pub ignore_times: bool,
     /// Check-only: one-way comparison (src → dst), skipping the reverse
     /// missing-on-src scan. rc command param keeps the documented camelCase.
     pub check_one_way: bool,
@@ -207,7 +222,11 @@ pub struct SyncJobParams {
 #[derive(Debug, Clone)]
 pub enum SyncEvent {
     Progress { transferred: u64, total: u64, rate: Option<f64> },
-    Completed { bytes: u64, files: u64 },
+    /// Terminal success. `skipped` counts the files the comparison found
+    /// identical at the destination (rclone stats `checks`) — the delta a
+    /// resume run did NOT re-send; the per-file `core/transferred` fallback
+    /// cannot recover it, so it reports 0 there.
+    Completed { bytes: u64, files: u64, skipped: u64 },
     /// Check jobs only: rclone's comparison report (`output` of the finished
     /// job). Fired instead of `Completed`; differences are not failures.
     CheckFinished { report: Value },
@@ -282,7 +301,7 @@ fn non_empty(patterns: &Option<Vec<String>>) -> Option<Vec<String>> {
 
 /// Whether two connection-root-relative paths overlap (equal or nested in
 /// either direction). Empty = the connection root, which overlaps everything.
-fn paths_overlap(a: &str, b: &str) -> bool {
+pub(crate) fn paths_overlap(a: &str, b: &str) -> bool {
     let (a, b) = (a.trim_matches('/'), b.trim_matches('/'));
     if a.is_empty() || b.is_empty() {
         return true;
@@ -391,6 +410,19 @@ fn build_rc_body(params: &SyncJobParams) -> Result<Value, String> {
         }
         if params.immutable {
             body["immutable"] = Value::Bool(true);
+        }
+        // Scheduler task provider knobs (--checksum/--ignore-existing/
+        // --ignore-times): same snake_case assembly as the policy flags —
+        // only sent when true, an absent key keeps rclone's default delta
+        // semantics (size+mtime compare with hash fallback, resume-friendly).
+        if params.checksum {
+            body["checksum"] = Value::Bool(true);
+        }
+        if params.ignore_existing {
+            body["ignore_existing"] = Value::Bool(true);
+        }
+        if params.ignore_times {
+            body["ignore_times"] = Value::Bool(true);
         }
         if let Some(min_size) = params
             .min_size
@@ -571,7 +603,7 @@ async fn poll_job(
             return;
         }
         // Progress snapshot; kept as the completion-totals candidate.
-        let mut final_totals: Option<(u64, u64)> = None;
+        let mut final_totals: Option<(u64, u64, u64)> = None;
         if let Ok(stats) = bounded_call(
             &client,
             "core/stats",
@@ -590,7 +622,10 @@ async fn poll_job(
                 .and_then(Value::as_u64)
                 .or_else(|| stats.get("transfers").and_then(Value::as_u64))
                 .unwrap_or(0);
-            final_totals = Some((transferred, files));
+            // `checks` counts the files the comparison found identical at
+            // the destination — the resume delta (never re-sent).
+            let skipped = stats.get("checks").and_then(Value::as_u64).unwrap_or(0);
+            final_totals = Some((transferred, files, skipped));
         }
         match bounded_call(
             &client,
@@ -643,11 +678,20 @@ async fn poll_job(
                         message: message.to_string(),
                     });
                 } else {
-                    let (bytes, files) = match final_totals {
-                        Some((bytes, files)) if bytes > 0 || files > 0 => (bytes, files),
-                        _ => transferred_totals(&client, &handle).await,
+                    // Stats totals are preferred (the per-file fallback
+                    // under-reports server-side copies) — including the
+                    // zero-transfer case, where `checks` carries the
+                    // compared-identical count a resume run skipped.
+                    // The fallback only covers stats that were never
+                    // readable at all.
+                    let (bytes, files, skipped) = match final_totals {
+                        Some(totals) => totals,
+                        None => {
+                            let (bytes, files) = transferred_totals(&client, &handle).await;
+                            (bytes, files, 0)
+                        }
                     };
-                    emit(SyncEvent::Completed { bytes, files });
+                    emit(SyncEvent::Completed { bytes, files, skipped });
                 }
                 return;
             }
@@ -908,6 +952,9 @@ mod tests {
             transfers: None,
             checkers: None,
             retries: None,
+            checksum: false,
+            ignore_existing: false,
+            ignore_times: false,
             check_one_way: false,
             check_download: false,
             sum_remote: None,
@@ -964,6 +1011,38 @@ mod tests {
 
     /// 缺省（false）时三个键必须整体缺席：缺席 = rclone 默认语义，与
     /// dry_run/max_delete「不设置就不下发」的装配口径一致。
+    /// Scheduler task knobs (--checksum/--ignore-existing/--ignore-times)
+    /// share the policy-flag assembly block: true must ride along as rc
+    /// snake_case true; default (false) must keep all three absent — an
+    /// absent key is rclone's size/hash delta, i.e. the resume semantics.
+    #[test]
+    fn task_provider_knobs_assemble_into_the_rc_body() {
+        let mut job = params(SyncKind::Copy, std::path::Path::new("/s"), std::path::Path::new("/d"));
+        job.checksum = true;
+        job.ignore_existing = true;
+        job.ignore_times = true;
+        let body = build_rc_body(&job).expect("body");
+        for key in ["checksum", "ignore_existing", "ignore_times"] {
+            assert_eq!(
+                body.get(key).and_then(Value::as_bool),
+                Some(true),
+                "{key} must ride along as true: {body}"
+            );
+        }
+        let default_body = build_rc_body(&params(
+            SyncKind::Copy,
+            std::path::Path::new("/s"),
+            std::path::Path::new("/d"),
+        ))
+        .expect("body");
+        for key in ["checksum", "ignore_existing", "ignore_times"] {
+            assert!(
+                default_body.get(key).is_none(),
+                "{key} must stay absent by default: {default_body}"
+            );
+        }
+    }
+
     #[test]
     fn policy_flags_default_to_absent_in_the_rc_body() {
         let body = build_rc_body(&params(
@@ -1022,7 +1101,7 @@ mod tests {
 
         let (_progress, event) = wait_terminal(&mut rx).await;
         let (bytes, files) = match event {
-            SyncEvent::Completed { bytes, files } => (bytes, files),
+            SyncEvent::Completed { bytes, files, .. } => (bytes, files),
             other => panic!("expected Completed, got {other:?}"),
         };
         assert_eq!(files, 2, "two files transferred");
@@ -1686,7 +1765,7 @@ mod tests {
             .expect("start far-future min-age copy");
         let (_progress, event) = wait_terminal(&mut rx).await;
         assert!(
-            matches!(event, SyncEvent::Completed { bytes: 0, files: 0 }),
+            matches!(event, SyncEvent::Completed { bytes: 0, files: 0, .. }),
             "far-future min_age must complete empty, got {event:?}"
         );
         assert!(dir_names(&dst.path()).is_empty(), "nothing may land: {:?}", dir_names(dst.path()));
@@ -1711,6 +1790,124 @@ mod tests {
         let (_progress, event) = wait_terminal(&mut rx).await;
         assert!(matches!(event, SyncEvent::Completed { files: 2, .. }), "got {event:?}");
         assert_eq!(dir_names(dst.path()), vec!["a.txt", "deep"]);
+    }
+
+    // -- scheduler task provider knobs (live rcd, engine-native behavior) --
+
+    /// Resume delta: a second copy of an unchanged tree transfers nothing
+    /// and reports the identical files as `skipped` (stats `checks`) — the
+    /// checksum/size-based recovery the task provider's resume mode builds
+    /// on. `ignore_times` flips the same pair into a full re-send.
+    #[tokio::test]
+    async fn second_copy_skips_identical_and_ignore_times_resends() {
+        let Some(binary) = resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
+        let (src, dst) = sandbox();
+        // First run: everything travels, nothing skipped.
+        let (on_event, mut rx) = event_channel();
+        let _handle = start_job(
+            rcd.client(),
+            params(SyncKind::Copy, src.path(), dst.path()),
+            on_event,
+        )
+        .await
+        .expect("start first copy");
+        let (_progress, event) = wait_terminal(&mut rx).await;
+        assert!(
+            matches!(event, SyncEvent::Completed { files: 2, skipped: 0, .. }),
+            "first copy must transfer both sentinels, got {event:?}"
+        );
+        // Second run (no source change): the delta check skips both —
+        // this is resume, NOT a blind re-copy.
+        let (on_event, mut rx) = event_channel();
+        let _handle = start_job(
+            rcd.client(),
+            params(SyncKind::Copy, src.path(), dst.path()),
+            on_event,
+        )
+        .await
+        .expect("start unchanged second copy");
+        let (_progress, event) = wait_terminal(&mut rx).await;
+        assert!(
+            matches!(event, SyncEvent::Completed { files: 0, skipped: 2, .. }),
+            "unchanged second copy must skip both identical files, got {event:?}"
+        );
+        // resume = off (`ignore_times`): every file is re-sent.
+        let mut resend = params(SyncKind::Copy, src.path(), dst.path());
+        resend.ignore_times = true;
+        let (on_event, mut rx) = event_channel();
+        let _handle = start_job(rcd.client(), resend, on_event)
+            .await
+            .expect("start ignore-times copy");
+        let (_progress, event) = wait_terminal(&mut rx).await;
+        assert!(
+            matches!(event, SyncEvent::Completed { files: 2, .. }),
+            "ignore_times must re-send both files, got {event:?}"
+        );
+    }
+
+    /// overwrite = off (`ignore_existing`): files already present at the
+    /// destination keep their bytes even when the source differs; new
+    /// files still travel.
+    #[tokio::test]
+    async fn ignore_existing_never_replaces_destination_files() {
+        let Some(binary) = resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
+        let (src, dst) = sandbox();
+        // A pre-existing destination file whose source twin differs.
+        std::fs::create_dir_all(dst.path().join("sub")).expect("dst sub dir");
+        std::fs::write(dst.path().join("sub").join("a.txt"), "destination wins").expect("stale");
+        let mut job = params(SyncKind::Copy, src.path(), dst.path());
+        job.ignore_existing = true;
+        let (on_event, mut rx) = event_channel();
+        let _handle = start_job(rcd.client(), job, on_event)
+            .await
+            .expect("start ignore-existing copy");
+        let (_progress, event) = wait_terminal(&mut rx).await;
+        assert!(
+            matches!(event, SyncEvent::Completed { .. }),
+            "ignore_existing copy must still complete, got {event:?}"
+        );
+        let kept = std::fs::read_to_string(dst.path().join("sub").join("a.txt"))
+            .expect("read kept file");
+        assert_eq!(kept, "destination wins", "existing destination file must not be replaced");
+        // The missing deep file still travels — only EXISTING files skip.
+        assert!(dst.path().join("deep").join("b.txt").is_file(), "new files still copy");
+    }
+
+    /// recursive = off maps to the top-level include filter (`["/*"]` —
+    /// root-anchored: bare `*` matches the file NAME at any level, live
+    /// verified v1.75.1): only direct children travel, subdirectories stay
+    /// behind, and the job still completes successfully.
+    #[tokio::test]
+    async fn top_level_include_limits_copy_to_direct_children() {
+        let Some(binary) = resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let rcd = RcdHandle::start(&binary, None).await.expect("rcd spawn");
+        let (src, dst) = sandbox();
+        let mut job = params(SyncKind::Copy, src.path(), dst.path());
+        job.include = Some(vec!["/*".to_string()]);
+        let (on_event, mut rx) = event_channel();
+        let _handle = start_job(rcd.client(), job, on_event)
+            .await
+            .expect("start top-level copy");
+        let (_progress, event) = wait_terminal(&mut rx).await;
+        assert!(
+            matches!(event, SyncEvent::Completed { files: 1, .. }),
+            "only the top-level sentinel travels, got {event:?}"
+        );
+        assert!(
+            !dst.path().join("deep").exists() && !dst.path().join("sub").exists(),
+            "subdirectories must stay behind"
+        );
     }
 
     #[tokio::test]

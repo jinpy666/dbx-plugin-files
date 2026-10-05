@@ -816,6 +816,18 @@ pub struct DirJobRequest {
     /// rclone `--retries` 对齐：本作业整体重试次数覆盖（1–10）。
     #[serde(default)]
     pub retries: Option<u32>,
+    /// rclone `--checksum` 对齐：true 时按文件哈希（而非大小+修改时间）
+    /// 判断差异；缺省 false 沿用 rclone 默认。
+    #[serde(default)]
+    pub checksum: Option<bool>,
+    /// rclone `--ignore-existing` 对齐：true 时目标端已存在的文件一律跳过
+    /// （永不覆盖；"overwrite = off"）；缺省 false 正常覆盖。
+    #[serde(default)]
+    pub ignore_existing: Option<bool>,
+    /// rclone `--ignore-times` 对齐：true 时不做 delta 比对、全部文件重新
+    /// 传输（"resume = off"）；缺省 false 即尺寸+哈希增量（断点续传语义）。
+    #[serde(default)]
+    pub ignore_times: Option<bool>,
 }
 
 /// `files/check`：比较两个目录（可跨连接，但需同一代理组）内容是否一致。

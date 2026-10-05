@@ -25,6 +25,7 @@ mod remote_edit;
 mod rclone;
 mod scheduler;
 mod store;
+mod task_provider;
 mod transfers;
 
 use std::collections::HashMap;
@@ -103,6 +104,9 @@ struct Plugin {
     /// 作业。执行复用下方三个 start_* 入口（同一作业镜像），详见
     /// scheduler 模块文档。
     scheduler: Arc<scheduler::Scheduler>,
+    /// 通用 Scheduler Task Provider（`io.dbx.files.tasks`，task/* 固定
+    /// RPC）：runId → 活动运行登记表（cancel 旗标 / job 关联 / 日志 seq）。
+    task_runs: task_provider::TaskRunRegistry,
 }
 
 impl Plugin {
@@ -267,6 +271,7 @@ impl Plugin {
             list_streams,
             list_cache,
             scheduler,
+            task_runs: task_provider::TaskRunRegistry::new(),
         })
     }
 
@@ -884,6 +889,9 @@ impl Plugin {
                                 transfers: None,
                                 checkers: None,
                                 retries: None,
+                                checksum: None,
+                                ignore_existing: None,
+                                ignore_times: None,
                             },
                             false,
                             method == "files/move",
@@ -995,6 +1003,9 @@ impl Plugin {
                         transfers: None,
                         checkers: None,
                         retries: None,
+                        checksum: None,
+                        ignore_existing: None,
+                        ignore_times: None,
                     };
                     let job_id = rclone_start_dir_job(
                         Arc::clone(&self.rclone),
@@ -2405,6 +2416,7 @@ impl Plugin {
                         transfers::JobStatus::Canceled,
                         None,
                         None,
+                        None,
                     );
                     return Ok(json!({ "success": true }));
                 }
@@ -2877,6 +2889,108 @@ impl Plugin {
                 ))
                 .await;
             }
+            // ------------------------------------------------------------------
+            // Scheduler Task Provider (`io.dbx.files.tasks`, ADR §6 frozen
+            // surface): only the five fixed `task/*` methods — no arbitrary
+            // `task/<custom>` RPC. sync/copy execute through the SAME native
+            // rclone dir-job engine as the workbench (rclone_start_dir_job,
+            // shared job mirror); cancellation routes through the shared
+            // transfer-cancel arm.
+            // ------------------------------------------------------------------
+            "task/validate" => {
+                let request: task_provider::ValidateRequest = parse(params)?;
+                let validation = task_provider::validate(
+                    &self.rclone,
+                    &request.task.trigger_id,
+                    request.task.connection_id.as_deref(),
+                    request.task.config_version,
+                    request.task.config.as_ref(),
+                );
+                Ok(json!({
+                    "valid": validation.errors.is_empty(),
+                    "errors": validation.errors,
+                    "warnings": validation.warnings,
+                }))
+            }
+            "task/execute" => {
+                task_provider::execute(
+                    task_provider::ExecutionContext {
+                        engine: Arc::clone(&self.rclone),
+                        sync_jobs: Arc::clone(&self.sync_jobs),
+                        registry: self.task_runs.clone(),
+                        emitter: emitter.clone(),
+                    },
+                    params,
+                )
+                .await
+            }
+            "task/stop" => {
+                let request: task_provider::StopRequest = parse(params)?;
+                // runId first, then any live run of the taskId (the host's
+                // concurrency policy keeps one active run per task).
+                let job_id = request
+                    .run_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .and_then(|run_id| self.task_runs.request_cancel(run_id))
+                    .or_else(|| {
+                        request
+                            .task_id
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .and_then(|task_id| self.task_runs.request_cancel_for_task(task_id))
+                    });
+                let Some(job_id) = job_id else {
+                    // Idempotent: stopping an unknown or already-finished
+                    // run is a no-op success (the run result already
+                    // traveled in its execute response).
+                    return Ok(json!({}));
+                };
+                // Real cancellation for live dir jobs: the shared
+                // transfer-cancel arm stops the remote rc job and settles
+                // terminal-once. Native single-file copies (and runs whose
+                // job has not started yet) settle through the execute
+                // watch loop's cancel flag instead.
+                let live_dir_job = {
+                    let jobs = rclone_lock(&self.rclone.jobs);
+                    let sync_jobs = rclone_lock(&self.sync_jobs);
+                    sync_jobs
+                        .get(&job_id)
+                        .map(|record| record.handle.is_some())
+                        .unwrap_or(false)
+                        && !jobs
+                            .get(&job_id)
+                            .map(|job| job.status.is_terminal())
+                            .unwrap_or(true)
+                };
+                if live_dir_job {
+                    return Box::pin(self.handle_request_via_rclone(
+                        "files/transfer/cancel",
+                        json!({ "taskId": job_id }),
+                        emitter,
+                    ))
+                    .await;
+                }
+                Ok(json!({}))
+            }
+            "task/status" => {
+                let request: task_provider::StatusRequest = parse(params)?;
+                let run_id = request
+                    .run_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or("task/status requires runId")?;
+                self.task_runs
+                    .status(&self.rclone, run_id)
+                    .ok_or_else(|| "task run was not found".to_string())
+            }
+            "task/start" => Err(format!(
+                "{} declares run-mode triggers only (sync/copy); task/start requires a resident trigger",
+                task_provider::PROVIDER_ID
+            )),
             _ => Err(format!("Method not found: {method}")),
         }
     }
@@ -3389,6 +3503,10 @@ struct RcloneSyncRecord {
     max_delete: Option<u64>,
     files_done: u64,
     files_total: Option<u64>,
+    /// The comparison found identical files at the destination (rclone
+    /// stats `checks`, carried by the Completed event) — the resume delta
+    /// this run did not re-send. `filesSkipped` on the wire events.
+    files_skipped: u64,
     /// Check jobs: one-line difference summary from the terminal report
     /// (`None` while running and for sync/copy/move jobs).
     check_summary: Option<String>,
@@ -3503,6 +3621,7 @@ async fn rclone_start_dir_job(
         max_delete: request.max_delete,
         files_done: 0,
         files_total: None,
+        files_skipped: 0,
         check_summary: None,
         bisync_session: None,
         // Source and target share one proxy group (enforced above), so the
@@ -3596,7 +3715,7 @@ async fn rclone_start_dir_job(
                     }
                 }
             }
-            rclone::sync::SyncEvent::Completed { bytes, files } => {
+            rclone::sync::SyncEvent::Completed { bytes, files, skipped } => {
                 {
                     let mut jobs = rclone_lock(&engine.jobs);
                     if let Some(job) = jobs.get_mut(&event_job_id) {
@@ -3614,6 +3733,7 @@ async fn rclone_start_dir_job(
                     transfers::JobStatus::Completed,
                     None,
                     Some(files),
+                    Some(skipped),
                 );
                 // sync/move leaves the emptied source tree; purge it so a
                 // directory rename does not leave the old name behind.
@@ -3643,6 +3763,7 @@ async fn rclone_start_dir_job(
                     transfers::JobStatus::Failed,
                     Some(message),
                     None,
+                    None,
                 );
             }
             rclone::sync::SyncEvent::Canceled => {
@@ -3652,6 +3773,7 @@ async fn rclone_start_dir_job(
                     event_emitter.as_ref(),
                     &event_job_id,
                     transfers::JobStatus::Canceled,
+                    None,
                     None,
                     None,
                 );
@@ -3692,6 +3814,11 @@ async fn rclone_start_dir_job(
             transfers: request.transfers,
             checkers: request.checkers,
             retries: request.retries,
+            // 调度任务旋钮（--checksum/--ignore-existing/--ignore-times）：
+            // 缺省 false = rclone 尺寸+哈希 delta（resume 友好）。
+            checksum: request.checksum.unwrap_or(false),
+            ignore_existing: request.ignore_existing.unwrap_or(false),
+            ignore_times: request.ignore_times.unwrap_or(false),
             check_one_way: false,
             check_download: false,
             // 目录作业不携带 SUM 校验参数（仅 check 作业的 SUM 分支使用）。
@@ -3876,6 +4003,7 @@ async fn rclone_start_check_job(
         files_done: 0,
         files_total: None,
         check_summary: None,
+        files_skipped: 0,
         bisync_session: None,
         work: rclone.start_work(&rclone::registry::group_key_of(
             source_binding.proxy.as_ref(),
@@ -3902,6 +4030,7 @@ async fn rclone_start_check_job(
                     transfers::JobStatus::Completed,
                     None,
                     None,
+                    None,
                 );
             }
             // Unreachable for check jobs (the report beats the counters),
@@ -3913,6 +4042,7 @@ async fn rclone_start_check_job(
                     event_emitter.as_ref(),
                     &event_job_id,
                     transfers::JobStatus::Completed,
+                    None,
                     None,
                     None,
                 );
@@ -3927,6 +4057,7 @@ async fn rclone_start_check_job(
                     transfers::JobStatus::Failed,
                     Some(message),
                     None,
+                    None,
                 );
             }
             rclone::sync::SyncEvent::Canceled => {
@@ -3936,6 +4067,7 @@ async fn rclone_start_check_job(
                     event_emitter.as_ref(),
                     &event_job_id,
                     transfers::JobStatus::Canceled,
+                    None,
                     None,
                     None,
                 );
@@ -3974,6 +4106,10 @@ async fn rclone_start_check_job(
             transfers: None,
             checkers: None,
             retries: None,
+            // check/bisync 作业不携带任务旋钮（仅 Copy/Sync/Move 装配）。
+            checksum: false,
+            ignore_existing: false,
+            ignore_times: false,
             check_one_way: sum_target.is_none() && request.one_way.unwrap_or(false),
             check_download: sum_target.is_none() && request.download.unwrap_or(false),
             sum_remote: sum_target
@@ -4112,6 +4248,7 @@ async fn rclone_start_bisync_job(
         files_done: 0,
         files_total: None,
         check_summary: None,
+        files_skipped: 0,
         bisync_session: None,
         work: rclone.start_work(&rclone::registry::group_key_of(
             source_binding.proxy.as_ref(),
@@ -4163,6 +4300,7 @@ async fn rclone_start_bisync_job(
                     terminal.0,
                     terminal.1,
                     None,
+                    None,
                 );
             }
             rclone::sync::SyncEvent::Completed { .. } => {
@@ -4172,6 +4310,7 @@ async fn rclone_start_bisync_job(
                     event_emitter.as_ref(),
                     &event_job_id,
                     transfers::JobStatus::Completed,
+                    None,
                     None,
                     None,
                 );
@@ -4189,6 +4328,7 @@ async fn rclone_start_bisync_job(
                     transfers::JobStatus::Failed,
                     Some(message),
                     None,
+                    None,
                 );
             }
             rclone::sync::SyncEvent::Canceled => {
@@ -4198,6 +4338,7 @@ async fn rclone_start_bisync_job(
                     event_emitter.as_ref(),
                     &event_job_id,
                     transfers::JobStatus::Canceled,
+                    None,
                     None,
                     None,
                 );
@@ -4231,6 +4372,10 @@ async fn rclone_start_bisync_job(
             transfers: None,
             checkers: None,
             retries: None,
+            // check/bisync 作业不携带任务旋钮（仅 Copy/Sync/Move 装配）。
+            checksum: false,
+            ignore_existing: false,
+            ignore_times: false,
             check_one_way: false,
             check_download: false,
             sum_remote: None,
@@ -4360,7 +4505,7 @@ fn rclone_sync_event_from(job: &transfers::TransferJob, record: &RcloneSyncRecor
         "filesTotal": record.files_total,
         "bytesDone": job.transferred_bytes,
         "bytesTotal": job.total_bytes,
-        "filesSkipped": 0,
+        "filesSkipped": record.files_skipped,
         "bytesSkipped": 0,
         "state": job.status.as_str(),
         "sync": matches!(record.kind, rclone::sync::SyncKind::Sync),
@@ -4406,7 +4551,7 @@ fn rclone_sync_dir_job_value(job: &transfers::TransferJob, record: &RcloneSyncRe
         "filesTotal": record.files_total,
         "bytesDone": job.transferred_bytes,
         "bytesTotal": job.total_bytes,
-        "filesSkipped": 0,
+        "filesSkipped": record.files_skipped,
         "bytesSkipped": 0,
         "dryRun": record.dry_run,
         "status": job.status.as_str(),
@@ -4459,6 +4604,7 @@ fn rclone_sync_terminal(
     status: transfers::JobStatus,
     error: Option<String>,
     files: Option<u64>,
+    files_skipped: Option<u64>,
 ) -> bool {
     let job = {
         let mut jobs = rclone_lock(jobs);
@@ -4473,11 +4619,16 @@ fn rclone_sync_terminal(
         job.finished_at = Some(store::unix_millis_now());
         job.clone()
     };
-    if files.is_some() {
+    if files.is_some() || files_skipped.is_some() {
         let mut sync_jobs = rclone_lock(sync_jobs);
         if let Some(record) = sync_jobs.get_mut(job_id) {
-            record.files_done = files.unwrap_or(0);
-            record.files_total = files;
+            if let Some(files) = files {
+                record.files_done = files;
+                record.files_total = Some(files);
+            }
+            if let Some(skipped) = files_skipped {
+                record.files_skipped = skipped;
+            }
         }
     }
     if let (Some(record), Some(emitter)) = (rclone_lock(sync_jobs).get(job_id), emitter) {
