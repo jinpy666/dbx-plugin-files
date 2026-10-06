@@ -1922,6 +1922,10 @@
         },
         "io.dbx.files.tasks": {
           "label": "文件任务",
+          "triggers": {
+            "sync": { "label": "目录同步" },
+            "copy": { "label": "复制" }
+          },
           "description": "供调度器使用的存储同步与复制任务：由 rclone 同步引擎原生执行，支持进度、取消、中断续传与产物报告。",
           "fields": {
             "source_path": {
@@ -2275,6 +2279,10 @@
         },
         "io.dbx.files.tasks": {
           "label": "檔案任務",
+          "triggers": {
+            "sync": { "label": "目錄同步" },
+            "copy": { "label": "複製" }
+          },
           "description": "供排程器使用的儲存同步與複製任務：由 rclone 同步引擎原生執行，支援進度、取消、中斷續傳與產物報告。",
           "fields": {
             "source_path": {
