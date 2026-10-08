@@ -578,6 +578,23 @@ pub struct ListPagedRequest {
     pub page_size: u64,
 }
 
+/// `files/listDirs`（宿主表单字段 picker 的 plugin 目录浏览：与
+/// `options_action` 同一条通用 invokePlugin 通道，**不属于** `task/*`
+/// 冻结面）：非递归列举 `path` 的子目录，返回
+/// `{entries:[{name, path, is_dir}], truncated?, resolved_path?}`。
+/// 目录**先过滤后截断**（`truncated` = 目录空间被截断）；`path` 存在但
+/// 不是目录时改列其父目录，`resolved_path` 带回实际列举的目录（普通
+/// 列举不出现）。`locale` 由宿主按 UI 语言携带，当前后端忽略（错误
+/// 文本固定英文）。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListDirsRequest {
+    pub connection_id: String,
+    pub path: String,
+    #[serde(default)]
+    pub locale: Option<String>,
+}
+
 /// `files/listStream`（issue #49 P1 流式目录列表）：非递归列举，先同步
 /// ack `{requestId, displayCharset?}`，条目经 `files/list/chunk` 事件分帧
 /// 交付。无 recurse 参数——流式形态本身就是为巨型目录准备的。

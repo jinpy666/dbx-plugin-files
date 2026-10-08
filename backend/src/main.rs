@@ -445,6 +445,32 @@ impl Plugin {
                 ));
                 Ok(ack)
             }
+            "files/listDirs" => {
+                // 宿主表单字段 picker 的 plugin 目录浏览（options_action 同
+                // 一条通用 invokePlugin 通道，非 task/* 冻结面）：仅目录、
+                // 逐级浏览。gate 与 files/list 完全一致（root / lock_to_root
+                // 在 ops::list 内经 gate_read 强制）；连接未就绪时上面的
+                // binding() 直接给出可读错误，宿主对话框内展示可重试。
+                // 目录先过滤后截断；路径是文件时改列父目录，resolved_path
+                // 带回实际列举的目录（普通列举不出现该键）。
+                let request: model::ListDirsRequest = parse(params)?;
+                let binding = self.rclone.binding(&request.connection_id)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                let (entries, truncated, resolved_path) = rclone::ops::list_dirs(
+                    &client,
+                    &rclone::call_fs(&binding),
+                    &request.path,
+                    &binding.root,
+                    binding.lock_to_root,
+                    rclone::ops::LIST_DIRS_MAX,
+                )
+                .await?;
+                let mut response = json!({ "entries": entries, "truncated": truncated });
+                if let Some(resolved) = resolved_path {
+                    response["resolved_path"] = Value::String(resolved);
+                }
+                Ok(response)
+            }
             "files/list" | "files/listPaged" | "files/stat" | "files/size" => {
                 let connection_id = params
                     .get("connectionId")

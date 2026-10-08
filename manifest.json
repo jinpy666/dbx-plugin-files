@@ -1425,7 +1425,8 @@
               "required": true,
               "default": "",
               "placeholder": "/data",
-              "description": "Directory to sync from, on the source storage connection."
+              "description": "Directory to sync from, on the source storage connection.",
+              "picker": { "kind": "directory", "source": "plugin", "action": "files/listDirs", "connection_field": "source_connection_id" }
             },
             {
               "key": "destination_path",
@@ -1435,15 +1436,18 @@
               "required": true,
               "default": "",
               "placeholder": "/backup/data",
-              "description": "Directory to sync into, on the destination storage connection."
+              "description": "Directory to sync into, on the destination storage connection.",
+              "picker": { "kind": "directory", "source": "plugin", "action": "files/listDirs", "connection_field": ["destination_connection_id", "source_connection_id"] }
             },
             {
               "key": "source_connection_id",
               "label": "Source connection id",
               "type": "text",
               "binding": "config",
+              "options_action": "host/connections",
               "default": "",
               "placeholder": "(task connection)",
+              "empty_label": "(task connection)",
               "description": "Storage connection id of the source; leave empty to use the connection this task is bound to."
             },
             {
@@ -1451,8 +1455,10 @@
               "label": "Destination connection id",
               "type": "text",
               "binding": "config",
+              "options_action": "host/connections",
               "default": "",
               "placeholder": "(source connection)",
+              "empty_label": "(source connection)",
               "description": "Storage connection id of the destination; leave empty to use the source connection. Both sides must share one storage engine instance (proxy group)."
             },
             {
@@ -1539,7 +1545,8 @@
               "required": true,
               "default": "",
               "placeholder": "/data/report.pdf or /data",
-              "description": "File or directory to copy from, on the source storage connection."
+              "description": "File or directory to copy from, on the source storage connection.",
+              "picker": { "kind": "directory", "source": "plugin", "action": "files/listDirs", "connection_field": "source_connection_id" }
             },
             {
               "key": "destination_path",
@@ -1549,15 +1556,18 @@
               "required": true,
               "default": "",
               "placeholder": "/backup/report.pdf or /backup/data",
-              "description": "Full target path (single file mode) or target directory (directory mode), on the destination storage connection."
+              "description": "Full target path (single file mode) or target directory (directory mode), on the destination storage connection.",
+              "picker": { "kind": "directory", "source": "plugin", "action": "files/listDirs", "connection_field": ["destination_connection_id", "source_connection_id"] }
             },
             {
               "key": "source_connection_id",
               "label": "Source connection id",
               "type": "text",
               "binding": "config",
+              "options_action": "host/connections",
               "default": "",
               "placeholder": "(task connection)",
+              "empty_label": "(task connection)",
               "description": "Storage connection id of the source; leave empty to use the connection this task is bound to."
             },
             {
@@ -1565,8 +1575,10 @@
               "label": "Destination connection id",
               "type": "text",
               "binding": "config",
+              "options_action": "host/connections",
               "default": "",
               "placeholder": "(source connection)",
+              "empty_label": "(source connection)",
               "description": "Storage connection id of the destination; leave empty to use the source connection. Both sides must share one storage engine instance (proxy group)."
             },
             {
@@ -1922,62 +1934,120 @@
         },
         "io.dbx.files.tasks": {
           "label": "文件任务",
-          "triggers": {
-            "sync": { "label": "目录同步" },
-            "copy": { "label": "复制" }
-          },
           "description": "供调度器使用的存储同步与复制任务：由 rclone 同步引擎原生执行，支持进度、取消、中断续传与产物报告。",
-          "fields": {
-            "source_path": {
-              "label": "源路径",
-              "description": "来源存储连接上的文件或目录。"
+          "triggers": {
+            "sync": {
+              "label": "目录同步",
+              "fields": {
+                "source_path": {
+                  "label": "源路径",
+                  "description": "来源存储连接上要同步的目录。",
+                  "placeholder": "/data"
+                },
+                "destination_path": {
+                  "label": "目标路径",
+                  "description": "目标存储连接上要同步到的目录。",
+                  "placeholder": "/backup/data"
+                },
+                "source_connection_id": {
+                  "label": "源连接 ID",
+                  "description": "来源存储连接 ID；留空使用任务绑定的连接。",
+                  "placeholder": "（跟随任务连接）",
+                  "empty_label": "（跟随任务连接）"
+                },
+                "destination_connection_id": {
+                  "label": "目标连接 ID",
+                  "description": "目标存储连接 ID；留空使用源连接。两侧须属同一存储引擎实例（代理组）。",
+                  "placeholder": "（跟随源连接）",
+                  "empty_label": "（跟随源连接）"
+                },
+                "delete_extra": {
+                  "label": "删除目标多余文件",
+                  "description": "镜像语义：目标端源里不存在的文件会被删除（rclone sync）。关闭则保留（rclone copy 语义）。"
+                },
+                "recursive": {
+                  "label": "递归",
+                  "description": "包含子目录。关闭时仅传输源目录顶层文件。"
+                },
+                "overwrite": {
+                  "label": "覆盖已变更文件",
+                  "description": "替换目标端与源不一致的文件。关闭则绝不改动已存在的目标文件（rclone --ignore-existing）。"
+                },
+                "checksum": {
+                  "label": "按校验和比较",
+                  "description": "以文件哈希而非大小+修改时间判断差异（rclone --checksum）；较慢，但能发现保留修改时间的文件编辑。"
+                },
+                "resume": {
+                  "label": "中断续传",
+                  "description": "跳过目标端已存在且大小/校验和一致的文件（rclone 增量检查），中断的运行从停下的位置继续。关闭则全部重新传输（rclone --ignore-times）。"
+                },
+                "concurrency": {
+                  "label": "并行传输数",
+                  "description": "同时传输的文件数（rclone --transfers，1-32）。"
+                },
+                "dry_run": {
+                  "label": "试运行",
+                  "description": "仅比对：报告将要复制、覆盖或删除的内容，不实际写入。"
+                }
+              }
             },
-            "destination_path": {
-              "label": "目标路径",
-              "description": "目标存储连接上的文件或目录。"
-            },
-            "source_connection_id": {
-              "label": "源连接 ID",
-              "description": "来源存储连接 ID；留空使用任务绑定的连接。"
-            },
-            "destination_connection_id": {
-              "label": "目标连接 ID",
-              "description": "目标存储连接 ID；留空使用源连接。两侧须属同一存储引擎实例（代理组）。"
-            },
-            "delete_extra": {
-              "label": "删除目标多余文件",
-              "description": "镜像语义：目标端源里不存在的文件会被删除（rclone sync）。关闭则保留（rclone copy 语义）。"
-            },
-            "recursive": {
-              "label": "递归",
-              "description": "包含子目录。关闭时仅传输源目录顶层文件。"
-            },
-            "overwrite": {
-              "label": "覆盖已变更文件",
-              "description": "替换目标端与源不一致的文件。关闭则绝不改动已存在的目标文件（rclone --ignore-existing）。"
-            },
-            "checksum": {
-              "label": "按校验和比较",
-              "description": "以文件哈希而非大小+修改时间判断差异（rclone --checksum）。"
-            },
-            "resume": {
-              "label": "中断续传",
-              "description": "跳过目标端已存在且大小/校验和一致的文件，中断的运行从停下的位置继续。关闭则全部重新传输（rclone --ignore-times）。"
-            },
-            "concurrency": {
-              "label": "并行传输数",
-              "description": "同时传输的文件数（rclone --transfers，1-32）。"
-            },
-            "dry_run": {
-              "label": "试运行",
-              "description": "仅比对：报告将要复制、覆盖或删除的内容，不实际写入。"
-            },
-            "mode": {
-              "label": "复制对象",
-              "description": "复制单个文件（目标路径含文件名）或整个目录树（服务端递归）。",
-              "options": {
-                "file": "单个文件",
-                "directory": "目录"
+            "copy": {
+              "label": "复制",
+              "fields": {
+                "mode": {
+                  "label": "复制对象",
+                  "description": "复制单个文件（目标路径含文件名）或整个目录树（服务端递归）。",
+                  "options": {
+                    "file": "单个文件",
+                    "directory": "目录"
+                  }
+                },
+                "source_path": {
+                  "label": "源路径",
+                  "description": "来源存储连接上要复制的文件或目录。",
+                  "placeholder": "/data/report.pdf 或 /data"
+                },
+                "destination_path": {
+                  "label": "目标路径",
+                  "description": "目标存储连接上的完整目标路径（单文件模式）或目标目录（目录模式）。",
+                  "placeholder": "/backup/report.pdf 或 /backup/data"
+                },
+                "source_connection_id": {
+                  "label": "源连接 ID",
+                  "description": "来源存储连接 ID；留空使用任务绑定的连接。",
+                  "placeholder": "（跟随任务连接）",
+                  "empty_label": "（跟随任务连接）"
+                },
+                "destination_connection_id": {
+                  "label": "目标连接 ID",
+                  "description": "目标存储连接 ID；留空使用源连接。两侧须属同一存储引擎实例（代理组）。",
+                  "placeholder": "（跟随源连接）",
+                  "empty_label": "（跟随源连接）"
+                },
+                "recursive": {
+                  "label": "递归",
+                  "description": "包含子目录。关闭时仅传输源目录顶层文件。"
+                },
+                "overwrite": {
+                  "label": "覆盖已存在文件",
+                  "description": "替换目标端已存在的文件。关闭则绝不改动已存在的目标文件（rclone --ignore-existing；单文件复制遇目标已存在会失败）。"
+                },
+                "checksum": {
+                  "label": "按校验和比较",
+                  "description": "以文件哈希而非大小+修改时间判断差异（rclone --checksum）。"
+                },
+                "resume": {
+                  "label": "中断续传",
+                  "description": "跳过目标端已存在且大小/校验和一致的文件，中断的运行从停下的位置继续。关闭则全部重新传输（rclone --ignore-times）。"
+                },
+                "concurrency": {
+                  "label": "并行传输数",
+                  "description": "同时传输的文件数（rclone --transfers，1-32）。"
+                },
+                "dry_run": {
+                  "label": "试运行",
+                  "description": "仅比对：报告将要复制的内容，不实际写入。"
+                }
               }
             }
           }
@@ -2279,62 +2349,120 @@
         },
         "io.dbx.files.tasks": {
           "label": "檔案任務",
-          "triggers": {
-            "sync": { "label": "目錄同步" },
-            "copy": { "label": "複製" }
-          },
           "description": "供排程器使用的儲存同步與複製任務：由 rclone 同步引擎原生執行，支援進度、取消、中斷續傳與產物報告。",
-          "fields": {
-            "source_path": {
-              "label": "來源路徑",
-              "description": "來源儲存連線上的檔案或目錄。"
+          "triggers": {
+            "sync": {
+              "label": "目錄同步",
+              "fields": {
+                "source_path": {
+                  "label": "來源路徑",
+                  "description": "來源儲存連線上要同步的目錄。",
+                  "placeholder": "/data"
+                },
+                "destination_path": {
+                  "label": "目標路徑",
+                  "description": "目標儲存連線上要同步到的目錄。",
+                  "placeholder": "/backup/data"
+                },
+                "source_connection_id": {
+                  "label": "來源連線 ID",
+                  "description": "來源儲存連線 ID；留空使用任務綁定的連線。",
+                  "placeholder": "（跟隨任務連線）",
+                  "empty_label": "（跟隨任務連線）"
+                },
+                "destination_connection_id": {
+                  "label": "目標連線 ID",
+                  "description": "目標儲存連線 ID；留空使用來源連線。兩側須屬同一儲存引擎實例（代理組）。",
+                  "placeholder": "（跟隨來源連線）",
+                  "empty_label": "（跟隨來源連線）"
+                },
+                "delete_extra": {
+                  "label": "刪除目標多餘檔案",
+                  "description": "鏡像語義：目標端來源裡不存在的檔案會被刪除（rclone sync）。關閉則保留（rclone copy 語義）。"
+                },
+                "recursive": {
+                  "label": "遞迴",
+                  "description": "包含子目錄。關閉時僅傳輸來源目錄頂層檔案。"
+                },
+                "overwrite": {
+                  "label": "覆寫已變更檔案",
+                  "description": "取代目標端與來源不一致的檔案。關閉則絕不更動已存在的目標檔案（rclone --ignore-existing）。"
+                },
+                "checksum": {
+                  "label": "依校驗和比較",
+                  "description": "以檔案雜湊而非大小+修改時間判斷差異（rclone --checksum）；較慢，但能發現保留修改時間的檔案編輯。"
+                },
+                "resume": {
+                  "label": "中斷續傳",
+                  "description": "跳過目標端已存在且大小/校驗和一致的檔案（rclone 增量檢查），中斷的執行從停下的位置繼續。關閉則全部重新傳輸（rclone --ignore-times）。"
+                },
+                "concurrency": {
+                  "label": "並行傳輸數",
+                  "description": "同時傳輸的檔案數（rclone --transfers，1-32）。"
+                },
+                "dry_run": {
+                  "label": "試運行",
+                  "description": "僅比對：報告將要複製、覆寫或刪除的內容，不實際寫入。"
+                }
+              }
             },
-            "destination_path": {
-              "label": "目標路徑",
-              "description": "目標儲存連線上的檔案或目錄。"
-            },
-            "source_connection_id": {
-              "label": "來源連線 ID",
-              "description": "來源儲存連線 ID；留空使用任務綁定的連線。"
-            },
-            "destination_connection_id": {
-              "label": "目標連線 ID",
-              "description": "目標儲存連線 ID；留空使用來源連線。兩側須屬同一儲存引擎實例（代理組）。"
-            },
-            "delete_extra": {
-              "label": "刪除目標多餘檔案",
-              "description": "鏡像語義：目標端來源裡不存在的檔案會被刪除（rclone sync）。關閉則保留（rclone copy 語義）。"
-            },
-            "recursive": {
-              "label": "遞迴",
-              "description": "包含子目錄。關閉時僅傳輸來源目錄頂層檔案。"
-            },
-            "overwrite": {
-              "label": "覆寫已變更檔案",
-              "description": "取代目標端與來源不一致的檔案。關閉則絕不更動已存在的目標檔案（rclone --ignore-existing）。"
-            },
-            "checksum": {
-              "label": "依校驗和比較",
-              "description": "以檔案雜湊而非大小+修改時間判斷差異（rclone --checksum）。"
-            },
-            "resume": {
-              "label": "中斷續傳",
-              "description": "跳過目標端已存在且大小/校驗和一致的檔案，中斷的執行從停下的位置繼續。關閉則全部重新傳輸（rclone --ignore-times）。"
-            },
-            "concurrency": {
-              "label": "並行傳輸數",
-              "description": "同時傳輸的檔案數（rclone --transfers，1-32）。"
-            },
-            "dry_run": {
-              "label": "試運行",
-              "description": "僅比對：報告將要複製、覆寫或刪除的內容，不實際寫入。"
-            },
-            "mode": {
-              "label": "複製對象",
-              "description": "複製單一檔案（目標路徑含檔名）或整個目錄樹（伺服器端遞迴）。",
-              "options": {
-                "file": "單一檔案",
-                "directory": "目錄"
+            "copy": {
+              "label": "複製",
+              "fields": {
+                "mode": {
+                  "label": "複製對象",
+                  "description": "複製單一檔案（目標路徑含檔名）或整個目錄樹（伺服器端遞迴）。",
+                  "options": {
+                    "file": "單一檔案",
+                    "directory": "目錄"
+                  }
+                },
+                "source_path": {
+                  "label": "來源路徑",
+                  "description": "來源儲存連線上要複製的檔案或目錄。",
+                  "placeholder": "/data/report.pdf 或 /data"
+                },
+                "destination_path": {
+                  "label": "目標路徑",
+                  "description": "目標儲存連線上的完整目標路徑（單一檔案模式）或目標目錄（目錄模式）。",
+                  "placeholder": "/backup/report.pdf 或 /backup/data"
+                },
+                "source_connection_id": {
+                  "label": "來源連線 ID",
+                  "description": "來源儲存連線 ID；留空使用任務綁定的連線。",
+                  "placeholder": "（跟隨任務連線）",
+                  "empty_label": "（跟隨任務連線）"
+                },
+                "destination_connection_id": {
+                  "label": "目標連線 ID",
+                  "description": "目標儲存連線 ID；留空使用來源連線。兩側須屬同一儲存引擎實例（代理組）。",
+                  "placeholder": "（跟隨來源連線）",
+                  "empty_label": "（跟隨來源連線）"
+                },
+                "recursive": {
+                  "label": "遞迴",
+                  "description": "包含子目錄。關閉時僅傳輸來源目錄頂層檔案。"
+                },
+                "overwrite": {
+                  "label": "覆寫已存在檔案",
+                  "description": "取代目標端已存在的檔案。關閉則絕不更動已存在的目標檔案（rclone --ignore-existing；單一檔案複製遇目標已存在會失敗）。"
+                },
+                "checksum": {
+                  "label": "依校驗和比較",
+                  "description": "以檔案雜湊而非大小+修改時間判斷差異（rclone --checksum）。"
+                },
+                "resume": {
+                  "label": "中斷續傳",
+                  "description": "跳過目標端已存在且大小/校驗和一致的檔案，中斷的執行從停下的位置繼續。關閉則全部重新傳輸（rclone --ignore-times）。"
+                },
+                "concurrency": {
+                  "label": "並行傳輸數",
+                  "description": "同時傳輸的檔案數（rclone --transfers，1-32）。"
+                },
+                "dry_run": {
+                  "label": "試運行",
+                  "description": "僅比對：報告將要複製的內容，不實際寫入。"
+                }
               }
             }
           }

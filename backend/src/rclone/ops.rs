@@ -188,6 +188,116 @@ pub async fn list_capped(
     Ok(cap_entries_for_response(entries, max, LIST_RESPONSE_BUDGET_BYTES))
 }
 
+// ---------------------------------------------------------------------------
+// files/listDirs（宿主 picker 目录浏览：仅目录投影）
+// ---------------------------------------------------------------------------
+
+/// `files/listDirs` 单次响应的目录条目上限。浏览是逐级交互，一屏条目
+/// 远小于工作台列表；沿用 [`list_capped`] 的双预算截断（条目数 + 序列化
+/// 字节），但截断发生在**目录过滤之后**——先过滤出目录再封顶，文件密集
+/// 目录不会截掉尾部子目录，`truncated` 确定为「目录空间被截断」。
+pub const LIST_DIRS_MAX: usize = 2_000;
+
+/// picker 目录契约投影：只保留目录条目，映射为
+/// `{name, path, is_dir}`。**目录过滤在插件侧完成**（宿主只消费目录
+/// 条目）；`is_dir` 恒为 `true`，保留在契约里是为将来可能的混合列举。
+/// `path` 保持 files/list 的列举词汇（fs 相对、带前导 `/`），与任务
+/// 配置的路径口径一致，可原样回填 `source_path` / `destination_path`。
+fn dirs_projection(entries: &[FileEntry]) -> Vec<Value> {
+    entries
+        .iter()
+        .filter(|entry| entry.kind == "dir")
+        .map(|entry| {
+            json!({
+                "name": entry.name,
+                "path": entry.path,
+                "is_dir": true,
+            })
+        })
+        .collect()
+}
+
+/// 列举词汇里的父目录：`/a/b/c` → `/a/b`，`/a` → `/`；根（`/`、空串）
+/// 没有父目录，返回 `None`。
+fn parent_of(path: &str) -> Option<String> {
+    let trimmed = path.trim();
+    if trimmed.trim_matches('/').is_empty() {
+        return None;
+    }
+    let parent = trimmed.trim_end_matches('/').rsplit_once('/').map(|(head, _)| head).unwrap_or("");
+    Some(if parent.is_empty() { "/".to_string() } else { parent.to_string() })
+}
+
+/// listDirs 的目标决策（纯函数，可单测）：`stat_is_dir` 是对请求路径的
+/// tri-state stat 结果——`Some(true)` 目录、`Some(false)` 文件、
+/// `None` 缺失或 stat 失败。文件路径改列其父目录（copy 单文件模式从
+/// 文件路径起步浏览），并以 `resolved_path` 标注实际列举的目录；其余
+/// 情形维持原路径、不产生 `resolved_path`（缺失路径由后续 `list` 给出
+/// 可读错误）。
+fn resolve_browse_target(requested: &str, stat_is_dir: Option<bool>) -> (String, Option<String>) {
+    if stat_is_dir == Some(false) {
+        if let Some(parent) = parent_of(requested) {
+            return (parent.clone(), Some(parent));
+        }
+    }
+    (requested.to_string(), None)
+}
+
+/// 先过滤目录、再应用双预算截断（语义修正：截断发生在目录过滤之后，
+/// 文件密集目录不再截掉尾部子目录）。字节预算仍按 [`FileEntry`]
+/// 序列化体积计——比目录投影略宽，保守方向。
+fn dirs_page(entries: Vec<FileEntry>, max: usize) -> (Vec<Value>, bool) {
+    let dirs: Vec<FileEntry> = entries.into_iter().filter(|entry| entry.kind == "dir").collect();
+    let (capped, truncated) = cap_entries_for_response(dirs, max, LIST_RESPONSE_BUDGET_BYTES);
+    (dirs_projection(&capped), truncated)
+}
+
+/// `operations/stat` 的 tri-state 结果：`Some(IsDir)` / `None`（item 缺失 =
+/// 路径不存在，rcd 对缺失对象回 `Ok({"item": null})`）。
+async fn stat_is_dir(client: &RcClient, fs: &str, remote: &str) -> Result<Option<bool>, String> {
+    let response = client
+        .operations_stat(fs, remote)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(response
+        .get("item")
+        .and_then(|item| item.get("IsDir"))
+        .and_then(Value::as_bool))
+}
+
+/// `files/listDirs`: 复用 files/list 的 gate（root / lock_to_root 经
+/// `gate_read`）与封顶列举，投影成宿主 picker 契约。root / lock_to_root /
+/// read_only 由 binding 携带：浏览是读操作，read_only 不适用；连接未
+/// 就绪时 `binding()`（调用方 main.rs）已给出可读错误。
+///
+/// 返回 `(目录条目, truncated?, resolved_path?)`：请求路径存在但不是
+/// 目录时改列其父目录，`resolved_path` 带回实际列举的目录（普通列举
+/// 不出现）；路径不存在时 `list` 给出可读错误，由宿主对话框展示重试。
+pub async fn list_dirs(
+    client: &RcClient,
+    fs: &str,
+    path: &str,
+    root: &str,
+    lock_to_root: bool,
+    max: usize,
+) -> Result<(Vec<Value>, bool, Option<String>), String> {
+    // 非根路径先 stat 定形：文件 → 父目录；缺失 / stat 失败维持原路径
+    // （前者由 list 给可读错误，后者与旧行为一致）。
+    let mut effective = path.to_string();
+    let mut resolved: Option<String> = None;
+    if !path.trim().trim_matches('/').is_empty() {
+        let remote = gate_read(root, lock_to_root, path)?;
+        if let Ok(kind) = stat_is_dir(client, fs, &remote).await {
+            let (target, resolved_path) = resolve_browse_target(path, kind);
+            effective = target;
+            resolved = resolved_path;
+        }
+    }
+    let entries = list(client, fs, &effective, false, root, lock_to_root).await?;
+    let (projected, truncated) = dirs_page(entries, max);
+    Ok((projected, truncated, resolved))
+}
+
 /// 双预算（条目数 + 序列化字节）截断：`(排序头部条目, truncated?)`。
 /// 单条自身超预算时无法再切，仍保底交付该条（截断救不了超长单条目）。
 fn cap_entries_for_response(
@@ -1536,6 +1646,106 @@ mod tests {
         assert_eq!(entry.path, "/");
         assert_eq!(entry.name, "/");
         assert_eq!(entry.size, None, "negative size never leaks");
+    }
+
+    // -- files/listDirs 投影（宿主 picker 目录浏览） ---------------------------
+
+    #[test]
+    fn dirs_projection_keeps_only_directories_in_picker_contract() {
+        let entries = vec![
+            FileEntry { name: "sub".into(), path: "/sub".into(), kind: "dir", size: None, modified_at: None, bucket: false },
+            FileEntry { name: "a.txt".into(), path: "/a.txt".into(), kind: "file", size: Some(1), modified_at: None, bucket: false },
+            FileEntry { name: "deep".into(), path: "/sub/deep".into(), kind: "dir", size: None, modified_at: None, bucket: true },
+        ];
+        let dirs = dirs_projection(&entries);
+        assert_eq!(
+            dirs,
+            vec![
+                json!({ "name": "sub", "path": "/sub", "is_dir": true }),
+                json!({ "name": "deep", "path": "/sub/deep", "is_dir": true }),
+            ],
+            "only dirs survive, bucket-marked entries stay regular dirs for the picker"
+        );
+        // The listing vocabulary (leading-slash fs-relative path) round-trips
+        // through the task path policy, so the picker can backfill sourcePath
+        // / destinationPath verbatim.
+        let locked = crate::policy::PathPolicy::from_parts("/srv", true, false, true);
+        assert_eq!(locked.resolve(dirs[0]["path"].as_str().unwrap()).unwrap().relative, "sub");
+    }
+
+    #[test]
+    fn dirs_projection_empty_input_yields_empty_list() {
+        assert_eq!(dirs_projection(&[]), Vec::<Value>::new());
+        let files_only = vec![FileEntry { name: "f".into(), path: "/f".into(), kind: "file", size: Some(0), modified_at: None, bucket: false }];
+        assert_eq!(dirs_projection(&files_only), Vec::<Value>::new());
+    }
+
+    // -- listDirs 先过滤后截断 + 非目录起点重定向 ------------------------------
+
+    fn dir_entry(path: &str) -> FileEntry {
+        FileEntry { name: path.into(), path: path.into(), kind: "dir", size: None, modified_at: None, bucket: false }
+    }
+
+    #[test]
+    fn dirs_page_filters_directories_before_capping() {
+        // 大量文件混少量目录：截断预算不再被文件吃掉，目录全部保留且
+        // 不误报 truncated。
+        let mut entries: Vec<FileEntry> = (0..3_000)
+            .map(|index| file_entry(&format!("/f{index:04}.txt")))
+            .collect();
+        entries.push(dir_entry("/sub-a"));
+        entries.push(dir_entry("/sub-b"));
+        let (dirs, truncated) = dirs_page(entries, LIST_DIRS_MAX);
+        assert_eq!(dirs.len(), 2, "3 files + 2 dirs under a 2000 cap: both dirs survive");
+        assert_eq!(dirs[0]["path"], "/sub-a");
+        assert_eq!(dirs[1]["path"], "/sub-b");
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn dirs_page_truncates_only_directories_when_the_cap_is_reached() {
+        // 目录自身超上限：截的是目录头部，truncated 语义 = 目录空间被截断。
+        let entries: Vec<FileEntry> = (0..LIST_DIRS_MAX + 5)
+            .map(|index| dir_entry(&format!("/d{index:04}")))
+            .collect();
+        let (dirs, truncated) = dirs_page(entries, LIST_DIRS_MAX);
+        assert_eq!(dirs.len(), LIST_DIRS_MAX);
+        assert_eq!(dirs[0]["path"], "/d0000", "keeps the sorted head");
+        assert!(truncated);
+        // 投影仍走 picker 契约（is_dir 恒 true）。
+        assert_eq!(dirs[0]["is_dir"], json!(true));
+    }
+
+    #[test]
+    fn parent_of_walks_the_listing_vocabulary() {
+        assert_eq!(parent_of("/a/b/c").as_deref(), Some("/a/b"));
+        assert_eq!(parent_of("/a").as_deref(), Some("/"));
+        assert_eq!(parent_of("/a/b/").as_deref(), Some("/a"));
+        assert_eq!(parent_of("/").is_none(), true, "the root has no parent");
+        assert_eq!(parent_of("").is_none(), true);
+    }
+
+    #[test]
+    fn resolve_browse_target_redirects_files_to_their_parent() {
+        // copy 单文件模式：字段里是文件路径 → 改列父目录并标注 resolved_path。
+        let (target, resolved) = resolve_browse_target("/data/report.pdf", Some(false));
+        assert_eq!(target, "/data");
+        assert_eq!(resolved.as_deref(), Some("/data"));
+
+        // 根目录下的文件 → 父目录是根。
+        let (target, resolved) = resolve_browse_target("/report.pdf", Some(false));
+        assert_eq!(target, "/");
+        assert_eq!(resolved.as_deref(), Some("/"));
+
+        // 目录起点维持原路径，不产生 resolved_path。
+        let (target, resolved) = resolve_browse_target("/data", Some(true));
+        assert_eq!(target, "/data");
+        assert_eq!(resolved, None);
+
+        // 缺失 / stat 失败（None）也维持原路径：可读错误由 list 给出。
+        let (target, resolved) = resolve_browse_target("/nope", None);
+        assert_eq!(target, "/nope");
+        assert_eq!(resolved, None);
     }
 
     // -- 标记项过滤 + 排序 -----------------------------------------------------

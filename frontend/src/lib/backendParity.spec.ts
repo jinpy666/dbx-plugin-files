@@ -49,6 +49,7 @@ const GOLDEN_BACKEND_METHODS: ReadonlySet<string> = new Set([
   "files/hashsum",
   "files/list",
   "files/listCancel",
+  "files/listDirs",
   "files/listPaged",
   "files/listStream",
   "files/local/capabilities",
@@ -121,6 +122,9 @@ const MOCK_EXEMPT_METHODS: Record<string, string> = {
   "files/local/open": "OS 能力，纯浏览器态不适用",
   // 工作台只调用 files/rmdirs（清理空目录），rmdir 无前端调用方。
   "files/rmdir": "无前端调用方",
+  // 宿主调度器表单的 plugin 目录选择器（picker.source:"plugin"）调用，
+  // 工作台前端不调用；目录浏览由宿主对话框承担。
+  "files/listDirs": "宿主调度器 picker 面，工作台不调用",
   // MCP 工具面方法（mcp/tools.rs 独立实现），工作台前端不调用。
   "mcp/call": "MCP 面方法，工作台不调用",
   "mcp/settings/get": "MCP 面方法，工作台不调用",
