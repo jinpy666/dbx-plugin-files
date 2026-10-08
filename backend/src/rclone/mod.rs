@@ -78,6 +78,19 @@ pub(crate) struct DownloadTask {
 /// local fs stays config-free, so a rcd respawn cannot orphan it.
 pub const LOCAL_CONNECTION_ID: &str = "__local__";
 
+/// Manifest-facing spelling of [`LOCAL_CONNECTION_ID`] for the scheduler task
+/// form: `source_connection_id` / `destination_connection_id` declare a static
+/// option `local` ("local path"), so a saved task config may carry the bare
+/// word where the workbench uses `__local__`. A registered connection id can
+/// never collide (host connection ids are uuids), and a registered id always
+/// wins — see [`RcloneEngine::binding`].
+pub const LOCAL_CONNECTION_ALIAS: &str = "local";
+
+/// True for either spelling of the built-in local filesystem id.
+pub fn is_local_connection_id(connection_id: &str) -> bool {
+    connection_id == LOCAL_CONNECTION_ID || connection_id == LOCAL_CONNECTION_ALIAS
+}
+
 /// Synthesized connection record behind [`LOCAL_CONNECTION_ID`]: an fs
 /// connection rooted at `/` with default gates (writable, deletable,
 /// unlocked root); policy and quick-path behavior are uniform with every
@@ -228,14 +241,20 @@ impl RcloneEngine {
     /// MCP route. Folds in the built-in `__local__` connection (the
     /// dual-pane local column): the synthesized root-`/` fs connection. The
     /// binding is never registered — local fs stays config-free, so a rcd
-    /// respawn cannot orphan it.
+    /// respawn cannot orphan it. The manifest-facing spelling `local`
+    /// (scheduler task form's reserved option) resolves to the same binding,
+    /// but only after the registry: a real registered id always wins.
     pub fn binding(&self, connection_id: &str) -> Result<registry::RemoteBinding, String> {
         if connection_id == LOCAL_CONNECTION_ID {
             return registry::binding_for(&local_connection());
         }
-        self.registry
-            .get(connection_id)
-            .ok_or_else(|| "Connection is not connected (rclone engine)".to_string())
+        if let Some(binding) = self.registry.get(connection_id) {
+            return Ok(binding);
+        }
+        if connection_id == LOCAL_CONNECTION_ALIAS {
+            return registry::binding_for(&local_connection());
+        }
+        Err("Connection is not connected (rclone engine)".to_string())
     }
 
     /// Routed rc client for an already-resolved binding: connections that
@@ -1090,7 +1109,8 @@ mod wiring_tests {
     /// The built-in `__local__` id resolves without registration (rooted fs
     /// binding, no policy gates) while unknown ids stay registry errors —
     /// the dual-pane local column depends on the first half, the MCP route
-    /// on both.
+    /// on both. The scheduler form's manifest-facing spelling `local`
+    /// resolves to the same binding (registered ids always win).
     #[test]
     fn binding_folds_in_built_in_local_connection() {
         let engine = RcloneEngine::new();
@@ -1105,6 +1125,14 @@ mod wiring_tests {
         assert_eq!(local.remote_fs, "/");
         assert_eq!(local.root, "/");
         assert!(local.allow_delete && !local.read_only && !local.lock_to_root);
+
+        // The manifest-facing alias (`local`, the scheduler task form's
+        // reserved option) resolves to the identical binding.
+        let alias = engine.binding(LOCAL_CONNECTION_ALIAS).expect("local alias binding");
+        assert_eq!(alias, local);
+        assert!(is_local_connection_id(LOCAL_CONNECTION_ID));
+        assert!(is_local_connection_id(LOCAL_CONNECTION_ALIAS));
+        assert!(!is_local_connection_id("conn-uuid"));
     }
 
     /// End-to-end through a live rcd: the fs-protocol wiring path — call_fs

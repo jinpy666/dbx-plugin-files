@@ -1418,6 +1418,17 @@
           "risk": "high",
           "fields": [
             {
+              "key": "source_connection_id",
+              "label": "Source connection",
+              "type": "text",
+              "binding": "config",
+              "required": true,
+              "options": [{ "value": "local", "label": "Local path" }],
+              "options_action": "host/connections",
+              "default": "",
+              "description": "Storage connection of the source. Pick 'local' to use a plain path on this machine's file system."
+            },
+            {
               "key": "source_path",
               "label": "Source path",
               "type": "text",
@@ -1425,8 +1436,20 @@
               "required": true,
               "default": "",
               "placeholder": "/data",
-              "description": "Directory to sync from, on the source storage connection.",
+              "description": "Directory to sync from, on the source storage connection — or on the local file system when the source connection is 'local'.",
               "picker": { "kind": "directory", "source": "plugin", "action": "files/listDirs", "connection_field": "source_connection_id" }
+            },
+            {
+              "key": "destination_connection_id",
+              "label": "Destination connection",
+              "type": "text",
+              "binding": "config",
+              "options": [{ "value": "local", "label": "Local path" }],
+              "options_action": "host/connections",
+              "default": "",
+              "placeholder": "(source connection)",
+              "empty_label": "(source connection)",
+              "description": "Storage connection id of the destination; leave empty to use the source connection. Both sides must share one storage engine instance (proxy group) — the built-in local side pairs with any connection without a proxy. Pick 'local' to use a plain path on this machine's file system."
             },
             {
               "key": "destination_path",
@@ -1436,30 +1459,8 @@
               "required": true,
               "default": "",
               "placeholder": "/backup/data",
-              "description": "Directory to sync into, on the destination storage connection.",
+              "description": "Directory to sync into, on the destination storage connection — or on the local file system when the destination connection is 'local'.",
               "picker": { "kind": "directory", "source": "plugin", "action": "files/listDirs", "connection_field": ["destination_connection_id", "source_connection_id"] }
-            },
-            {
-              "key": "source_connection_id",
-              "label": "Source connection id",
-              "type": "text",
-              "binding": "config",
-              "options_action": "host/connections",
-              "default": "",
-              "placeholder": "(task connection)",
-              "empty_label": "(task connection)",
-              "description": "Storage connection id of the source; leave empty to use the connection this task is bound to."
-            },
-            {
-              "key": "destination_connection_id",
-              "label": "Destination connection id",
-              "type": "text",
-              "binding": "config",
-              "options_action": "host/connections",
-              "default": "",
-              "placeholder": "(source connection)",
-              "empty_label": "(source connection)",
-              "description": "Storage connection id of the destination; leave empty to use the source connection. Both sides must share one storage engine instance (proxy group)."
             },
             {
               "key": "delete_extra",
@@ -1538,6 +1539,17 @@
               "description": "Copy one file (destination path includes the file name) or a whole directory tree (server-side, recursive)."
             },
             {
+              "key": "source_connection_id",
+              "label": "Source connection",
+              "type": "text",
+              "binding": "config",
+              "required": true,
+              "options": [{ "value": "local", "label": "Local path" }],
+              "options_action": "host/connections",
+              "default": "",
+              "description": "Storage connection of the source. Pick 'local' to use a plain path on this machine's file system."
+            },
+            {
               "key": "source_path",
               "label": "Source path",
               "type": "text",
@@ -1545,8 +1557,20 @@
               "required": true,
               "default": "",
               "placeholder": "/data/report.pdf or /data",
-              "description": "File or directory to copy from, on the source storage connection.",
+              "description": "File or directory to copy from, on the source storage connection — or on the local file system when the source connection is 'local'.",
               "picker": { "kind": "directory", "source": "plugin", "action": "files/listDirs", "connection_field": "source_connection_id" }
+            },
+            {
+              "key": "destination_connection_id",
+              "label": "Destination connection",
+              "type": "text",
+              "binding": "config",
+              "options": [{ "value": "local", "label": "Local path" }],
+              "options_action": "host/connections",
+              "default": "",
+              "placeholder": "(source connection)",
+              "empty_label": "(source connection)",
+              "description": "Storage connection id of the destination; leave empty to use the source connection. Both sides must share one storage engine instance (proxy group) — the built-in local side pairs with any connection without a proxy. Pick 'local' to use a plain path on this machine's file system."
             },
             {
               "key": "destination_path",
@@ -1556,30 +1580,8 @@
               "required": true,
               "default": "",
               "placeholder": "/backup/report.pdf or /backup/data",
-              "description": "Full target path (single file mode) or target directory (directory mode), on the destination storage connection.",
+              "description": "Full target path (single file mode) or target directory (directory mode), on the destination storage connection — or on the local file system when the destination connection is 'local'.",
               "picker": { "kind": "directory", "source": "plugin", "action": "files/listDirs", "connection_field": ["destination_connection_id", "source_connection_id"] }
-            },
-            {
-              "key": "source_connection_id",
-              "label": "Source connection id",
-              "type": "text",
-              "binding": "config",
-              "options_action": "host/connections",
-              "default": "",
-              "placeholder": "(task connection)",
-              "empty_label": "(task connection)",
-              "description": "Storage connection id of the source; leave empty to use the connection this task is bound to."
-            },
-            {
-              "key": "destination_connection_id",
-              "label": "Destination connection id",
-              "type": "text",
-              "binding": "config",
-              "options_action": "host/connections",
-              "default": "",
-              "placeholder": "(source connection)",
-              "empty_label": "(source connection)",
-              "description": "Storage connection id of the destination; leave empty to use the source connection. Both sides must share one storage engine instance (proxy group)."
             },
             {
               "key": "recursive",
@@ -1941,25 +1943,29 @@
               "fields": {
                 "source_path": {
                   "label": "源路径",
-                  "description": "来源存储连接上要同步的目录。",
+                  "description": "来源存储连接上要同步的目录；源连接选「本地路径」时为本机文件系统上的目录。",
                   "placeholder": "/data"
                 },
                 "destination_path": {
                   "label": "目标路径",
-                  "description": "目标存储连接上要同步到的目录。",
+                  "description": "目标存储连接上要同步到的目录；目标连接选「本地路径」时为本机文件系统上的目录。",
                   "placeholder": "/backup/data"
                 },
                 "source_connection_id": {
-                  "label": "源连接 ID",
-                  "description": "来源存储连接 ID；留空使用任务绑定的连接。",
-                  "placeholder": "（跟随任务连接）",
-                  "empty_label": "（跟随任务连接）"
+                  "label": "源连接",
+                  "description": "来源存储连接。选择「本地路径」可直接使用本机文件系统，无需预先创建存储连接。",
+                  "options": {
+                    "local": "本地路径"
+                  }
                 },
                 "destination_connection_id": {
-                  "label": "目标连接 ID",
-                  "description": "目标存储连接 ID；留空使用源连接。两侧须属同一存储引擎实例（代理组）。",
+                  "label": "目标连接",
+                  "description": "目标存储连接 ID；留空使用源连接。两侧须属同一存储引擎实例（代理组）——内置本地一侧可与任何未配置代理的连接互拷。选择「本地路径」可直接使用本机文件系统。",
                   "placeholder": "（跟随源连接）",
-                  "empty_label": "（跟随源连接）"
+                  "empty_label": "（跟随源连接）",
+                  "options": {
+                    "local": "本地路径"
+                  }
                 },
                 "delete_extra": {
                   "label": "删除目标多余文件",
@@ -2004,25 +2010,29 @@
                 },
                 "source_path": {
                   "label": "源路径",
-                  "description": "来源存储连接上要复制的文件或目录。",
+                  "description": "来源存储连接上要复制的文件或目录；源连接选「本地路径」时为本机文件系统上的路径。",
                   "placeholder": "/data/report.pdf 或 /data"
                 },
                 "destination_path": {
                   "label": "目标路径",
-                  "description": "目标存储连接上的完整目标路径（单文件模式）或目标目录（目录模式）。",
+                  "description": "目标存储连接上的完整目标路径（单文件模式）或目标目录（目录模式）；目标连接选「本地路径」时为本机文件系统上的路径。",
                   "placeholder": "/backup/report.pdf 或 /backup/data"
                 },
                 "source_connection_id": {
-                  "label": "源连接 ID",
-                  "description": "来源存储连接 ID；留空使用任务绑定的连接。",
-                  "placeholder": "（跟随任务连接）",
-                  "empty_label": "（跟随任务连接）"
+                  "label": "源连接",
+                  "description": "来源存储连接。选择「本地路径」可直接使用本机文件系统，无需预先创建存储连接。",
+                  "options": {
+                    "local": "本地路径"
+                  }
                 },
                 "destination_connection_id": {
-                  "label": "目标连接 ID",
-                  "description": "目标存储连接 ID；留空使用源连接。两侧须属同一存储引擎实例（代理组）。",
+                  "label": "目标连接",
+                  "description": "目标存储连接 ID；留空使用源连接。两侧须属同一存储引擎实例（代理组）——内置本地一侧可与任何未配置代理的连接互拷。选择「本地路径」可直接使用本机文件系统。",
                   "placeholder": "（跟随源连接）",
-                  "empty_label": "（跟随源连接）"
+                  "empty_label": "（跟随源连接）",
+                  "options": {
+                    "local": "本地路径"
+                  }
                 },
                 "recursive": {
                   "label": "递归",
@@ -2356,25 +2366,29 @@
               "fields": {
                 "source_path": {
                   "label": "來源路徑",
-                  "description": "來源儲存連線上要同步的目錄。",
+                  "description": "來源儲存連線上要同步的目錄；來源連線選「本地路徑」時為本機檔案系統上的目錄。",
                   "placeholder": "/data"
                 },
                 "destination_path": {
                   "label": "目標路徑",
-                  "description": "目標儲存連線上要同步到的目錄。",
+                  "description": "目標儲存連線上要同步到的目錄；目標連線選「本地路徑」時為本機檔案系統上的目錄。",
                   "placeholder": "/backup/data"
                 },
                 "source_connection_id": {
-                  "label": "來源連線 ID",
-                  "description": "來源儲存連線 ID；留空使用任務綁定的連線。",
-                  "placeholder": "（跟隨任務連線）",
-                  "empty_label": "（跟隨任務連線）"
+                  "label": "來源連線",
+                  "description": "來源儲存連線。選擇「本地路徑」可直接使用本機檔案系統，無需預先建立儲存連線。",
+                  "options": {
+                    "local": "本地路徑"
+                  }
                 },
                 "destination_connection_id": {
-                  "label": "目標連線 ID",
-                  "description": "目標儲存連線 ID；留空使用來源連線。兩側須屬同一儲存引擎實例（代理組）。",
+                  "label": "目標連線",
+                  "description": "目標儲存連線 ID；留空使用來源連線。兩側須屬同一儲存引擎實例（代理組）——內建本機一側可與任何未設定代理的連線互拷。選擇「本地路徑」可直接使用本機檔案系統。",
                   "placeholder": "（跟隨來源連線）",
-                  "empty_label": "（跟隨來源連線）"
+                  "empty_label": "（跟隨來源連線）",
+                  "options": {
+                    "local": "本地路徑"
+                  }
                 },
                 "delete_extra": {
                   "label": "刪除目標多餘檔案",
@@ -2419,25 +2433,29 @@
                 },
                 "source_path": {
                   "label": "來源路徑",
-                  "description": "來源儲存連線上要複製的檔案或目錄。",
+                  "description": "來源儲存連線上要複製的檔案或目錄；來源連線選「本地路徑」時為本機檔案系統上的路徑。",
                   "placeholder": "/data/report.pdf 或 /data"
                 },
                 "destination_path": {
                   "label": "目標路徑",
-                  "description": "目標儲存連線上的完整目標路徑（單一檔案模式）或目標目錄（目錄模式）。",
+                  "description": "目標儲存連線上的完整目標路徑（單一檔案模式）或目標目錄（目錄模式）；目標連線選「本地路徑」時為本機檔案系統上的路徑。",
                   "placeholder": "/backup/report.pdf 或 /backup/data"
                 },
                 "source_connection_id": {
-                  "label": "來源連線 ID",
-                  "description": "來源儲存連線 ID；留空使用任務綁定的連線。",
-                  "placeholder": "（跟隨任務連線）",
-                  "empty_label": "（跟隨任務連線）"
+                  "label": "來源連線",
+                  "description": "來源儲存連線。選擇「本地路徑」可直接使用本機檔案系統，無需預先建立儲存連線。",
+                  "options": {
+                    "local": "本地路徑"
+                  }
                 },
                 "destination_connection_id": {
-                  "label": "目標連線 ID",
-                  "description": "目標儲存連線 ID；留空使用來源連線。兩側須屬同一儲存引擎實例（代理組）。",
+                  "label": "目標連線",
+                  "description": "目標儲存連線 ID；留空使用來源連線。兩側須屬同一儲存引擎實例（代理組）——內建本機一側可與任何未設定代理的連線互拷。選擇「本地路徑」可直接使用本機檔案系統。",
                   "placeholder": "（跟隨來源連線）",
-                  "empty_label": "（跟隨來源連線）"
+                  "empty_label": "（跟隨來源連線）",
+                  "options": {
+                    "local": "本地路徑"
+                  }
                 },
                 "recursive": {
                   "label": "遞迴",
@@ -2775,11 +2793,11 @@
               "description": "File or directory on the destination storage connection."
             },
             "source_connection_id": {
-              "label": "Source connection id",
-              "description": "Storage connection id of the source; leave empty to use the connection this task is bound to."
+              "label": "Source connection",
+              "description": "Storage connection of the source."
             },
             "destination_connection_id": {
-              "label": "Destination connection id",
+              "label": "Destination connection",
               "description": "Storage connection id of the destination; leave empty to use the source connection. Both sides must share one storage engine instance (proxy group)."
             },
             "delete_extra": {

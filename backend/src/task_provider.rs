@@ -1800,6 +1800,58 @@ mod tests {
         assert_eq!(cancelled["message"], "cancelled by request");
     }
 
+    // -- validate: reserved local side -----------------------------------------
+
+    /// The scheduler form's reserved `local` side (manifest option value)
+    /// validates without any registered connection — the engine folds it in
+    /// (see `RcloneEngine::binding`), and a plain path under `/` passes the
+    /// root-`/` policy gates of the synthesized local binding.
+    #[test]
+    fn validate_accepts_the_reserved_local_side_without_registered_connections() {
+        let engine = Arc::new(crate::rclone::RcloneEngine::new());
+        let validation = validate(
+            &engine,
+            TRIGGER_SYNC,
+            Some("task-bound-conn"),
+            None,
+            Some(&json!({
+                "sourceConnectionId": crate::rclone::LOCAL_CONNECTION_ALIAS,
+                "sourcePath": "/tmp/dbx-local-src",
+                "destinationConnectionId": crate::rclone::LOCAL_CONNECTION_ALIAS,
+                "destinationPath": "/tmp/dbx-local-dst"
+            })),
+        );
+        assert!(
+            validation.errors.is_empty(),
+            "local → local must validate: {:?}",
+            validation.errors
+        );
+        let resolved = validation.resolved.expect("resolved");
+        assert_eq!(resolved.source_connection_id, crate::rclone::LOCAL_CONNECTION_ALIAS);
+        assert_eq!(resolved.destination_connection_id, crate::rclone::LOCAL_CONNECTION_ALIAS);
+
+        // An unknown connection id still fails the same way as before.
+        let validation = validate(
+            &engine,
+            TRIGGER_SYNC,
+            Some("task-bound-conn"),
+            None,
+            Some(&json!({
+                "sourceConnectionId": "ghost-conn",
+                "sourcePath": "/data",
+                "destinationPath": "/backup"
+            })),
+        );
+        assert!(
+            validation
+                .errors
+                .iter()
+                .any(|error| error.contains("ghost-conn") && error.contains("not available")),
+            "unknown ids stay unavailable: {:?}",
+            validation.errors
+        );
+    }
+
     // -- redaction --------------------------------------------------------------
 
     #[test]
