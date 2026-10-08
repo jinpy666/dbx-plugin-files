@@ -262,32 +262,37 @@ impl TriggerConfig {
         let Value::Object(map) = value else {
             return Err("config must be a JSON object".to_string());
         };
-        let text = |key: &str| -> Option<String> {
-            map.get(key)
+        let text = |value: Option<&Value>| -> Option<String> {
+            value
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(str::to_string)
         };
-        let boolean = |key: &str, default: bool| -> Result<bool, String> {
-            match map.get(key) {
+        let boolean = |value: Option<&Value>, key: &str, default: bool| -> Result<bool, String> {
+            match value {
                 None | Some(Value::Null) => Ok(default),
                 Some(Value::Bool(value)) => Ok(*value),
                 Some(other) => Err(format!("{key} must be a boolean, got {other}")),
             }
         };
+        // The workbench API speaks camelCase; the scheduler manifest's form
+        // field keys are snake_case (the host stores the form verbatim).
+        // Accept both spellings, camel winning when both are present — the
+        // workbench contract stays authoritative.
+        let pick = |camel: &str, snake: &str| map.get(camel).or_else(|| map.get(snake));
         config.mode = CopyMode::parse(map.get("mode").and_then(Value::as_str))?;
-        config.source_connection_id = text("sourceConnectionId");
-        config.source_path = text("sourcePath").unwrap_or_default();
-        config.destination_connection_id = text("destinationConnectionId");
-        config.destination_path = text("destinationPath").unwrap_or_default();
-        config.recursive = boolean("recursive", true)?;
-        config.delete_extra = boolean("deleteExtra", true)?;
-        config.overwrite = boolean("overwrite", true)?;
-        config.checksum = boolean("checksum", false)?;
-        config.resume = boolean("resume", true)?;
-        config.dry_run = boolean("dryRun", false)?;
-        config.concurrency = match map.get("concurrency") {
+        config.source_connection_id = text(pick("sourceConnectionId", "source_connection_id"));
+        config.source_path = text(pick("sourcePath", "source_path")).unwrap_or_default();
+        config.destination_connection_id = text(pick("destinationConnectionId", "destination_connection_id"));
+        config.destination_path = text(pick("destinationPath", "destination_path")).unwrap_or_default();
+        config.recursive = boolean(pick("recursive", "recursive"), "recursive", true)?;
+        config.delete_extra = boolean(pick("deleteExtra", "delete_extra"), "deleteExtra", true)?;
+        config.overwrite = boolean(pick("overwrite", "overwrite"), "overwrite", true)?;
+        config.checksum = boolean(pick("checksum", "checksum"), "checksum", false)?;
+        config.resume = boolean(pick("resume", "resume"), "resume", true)?;
+        config.dry_run = boolean(pick("dryRun", "dry_run"), "dryRun", false)?;
+        config.concurrency = match pick("concurrency", "concurrency") {
             None | Some(Value::Null) => None,
             Some(value) => {
                 let raw = value
@@ -1648,6 +1653,39 @@ mod tests {
         let error = TriggerConfig::parse(Some(&json!({ "concurrency": "many" })))
             .expect_err("bad concurrency");
         assert!(error.contains("concurrency"), "{error}");
+    }
+
+    #[test]
+    fn parse_accepts_the_scheduler_manifest_snake_case_keys() {
+        // The workbench API speaks camelCase; the scheduler manifest's form
+        // field keys are snake_case. Both spellings must land on the same
+        // config or every form-saved task fails validation.
+        let config = TriggerConfig::parse(Some(&json!({
+            "source_connection_id": "local",
+            "source_path": "/tmp/a",
+            "destination_connection_id": "conn-d",
+            "destination_path": "/tmp/b",
+            "delete_extra": false,
+            "dry_run": true,
+            "concurrency": 4,
+        })))
+        .expect("snake case config parses");
+        assert_eq!(config.source_connection_id.as_deref(), Some("local"));
+        assert_eq!(config.source_path, "/tmp/a");
+        assert_eq!(config.destination_connection_id.as_deref(), Some("conn-d"));
+        assert_eq!(config.destination_path, "/tmp/b");
+        assert!(!config.delete_extra);
+        assert!(config.dry_run);
+        assert_eq!(config.concurrency, Some(4));
+
+        // camelCase wins when both spellings are present: the workbench
+        // contract stays authoritative.
+        let both = TriggerConfig::parse(Some(&json!({
+            "sourcePath": "/camel",
+            "source_path": "/snake",
+        })))
+        .expect("both spellings parse");
+        assert_eq!(both.source_path, "/camel");
     }
 
     // -- dir job mapping (pure) -----------------------------------------------
