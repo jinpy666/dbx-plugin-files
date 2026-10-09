@@ -134,9 +134,10 @@ impl PathPolicy {
     ///
     /// When `lock_to_root` is set and a root is configured, every resolved
     /// path stays inside `root`; root-prefixed absolute spellings keep their
-    /// absolute reading. Rejected: NUL/control characters, backslashes
-    /// (ambiguous across fs backends), and any `..` that escapes the visible
-    /// space.
+    /// absolute reading. Rejected: NUL/control characters and any `..` that
+    /// escapes the visible space (backslash spellings are probed under the
+    /// worst-case `\`-as-separator reading; literal backslash names pass
+    /// through — see [`sanitize`]).
     pub fn resolve(&self, path: &str) -> Result<ResolvedPath, String> {
         let sanitized = sanitize(path)?;
         // Inputs without a leading slash are relative to the configured root
@@ -276,13 +277,13 @@ impl PathPolicy {
 
 /// Normalizes a configured root into canonical absolute form.
 ///
-/// Windows drive-letter roots (`C:\data`, `C:\`) use `\` as separator —
-/// `sanitize` rejects backslashes everywhere else, so without the drive-form
-/// pre-normalization such roots silently fell back to `/` and `lock_to_root`
-/// became a no-op (`C:\data` and `C:/data` behaved differently with no
-/// warning; review FILES-M3). Drive-form input is backslash-normalized to
-/// `/` first, so both spellings canonicalize identically and the lock
-/// applies.
+/// Windows drive-letter roots (`C:\data`, `C:\`) use `\` as separator — the
+/// `..`-escape probe reads `\` as a separator, so without the drive-form
+/// pre-normalization a root like `C:\data..\x` would read differently than
+/// its forward-slash spelling, and `C:\data` vs `C:/data` would behave
+/// differently with no warning (review FILES-M3). Drive-form input is
+/// backslash-normalized to `/` first, so both spellings canonicalize
+/// identically and the lock applies.
 fn canonical_root(root: &str) -> String {
     let trimmed = root.trim_end_matches('/');
     let is_drive_form = {
@@ -310,10 +311,21 @@ pub fn sanitize_path(path: &str) -> Result<String, String> {
 }
 
 /// Sanitizes a raw path into canonical absolute form (`/a/b`, `/` for root).
+///
+/// Control characters are always rejected. Backslashes are LEGAL: object
+/// store keys (s3 family) and non-Windows file names carry them literally,
+/// and listings return such entries verbatim — rejecting them at read time
+/// contradicted the listing (issue #80). The traversal red line is instead
+/// enforced under the worst-case separator reading: `\` is normalized to `/`
+/// for a `..`-escape check (on Windows fs `\` IS a separator), while the
+/// literal path is handed to the backend untouched.
 fn sanitize(path: &str) -> Result<String, String> {
-    if path.chars().any(|ch| ch == '\\' || ch.is_control()) {
+    if path.chars().any(|ch| ch.is_control()) {
+        return Err(format!("path '{path}' contains control characters"));
+    }
+    if path.contains('\\') && escapes_via_backslash(path) {
         return Err(format!(
-            "path '{path}' contains backslashes or control characters"
+            "path '{path}' escapes the connection root via backslash traversal"
         ));
     }
     let mut segments: Vec<&str> = Vec::new();
@@ -333,6 +345,27 @@ fn sanitize(path: &str) -> Result<String, String> {
     } else {
         Ok(format!("/{}", segments.join("/")))
     }
+}
+
+/// `\`-aware traversal probe: would this path escape the visible space if
+/// every backslash were a separator? Pure check — the literal path travels
+/// on (object keys keep their backslashes byte-for-byte).
+fn escapes_via_backslash(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let mut depth: usize = 0;
+    for segment in normalized.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                if depth == 0 {
+                    return true;
+                }
+                depth -= 1;
+            }
+            _ => depth += 1,
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -410,8 +443,10 @@ mod tests {
         for input in [
             "../x",
             "a/../../x",
-            "a\\..\\b",
-            "a\\b",
+            // `\` 按最坏分隔符解释（Windows fs）做穿越检测：两级 `..` 逃出
+            // 可视空间顶层 → 拒绝（issue #80 修复后的红线）。
+            "a\\..\\..\\x",
+            "\\..\\x",
             "a\0b",
             "a\nb",
             "a/../b/../../../c",
@@ -420,6 +455,30 @@ mod tests {
                 policy.resolve(input).is_err(),
                 "resolve('{input}') should be rejected"
             );
+        }
+    }
+
+    /// issue #80 回归（图 2：`txffp\20201214\…jpg`）：对象存储 key 与非
+    /// Windows 文件名里的反斜杠是合法字面字符，列表能原样返回这类条目，
+    /// 读侧不得自相矛盾地拒绝。字面路径逐字节透传；只有按最坏分隔符解释
+    /// 会 `..` 逃逸的拼写才被拒。
+    #[test]
+    fn resolve_passes_backslash_names_through_literally() {
+        let policy = policy("/", false, false, true);
+        let cases = [
+            "txffp\\20201214\\79e794bf3c8d4647b3f76bf25b4eb13e.jpg",
+            "flat\\back.jpg",
+            "a,b.csv",
+            "balance#alipay#20220822#QRA_1.csv",
+            // 单级 `..\` 不逃逸（Windows 语义下等价 `a/../b`，仍在可视空间）。
+            "a\\..\\b",
+        ];
+        for input in cases {
+            let resolved = policy
+                .resolve(input)
+                .unwrap_or_else(|err| panic!("resolve('{input}') should pass: {err}"));
+            // 字面透传：relative 与输入逐字节一致（根为 / 时）。
+            assert_eq!(resolved.relative, input, "'{input}' must travel literally");
         }
     }
 
@@ -642,12 +701,13 @@ mod tests {
     #[test]
     fn sanitize_path_adversarial_inputs_reject_or_stay_literal() {
         // 拒绝：遍历逃逸与歧义字节（`..` 段在栈空时必须报错，不许吞）。
+        // 反斜杠拼写按最坏分隔符解释探穿越（issue #80 修复后的红线）。
         for input in [
             "/..",
             "../x",
             "a/../../etc",
             "/a/../..",
-            "a\\..\\b",
+            "a\\..\\..\\b",
             "a\0b",
             "a\nb",
         ] {
@@ -660,7 +720,9 @@ mod tests {
         assert_eq!(sanitize_path("/a/./b").unwrap(), "/a/b");
         assert_eq!(sanitize_path(".").unwrap(), "/");
         // 字面透传：不展开、不解码、不归一化（相对输入补前导 `/` 属既有
-        // 根相对语义，`~` 依旧是字面名）。
+        // 根相对语义，`~` 依旧是字面名）。反斜杠名是合法字面（issue #80：
+        // 对象存储 key / 非 Windows 文件名），`\..\` 单级拼写不逃逸同样
+        // 字面传递——穿越红线由 escapes_via_backslash 的最坏解释守住。
         for (input, literal) in [
             ("~", "/~"),
             ("/home/u/~x", "/home/u/~x"),
@@ -669,6 +731,8 @@ mod tests {
             ("/caf\u{e9}", "/caf\u{e9}"),   // NFC
             ("/cafe\u{301}", "/cafe\u{301}"), // NFD 组合（与 NFC 不同字节 → 不同条目）
             ("/data/报告 v2.txt", "/data/报告 v2.txt"), // 空格与 unicode 文件名合法
+            ("/txffp\\20201214\\a.jpg", "/txffp\\20201214\\a.jpg"),
+            ("/a\\..\\b", "/a\\..\\b"),
         ] {
             assert_eq!(
                 sanitize_path(input).unwrap(),

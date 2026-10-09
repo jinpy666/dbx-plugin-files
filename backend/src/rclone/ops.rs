@@ -1348,10 +1348,15 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.contains("escapes the connection root"), "{error}");
-        let error = size(&client, "dbxdead:", "a\\b", "", false)
+        // 反斜杠 `..` 逃逸拼写（issue #80 修复后的红线）依旧在任何 rc 调用
+        // 之前拒绝；字面反斜杠名（`a\b`）自该修复起放行。
+        let error = size(&client, "dbxdead:", "a\\..\\..\\b", "", false)
             .await
             .unwrap_err();
-        assert!(error.contains("backslashes or control characters"), "{error}");
+        assert!(
+            error.contains("escapes the connection root via backslash traversal"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -2037,11 +2042,15 @@ mod tests {
                 "listing vocabulary must pass the gate, got: {error}"
             );
         }
-        // 反斜杠路径同样在 HTTP 之前拒绝。
-        let error = delete_file(&client, "dbx:", "a\\b", "", false)
+        // 反斜杠 `..` 逃逸拼写同样在 HTTP 之前拒绝（issue #80 修复后的
+        // 红线）；字面反斜杠名自该修复起放行。
+        let error = delete_file(&client, "dbx:", "a\\..\\..\\b", "", false)
             .await
             .unwrap_err();
-        assert!(error.contains("backslashes or control characters"), "{error}");
+        assert!(
+            error.contains("escapes the connection root via backslash traversal"),
+            "{error}"
+        );
         // purge 根红线（policy::check_purge，与接线层 refuse_root_purge 同源）。
         for path in ["", "/"] {
             let error = purge(&client, "dbx:", path, "", false).await.unwrap_err();
