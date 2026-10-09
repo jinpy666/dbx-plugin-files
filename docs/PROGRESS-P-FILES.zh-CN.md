@@ -2231,3 +2231,72 @@ customCommand+remotePath → 顶部提示；「记住为默认」后子菜单出
 验证：`pnpm typecheck/test` 全绿（662）；build 通过。剩余说明：ask 决议
 弹窗复用同一 `.wb-dialog` 样式体系，视觉走查由决议流 spec 逻辑覆盖 +
 子菜单/弹窗截图背书，未单独截图。
+
+## 用户上报修复批：#80 特殊字符名下载/预览失败 + #81 七牛桶列表不全（2026-10-09）
+
+基线 `files-v0.1.88`（修复分支 `fix/v0.1.88-user-issues`，基于 tag）。两个
+issue 各自的根因都在 MinIO + rclone v1.75.1 真机黑盒复现中钉死：
+
+### #80 根因一（主）：listStream 升级路径条目 path 丢 listed 前缀
+
+- **现象**：namespace 连接（bucket 字段空，根=桶列表）进入桶内浏览大目录
+  （用户 2755 项 > 5s 软超时）后，下载/预览报
+  `Failed to stat 'balance#alipay#…csv': path does not exist`——截图逐字
+  吻合。目录内**所有**文件都失败，用户文件全是 `#` 命名故标题归因特殊字符。
+- **根因**（live-verified v1.75.1）：`rclone lsjson remote:bucket` 输出的
+  `Path` 相对 **listed 目录**（裸名），rc 快路径 `operations/list` 同一次
+  列取输出 `bucket/file`（相对 fs 根、带 listed 前缀）。listStream 软超时
+  升级 `lsjson` 子进程后条目 path 丢桶前缀 → 前端回传单段 path → stat 单段
+  remote → rclone 把文件名折叠成 bucket 名 → `item:null`。既有
+  `stream_filters_marker_entries` 夹具恰好假定了带前缀的错误形态，掩盖了
+  该语义差；smoke stream 段只测根目录（prefix 空，两形态同形）也测不到。
+- **修复**（`rclone/list_stream.rs`）：升级路径 `apply_listed_prefix` 在
+  marker 过滤（keep）之后把条目 path 拼回 `/{prefix}/{raw}`，与 rc 快路径
+  同口径；prefix 空（根层）不改写。特殊字符名逐字节字面保留。
+
+### #80 根因二（图 2，`\`）：policy 一刀切拒绝反斜杠
+
+- **现象**：`path '/yq-test1/txffp\20201214\…jpg' contains backslashes or
+  control characters`——s3 系对象 key 含 `\` 完全合法（列表能返回），
+  读侧却被 `policy::sanitize` 无条件拒绝，列表/操作自相矛盾。
+- **修复**（`policy.rs`）：`\` 放行为字面字符；穿越红线改按「最坏分隔符
+  解释」探查——含 `\` 的拼写先归一 `\`→`/` 做 `..` 逃逸检测
+  （`escapes_via_backslash`，Windows fs 语义），字面路径原样传后端。
+  `a\..\..\x`、`\..\x` 依旧拒绝；`txffp\20201214\a.jpg`、`a\..\b`（单级
+  不逃逸）放行。错误文案拆分：控制字符 → "contains control characters"，
+  反斜杠逃逸 → "escapes the connection root via backslash traversal"。
+  本地下载落盘名（`local_downloads::sanitize_file_name`）本就过滤 `\`，
+  Windows 落盘不受影响。
+
+### #81：七牛 namespace 连接"没有显示所有的桶"
+
+- **根因**：七牛 S3 兼容网关按区域部署（`s3.<region>.qiniucs.com`），
+  ListBuckets（GET /）返回范围由网关决定（社区普遍经验：仅同区域空间；
+  官方文档未明确），插件端无法枚举跨区域桶——服务端行为，不可"修复"。
+  插件侧真实缺陷是**配置期假阳性**：bucket-less 连接的 `connection/test`
+  跳过存在性检查（`check_root=false`），endpoint 错误/网关拒绝列出也报
+  "已连接"，用户在配置页拿到绿灯后在桶视图看到空列表无从归因。
+- **修复**：`registry::test_connection` 对 bucket-namespace 连接
+  （`namespace_probe_needed` = bucket 根型 + root 空）在 cleanup 前实际
+  列一次根——ListBuckets 报错即测试失败并透传原始错误；列根为空不报错
+  （空桶账号合法）。前端 FileTable 空态在 namespace 根视图空列表时显示
+  解释文案（S3 兼容网关按 endpoint 区域返回桶，建议核对区域或直接填桶名），
+  新 i18n 键 `bucketListEmptyHint` 七语同步。
+
+### 测试
+
+- 后端：`list_stream` 新增升级路径口径回归（lsjson 裸名 + 前缀拼回 ==
+  rc 条目，`#`/`\` 字面保留）；`stream_filters_marker_entries` 夹具改为
+  真实 lsjson 形态（期望值不变）；`policy` 新增反斜杠字面透传 + `\..\..\`
+  逃逸拒绝回归；`registry` 新增探活决策单测；ops 门禁两处旧文案断言迁移。
+- 前端：FileTable 桶空态提示 spec（根视图显示/子目录与非 namespace 不显示）。
+- **端到端真机复现**（MinIO + release sidecar，7 步全绿）：namespace 根
+  列桶、connection/test 探活、listStream 升级路径条目带 `/bucket/` 前缀、
+  含 `#` stat + 下载 round-trip、含 `\` stat、含 `,` stat。
+- `scripts/test.sh`（带 MinIO s3 段）全绿：cargo test 525、前端
+  typecheck + vitest 698 + build、framed smoke PASS 108 / SKIP 5 / FAIL 0。
+
+剩余风险：#81 的跨区域桶不可见是七牛网关行为，真机需用真实七牛账号复验
+（本环境无凭据）；listStream 升级路径的修复需要真机在大目录 + 慢网下复验
+（软超时 5s 的触发面）；`#` 在 presign 公开链接 URL 里的编码已由 0.1.81
+的 `encode_serve_path` 覆盖，本轮未改动。
