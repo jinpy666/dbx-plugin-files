@@ -720,10 +720,14 @@ pub fn binding_for(connection: &StoredConnection) -> Result<RemoteBinding, Strin
 /// surfaces as a failed test in both rclone shapes (verified on a live rcd):
 /// local-like backends fail fs creation with rc 404 "directory not found",
 /// object-rooted backends answer `Ok(item: null)` — caught by the explicit
-/// check below. Bucket-less empty roots skip that check. For bucket-based
-/// backends a 404 gains a diagnostic hint: the first path segment of the
-/// root is the bucket name, so the usual cause is a wrong bucket/endpoint,
-/// not a missing directory (issue #53).
+/// check below. Bucket-less empty roots skip that check, but bucket-namespace
+/// connections (root = bucket list, issue #81) additionally probe the root
+/// LISTING once: rclone walks ListBuckets there, so a wrong endpoint, failed
+/// signature, or a gateway refusing the listing fails the test with the
+/// original error instead of a false "connected" plus an empty bucket view.
+/// For bucket-based backends a 404 gains a diagnostic hint: the first path
+/// segment of the root is the bucket name, so the usual cause is a wrong
+/// bucket/endpoint, not a missing directory (issue #53).
 pub async fn test_connection(
     client: &RcClient,
     connection: &StoredConnection,
@@ -757,6 +761,18 @@ pub async fn test_connection(
         return Err(error.to_string());
     }
     let stat = client.operations_stat(&fs_string, "").await;
+    // issue #81：bucket-namespace 连接（根=桶列表）在配置期实际列一次根。
+    // stat 对 bucket-less 根没有对象语义（下方 missing 检查被跳过）；rclone
+    // 对无 root 的 bucket 根型 fs 列根走 ListBuckets——endpoint 错误、签名
+    // 失败或网关拒绝列出在这里就会带着原始错误失败，而不是"已连接"假阳性
+    // + 前端空桶列表（用户视角即"没有显示所有的桶"）。列根为空不报错：
+    // 空桶账号是合法状态。
+    let check_root = !(connection.root.is_empty() && connection.protocol != "fs");
+    let bucket_listing = if namespace_probe_needed(&backend_type, check_root) {
+        Some(client.operations_list(&fs_string, "", Value::Null).await)
+    } else {
+        None
+    };
     let cleanup = client.config_delete(&name).await;
     let stat = stat.map_err(|error| {
         // Bucket-based backends address the bucket as the first fs path
@@ -778,7 +794,6 @@ pub async fn test_connection(
     })?;
     cleanup.map_err(|error| format!("connection test passed but cleanup failed: {error}"))?;
 
-    let check_root = !(connection.root.is_empty() && connection.protocol != "fs");
     if check_root {
         let missing = stat.get("item").map(Value::is_null).unwrap_or(true);
         if missing {
@@ -793,7 +808,19 @@ pub async fn test_connection(
             ));
         }
     }
+    if let Some(Err(error)) = bucket_listing {
+        return Err(format!(
+            "connection test reached the remote but the bucket listing failed: {error}"
+        ));
+    }
     Ok(())
+}
+
+/// issue #81 探活决策（纯函数便于单测）：bucket 根型后端且 root 未折叠
+/// 任何桶（namespace 形态，`check_root=false` 的构成条件）时，
+/// `connection/test` 需要一次真实的列根来验证 ListBuckets 面。
+fn namespace_probe_needed(backend_type: &str, check_root: bool) -> bool {
+    !check_root && super::is_bucket_rooted(backend_type)
 }
 
 /// `connection/connect`: register the remote in rcd's config and in the
@@ -1540,6 +1567,30 @@ mod tests {
     /// 夹具值统一运行时构造，赋值与断言引用同一函数，语义保持确定。
     pub(super) fn secret(tag: &str) -> String {
         format!("fixture::{tag}")
+    }
+
+    /// issue #81 探活决策：仅 bucket 根型后端的 namespace 形态（root 未折叠
+    /// 桶 → `check_root=false`）需要列根探活；折叠了桶、path 根型后端与
+    /// fs 协议都不需要。（backend_type 是归一后的 rclone 类型——oss/qiniu
+    /// 等协议在 registry 里都归一成 `s3`。）
+    #[test]
+    fn namespace_probe_applies_only_to_rootless_bucket_backends() {
+        for backend in ["s3", "gcs", "azureblob", "qingstor", "swift", "storj", "b2"] {
+            assert!(
+                namespace_probe_needed(backend, false),
+                "{backend} namespace connection must probe the bucket listing"
+            );
+            assert!(
+                !namespace_probe_needed(backend, true),
+                "{backend} rooted connection resolves via stat, no listing probe"
+            );
+        }
+        for backend in ["local", "sftp", "webdav", "ftp"] {
+            assert!(
+                !namespace_probe_needed(backend, false),
+                "{backend} is path-rooted: no bucket listing probe"
+            );
+        }
     }
 
     /// A blank connection for `protocol`; tests flip individual fields.

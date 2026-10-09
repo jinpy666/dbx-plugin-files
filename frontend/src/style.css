@@ -147,6 +147,8 @@ button.wb-session-reconnect:focus-visible { outline: 2px solid var(--destructive
 .wb-file-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; max-width: 320px; margin: 24px auto 0; border: 1px dashed var(--border); border-radius: var(--radius); padding: 20px 14px; text-align: center; color: var(--muted-foreground); font-size: 12px; }
 .wb-file-empty svg { width: 22px; height: 22px; stroke-width: 1.5; opacity: .8; }
 .wb-file-empty p { margin: 0; }
+/* issue #81：namespace 根空态的解释行（S3 兼容网关的区域行为）。 */
+.wb-file-empty .wb-empty-hint { opacity: .85; line-height: 1.5; }
 /* 空态 CTA（新建文件夹引导）：上面的 svg 规则会波及按钮内图标，收敛回工具栏尺寸。 */
 .wb-file-empty .wb-empty-cta svg { width: 14px; height: 14px; opacity: 1; }
 .wb-file-empty .wb-empty-cta { margin-top: 6px; }

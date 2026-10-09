@@ -112,6 +112,39 @@ describe("FileTable 空态与 a11y（R3-P2-6 / R3-P2-8）", () => {
     expect(wrapper.find(".wb-file-empty").text()).toBe("emptyDirectory");
   });
 
+  // issue #81：namespace 连接（bucketRoot）的根视图空态解释「为什么桶列
+  // 表可能为空」（S3 兼容网关按 endpoint 区域返回桶）。子目录、过滤态与
+  // 非 namespace 连接都不显示，避免把普通空目录误读成桶列表问题。
+  it("bucket namespace root empty state explains the region-gated listing", () => {
+    const mountBucket = (activePath: string) => mount(FileTable, {
+      props: {
+        entries: [],
+        selection: [],
+        activePath,
+        sort: { column: "name", direction: "asc" },
+        bucketRoot: true,
+        t: (key: string) => key,
+      },
+    });
+    const root = mountBucket("/");
+    expect(root.find(".wb-empty-hint").text()).toBe("bucketListEmptyHint");
+    root.unmount();
+    const sub = mountBucket("/bucket");
+    expect(sub.find(".wb-empty-hint").exists()).toBe(false);
+    sub.unmount();
+    const plain = mount(FileTable, {
+      props: {
+        entries: [],
+        selection: [],
+        activePath: "/",
+        sort: { column: "name", direction: "asc" },
+        t: (key: string) => key,
+      },
+    });
+    expect(plain.find(".wb-empty-hint").exists()).toBe(false);
+    plain.unmount();
+  });
+
   // 空目录引导（UX）：可写连接的空目录在空态卡片内给「新建文件夹」直达；
   // 过滤无匹配态与只读连接不显示。
   it("empty directory offers the new-folder CTA when writable, hidden when filtered or read-only", async () => {

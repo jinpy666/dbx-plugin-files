@@ -31,6 +31,9 @@ const props = defineProps<{
   /** 流式列表中：entries 随 chunk 到达逐帧换引用，重置滚动会把用户弹回
    *  顶部（大目录数秒内无法下滚）——streaming 期间跳过 entries watch。 */
   streaming?: boolean;
+  /** issue #81：当前连接为桶命名空间形态（根目录=桶列表）——空态时解释
+   *  「桶列表为空」最常见的原因（S3 兼容网关按 endpoint 区域返回桶）。 */
+  bucketRoot?: boolean;
   t: (key: string, values?: Record<string, string | number>) => string;
 }>();
 
@@ -473,6 +476,12 @@ function onResizeEnd() {
       <div v-else-if="!entries.length" class="wb-file-empty" role="status">
         <component :is="filtered ? SearchX : FolderOpen" aria-hidden="true" />
         <p>{{ filtered ? t("noMatchResults") : t("emptyDirectory") }}</p>
+        <!-- issue #81：namespace 连接的根（桶列表）为空时，给出可操作的
+             解释——S3 兼容网关通常只返回与 endpoint 同区域的桶。仅根视图
+             提示，子目录的空目录不误导。 -->
+        <p v-if="bucketRoot && activePath === '/' && !filtered" class="wb-empty-hint">
+          {{ t("bucketListEmptyHint") }}
+        </p>
         <!-- 空目录引导：新用户面对空目录（尤其是新建的远端桶）不知道下一步，
              上传入口在顶部工具栏而视线焦点在列表中央。过滤无匹配态与只读连接
              不显示；上传按 P1-5 固定右栏目标，不放这里以免误导。 -->
