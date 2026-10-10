@@ -287,7 +287,7 @@ connectionId `__local__`——按需合成的 root=`/` fs 连接（可写、可�
 | `files/delete` | `path` | `allow_delete=false` 拒绝；幂等（OpenDAL 语义） |
 | `files/purge` | `path` | `delete_with(recursive(true))`；**拒绝等于 root 或 `/`**；`allow_delete` 门禁 |
 | `files/copy` / `files/move` | `sourceConnectionId?`（缺省同连接）、`sourcePath`、`targetConnectionId?`、`targetPath` | 同服务走原生 copy/rename（capability 探测）；跨连接或不支持自动降级 read→write job |
-| `files/rename` | `path`、`newPath` | 同连接；capability 不支持时降级 copy+delete job |
+| `files/rename` | `path`、`newPath`、`sourceKind?` | 同连接；capability 不支持时降级 copy+delete job。`sourceKind`（`"file"`\|`"dir"`，issue #82）：对象存储同名文件+前缀目录共存时 `stat` 恒命中文件对象，源实体 kind 由前端列表仲裁；缺省维持 stat 判定 |
 
 （`chmod` 与 `About` 不提供——OpenDAL 无对应能力，见 §5.5。）
 

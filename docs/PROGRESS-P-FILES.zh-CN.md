@@ -2300,3 +2300,74 @@ issue 各自的根因都在 MinIO + rclone v1.75.1 真机黑盒复现中钉死�
 （本环境无凭据）；listStream 升级路径的修复需要真机在大目录 + 慢网下复验
 （软超时 5s 的触发面）；`#` 在 presign 公开链接 URL 里的编码已由 0.1.81
 的 `encode_serve_path` 覆盖，本轮未改动。
+
+## 用户上报修复批：#82 OSS 同名文件+文件夹共存无法单独操作（2026-10-09）
+
+同一修复分支 `fix/v0.1.88-user-issues`（基线 0.1.89-beta.2 工作区，不涉及
+tag/分支指针）。截图：图 1 为 OSS 根目录并列「文件夹 new-api（2000-01-01
+占位时间）」与「文件 new-api（93.0 MiB）」双条目；图 2 为两行同时勾选后
+右键菜单，底部计数「名称 1」——两条实体的勾选互相覆盖。
+
+### 黑盒语义钉死（rclone v1.75.1 + MinIO live-verified）
+
+- 对象存储平铺 key 命名空间下 `abc`（对象）与 `abc/…`（前缀组）合法共存；
+  阿里云 OSS 带 delimiter 列表返回 file `abc` + CommonPrefix `abc/` 双条目
+  （用户截图即此形态）。MinIO 则**遮蔽**冲突前缀（文件 `new-api` 存在时
+  `new-api/inner.txt` 从 ListObjects 消失、`stat` 仍可命中）——MinIO 无法
+  用于列表双条目复现，映射/选中层回归以单测锁定。
+- `operations/stat remote=abc` 与 `remote=abc/` **都命中文件对象**（rclone
+  精确对象优先 + 尾斜杠规范化）——后端不存在能用 path 寻址「目录实体」的
+  手段；文件删掉后同路径 stat 才退回前缀虚拟目录（`inode/directory`）。
+- `operations/deletefile` 只删对象本身；`operations/purge remote=abc` 删
+  `abc/` 前缀树，字符串前缀语义不覆盖 key `abc` 本身（真实 OSS 上不误删
+  同名文件）——删除链路的双实体语义本来就正确，无需改。
+
+### 根因（两处，前端为主）
+
+1. **前端选中/操作身份以裸 path 为唯一 key**：同名 file+dir 双条目 path
+   同值（`/new-api`），checkbox/aria-selected 同亮同灭、勾选互覆（截图
+   「勾 2 显示 1」）、`pickSideEntries`/`toolbarSelectionEntries`/批量下载
+   过滤按 path 命中双实体——「只想删/下/拖其中一个」必然打到两个；右键
+   菜单的条目集也随之失真。
+2. **后端 `files/rename` 用 stat 预检分流文件/目录**：同名共存时 stat 恒
+   命中文件 → 用户重命名**目录**时走对象级 `operations/movefile`，实际
+   重命名的是同名文件（或对象不存在报 NotFound）。
+
+### 修复
+
+- 前端（`lib/api.ts` 新增 `entryKey`/`pathFromEntryKey`，issue #82 注释
+  逐落点标注）：选中集合、shift 区间/全选/Space、行高亮与 aria、checkbox、
+  右键、拖拽 payload（`x-dbx-files` paths）、`pickSideEntries`、
+  `toolbarSelectionEntries`、批量下载过滤、uiIntent `select`、批量重命名
+  抽屉行状态 key 全部改用 **kind+path 复合身份 key**；快照 anchor 出口经
+  `pathFromEntryKey` 反解回裸 path（宿主契约不变）；`activePath` 保持裸
+  path 导航语义不动；FileTable 行 `:key` 同步复合化（消除同名双行 DOM
+  复用）。FileEntry 的 wire 形状零改动——协议无新字段/新方法。
+- 后端（`model.rs` + `main.rs` + `ops.rs`）：`RenameRequest` 增 optional
+  `sourceKind`（`"file"|"dir"`，`serde(default)`），`files/rename` 源实体
+  kind 经 `ops::rename_source_is_dir` 仲裁——前端下发的列表真实 kind 优先
+  （同名共存下 stat 不可信），缺省维持 stat 判定（旧调用方/MCP 兼容）。
+  协议文档 `IMPL_PLAN_DBX_FILES.zh-CN.md` §8.2、`IMPL_PLAN_RCLONE.zh-CN.md`
+  §5 两处同步。
+
+### 测试
+
+- 后端：ops 新增 `entry_from_item_keeps_same_name_file_and_dir_distinct`
+  （rc 双条目映射保真：path 同值、kind 相异、不合并不丢）、
+  `filter_and_sort_keeps_same_name_file_and_dir_pair`（过滤排序不去重）、
+  `rename_source_is_dir_arbitration_table`（仲裁表 + 非法值回退）。
+- 前端：api.spec 身份 key 纯函数（双实体 key 相异 + 反解 round-trip +
+  裸 path 透传）；FileTable.spec 同名双实体 checkbox 独立勾选/右键单选/
+  全选双 key 三用例。既有 9 个 spec 的 selection 构造（裸 path → 身份 key）
+  与 rename 参数断言（补 `sourceKind`）同步迁移。
+- 验证：cargo test --locked 528 全绿；前端 typecheck + vitest 703 全绿 +
+  build 通过；smoke（fs + memory + MinIO s3 段）PASS 108 / SKIP 5 / FAIL 0；
+  `scripts/test.sh` 交付门禁全绿。
+- 黑盒端到端（MinIO + rclone rc 直连）：stat 尾斜杠无效、deletefile 单删
+  对象、purge 前缀树不覆盖同名 key——操作链路语义与修复假设一致，实测
+  通过（列表双条目受 MinIO 遮蔽限制无法在容器内复现，见剩余风险）。
+
+剩余风险：列表双条目 + 分别勾选/删除/重命名的**真机复验**需在真实阿里云
+OSS 上做（本环境无 OSS 凭据，MinIO 遮蔽冲突前缀无法构造双条目场景）；
+`pathExists` 重名预检（新建/重命名目标）在同名共存下仍按 stat 保守报
+「已存在」，属可接受的保守行为，未改动。

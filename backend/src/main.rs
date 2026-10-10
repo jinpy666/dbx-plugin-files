@@ -964,7 +964,10 @@ impl Plugin {
                     binding.lock_to_root,
                 )
                 .await?;
-                if source.kind == "dir" {
+                // issue #82：对象存储同名文件+前缀目录共存时 stat 恒命中文件
+                // 对象（精确对象优先），目录实体重命名须按前端下发的
+                // sourceKind 仲裁；缺省维持 stat 判定（兼容旧调用方/MCP）。
+                if rclone::ops::rename_source_is_dir(&source.kind, request.source_kind.as_deref()) {
                     // 外层 RenameRequest 被 dirJob 的同名遮蔽前先捕获
                     // （失效钩子要引用原语义的连接与路径）。
                     let rename_conn = request.connection_id.clone();

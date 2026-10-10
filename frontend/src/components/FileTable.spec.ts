@@ -42,14 +42,14 @@ describe("FileTable keyboard selection (P2-9 Space 首按回归)", () => {
     pressKeydown(wrapper, "ArrowDown");
     pressKeydown(wrapper, " ");
     // props.activePath 仍为 ""（同 tick），修复后用 nav.index 兜底 → 首按即勾选首行
-    expect(wrapper.emitted("update:selection")?.at(-1)).toEqual([["/a.txt"]]);
+    expect(wrapper.emitted("update:selection")?.at(-1)).toEqual([["file:/a.txt"]]);
   });
 
   it("second Space untoggles once props catch up (toggle semantics intact)", async () => {
     const wrapper = mountTable();
     pressKeydown(wrapper, "ArrowDown");
     pressKeydown(wrapper, " ");
-    await wrapper.setProps({ activePath: "/a.txt", selection: ["/a.txt"] });
+    await wrapper.setProps({ activePath: "/a.txt", selection: ["file:/a.txt"] });
     pressKeydown(wrapper, " ");
     expect(wrapper.emitted("update:selection")?.at(-1)).toEqual([[]]);
   });
@@ -174,7 +174,7 @@ describe("FileTable 空态与 a11y（R3-P2-6 / R3-P2-8）", () => {
     const wrapper = mount(FileTable, {
       props: {
         entries,
-        selection: ["/a.txt"],
+        selection: ["file:/a.txt"],
         activePath: "/a.txt",
         sort: { column: "name", direction: "asc" },
         t: (key: string) => key,
@@ -188,6 +188,73 @@ describe("FileTable 空态与 a11y（R3-P2-6 / R3-P2-8）", () => {
     expect(row.attributes("aria-selected")).toBe("true");
     const checkbox = row.find('input[type="checkbox"]');
     expect(checkbox.attributes("aria-label")).toBe("selectEntry");
+  });
+
+  // issue #82：对象存储同名文件+前缀目录共存（`new-api` 对象 + `new-api/` 前缀组，
+  // 两条目 path 同值、kind 相异）——选中态以 kind+path 身份 key 隔离，互不覆盖。
+  const clashEntries: FileEntry[] = [
+    { name: "new-api", path: "/new-api", kind: "directory" },
+    { name: "new-api", path: "/new-api", kind: "file", size: 93 },
+  ];
+
+  it("same-name file+dir rows toggle selection independently (checkbox)", async () => {
+    const wrapper = mount(FileTable, {
+      props: {
+        entries: clashEntries,
+        selection: [],
+        activePath: "",
+        sort: { column: "name", direction: "asc" },
+        t: (key: string) => key,
+      },
+    });
+    const rows = wrapper.findAll(".wb-file-row");
+    expect(rows.length).toBe(2);
+    await rows[0].find('input[type="checkbox"]').trigger("change");
+    expect(wrapper.emitted("update:selection")?.at(-1)).toEqual([["dir:/new-api"]]);
+    // props 回写后只勾目录行：文件行的 checkbox 与 aria-selected 都保持未选。
+    await wrapper.setProps({ selection: ["dir:/new-api"] });
+    const checked = wrapper.findAll(".wb-file-row").map((row) => (row.find('input[type="checkbox"]').element as HTMLInputElement).checked);
+    expect(checked).toEqual([true, false]);
+    expect(wrapper.findAll(".wb-file-row")[1].attributes("aria-selected")).toBe("false");
+    // 再勾文件行：两实体同存于选择集，而不是覆盖目录行。
+    await wrapper.findAll(".wb-file-row")[1].find('input[type="checkbox"]').trigger("change");
+    expect(wrapper.emitted("update:selection")?.at(-1)).toEqual([["dir:/new-api", "file:/new-api"]]);
+    wrapper.unmount();
+  });
+
+  it("right-click on one same-name entity selects only that entity (contextmenu)", async () => {
+    const wrapper = mount(FileTable, {
+      props: {
+        entries: clashEntries,
+        selection: ["dir:/new-api"],
+        activePath: "",
+        sort: { column: "name", direction: "asc" },
+        t: (key: string) => key,
+      },
+    });
+    // 右键文件行（未在选中集）：选择集整体切到该文件实体。
+    await wrapper.findAll(".wb-file-row")[1].trigger("contextmenu");
+    expect(wrapper.emitted("update:selection")?.at(-1)).toEqual([["file:/new-api"]]);
+    const menu = wrapper.emitted("contextmenu")?.at(-1)?.[0] as { entry: FileEntry };
+    expect(menu.entry.kind).toBe("file");
+    wrapper.unmount();
+  });
+
+  it("select-all carries both same-name entities as distinct keys", async () => {
+    const wrapper = mount(FileTable, {
+      props: {
+        entries: clashEntries,
+        selection: [],
+        activePath: "",
+        sort: { column: "name", direction: "asc" },
+        t: (key: string) => key,
+      },
+    });
+    pressKeydown(wrapper, "ArrowDown");
+    const viewport = wrapper.find(".wb-file-scroll");
+    viewport.element.dispatchEvent(new KeyboardEvent("keydown", { key: "a", metaKey: true, bubbles: true, cancelable: true }));
+    expect(wrapper.emitted("update:selection")?.at(-1)).toEqual([["dir:/new-api", "file:/new-api"]]);
+    wrapper.unmount();
   });
 
   it("column headers carry aria-sort for the active sort column (R3-P2-8)", async () => {
@@ -254,12 +321,12 @@ describe("FileTable 类型图标", () => {
 describe("FileTable write shortcuts", () => {
   it("Delete requests confirmation and F2 targets exactly one selected entry", async () => {
     const wrapper = mountTable();
-    await wrapper.setProps({ canWrite: true, selection: ["/b.txt"], activePath: "/b.txt" });
+    await wrapper.setProps({ canWrite: true, selection: ["file:/b.txt"], activePath: "/b.txt" });
     await wrapper.get('.wb-file-scroll').trigger('keydown', { key: 'Delete' });
     expect(wrapper.emitted('delete')).toEqual([[]]);
     await wrapper.get('.wb-file-scroll').trigger('keydown', { key: 'F2' });
     expect(wrapper.emitted('rename')).toEqual([[entries[1]]]);
-    await wrapper.setProps({ selection: ["/a.txt", "/b.txt"] });
+    await wrapper.setProps({ selection: ["file:/a.txt", "file:/b.txt"] });
     await wrapper.get('.wb-file-scroll').trigger('keydown', { key: 'F2' });
     expect(wrapper.emitted('rename')).toHaveLength(1);
     wrapper.unmount();
@@ -269,7 +336,7 @@ describe("FileTable write shortcuts", () => {
     { canWrite: false }, { loading: true }, { failed: true }, { selection: [] },
   ])("does not request write actions when unavailable: %j", async (props) => {
     const wrapper = mountTable();
-    await wrapper.setProps({ canWrite: true, selection: ["/a.txt"], ...props });
+    await wrapper.setProps({ canWrite: true, selection: ["file:/a.txt"], ...props });
     await wrapper.get('.wb-file-scroll').trigger('keydown', { key: 'Delete' });
     await wrapper.get('.wb-file-scroll').trigger('keydown', { key: 'F2' });
     expect(wrapper.emitted('delete')).toBeUndefined();
@@ -279,7 +346,7 @@ describe("FileTable write shortcuts", () => {
 
   it.each(['metaKey', 'ctrlKey', 'altKey', 'shiftKey', 'repeat', 'isComposing'])("leaves %s shortcuts to their owner", async (modifier) => {
     const wrapper = mountTable();
-    await wrapper.setProps({ canWrite: true, selection: ["/a.txt"] });
+    await wrapper.setProps({ canWrite: true, selection: ["file:/a.txt"] });
     for (const key of ['Delete', 'F2']) {
       const event = new KeyboardEvent('keydown', { key, [modifier]: true, bubbles: true, cancelable: true });
       wrapper.get('.wb-file-scroll').element.dispatchEvent(event);
@@ -292,7 +359,7 @@ describe("FileTable write shortcuts", () => {
 
   it("does not steal Space or write shortcuts from a focused checkbox", async () => {
     const wrapper = mountTable();
-    await wrapper.setProps({ canWrite: true, selection: ["/a.txt"], activePath: "/a.txt" });
+    await wrapper.setProps({ canWrite: true, selection: ["file:/a.txt"], activePath: "/a.txt" });
     for (const key of [' ', 'Delete', 'F2']) {
       const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
       wrapper.get('input[type=checkbox]').element.dispatchEvent(event);
@@ -324,7 +391,7 @@ describe("FileTable loading and failure states", () => {
 
   it.each([{ cached: [] as FileEntry[] }, { cached: entries }])("distinguishes failure from an empty or cached listing: %j", async ({ cached }) => {
     const wrapper = mountTable();
-    await wrapper.setProps({ entries: cached, failed: true, selection: ['/a.txt'] });
+    await wrapper.setProps({ entries: cached, failed: true, selection: ['file:/a.txt'] });
     expect(wrapper.get('[role=status]').text()).toContain('directoryLoadFailed');
     expect(wrapper.findAll('.wb-file-row')).toHaveLength(0);
     expect(wrapper.text()).not.toContain('emptyDirectory');

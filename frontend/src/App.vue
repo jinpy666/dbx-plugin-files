@@ -91,6 +91,7 @@ import {
   bindApi,
   baseName,
   call,
+  entryKey,
   errorMessage,
   formatBytes,
   isHostMethodMissing,
@@ -98,6 +99,7 @@ import {
   joinPath,
   normalizeEntries,
   parentPath,
+  pathFromEntryKey,
   type FileCapabilities,
   type FileEntry,
 } from "./lib/api";
@@ -868,7 +870,8 @@ function openBlank(side: PaneSide, payload: { x: number; y: number }) {
 function toolbarSelectionEntries(side: PaneSide): FileEntry[] {
   const pool = side === "right" ? rightSorted.value : sortedEntries.value;
   const sel = side === "right" ? rightSelection.value : selection.value;
-  return pool.filter((entry) => sel.includes(entry.path));
+  // issue #82：selection 元素是条目身份 key（kind+path），同名文件+目录各自命中。
+  return pool.filter((entry) => sel.includes(entryKey(entry)));
 }
 
 // ---- 收藏夹（rclone-ui parity）------------------------------------------------
@@ -1237,7 +1240,8 @@ function summarizeListing(): UiIntentSummary {
 }
 
 /** 快照型 report：当前面板、path、结果计数、选中项 path（设计 §1「UI 快照」，
- * `files_ui_state` 不带 intentId 时返回）。回报失败由公共层静默收敛。 */
+ * `files_ui_state` 不带 intentId 时返回）。回报失败由公共层静默收敛。
+ * anchor 出口反解为裸 path（selection 元素是 kind+path 身份 key，issue #82）。 */
 function reportPaneSnapshot(side: PaneSide) {
   const left = side === "left";
   const sel = left ? selection.value : rightSelection.value;
@@ -1245,7 +1249,7 @@ function reportPaneSnapshot(side: PaneSide) {
     panel: currentIntentPanel(),
     path: left ? path.value : rightPath.value,
     count: (left ? entries.value : rightEntries.value).length,
-    ...(sel.length ? { anchor: sel[0] } : {}),
+    ...(sel.length ? { anchor: pathFromEntryKey(sel[0]) } : {}),
   });
 }
 
@@ -1299,7 +1303,8 @@ const uiIntentHandlers = {
     if (!row) return { status: "rejected", reason: t("intent.selectMissing") };
     // FileTable 按 selection/activePath 高亮命中行；快照上报由 setPaneSelection 承接。
     const side: PaneSide = leftRow ? "left" : "right";
-    setPaneSelection(side, [target]);
+    // issue #82：selection 元素是条目身份 key（kind+path）。
+    setPaneSelection(side, [entryKey(row)]);
     setPaneActivePath(side, target);
     return { status: "applied", summary: { count: 1, anchor: target, rows: [intentRowOf(row)] } };
   },
@@ -2466,6 +2471,9 @@ async function onConfirm() {
         const retry = transferRequest(id, "files/rename", {
           path: entry.path,
           newPath,
+          // issue #82：对象存储同名文件+目录共存时后端 stat 恒命中文件对象，
+          // 列表真实 kind 随请求仲裁目录 rename 的分流。
+          sourceKind: entry.kind === "directory" ? "dir" : "file",
         });
         const result = await call<{ transport?: string; jobId?: string | null }>(retry.method, retry.params);
         if (result.transport === "job" && result.jobId) {
@@ -2641,9 +2649,11 @@ async function onConfirm() {
 
 // ---- cross-pane transfers（A-FILES ①）-----------------------------------------
 
+/** 按选择集解析条目。`paths` 元素是条目身份 key（kind+path，issue #82）——
+ *  对象存储同名文件+前缀目录共存时裸 path 无法区分双实体，以 key 精确命中。 */
 function pickSideEntries(side: PaneSide, paths: string[]): FileEntry[] {
   const pool = side === "left" ? sortedEntries.value : rightSorted.value;
-  return pool.filter((entry) => paths.includes(entry.path));
+  return pool.filter((entry) => paths.includes(entryKey(entry)));
 }
 
 /**
@@ -3422,7 +3432,8 @@ async function downloadSelection(side: PaneSide = "left") {
   // R3-P1-2：按活动栏解析选择集（此前只读左栏，右栏选中时工具栏下载灰置）。
   const pool = side === "right" ? rightSorted.value : sortedEntries.value;
   const sel = side === "right" ? rightSelection.value : selection.value;
-  const files = pool.filter((entry) => sel.includes(entry.path) && entry.kind === "file");
+  // issue #82：sel 元素是条目身份 key（kind+path）——同名共存时只下载用户选中的文件实体。
+  const files = pool.filter((entry) => sel.includes(entryKey(entry)) && entry.kind === "file");
   // P2-6：过滤后为空（如只选了目录）不再静默，给出明确提示。
   if (!files.length) {
     showNotice(t("downloadNoneSelected"));

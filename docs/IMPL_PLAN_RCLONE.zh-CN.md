@@ -112,7 +112,7 @@ DBX 宿主 ⇄ stdio 帧协议（不变） ⇄ Rust sidecar
 | `files/mkdir` / `files/rmdir` | `operations/mkdir` / `operations/rmdir` | B | |
 | `files/delete` / `files/purge` | `operations/deletefile` / `operations/purge` | B | 门禁（read_only/allow_delete/lock_to_root）沿用 policy.rs，先门禁后 rc |
 | `files/copy` / `files/move` | `operations/copyfile` / `movefile`（跨连接 = 两个 fs 字符串） | B | 同实例降级语义改由 rclone `--server-side-across-configs` 等价机制承担 |
-| `files/rename` | `operations/movefile`（同 fs） | B | |
+| `files/rename` | `operations/movefile`（同 fs）；目录走 `sync/move` job | B | issue #82：`sourceKind?` 仲裁源实体 kind（同名文件+前缀目录共存时 `operations/stat` 恒命中文件对象）；缺省 stat 判定 |
 | `files/publicLink` | `operations/publiclink` | B | 不支持的后端返回原文错误 |
 | `files/upload/start|finish` + 二进制通道 `files/upload/{taskId}` | 帧写入本地 staging 文件，finish 时 `uploadfile`（≥1.68）；进度由字节泵计数 | B | 256KiB 帧、8B BE offset 协议不变 |
 | `files/download/start|finish` + `files/download/{taskId}` | rc-serve GET 流式泵 | B | save_to_local 直落本地（跳过二进制帧）保持现有行为 |

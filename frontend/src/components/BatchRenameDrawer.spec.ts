@@ -88,9 +88,9 @@ describe("BatchRenameDrawer", () => {
     await inputOf(wrapper!, "replace").setValue("z");
     await wrapper!.get("[data-test=apply]").trigger("click");
     await flush();
-    // 只有计划发生变化的行会下发 rename；路径沿用原父目录。
+    // 只有计划发生变化的行会下发 rename；路径沿用原父目录。sourceKind：issue #82 同名共存仲裁。
     expect(renames).toEqual([
-      { connectionId: "conn-1", path: "/dir/a.txt", newPath: "/dir/z.txt" },
+      { connectionId: "conn-1", path: "/dir/a.txt", newPath: "/dir/z.txt", sourceKind: "file" },
     ]);
     expect(wrapper!.emitted("applied")).toEqual([[{ ok: 1, total: 1, renamedPaths: ["/dir/a.txt"] }]]);
     expect(wrapper!.findAll("[data-test=plan-row]")[0].text()).toContain("batchRenameOk");

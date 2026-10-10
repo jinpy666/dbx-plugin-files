@@ -342,10 +342,11 @@ describe("round5 retry UI smoke", () => {
     await openDualPane();
     const folder = parentPath(table(from).props("entries")[0].path);
     const paths = ["failed-one.txt", "failed-two.txt"].map((name) => joinPath(folder, name));
+    const keys = paths.map((path) => `file:${path}`); // issue #82：selection 元素是 kind+path 身份 key。
     for (const path of paths) await window.dbxPlugin.invoke("files/write", { connectionId: from === "left" ? "__local__" : "mock-conn", path, dataBase64: "" });
     table(from).vm.$emit("retry");
     await settle();
-    table(from).vm.$emit("update:selection", paths);
+    table(from).vm.$emit("update:selection", keys);
     await nextTick();
     const entry = table(from).props("entries").find((item) => item.path === paths[0])!;
     table(from).vm.$emit("contextmenu", { entry, x: 10, y: 10 });
@@ -472,7 +473,7 @@ describe("round5 current host context/environment UI smoke", () => {
     }
     mountWorkbench();
     await settle();
-    table("left").vm.$emit("update:selection", paths);
+    table("left").vm.$emit("update:selection", paths.map((path) => `file:${path}`));
     await nextTick();
     wrapper!.getComponent(FileToolbar).vm.$emit("delete");
     await nextTick();

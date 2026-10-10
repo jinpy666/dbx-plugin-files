@@ -84,7 +84,7 @@ describe("batch delete with a failing target", () => {
     await settle();
     expect(leftRowTexts().join("|")).toContain("notes.txt");
 
-    await leftTable().vm.$emit("update:selection", ["/docs/data.csv", "/docs/notes.txt"]);
+    await leftTable().vm.$emit("update:selection", ["file:/docs/data.csv", "file:/docs/notes.txt"]); // issue #82：selection 元素是 kind+path 身份 key。
     await nextTick();
     leftTable().vm.$emit("delete");
     await nextTick();
