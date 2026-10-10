@@ -14,7 +14,7 @@ import { workbenchMessage } from "./lib/i18n";
 import { CONFLICT_POLICY_KEY, prefsStore } from "./lib/prefs";
 import { vTip } from "./lib/tooltip";
 import { saveUiPrefs } from "./lib/prefs";
-import type { FileEntry } from "./lib/api";
+import { entryKey, type FileEntry } from "./lib/api";
 
 let wrapper: VueWrapper | undefined;
 
@@ -178,7 +178,7 @@ describe("download conflict policy (local save)", () => {
     const entry = (table.props("entries") as FileEntry[]).find((candidate) => candidate.name === name);
     expect(entry, `remote fixture ${name} should be listed`).toBeTruthy();
     // selection 的 payload 是路径数组（见 App.parityTools.spec 先例），不是条目对象。
-    table.vm.$emit("update:selection", [entry!.path]);
+    table.vm.$emit("update:selection", [entryKey(entry!)]);
     await settle();
     const download = wrapper!.getComponent(FileToolbar).findAll("button")
       .find((button) => button.attributes("aria-label") === workbenchMessage("en", "download"))!;

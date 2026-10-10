@@ -134,7 +134,8 @@ describe("workbench intent wiring (App.vue + mock host)", () => {
     await settle();
     emitUiIntent({ intentId: "i-select", action: "select", params: { path: "/docs/readme.md" } });
     await settle();
-    expect(table().props("selection")).toEqual(["/docs/readme.md"]);
+    // issue #82：selection 元素是 kind+path 身份 key；快照 anchor 反解回裸 path。
+    expect(table().props("selection")).toEqual(["file:/docs/readme.md"]);
     expect(table().props("activePath")).toBe("/docs/readme.md");
     expect(intentReport("i-select")).toMatchObject({
       intentId: "i-select",
@@ -161,7 +162,7 @@ describe("workbench intent wiring (App.vue + mock host)", () => {
       expect.objectContaining({ status: "snapshot", summary: expect.objectContaining({ panel: "browse", path: "/docs", count: expect.any(Number) }) }),
     );
     invoke.mockClear();
-    table().vm.$emit("update:selection", ["/docs/readme.md"]);
+    table().vm.$emit("update:selection", ["file:/docs/readme.md"]);
     await nextTick();
     expect(reportBodies()).toContainEqual(
       expect.objectContaining({ status: "snapshot", summary: expect.objectContaining({ path: "/docs", anchor: "/docs/readme.md" }) }),

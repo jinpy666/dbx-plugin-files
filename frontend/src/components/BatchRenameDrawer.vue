@@ -3,7 +3,7 @@
 // 前缀/后缀、序号；计划表实时预览旧名 → 新名并逐行标错（空名/重复/目录已存在）。
 // 应用时按行串行 files/rename（与单文件 rename 同一调用链路），逐行回报成败。
 import { computed, nextTick, onMounted, ref, watch } from "vue";
-import { call, errorMessage, joinPath, parentPath, type FileEntry } from "../lib/api";
+import { call, entryKey, errorMessage, joinPath, parentPath, type FileEntry } from "../lib/api";
 import { buildRenamePlan, type RenamePlanOptions } from "../lib/batchRename";
 import { trapTabKey } from "../lib/a11y";
 
@@ -37,7 +37,7 @@ const suffix = ref("");
 const numbering = ref(false);
 const numberingStart = ref(1);
 const applying = ref(false);
-/** 应用结果：path → "ok" | 错误消息（仅已尝试行）。 */
+/** 应用结果：条目身份 key（kind+path，issue #82 同名双实体不互覆）→ "ok" | 错误消息。 */
 const statuses = ref<Record<string, string>>({});
 /** 应用进行中的逐项进度与「取消剩余」标志（大批准rename此前只能对着
  *  不动的 loading 干等到底）。 */
@@ -61,8 +61,8 @@ const plan = computed(() => buildRenamePlan(props.entries, options.value, props.
 
 const renameCount = computed(() => plan.value.applicable);
 
-function statusOf(path: string): string {
-  return statuses.value[path] ?? "";
+function statusOf(key: string): string {
+  return statuses.value[key] ?? "";
 }
 
 /** 应用：串行 files/rename（沿用单文件 rename 的调用链与错误透传）。
@@ -79,19 +79,23 @@ async function apply() {
   const renamedPaths: string[] = [];
   for (const row of targets) {
     if (cancelRequested.value) break;
+    const rowKey = entryKey(row.entry);
     try {
       const newPath = joinPath(parentPath(row.entry.path), row.newName);
       // 目录 rename 可能降级 job（transport=job）：任务继续在传输面板跟踪，行内按成功计。
+      // sourceKind：issue #82——同名文件+目录共存时后端 stat 恒命中文件对象，
+      // 列表真实 kind 随请求仲裁目录 rename 的分流。
       await call<{ transport?: string; jobId?: string | null }>("files/rename", {
         connectionId: props.connectionId,
         path: row.entry.path,
         newPath,
+        sourceKind: row.entry.kind === "directory" ? "dir" : "file",
       });
-      statuses.value = { ...statuses.value, [row.entry.path]: "ok" };
+      statuses.value = { ...statuses.value, [rowKey]: "ok" };
       ok += 1;
       renamedPaths.push(row.entry.path);
     } catch (cause) {
-      statuses.value = { ...statuses.value, [row.entry.path]: errorMessage(cause) };
+      statuses.value = { ...statuses.value, [rowKey]: errorMessage(cause) };
     }
     progress.value = { ...progress.value, done: progress.value.done + 1 };
   }
@@ -172,8 +176,8 @@ onMounted(async () => {
           <tbody>
             <tr
               v-for="row in plan.rows"
-              :key="row.entry.path"
-              :class="{ 'is-error': row.error, 'is-ok': statusOf(row.entry.path) === 'ok' }"
+              :key="entryKey(row.entry)"
+              :class="{ 'is-error': row.error, 'is-ok': statusOf(entryKey(row.entry)) === 'ok' }"
               :data-test="`plan-row`"
             >
               <td>{{ row.oldName }}</td>
@@ -182,8 +186,8 @@ onMounted(async () => {
                 {{ row.newName }}
               </td>
               <td>
-                <template v-if="statusOf(row.entry.path) === 'ok'">{{ t("batchRenameOk") }}</template>
-                <template v-else-if="statusOf(row.entry.path)">{{ statusOf(row.entry.path) }}</template>
+                <template v-if="statusOf(entryKey(row.entry)) === 'ok'">{{ t("batchRenameOk") }}</template>
+                <template v-else-if="statusOf(entryKey(row.entry))">{{ statusOf(entryKey(row.entry)) }}</template>
                 <template v-else-if="row.error">{{ t(row.error) }}</template>
               </td>
             </tr>

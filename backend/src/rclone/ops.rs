@@ -1201,6 +1201,20 @@ pub async fn move_file(
         .map_err(|error| format!("Failed to move '{src}' to '{dst}': {error}"))
 }
 
+/// issue #82：rename 源实体 kind 仲裁。对象存储（OSS/S3 等）同名文件与
+/// 前缀目录可合法共存（`abc` 对象 + `abc/…` 前缀），此时 `operations/stat`
+/// 恒命中文件对象（rclone 精确对象优先，尾斜杠被规范化，目录实体 stat
+/// 不到）——仅凭 stat 判定会把「重命名目录」打成对象级 movefile。前端
+/// 列表持有真实 kind，随 `RenameRequest.sourceKind` 下发并优先；缺省
+/// （旧调用方/MCP）维持 stat 判定。
+pub fn rename_source_is_dir(stat_kind: &str, source_kind: Option<&str>) -> bool {
+    match source_kind {
+        Some("dir") => true,
+        Some("file") => false,
+        _ => stat_kind == "dir",
+    }
+}
+
 /// `files/rename` (§5: `operations/movefile` within one fs): both endpoints
 /// gated through `policy::PathPolicy::check_rename` — path whitelist on the
 /// source, write gate on the target, delete gate for the implicit source
@@ -1458,10 +1472,15 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.contains("escapes the connection root"), "{error}");
-        let error = size(&client, "dbxdead:", "a\\b", "", false)
+        // 反斜杠 `..` 逃逸拼写（issue #80 修复后的红线）依旧在任何 rc 调用
+        // 之前拒绝；字面反斜杠名（`a\b`）自该修复起放行。
+        let error = size(&client, "dbxdead:", "a\\..\\..\\b", "", false)
             .await
             .unwrap_err();
-        assert!(error.contains("backslashes or control characters"), "{error}");
+        assert!(
+            error.contains("escapes the connection root via backslash traversal"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1593,6 +1612,45 @@ mod tests {
     }
 
     // -- 条目 JSON → FileEntry 映射 -------------------------------------------
+
+    /// issue #82：对象存储同名文件+前缀目录共存（`abc` 对象 + `abc/` 前缀），
+    /// rc 列表返回两条 `Path` 相同、`IsDir` 相异的条目——映射必须保真双实体
+    /// （不合并、不丢、path 保持同值由前端 kind 复合 key 区分）。
+    #[test]
+    fn entry_from_item_keeps_same_name_file_and_dir_distinct() {
+        let file = json!({
+            "Path": "new-api", "Name": "new-api", "Size": 93, "IsDir": false,
+            "ModTime": "2026-09-28T08:46:00+08:00"
+        });
+        let dir = json!({
+            "Path": "new-api", "Name": "new-api", "Size": -1,
+            "MimeType": "inode/directory", "IsDir": true
+        });
+        let file_entry = entry_from_item(&file);
+        let dir_entry = entry_from_item(&dir);
+        assert_eq!(file_entry.name, "new-api");
+        assert_eq!(dir_entry.name, "new-api");
+        assert_eq!(file_entry.path, "/new-api");
+        assert_eq!(dir_entry.path, "/new-api", "path stays equal — disambiguation rides on kind");
+        assert_eq!(file_entry.kind, "file");
+        assert_eq!(dir_entry.kind, "dir");
+        assert_eq!(file_entry.size, Some(93));
+        assert_eq!(dir_entry.size, None, "dirs never carry size");
+    }
+
+    #[test]
+    fn filter_and_sort_keeps_same_name_file_and_dir_pair() {
+        // issue #82：过滤/排序不按 name/path 去重——同名 file+dir 双条目都要活。
+        let entries = vec![
+            FileEntry { name: "new-api".into(), path: "/new-api".into(), kind: "dir", size: None, modified_at: None, bucket: false },
+            FileEntry { name: "new-api".into(), path: "/new-api".into(), kind: "file", size: Some(93), modified_at: None, bucket: false },
+            FileEntry { name: "ai-video".into(), path: "/ai-video".into(), kind: "dir", size: None, modified_at: None, bucket: false },
+        ];
+        let kept = filter_and_sort(entries, "");
+        assert_eq!(kept.len(), 3, "same-name file+dir pair must both survive");
+        let kinds: Vec<&str> = kept.iter().map(|entry| entry.kind).collect();
+        assert_eq!(kinds, vec!["dir", "dir", "file"], "stable sort keeps both /new-api entries");
+    }
 
     #[test]
     fn entry_from_item_maps_live_response_shape() {
@@ -1770,6 +1828,21 @@ mod tests {
         let filtered = filter_and_sort(markers, "sub");
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].path, "/keep");
+    }
+
+    // -- rename 源实体 kind 仲裁（issue #82）-----------------------------------
+
+    #[test]
+    fn rename_source_is_dir_arbitration_table() {
+        // 缺省（旧调用方/MCP）：维持 stat 判定。
+        assert!(rename_source_is_dir("dir", None));
+        assert!(!rename_source_is_dir("file", None));
+        // 同名共存时 stat 恒命中 file——前端下发的真实 kind 优先仲裁。
+        assert!(rename_source_is_dir("file", Some("dir")), "coexisting dir renamed via stat-hit-file must win");
+        assert!(!rename_source_is_dir("dir", Some("file")));
+        // 非法值回退 stat 判定（防御未知调用方）。
+        assert!(rename_source_is_dir("dir", Some("bogus")));
+        assert!(!rename_source_is_dir("file", Some("bogus")));
     }
 
     // -- capabilities 矩阵 -----------------------------------------------------
@@ -2247,11 +2320,15 @@ mod tests {
                 "listing vocabulary must pass the gate, got: {error}"
             );
         }
-        // 反斜杠路径同样在 HTTP 之前拒绝。
-        let error = delete_file(&client, "dbx:", "a\\b", "", false)
+        // 反斜杠 `..` 逃逸拼写同样在 HTTP 之前拒绝（issue #80 修复后的
+        // 红线）；字面反斜杠名自该修复起放行。
+        let error = delete_file(&client, "dbx:", "a\\..\\..\\b", "", false)
             .await
             .unwrap_err();
-        assert!(error.contains("backslashes or control characters"), "{error}");
+        assert!(
+            error.contains("escapes the connection root via backslash traversal"),
+            "{error}"
+        );
         // purge 根红线（policy::check_purge，与接线层 refuse_root_purge 同源）。
         for path in ["", "/"] {
             let error = purge(&client, "dbx:", path, "", false).await.unwrap_err();

@@ -14,7 +14,7 @@ import FileToolbar from "./components/FileToolbar.vue";
 import { installMockHost } from "./lib/mockHost";
 import { workbenchMessage } from "./lib/i18n";
 import { vTip } from "./lib/tooltip";
-import type { FileEntry } from "./lib/api";
+import { entryKey, type FileEntry } from "./lib/api";
 
 // App.vue 源码反向锁定约束（ssh workbench.spec 同款防线）。
 const appScript = appVueSource.slice(appVueSource.indexOf("<script"), appVueSource.indexOf("</script>"));
@@ -95,7 +95,7 @@ describe("no-fileTransfer download via host saveFile (integration)", () => {
     const table = wrapper.findAllComponents(FileTable)[0]!;
     const entry = (table.props("entries") as FileEntry[]).find((candidate) => candidate.name === "bridge.txt");
     expect(entry, "remote fixture bridge.txt should be listed").toBeTruthy();
-    table.vm.$emit("update:selection", [entry!.path]);
+    table.vm.$emit("update:selection", [entryKey(entry!)]);
     await settle();
     const download = wrapper.getComponent(FileToolbar).findAll("button")
       .find((button) => button.attributes("aria-label") === workbenchMessage("en", "download"))!;

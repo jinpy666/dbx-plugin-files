@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isHostMethodMissing, normalizeEntry, normalizeEntries, type FileEntry } from "./api";
+import { entryKey, isHostMethodMissing, normalizeEntry, normalizeEntries, pathFromEntryKey, type FileEntry } from "./api";
 import { sortEntries, type SortState } from "./sorting";
 
 const modifiedSort: SortState = { column: "modified", direction: "asc" };
@@ -37,6 +37,24 @@ describe("dual-pane modified sort regression (双栏 modifiedAt localeCompare �
     ]);
     expect(() => sortEntries(raw, modifiedSort)).not.toThrow();
     expect(sortEntries(raw, modifiedSort).map((item) => item.name)).toEqual(["old", "new"]);
+  });
+});
+
+describe("entryKey（issue #82 同名文件+目录双实体身份）", () => {
+  it("same-name file and dir entries get distinct keys despite equal paths", () => {
+    // OSS 平铺 key：`new-api` 对象与 `new-api/` 前缀组合法共存，两条目 path 同值。
+    const file: FileEntry = { name: "new-api", path: "/new-api", kind: "file", size: 93 };
+    const dir: FileEntry = { name: "new-api", path: "/new-api", kind: "directory" };
+    expect(entryKey(file)).not.toBe(entryKey(dir));
+    expect(entryKey(file)).toBe("file:/new-api");
+    expect(entryKey(dir)).toBe("dir:/new-api");
+  });
+
+  it("pathFromEntryKey round-trips both kinds and passes bare paths through", () => {
+    expect(pathFromEntryKey(entryKey({ path: "/new-api", kind: "directory" }))).toBe("/new-api");
+    expect(pathFromEntryKey(entryKey({ path: "/new-api", kind: "file" }))).toBe("/new-api");
+    // 宿主快照等历史出口的裸 path 原样透传（防御）。
+    expect(pathFromEntryKey("/plain/path")).toBe("/plain/path");
   });
 });
 

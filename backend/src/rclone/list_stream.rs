@@ -226,6 +226,27 @@ fn keep(entry: &FileEntry, prefix: &str) -> bool {
     !trimmed.is_empty() && trimmed != prefix
 }
 
+/// issue #80：升级路径的条目 path 必须与 rc 快路径同口径。
+///
+/// `rclone lsjson <fs>/<remote>` 的 `Path` 相对 **listed 目录**（列
+/// `remote:bucket` 输出 `file`，live-verified v1.75.1），而 rc 快路径
+/// `operations/list` 的 `Path` 相对 **fs 根**（同一次列取输出
+/// `bucket/file`）。prefix 非空时不把前缀拼回条目 path，升级后前端拿到的
+/// 就是丢前缀的单段路径：下载/预览 stat 单段 remote，namespace 连接上会
+/// 被 rclone 折叠成 bucket 名（item:null → "path does not exist"），
+/// rooted 连接上也是 NotFound。prefix 为空（根层，remote=""）时 lsjson
+/// 与 rc 输出同形，不动。
+fn apply_listed_prefix(entry: &mut FileEntry, prefix: &str) {
+    if prefix.is_empty() {
+        return;
+    }
+    let raw = entry.path.trim_matches('/');
+    if raw.is_empty() {
+        return;
+    }
+    entry.path = format!("/{prefix}/{raw}");
+}
+
 // ---------------------------------------------------------------------------
 // batcher（256 条 / 帧字节预算 / 50ms 三者先到即成帧；flush 后即弃）
 // ---------------------------------------------------------------------------
@@ -865,6 +886,9 @@ pub(crate) async fn stream_child(
                                 entry.bucket = true;
                             }
                             if keep(&entry, prefix) {
+                                // marker 过滤针对原始 path 判定（keep），
+                                // 通过后再拼回 listed 前缀（issue #80）。
+                                apply_listed_prefix(&mut entry, prefix);
                                 if let Some(entries) = batcher.push(entry) {
                                     seq += 1;
                                     sink.emit(chunk_frame(request_id, seq, entries, false, None));
@@ -1202,6 +1226,51 @@ mod tests {
         assert!(!keep(&entry("", "dir"), ""));
         assert!(!keep(&entry("sub", "dir"), "sub"));
         assert!(keep(&entry("sub/a.txt", "file"), "sub"));
+    }
+
+    /// issue #80 回归：升级路径（lsjson）的条目 path 必须重写成 rc 快路径
+    /// （operations/list）的口径——`Path` 相对 listed 目录 → 拼回 listed
+    /// 前缀。特殊字符文件名（`#`、`\`、`,`）原样字面保留。prefix 为空
+    /// （根层）时两种引擎输出本就同形，不得改写。
+    #[test]
+    fn escalated_entries_carry_the_listed_prefix_like_the_rc_fast_path() {
+        // lsjson 输出：Path 相对 listed 目录（无前缀）。
+        let lsjson_item = serde_json::json!({
+            "Path": "balance#alipay#20220822#QRA_1.csv",
+            "Name": "balance#alipay#20220822#QRA_1.csv",
+            "Size": 5,
+            "IsDir": false,
+        });
+        let mut escalated = entry_from_item(&lsjson_item);
+        apply_listed_prefix(&mut escalated, "yq-test");
+        // rc 输出：同一条目的 Path 带 listed 前缀。
+        let rc_item = serde_json::json!({
+            "Path": "yq-test/balance#alipay#20220822#QRA_1.csv",
+            "Name": "balance#alipay#20220822#QRA_1.csv",
+            "Size": 5,
+            "IsDir": false,
+        });
+        let fast_path = entry_from_item(&rc_item);
+        // 两条路径必须产出完全相同的 path——否则升级后 stat 单段路径。
+        assert_eq!(escalated.path, fast_path.path);
+        assert_eq!(escalated.path, "/yq-test/balance#alipay#20220822#QRA_1.csv");
+        assert_eq!(escalated.name, fast_path.name);
+
+        // 反斜杠名同样字面拼回（后续策略放行见 policy.rs 回归）。
+        let mut backslash = entry("txffp\\20201214\\a.jpg", "file");
+        apply_listed_prefix(&mut backslash, "yq-test");
+        assert_eq!(backslash.path, "/yq-test/txffp\\20201214\\a.jpg");
+
+        // 深层前缀与目录条目同样拼回；根层（prefix 空）与空 path 不动。
+        let mut deep = entry("nested.txt", "file");
+        apply_listed_prefix(&mut deep, "bucket/sub");
+        assert_eq!(deep.path, "/bucket/sub/nested.txt");
+        let mut root_level = entry("bucket", "dir");
+        apply_listed_prefix(&mut root_level, "");
+        assert_eq!(root_level.path, "/bucket");
+        let mut bare = entry("", "dir");
+        apply_listed_prefix(&mut bare, "bucket");
+        assert_eq!(bare.path, "/");
     }
 
     /// 锁定 root 连接的列出→回开回环（本仓 bug 报告的完整形态）：锁定的
@@ -1543,14 +1612,18 @@ mod tests {
     }
 
     /// 前缀 marker 与根 marker 被过滤，其余保留（与 filter_and_sort 的过滤
-    /// 语义一致）。
+    /// 语义一致）。夹具按**真实 lsjson 输出形态**（live-verified v1.75.1）：
+    /// `Path` 相对 listed 目录（列 `remote:sub` 输出裸名 `file`）——修复前
+    /// 这正是 issue #80 的病灶：升级路径把裸名当条目 path 交付，rc 快路径
+    /// 同一次列取却输出 `sub/file`；修复后 apply_listed_prefix 拼回前缀，
+    /// 两条路径同口径（断言值与旧夹具的假定一致，形态改为真实值）。
     #[cfg(unix)]
     #[tokio::test]
     async fn stream_filters_marker_entries() {
         let script = "printf '[\\n'\n\
             printf '{\"Path\":\"\",\"Name\":\"\",\"IsDir\":true},\\n'\n\
             printf '{\"Path\":\"sub\",\"Name\":\"sub\",\"IsDir\":true},\\n'\n\
-            printf '{\"Path\":\"sub/file\",\"Name\":\"file\",\"IsDir\":false,\"Size\":1}\\n'\n\
+            printf '{\"Path\":\"file\",\"Name\":\"file\",\"IsDir\":false,\"Size\":1}\\n'\n\
             printf ']\\n'\n";
         let child = spawn_sh(script);
         let sink = VecSink::default();

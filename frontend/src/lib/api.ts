@@ -14,6 +14,22 @@ export interface FileEntry {
 }
 
 /**
+ * 条目身份 key（issue #82）：对象存储同名文件+前缀目录合法共存（`abc` 对象
+ * 与 `abc/…` 前缀组），两条目 `path` 相同、仅 `kind` 相异——选中集合/拖拽
+ * payload 等以 path 为唯一 key 的身份比较会把双实体混成一条（勾选互覆、
+ * 计数错、删除/重命名打到错误实体）。身份比较一律用本 key（kind 前缀 +
+ * path）；路径寻址（stat/list/传输目标等）仍用裸 path。
+ */
+export function entryKey(entry: Pick<FileEntry, "path" | "kind">): string {
+  return `${entry.kind === "directory" ? "dir" : "file"}:${entry.path}`;
+}
+
+/** 身份 key → 裸 path（宿主快照 anchor 等只认 path 的出口处反解）。 */
+export function pathFromEntryKey(key: string): string {
+  return key.startsWith("dir:") || key.startsWith("file:") ? key.slice(key.indexOf(":") + 1) : key;
+}
+
+/**
  * 后端 `FileEntry.kind` 序列化为 "dir"|"file"（model.rs），前端统一用
  * "directory"。P-FILES ④ 浏览器验证发现的真实契约错位：不做归一化时
  * 目录双击/目录判断（排序、删除递归、右键菜单）全部失效。

@@ -8,6 +8,7 @@ import { nextTick } from "vue";
 import App from "./App.vue";
 import FileTable from "./components/FileTable.vue";
 import FileToolbar from "./components/FileToolbar.vue";
+import { entryKey } from "./lib/api";
 import { installMockHost } from "./lib/mockHost";
 import { workbenchMessage } from "./lib/i18n";
 import { vTip } from "./lib/tooltip";
@@ -112,9 +113,11 @@ describe("cross-pane drop action chooser", () => {
     await settle();
     await openDualPane();
     const calls = stubTransfers();
-    const dragPath = firstLeftEntry().path;
+    const dragEntry = firstLeftEntry();
+    const dragPath = dragEntry.path;
     const targetPath = `/${dragPath.split("/").pop()}`;
-    wrapper!.get(".wb-pane-target").element.dispatchEvent(internalDropEvent("left", [dragPath]));
+    // issue #82：拖拽 payload 的 paths 是 kind+path 身份 key。
+    wrapper!.get(".wb-pane-target").element.dispatchEvent(internalDropEvent("left", [entryKey(dragEntry)]));
     await settle();
     // 选择器先弹，确认前不执行任何 copy/move。
     expect(chooser().exists()).toBe(true);
@@ -141,8 +144,9 @@ describe("cross-pane drop action chooser", () => {
     await settle();
     await openDualPane();
     const calls = stubTransfers();
-    const dragPath = firstLeftEntry().path;
-    wrapper!.get(".wb-pane-target").element.dispatchEvent(internalDropEvent("left", [dragPath]));
+    const dragEntry = firstLeftEntry();
+    const dragPath = dragEntry.path;
+    wrapper!.get(".wb-pane-target").element.dispatchEvent(internalDropEvent("left", [entryKey(dragEntry)]));
     await settle();
     // 方向键切到「移动」再确认。
     const options = wrapper!.findAll(".wb-dropaction-option");
@@ -160,7 +164,7 @@ describe("cross-pane drop action chooser", () => {
     await settle();
     await openDualPane();
     const calls = stubTransfers();
-    wrapper!.get(".wb-pane-target").element.dispatchEvent(internalDropEvent("left", [firstLeftEntry().path]));
+    wrapper!.get(".wb-pane-target").element.dispatchEvent(internalDropEvent("left", [entryKey(firstLeftEntry())]));
     await settle();
     expect(chooser().exists()).toBe(true);
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
@@ -174,7 +178,7 @@ describe("cross-pane drop action chooser", () => {
     await settle();
     await openDualPane();
     stubTransfers();
-    wrapper!.get(".wb-pane-source").element.dispatchEvent(internalDropEvent("left", [firstLeftEntry().path]));
+    wrapper!.get(".wb-pane-source").element.dispatchEvent(internalDropEvent("left", [entryKey(firstLeftEntry())]));
     await settle();
     expect(chooser().exists()).toBe(false);
   });

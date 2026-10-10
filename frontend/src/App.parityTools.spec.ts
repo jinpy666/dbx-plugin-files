@@ -146,14 +146,14 @@ describe("archive download wiring", () => {
   it("offers pack-and-download in the multi-select menu when all selected are directories", async () => {
     mountWorkbench();
     await settle();
-    table().vm.$emit("update:selection", ["/docs", "/media"]);
+    table().vm.$emit("update:selection", ["dir:/docs", "dir:/media"]); // issue #82：身份 key。
     await settle();
     table().vm.$emit("contextmenu", { entry: leftEntry("/docs"), x: 10, y: 10 });
     await settle();
     const expected = workbenchMessage("en", "archiveDownloadSelected", { count: 2 });
     expect(menuItem(expected)).toBeTruthy();
     // 混选（含文件）时不出现打包下载批量项。
-    table().vm.$emit("update:selection", ["/docs", "/backup.zip"]);
+    table().vm.$emit("update:selection", ["dir:/docs", "file:/backup.zip"]);
     await settle();
     table().vm.$emit("contextmenu", { entry: leftEntry("/docs"), x: 10, y: 10 });
     await settle();
@@ -169,7 +169,7 @@ describe("batch rename drawer wiring", () => {
     const { calls } = stubInvoke((method) =>
       method === "files/rename" ? { success: true, transport: "native", jobId: null } : undefined,
     );
-    table().vm.$emit("update:selection", ["/docs", "/empty"]);
+    table().vm.$emit("update:selection", ["dir:/docs", "dir:/empty"]);
     await settle();
     // 键盘可达入口：FileTable 底部按钮（多选时出现）。
     const button = table().get("[data-test=batch-rename]");
@@ -184,7 +184,7 @@ describe("batch rename drawer wiring", () => {
     await vi.advanceTimersByTimeAsync(500);
     await settle();
     expect(calls.filter((item) => item.method === "files/rename").map((item) => item.params)).toEqual([
-      { connectionId: "mock-conn", path: "/docs", newPath: "/d0cs" },
+      { connectionId: "mock-conn", path: "/docs", newPath: "/d0cs", sourceKind: "dir" },
     ]);
     expect(wrapper!.get(".wb-notice").text()).toContain(workbenchMessage("en", "batchRenameApplied", { ok: 1, total: 1 }));
   });
@@ -192,7 +192,7 @@ describe("batch rename drawer wiring", () => {
   it("exposes batch rename in the multi-select context menu and disables it read-only", async () => {
     mountWorkbench();
     await settle();
-    table().vm.$emit("update:selection", ["/docs", "/empty"]);
+    table().vm.$emit("update:selection", ["dir:/docs", "dir:/empty"]);
     await settle();
     table().vm.$emit("contextmenu", { entry: leftEntry("/docs"), x: 10, y: 10 });
     await settle();
@@ -205,7 +205,7 @@ describe("batch rename drawer wiring", () => {
     installMockHost();
     mountWorkbench();
     await settle();
-    table().vm.$emit("update:selection", ["/docs", "/empty"]);
+    table().vm.$emit("update:selection", ["dir:/docs", "dir:/empty"]);
     await settle();
     table().vm.$emit("contextmenu", { entry: leftEntry("/docs"), x: 10, y: 10 });
     await settle();

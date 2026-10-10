@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Check, Database, Folder, FolderOpen, FolderPlus, SearchX } from "@lucide/vue";
-import { formatBytes, formatTime, type FileEntry } from "../lib/api";
+import { entryKey, formatBytes, formatTime, type FileEntry } from "../lib/api";
 import { fileIcon, fileIconClass } from "../lib/fileIcons";
 import { listNav, scrollRowIntoView, selectionRange, type ListNavState } from "../lib/listNav";
 import {
@@ -31,6 +31,9 @@ const props = defineProps<{
   /** 流式列表中：entries 随 chunk 到达逐帧换引用，重置滚动会把用户弹回
    *  顶部（大目录数秒内无法下滚）——streaming 期间跳过 entries watch。 */
   streaming?: boolean;
+  /** issue #81：当前连接为桶命名空间形态（根目录=桶列表）——空态时解释
+   *  「桶列表为空」最常见的原因（S3 兼容网关按 endpoint 区域返回桶）。 */
+  bucketRoot?: boolean;
   t: (key: string, values?: Record<string, string | number>) => string;
 }>();
 
@@ -104,6 +107,8 @@ watch(() => props.loading, (loading) => {
 const nav = ref<ListNavState>({ index: -1, anchor: -1 });
 
 function activeIndex() {
+  // issue #82：activePath 是裸 path（导航语义），键盘导航定位保持按 path 匹配；
+  // 同名文件+目录双实体下首行命中即可（Enter/Space 走 entries[index] 对象）。
   return props.entries.findIndex((entry) => entry.path === props.activePath);
 }
 
@@ -117,7 +122,7 @@ function onListKeydown(event: KeyboardEvent) {
       event.stopPropagation();
       emit("delete");
     } else if (props.selection.length === 1) {
-      const entry = props.entries.find((candidate) => candidate.path === props.selection[0]);
+      const entry = props.entries.find((candidate) => entryKey(candidate) === props.selection[0]);
       if (!entry) return;
       event.preventDefault();
       event.stopPropagation();
@@ -128,7 +133,7 @@ function onListKeydown(event: KeyboardEvent) {
   if ((event.metaKey || event.ctrlKey) && (event.key === "a" || event.key === "A")) {
     event.preventDefault();
     nav.value = { index: props.entries.length - 1, anchor: 0 };
-    emit("update:selection", props.entries.map((entry) => entry.path));
+    emit("update:selection", props.entries.map((entry) => entryKey(entry)));
     return;
   }
   // Shift+F10：键盘呼出列显隐菜单——表头右键没有键盘落点（非可聚焦元
@@ -147,7 +152,7 @@ function onListKeydown(event: KeyboardEvent) {
     const next = listNav({ index: activeIndex(), anchor: nav.value.anchor }, direction, props.entries.length, event.shiftKey);
     nav.value = next;
     const [start, end] = selectionRange(next);
-    emit("update:selection", props.entries.slice(start, end + 1).map((entry) => entry.path));
+    emit("update:selection", props.entries.slice(start, end + 1).map((entry) => entryKey(entry)));
     emit("update:activePath", props.entries[next.index].path);
     if (viewport.value) viewport.value.scrollTop = scrollRowIntoView(viewport.value, next.index, ROW_HEIGHT);
     return;
@@ -177,15 +182,17 @@ function rowStyle(index: number) {
 function toggleSelection(entry: FileEntry, modifiers: { meta?: boolean; ctrl?: boolean; shift?: boolean }) {
   const current = [...props.selection];
   if (modifiers.meta || modifiers.ctrl) {
-    const index = current.indexOf(entry.path);
+    // issue #82：以 kind+path 复合 key 标识条目——同名文件+目录双实体各自独立勾选。
+    const key = entryKey(entry);
+    const index = current.indexOf(key);
     if (index >= 0) current.splice(index, 1);
-    else current.push(entry.path);
+    else current.push(key);
     emit("update:selection", current);
     return;
   }
   if (modifiers.shift && current.length && props.entries.length) {
     const anchorPath = current[current.length - 1];
-    const anchorIndex = props.entries.findIndex((candidate) => candidate.path === anchorPath);
+    const anchorIndex = props.entries.findIndex((candidate) => entryKey(candidate) === anchorPath);
     const targetIndex = props.entries.indexOf(entry);
     if (anchorIndex >= 0 && targetIndex >= 0) {
       const [start, end] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
@@ -193,7 +200,7 @@ function toggleSelection(entry: FileEntry, modifiers: { meta?: boolean; ctrl?: b
       return;
     }
   }
-  emit("update:selection", [entry.path]);
+  emit("update:selection", [entryKey(entry)]);
   emit("update:activePath", entry.path);
   // 鼠标单击重置键盘扩选锚点，保证随后 Shift+方向键从该行起算。
   const index = props.entries.indexOf(entry);
@@ -205,20 +212,22 @@ function onClickRow(entry: FileEntry, event: MouseEvent) {
 }
 
 function onContextRow(entry: FileEntry, event: MouseEvent) {
-  if (!selectedSet.value.has(entry.path)) {
-    emit("update:selection", [entry.path]);
+  if (!selectedSet.value.has(entryKey(entry))) {
+    emit("update:selection", [entryKey(entry)]);
   }
   emit("update:activePath", entry.path);
   emit("contextmenu", { entry, x: event.clientX, y: event.clientY });
 }
 
 function onDragStart(entry: FileEntry, event: DragEvent) {
-  const dragged = selectedSet.value.has(entry.path)
-    ? props.entries.filter((candidate) => selectedSet.value.has(candidate.path))
+  const dragged = selectedSet.value.has(entryKey(entry))
+    ? props.entries.filter((candidate) => selectedSet.value.has(entryKey(candidate)))
     : [entry];
   event.dataTransfer?.setData(
     "application/x-dbx-files",
-    JSON.stringify({ paneId: props.paneId ?? "", paths: dragged.map((item) => item.path) }),
+    // issue #82：payload 存条目身份 key（kind+path），接收端 pickSideEntries
+    // 同口径解析——同名文件+目录共存时拖拽只命中用户选中的那个实体。
+    JSON.stringify({ paneId: props.paneId ?? "", paths: dragged.map((item) => entryKey(item)) }),
   );
   if (event.dataTransfer) event.dataTransfer.effectAllowed = "copyMove";
   emit("drag-entries", { paneId: props.paneId ?? "", entries: dragged });
@@ -454,11 +463,11 @@ function onResizeEnd() {
       <div
         v-for="(entry, localIndex) in visibleEntries"
         v-show="!loading"
-        :key="entry.path"
+        :key="entryKey(entry)"
         class="wb-file-row"
         role="option"
-        :aria-selected="selectedSet.has(entry.path)"
-        :class="{ 'is-selected': selectedSet.has(entry.path), 'is-active': entry.path === activePath }"
+        :aria-selected="selectedSet.has(entryKey(entry))"
+        :class="{ 'is-selected': selectedSet.has(entryKey(entry)), 'is-active': entry.path === activePath }"
         :style="rowStyle(firstIndex + localIndex)"
         draggable="true"
         @click="onClickRow(entry, $event)"
@@ -469,7 +478,7 @@ function onResizeEnd() {
         <label class="wb-file-check" @click.stop>
           <input
             type="checkbox"
-            :checked="selectedSet.has(entry.path)"
+            :checked="selectedSet.has(entryKey(entry))"
             :aria-label="t('selectEntry', { name: entry.displayName ?? entry.name })"
             @change="toggleSelection(entry, { meta: true, shift: false })"
           />
@@ -497,6 +506,12 @@ function onResizeEnd() {
       <div v-else-if="!entries.length" class="wb-file-empty" role="status">
         <component :is="filtered ? SearchX : FolderOpen" aria-hidden="true" />
         <p>{{ filtered ? t("noMatchResults") : t("emptyDirectory") }}</p>
+        <!-- issue #81：namespace 连接的根（桶列表）为空时，给出可操作的
+             解释——S3 兼容网关通常只返回与 endpoint 同区域的桶。仅根视图
+             提示，子目录的空目录不误导。 -->
+        <p v-if="bucketRoot && activePath === '/' && !filtered" class="wb-empty-hint">
+          {{ t("bucketListEmptyHint") }}
+        </p>
         <!-- 空目录引导：新用户面对空目录（尤其是新建的远端桶）不知道下一步，
              上传入口在顶部工具栏而视线焦点在列表中央。过滤无匹配态与只读连接
              不显示；上传按 P1-5 固定右栏目标，不放这里以免误导。 -->

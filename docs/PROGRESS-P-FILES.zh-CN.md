@@ -2231,3 +2231,143 @@ customCommand+remotePath → 顶部提示；「记住为默认」后子菜单出
 验证：`pnpm typecheck/test` 全绿（662）；build 通过。剩余说明：ask 决议
 弹窗复用同一 `.wb-dialog` 样式体系，视觉走查由决议流 spec 逻辑覆盖 +
 子菜单/弹窗截图背书，未单独截图。
+
+## 用户上报修复批：#80 特殊字符名下载/预览失败 + #81 七牛桶列表不全（2026-10-09）
+
+基线 `files-v0.1.88`（修复分支 `fix/v0.1.88-user-issues`，基于 tag）。两个
+issue 各自的根因都在 MinIO + rclone v1.75.1 真机黑盒复现中钉死：
+
+### #80 根因一（主）：listStream 升级路径条目 path 丢 listed 前缀
+
+- **现象**：namespace 连接（bucket 字段空，根=桶列表）进入桶内浏览大目录
+  （用户 2755 项 > 5s 软超时）后，下载/预览报
+  `Failed to stat 'balance#alipay#…csv': path does not exist`——截图逐字
+  吻合。目录内**所有**文件都失败，用户文件全是 `#` 命名故标题归因特殊字符。
+- **根因**（live-verified v1.75.1）：`rclone lsjson remote:bucket` 输出的
+  `Path` 相对 **listed 目录**（裸名），rc 快路径 `operations/list` 同一次
+  列取输出 `bucket/file`（相对 fs 根、带 listed 前缀）。listStream 软超时
+  升级 `lsjson` 子进程后条目 path 丢桶前缀 → 前端回传单段 path → stat 单段
+  remote → rclone 把文件名折叠成 bucket 名 → `item:null`。既有
+  `stream_filters_marker_entries` 夹具恰好假定了带前缀的错误形态，掩盖了
+  该语义差；smoke stream 段只测根目录（prefix 空，两形态同形）也测不到。
+- **修复**（`rclone/list_stream.rs`）：升级路径 `apply_listed_prefix` 在
+  marker 过滤（keep）之后把条目 path 拼回 `/{prefix}/{raw}`，与 rc 快路径
+  同口径；prefix 空（根层）不改写。特殊字符名逐字节字面保留。
+
+### #80 根因二（图 2，`\`）：policy 一刀切拒绝反斜杠
+
+- **现象**：`path '/yq-test1/txffp\20201214\…jpg' contains backslashes or
+  control characters`——s3 系对象 key 含 `\` 完全合法（列表能返回），
+  读侧却被 `policy::sanitize` 无条件拒绝，列表/操作自相矛盾。
+- **修复**（`policy.rs`）：`\` 放行为字面字符；穿越红线改按「最坏分隔符
+  解释」探查——含 `\` 的拼写先归一 `\`→`/` 做 `..` 逃逸检测
+  （`escapes_via_backslash`，Windows fs 语义），字面路径原样传后端。
+  `a\..\..\x`、`\..\x` 依旧拒绝；`txffp\20201214\a.jpg`、`a\..\b`（单级
+  不逃逸）放行。错误文案拆分：控制字符 → "contains control characters"，
+  反斜杠逃逸 → "escapes the connection root via backslash traversal"。
+  本地下载落盘名（`local_downloads::sanitize_file_name`）本就过滤 `\`，
+  Windows 落盘不受影响。
+
+### #81：七牛 namespace 连接"没有显示所有的桶"
+
+- **根因**：七牛 S3 兼容网关按区域部署（`s3.<region>.qiniucs.com`），
+  ListBuckets（GET /）返回范围由网关决定（社区普遍经验：仅同区域空间；
+  官方文档未明确），插件端无法枚举跨区域桶——服务端行为，不可"修复"。
+  插件侧真实缺陷是**配置期假阳性**：bucket-less 连接的 `connection/test`
+  跳过存在性检查（`check_root=false`），endpoint 错误/网关拒绝列出也报
+  "已连接"，用户在配置页拿到绿灯后在桶视图看到空列表无从归因。
+- **修复**：`registry::test_connection` 对 bucket-namespace 连接
+  （`namespace_probe_needed` = bucket 根型 + root 空）在 cleanup 前实际
+  列一次根——ListBuckets 报错即测试失败并透传原始错误；列根为空不报错
+  （空桶账号合法）。前端 FileTable 空态在 namespace 根视图空列表时显示
+  解释文案（S3 兼容网关按 endpoint 区域返回桶，建议核对区域或直接填桶名），
+  新 i18n 键 `bucketListEmptyHint` 七语同步。
+
+### 测试
+
+- 后端：`list_stream` 新增升级路径口径回归（lsjson 裸名 + 前缀拼回 ==
+  rc 条目，`#`/`\` 字面保留）；`stream_filters_marker_entries` 夹具改为
+  真实 lsjson 形态（期望值不变）；`policy` 新增反斜杠字面透传 + `\..\..\`
+  逃逸拒绝回归；`registry` 新增探活决策单测；ops 门禁两处旧文案断言迁移。
+- 前端：FileTable 桶空态提示 spec（根视图显示/子目录与非 namespace 不显示）。
+- **端到端真机复现**（MinIO + release sidecar，7 步全绿）：namespace 根
+  列桶、connection/test 探活、listStream 升级路径条目带 `/bucket/` 前缀、
+  含 `#` stat + 下载 round-trip、含 `\` stat、含 `,` stat。
+- `scripts/test.sh`（带 MinIO s3 段）全绿：cargo test 525、前端
+  typecheck + vitest 698 + build、framed smoke PASS 108 / SKIP 5 / FAIL 0。
+
+剩余风险：#81 的跨区域桶不可见是七牛网关行为，真机需用真实七牛账号复验
+（本环境无凭据）；listStream 升级路径的修复需要真机在大目录 + 慢网下复验
+（软超时 5s 的触发面）；`#` 在 presign 公开链接 URL 里的编码已由 0.1.81
+的 `encode_serve_path` 覆盖，本轮未改动。
+
+## 用户上报修复批：#82 OSS 同名文件+文件夹共存无法单独操作（2026-10-09）
+
+同一修复分支 `fix/v0.1.88-user-issues`（基线 0.1.89-beta.2 工作区，不涉及
+tag/分支指针）。截图：图 1 为 OSS 根目录并列「文件夹 new-api（2000-01-01
+占位时间）」与「文件 new-api（93.0 MiB）」双条目；图 2 为两行同时勾选后
+右键菜单，底部计数「名称 1」——两条实体的勾选互相覆盖。
+
+### 黑盒语义钉死（rclone v1.75.1 + MinIO live-verified）
+
+- 对象存储平铺 key 命名空间下 `abc`（对象）与 `abc/…`（前缀组）合法共存；
+  阿里云 OSS 带 delimiter 列表返回 file `abc` + CommonPrefix `abc/` 双条目
+  （用户截图即此形态）。MinIO 则**遮蔽**冲突前缀（文件 `new-api` 存在时
+  `new-api/inner.txt` 从 ListObjects 消失、`stat` 仍可命中）——MinIO 无法
+  用于列表双条目复现，映射/选中层回归以单测锁定。
+- `operations/stat remote=abc` 与 `remote=abc/` **都命中文件对象**（rclone
+  精确对象优先 + 尾斜杠规范化）——后端不存在能用 path 寻址「目录实体」的
+  手段；文件删掉后同路径 stat 才退回前缀虚拟目录（`inode/directory`）。
+- `operations/deletefile` 只删对象本身；`operations/purge remote=abc` 删
+  `abc/` 前缀树，字符串前缀语义不覆盖 key `abc` 本身（真实 OSS 上不误删
+  同名文件）——删除链路的双实体语义本来就正确，无需改。
+
+### 根因（两处，前端为主）
+
+1. **前端选中/操作身份以裸 path 为唯一 key**：同名 file+dir 双条目 path
+   同值（`/new-api`），checkbox/aria-selected 同亮同灭、勾选互覆（截图
+   「勾 2 显示 1」）、`pickSideEntries`/`toolbarSelectionEntries`/批量下载
+   过滤按 path 命中双实体——「只想删/下/拖其中一个」必然打到两个；右键
+   菜单的条目集也随之失真。
+2. **后端 `files/rename` 用 stat 预检分流文件/目录**：同名共存时 stat 恒
+   命中文件 → 用户重命名**目录**时走对象级 `operations/movefile`，实际
+   重命名的是同名文件（或对象不存在报 NotFound）。
+
+### 修复
+
+- 前端（`lib/api.ts` 新增 `entryKey`/`pathFromEntryKey`，issue #82 注释
+  逐落点标注）：选中集合、shift 区间/全选/Space、行高亮与 aria、checkbox、
+  右键、拖拽 payload（`x-dbx-files` paths）、`pickSideEntries`、
+  `toolbarSelectionEntries`、批量下载过滤、uiIntent `select`、批量重命名
+  抽屉行状态 key 全部改用 **kind+path 复合身份 key**；快照 anchor 出口经
+  `pathFromEntryKey` 反解回裸 path（宿主契约不变）；`activePath` 保持裸
+  path 导航语义不动；FileTable 行 `:key` 同步复合化（消除同名双行 DOM
+  复用）。FileEntry 的 wire 形状零改动——协议无新字段/新方法。
+- 后端（`model.rs` + `main.rs` + `ops.rs`）：`RenameRequest` 增 optional
+  `sourceKind`（`"file"|"dir"`，`serde(default)`），`files/rename` 源实体
+  kind 经 `ops::rename_source_is_dir` 仲裁——前端下发的列表真实 kind 优先
+  （同名共存下 stat 不可信），缺省维持 stat 判定（旧调用方/MCP 兼容）。
+  协议文档 `IMPL_PLAN_DBX_FILES.zh-CN.md` §8.2、`IMPL_PLAN_RCLONE.zh-CN.md`
+  §5 两处同步。
+
+### 测试
+
+- 后端：ops 新增 `entry_from_item_keeps_same_name_file_and_dir_distinct`
+  （rc 双条目映射保真：path 同值、kind 相异、不合并不丢）、
+  `filter_and_sort_keeps_same_name_file_and_dir_pair`（过滤排序不去重）、
+  `rename_source_is_dir_arbitration_table`（仲裁表 + 非法值回退）。
+- 前端：api.spec 身份 key 纯函数（双实体 key 相异 + 反解 round-trip +
+  裸 path 透传）；FileTable.spec 同名双实体 checkbox 独立勾选/右键单选/
+  全选双 key 三用例。既有 9 个 spec 的 selection 构造（裸 path → 身份 key）
+  与 rename 参数断言（补 `sourceKind`）同步迁移。
+- 验证：cargo test --locked 528 全绿；前端 typecheck + vitest 703 全绿 +
+  build 通过；smoke（fs + memory + MinIO s3 段）PASS 108 / SKIP 5 / FAIL 0；
+  `scripts/test.sh` 交付门禁全绿。
+- 黑盒端到端（MinIO + rclone rc 直连）：stat 尾斜杠无效、deletefile 单删
+  对象、purge 前缀树不覆盖同名 key——操作链路语义与修复假设一致，实测
+  通过（列表双条目受 MinIO 遮蔽限制无法在容器内复现，见剩余风险）。
+
+剩余风险：列表双条目 + 分别勾选/删除/重命名的**真机复验**需在真实阿里云
+OSS 上做（本环境无 OSS 凭据，MinIO 遮蔽冲突前缀无法构造双条目场景）；
+`pathExists` 重名预检（新建/重命名目标）在同名共存下仍按 stat 保守报
+「已存在」，属可接受的保守行为，未改动。

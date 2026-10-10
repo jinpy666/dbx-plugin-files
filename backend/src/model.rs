@@ -678,6 +678,12 @@ pub struct RenameRequest {
     pub connection_id: String,
     pub path: String,
     pub new_path: String,
+    /// issue #82：源实体 kind 仲裁（`"file"` | `"dir"`，optional）。对象存储
+    /// 同名文件+前缀目录共存时 `operations/stat` 恒命中文件对象（尾斜杠被
+    /// rclone 规范化），目录实体 stat 不到；前端列表持有真实 kind，随请求
+    /// 下发并优先于 stat 判定。缺省（旧调用方/MCP）维持 stat 判定不变。
+    #[serde(default)]
+    pub source_kind: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
