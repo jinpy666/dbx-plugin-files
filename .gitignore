@@ -20,3 +20,7 @@ frontend/.pnpm-store/
 
 # GUI 测试截图产物不入库
 gui-test-screenshots/
+
+# 本地工具 scratch 指针目录
+.v2c/
+.video_agent/
