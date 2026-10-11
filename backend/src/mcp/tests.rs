@@ -1515,6 +1515,8 @@ fn inline_connection_schema_covers_every_mapped_key() {
         "domain",
         "knownHostsStrategy",
         "displayCharset",
+        "ftpTls",
+        "webdavScheme",
         "proxyType",
         "proxyHost",
         "proxyPort",
@@ -1618,6 +1620,8 @@ fn manifest_fields_are_fully_covered_by_inline_mapping() {
         ("domain", "domain"),
         ("known_hosts_strategy", "knownHostsStrategy"),
         ("display_charset", "displayCharset"),
+        ("ftp_tls", "ftpTls"),
+        ("webdav_scheme", "webdavScheme"),
         ("proxy_type", "proxyType"),
         ("proxy_host", "proxyHost"),
         ("proxy_port", "proxyPort"),
@@ -1659,6 +1663,11 @@ fn manifest_fields_are_fully_covered_by_inline_mapping() {
         let key = field["key"].as_str().expect("field key");
         match field["binding"].as_str().expect("field binding") {
             "name" => assert_eq!(key, "display_name", "unexpected name-bound field"),
+            // Connection-level bindings (issue #83): they ride the lifecycle
+            // `connection.host`/`connection.port`, not the inline config map —
+            // MCP inline callers address single-endpoint protocols via
+            // `endpoint` instead.
+            "host" | "port" => {}
             "secret" => assert!(
                 secret_map.iter().any(|(source, _)| *source == key),
                 "secret field '{key}' missing from the inline secret mapping"

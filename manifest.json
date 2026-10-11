@@ -450,11 +450,6 @@
               "bos",
               "tos",
               "ks3",
-              "webdav",
-              "ftp",
-              "sftp",
-              "smb",
-              "sftp-native",
               "koofr",
               "pcloud",
               "seafile",
@@ -489,11 +484,6 @@
               "bos",
               "tos",
               "ks3",
-              "webdav",
-              "ftp",
-              "sftp",
-              "smb",
-              "sftp-native",
               "koofr",
               "pcloud",
               "seafile",
@@ -506,6 +496,100 @@
             ]
           },
           "description": "Service address. GCS: leave empty for Google's default endpoint; custom GCS endpoints use host[:port]. Object storage/WebDAV: https://host; FTP: ftp(s)://host[:21]; SFTP: ssh://user@host[:22]; SMB: host[:445]; http: full URL; hdfs: namenode:8020; netstorage/quatrix: host name; azurefiles: optional service URL. S3-compatible vendors take their vendor S3 endpoint: R2 https://<accountid>.r2.cloudflarestorage.com; Wasabi https://s3.<region>.wasabisys.com; Spaces https://s3.<region>.digitaloceanspaces.com; Scaleway https://s3.<region>.scw.cloud; IDrive e2 account endpoint; US3 https://s3-<region>.ufileos.com; China Mobile EOS https://eos-<region>-1.cmecloud.cn; Netease NOS https://s3.netease.com; BOS https://s3.<region>.bcebos.com; TOS https://tos-s3-<region>.volces.com; KS3 https://s3.<region>.ksyuncs.com."
+        },
+        {
+          "key": "host",
+          "label": "Host",
+          "type": "text",
+          "binding": "host",
+          "default": "",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "webdav",
+              "ftp",
+              "sftp",
+              "smb",
+              "sftp-native"
+            ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
+              "webdav",
+              "ftp",
+              "sftp",
+              "smb",
+              "sftp-native"
+            ]
+          },
+          "placeholder": "files.example.com",
+          "description": "Storage server host for FTP/SFTP/SMB/WebDAV. Declaring it lets DBX attach SSH/HTTP/SOCKS transport layers (static tunnel) to the connection. Existing connections that already carry an endpoint keep using it."
+        },
+        {
+          "key": "port",
+          "label": "Port",
+          "type": "number",
+          "binding": "port",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "webdav",
+              "ftp",
+              "sftp",
+              "smb",
+              "sftp-native"
+            ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
+              "webdav",
+              "ftp",
+              "sftp",
+              "smb",
+              "sftp-native"
+            ]
+          },
+          "description": "TCP port, 1-65535. Typical values: FTP 21, SFTP 22, SMB 445, WebDAV 80 (HTTP) / 443 (HTTPS)."
+        },
+        {
+          "key": "ftp_tls",
+          "label": "TLS (FTPS)",
+          "type": "boolean",
+          "binding": "config",
+          "default": false,
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "ftp"
+            ]
+          },
+          "description": "Connect with FTPS (explicit TLS on the FTP control connection)."
+        },
+        {
+          "key": "webdav_scheme",
+          "label": "Scheme",
+          "type": "select",
+          "binding": "config",
+          "default": "https",
+          "options": [
+            {
+              "label": "HTTPS",
+              "value": "https"
+            },
+            {
+              "label": "HTTP",
+              "value": "http"
+            }
+          ],
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "webdav"
+            ]
+          },
+          "description": "URL scheme for the WebDAV service address built from host and port."
         },
         {
           "key": "config",
@@ -1414,6 +1498,27 @@
           "label": "存储",
           "description": "基于 rclone 的存储连接：本地文件系统、S3/MinIO、阿里云 OSS、腾讯云 COS、Azure Blob、Google Cloud Storage、华为云 OBS、WebDAV、FTP、SFTP、SMB/CIFS 或任意其他 rclone 后端。",
           "fields": {
+            "ftp_tls": {
+                "label": "TLS（FTPS）",
+                "description": "以 FTPS 连接（FTP 控制连接上的显式 TLS）。"
+              },
+            "host": {
+                "label": "主机",
+                "placeholder": "files.example.com",
+                "description": "FTP/SFTP/SMB/WebDAV 的存储服务器主机。声明主机后，DBX 才能为该连接挂 SSH/HTTP/SOCKS 传输层（静态隧道）。已保存端点的旧连接继续使用原端点。"
+              },
+            "port": {
+                "label": "端口",
+                "description": "TCP 端口（1-65535）。常用值：FTP 21、SFTP 22、SMB 445、WebDAV 80（HTTP）/ 443（HTTPS）。"
+              },
+            "webdav_scheme": {
+                "label": "协议",
+                "description": "由主机和端口合成 WebDAV 服务地址时使用的 URL 协议。",
+                "options": {
+                  "https": "HTTPS",
+                  "http": "HTTP"
+                }
+              },
             "display_name": {
               "label": "连接名称",
               "description": "显示在连接列表中的名称。"
@@ -1562,7 +1667,7 @@
             },
             "endpoint": {
               "label": "端点",
-              "description": "服务地址。对象存储/WebDAV：https://host；FTP：ftp(s)://host[:21]；SFTP：ssh://user@host[:22]；SMB：host[:445]；http：完整 URL；hdfs：namenode:8020；netstorage/quatrix：主机名；azurefiles：可选服务 URL。 S3 兼容厂商填写其 S3 端点：R2 https://<accountid>.r2.cloudflarestorage.com；Wasabi https://s3.<region>.wasabisys.com；Spaces https://<region>.digitaloceanspaces.com；Scaleway https://s3.<region>.scw.cloud；IDrive e2 账号端点；US3 https://s3-<region>.ufileos.com；移动云 EOS https://eos-<region>-1.cmecloud.cn；网易数帆 NOS https://s3.netease.com；BOS https://s3.<region>.bcebos.com；TOS https://tos-s3-<region>.volces.com；KS3 https://s3.<region>.ksyuncs.com。"
+              "description": "服务地址。对象存储：https://host；http：完整 URL；hdfs：namenode:8020；netstorage/quatrix：主机名；azurefiles：可选服务 URL。 S3 兼容厂商填写其 S3 端点：R2 https://<accountid>.r2.cloudflarestorage.com；Wasabi https://s3.<region>.wasabisys.com；Spaces https://<region>.digitaloceanspaces.com；Scaleway https://s3.<region>.scw.cloud；IDrive e2 账号端点；US3 https://s3-<region>.ufileos.com；移动云 EOS https://eos-<region>-1.cmecloud.cn；网易数帆 NOS https://s3.netease.com；BOS https://s3.<region>.bcebos.com；TOS https://tos-s3-<region>.volces.com；KS3 https://s3.<region>.ksyuncs.com。"
             },
             "share": {
               "label": "共享名",
@@ -1709,6 +1814,27 @@
           "label": "儲存",
           "description": "基於 rclone 的儲存連線：本機檔案系統、S3/MinIO、阿里雲 OSS、騰訊雲 COS、Azure Blob、Google Cloud Storage、華為雲 OBS、WebDAV、FTP、SFTP、SMB/CIFS 或任意其他 rclone 後端。",
           "fields": {
+            "ftp_tls": {
+                "label": "TLS（FTPS）",
+                "description": "以 FTPS 連線（FTP 控制連線上的明確 TLS）。"
+              },
+            "host": {
+                "label": "主機",
+                "placeholder": "files.example.com",
+                "description": "FTP/SFTP/SMB/WebDAV 的儲存伺服器主機。宣告主機後，DBX 才能為該連線掛 SSH/HTTP/SOCKS 傳輸層（靜態通道）。已儲存端點的舊連線繼續使用原端點。"
+              },
+            "port": {
+                "label": "連接埠",
+                "description": "TCP 連接埠（1-65535）。常用值：FTP 21、SFTP 22、SMB 445、WebDAV 80（HTTP）/ 443（HTTPS）。"
+              },
+            "webdav_scheme": {
+                "label": "通訊協定",
+                "description": "由主機和連接埠合成 WebDAV 服務位址時使用的 URL 通訊協定。",
+                "options": {
+                  "https": "HTTPS",
+                  "http": "HTTP"
+                }
+              },
             "display_name": {
               "label": "連線名稱",
               "description": "顯示在連線清單中的名稱。"
@@ -1857,7 +1983,7 @@
             },
             "endpoint": {
               "label": "端點",
-              "description": "服務位址。物件儲存/WebDAV：https://host；FTP：ftp(s)://host[:21]；SFTP：ssh://user@host[:22]；SMB：host[:445]；http：完整 URL；hdfs：namenode:8020；netstorage/quatrix：主機名稱；azurefiles：可選服務 URL。 S3 相容廠商填寫其 S3 端點：R2 https://<accountid>.r2.cloudflarestorage.com；Wasabi https://s3.<region>.wasabisys.com；Spaces https://<region>.digitaloceanspaces.com；Scaleway https://s3.<region>.scw.cloud；IDrive e2 帳號端點；US3 https://s3-<region>.ufileos.com；移動雲 EOS https://eos-<region>-1.cmecloud.cn；網易數帆 NOS https://s3.netease.com；BOS https://s3.<region>.bcebos.com；TOS https://tos-s3-<region>.volces.com；KS3 https://s3.<region>.ksyuncs.com。"
+              "description": "服務位址。物件儲存：https://host；http：完整 URL；hdfs：namenode:8020；netstorage/quatrix：主機名稱；azurefiles：可選服務 URL。 S3 相容廠商填寫其 S3 端點：R2 https://<accountid>.r2.cloudflarestorage.com；Wasabi https://s3.<region>.wasabisys.com；Spaces https://<region>.digitaloceanspaces.com；Scaleway https://s3.<region>.scw.cloud；IDrive e2 帳號端點；US3 https://s3-<region>.ufileos.com；移動雲 EOS https://eos-<region>-1.cmecloud.cn；網易數帆 NOS https://s3.netease.com；BOS https://s3.<region>.bcebos.com；TOS https://tos-s3-<region>.volces.com；KS3 https://s3.<region>.ksyuncs.com。"
             },
             "share": {
               "label": "共用名稱",
@@ -2004,6 +2130,27 @@
           "label": "Storage",
           "description": "Storage connection backed by rclone: local filesystem, S3/MinIO, Azure Blob, Google Cloud Storage, Huawei OBS, Alibaba OSS, Tencent COS, WebDAV, FTP, SFTP, SMB/CIFS, or any other rclone backend.",
           "fields": {
+            "host": {
+                "label": "Host",
+                "placeholder": "files.example.com",
+                "description": "Storage server host for FTP/SFTP/SMB/WebDAV. Declaring it lets DBX attach SSH/HTTP/SOCKS transport layers (static tunnel) to the connection. Existing connections that already carry an endpoint keep using it."
+              },
+            "port": {
+                "label": "Port",
+                "description": "TCP port, 1-65535. Typical values: FTP 21, SFTP 22, SMB 445, WebDAV 80 (HTTP) / 443 (HTTPS)."
+              },
+            "ftp_tls": {
+                "label": "TLS (FTPS)",
+                "description": "Connect with FTPS (explicit TLS on the FTP control connection)."
+              },
+            "webdav_scheme": {
+                "label": "Scheme",
+                "description": "URL scheme for the WebDAV service address built from host and port.",
+                "options": {
+                  "https": "HTTPS",
+                  "http": "HTTP"
+                }
+              },
             "display_name": {
               "label": "Connection name",
               "description": "Name shown in the connection list."
@@ -2152,7 +2299,7 @@
             },
             "endpoint": {
               "label": "Endpoint",
-              "description": "Service address. Object storage/WebDAV: https://host; FTP: ftp(s)://host[:21]; SFTP: ssh://user@host[:22]; SMB: host[:445]; http: full URL; hdfs: namenode:8020; netstorage/quatrix: host name; azurefiles: optional service URL. S3-compatible vendors take their vendor S3 endpoint: R2 https://<accountid>.r2.cloudflarestorage.com; Wasabi https://s3.<region>.wasabisys.com; Spaces https://<region>.digitaloceanspaces.com; Scaleway https://s3.<region>.scw.cloud; IDrive e2 account endpoint; US3 https://s3-<region>.ufileos.com; China Mobile EOS https://eos-<region>-1.cmecloud.cn; Netease NOS https://s3.netease.com; BOS https://s3.<region>.bcebos.com; TOS https://tos-s3-<region>.volces.com; KS3 https://s3.<region>.ksyuncs.com."
+              "description": "Service address. Object storage: https://host; http: full URL; hdfs: namenode:8020; netstorage/quatrix: host name; azurefiles: optional service URL. S3-compatible vendors take their vendor S3 endpoint: R2 https://<accountid>.r2.cloudflarestorage.com; Wasabi https://s3.<region>.wasabisys.com; Spaces https://<region>.digitaloceanspaces.com; Scaleway https://s3.<region>.scw.cloud; IDrive e2 account endpoint; US3 https://s3-<region>.ufileos.com; China Mobile EOS https://eos-<region>-1.cmecloud.cn; Netease NOS https://s3.netease.com; BOS https://s3.<region>.bcebos.com; TOS https://tos-s3-<region>.volces.com; KS3 https://s3.<region>.ksyuncs.com."
             },
             "share": {
               "label": "Share",
@@ -2299,6 +2446,27 @@
           "label": "Almacenamiento",
           "description": "Conexión de almacenamiento basada en rclone: sistema de archivos local, S3/MinIO, OSS de Alibaba, COS de Tencent, Azure Blob, Google Cloud Storage, OBS de Huawei, WebDAV, FTP, SFTP, SMB/CIFS o cualquier otro backend de rclone.",
           "fields": {
+            "ftp_tls": {
+                "label": "TLS (FTPS)",
+                "description": "Conectar con FTPS (TLS explícito en la conexión de control FTP)."
+              },
+            "host": {
+                "label": "Servidor",
+                "placeholder": "files.example.com",
+                "description": "Host del servidor de almacenamiento para FTP/SFTP/SMB/WebDAV. Al declararlo, DBX puede adjuntar capas de transporte SSH/HTTP/SOCKS a la conexión (túnel estático). Las conexiones existentes que ya tienen endpoint siguen usándolo."
+              },
+            "port": {
+                "label": "Puerto",
+                "description": "Puerto TCP, 1-65535. Valores habituales: FTP 21, SFTP 22, SMB 445, WebDAV 80 (HTTP) / 443 (HTTPS)."
+              },
+            "webdav_scheme": {
+                "label": "Esquema",
+                "description": "Esquema de URL para la dirección del servicio WebDAV construida a partir del host y el puerto.",
+                "options": {
+                  "https": "HTTPS",
+                  "http": "HTTP"
+                }
+              },
             "display_name": {
               "label": "Nombre de la conexión",
               "description": "Nombre mostrado en la lista de conexiones."
@@ -2447,7 +2615,7 @@
             },
             "endpoint": {
               "label": "Endpoint",
-              "description": "Dirección del servicio. Almacenamiento de objetos/WebDAV: https://host; FTP: ftp(s)://host[:21]; SFTP: ssh://user@host[:22]; SMB: host[:445]; http: URL completa; hdfs: namenode:8020; netstorage/quatrix: nombre de host; azurefiles: URL de servicio opcional. Los proveedores compatibles con S3 usan su endpoint S3: R2 https://<accountid>.r2.cloudflarestorage.com; Wasabi https://s3.<region>.wasabisys.com; Spaces https://<region>.digitaloceanspaces.com; Scaleway https://s3.<region>.scw.cloud; IDrive e2 endpoint de la cuenta; US3 https://s3-<region>.ufileos.com; China Mobile EOS https://eos-<region>-1.cmecloud.cn; Netease NOS https://s3.netease.com; BOS https://s3.<region>.bcebos.com; TOS https://tos-s3-<region>.volces.com; KS3 https://s3.<region>.ksyuncs.com."
+              "description": "Dirección del servicio. Almacenamiento de objetos: https://host; http: URL completa; hdfs: namenode:8020; netstorage/quatrix: nombre de host; azurefiles: URL de servicio opcional. Los proveedores compatibles con S3 usan su endpoint S3: R2 https://<accountid>.r2.cloudflarestorage.com; Wasabi https://s3.<region>.wasabisys.com; Spaces https://<region>.digitaloceanspaces.com; Scaleway https://s3.<region>.scw.cloud; IDrive e2 endpoint de la cuenta; US3 https://s3-<region>.ufileos.com; China Mobile EOS https://eos-<region>-1.cmecloud.cn; Netease NOS https://s3.netease.com; BOS https://s3.<region>.bcebos.com; TOS https://tos-s3-<region>.volces.com; KS3 https://s3.<region>.ksyuncs.com."
             },
             "share": {
               "label": "Recurso compartido",
@@ -2594,6 +2762,27 @@
           "label": "Archiviazione",
           "description": "Connessione di archiviazione basata su rclone: filesystem locale, S3/MinIO, OSS di Alibaba, COS Tencent, Azure Blob, Google Cloud Storage, OBS di Huawei, WebDAV, FTP, SFTP, SMB/CIFS o qualsiasi altro backend rclone.",
           "fields": {
+            "ftp_tls": {
+                "label": "TLS (FTPS)",
+                "description": "Connessione tramite FTPS (TLS esplicito sulla connessione di controllo FTP)."
+              },
+            "host": {
+                "label": "Host",
+                "placeholder": "files.example.com",
+                "description": "Host del server di archiviazione per FTP/SFTP/SMB/WebDAV. Dichiaramdo, DBX può applicare livelli di trasporto SSH/HTTP/SOCKS alla connessione (tunnel statico). Le connessioni esistenti con endpoint continuano a usarlo."
+              },
+            "port": {
+                "label": "Porta",
+                "description": "Porta TCP, 1-65535. Valori tipici: FTP 21, SFTP 22, SMB 445, WebDAV 80 (HTTP) / 443 (HTTPS)."
+              },
+            "webdav_scheme": {
+                "label": "Schema",
+                "description": "Schema URL per l'indirizzo del servizio WebDAV costruito da host e porta.",
+                "options": {
+                  "https": "HTTPS",
+                  "http": "HTTP"
+                }
+              },
             "display_name": {
               "label": "Nome connessione",
               "description": "Nome mostrato nell'elenco delle connessioni."
@@ -2742,7 +2931,7 @@
             },
             "endpoint": {
               "label": "Endpoint",
-              "description": "Indirizzo del servizio. Object storage/WebDAV: https://host; FTP: ftp(s)://host[:21]; SFTP: ssh://user@host[:22]; SMB: host[:445]; http: URL completo; hdfs: namenode:8020; netstorage/quatrix: nome host; azurefiles: URL di servizio opzionale. I provider compatibili S3 usano il loro endpoint S3: R2 https://<accountid>.r2.cloudflarestorage.com; Wasabi https://s3.<region>.wasabisys.com; Spaces https://<region>.digitaloceanspaces.com; Scaleway https://s3.<region>.scw.cloud; IDrive e2 endpoint dell'account; US3 https://s3-<region>.ufileos.com; China Mobile EOS https://eos-<region>-1.cmecloud.cn; Netease NOS https://s3.netease.com; BOS https://s3.<region>.bcebos.com; TOS https://tos-s3-<region>.volces.com; KS3 https://s3.<region>.ksyuncs.com."
+              "description": "Indirizzo del servizio. Object storage: https://host; http: URL completo; hdfs: namenode:8020; netstorage/quatrix: nome host; azurefiles: URL di servizio opzionale. I provider compatibili S3 usano il loro endpoint S3: R2 https://<accountid>.r2.cloudflarestorage.com; Wasabi https://s3.<region>.wasabisys.com; Spaces https://<region>.digitaloceanspaces.com; Scaleway https://s3.<region>.scw.cloud; IDrive e2 endpoint dell'account; US3 https://s3-<region>.ufileos.com; China Mobile EOS https://eos-<region>-1.cmecloud.cn; Netease NOS https://s3.netease.com; BOS https://s3.<region>.bcebos.com; TOS https://tos-s3-<region>.volces.com; KS3 https://s3.<region>.ksyuncs.com."
             },
             "share": {
               "label": "Condivisione",
@@ -2889,6 +3078,27 @@
           "label": "ストレージ",
           "description": "rclone ベースのストレージ接続：ローカルファイルシステム、S3/MinIO、Alibaba OSS、Tencent COS、Azure Blob、Google Cloud Storage、Huawei OBS、WebDAV、FTP、SFTP、SMB/CIFS、またはその他の任意の rclone バックエンド。",
           "fields": {
+            "ftp_tls": {
+                "label": "TLS（FTPS）",
+                "description": "FTPS で接続します（FTP 制御接続上の明示的 TLS）。"
+              },
+            "host": {
+                "label": "ホスト",
+                "placeholder": "files.example.com",
+                "description": "FTP/SFTP/SMB/WebDAV のストレージサーバーホスト。ホストを宣言すると、DBX はこの接続に SSH/HTTP/SOCKS トランスポート層（静的トンネル）を接続できます。エンドポイントを持つ既存接続は引き続きそれを使用します。"
+              },
+            "port": {
+                "label": "ポート",
+                "description": "TCP ポート（1-65535）。典型値: FTP 21、SFTP 22、SMB 445、WebDAV 80（HTTP）/ 443（HTTPS）。"
+              },
+            "webdav_scheme": {
+                "label": "スキーム",
+                "description": "ホストとポートから WebDAV サービスアドレスを組み立てる際の URL スキーム。",
+                "options": {
+                  "https": "HTTPS",
+                  "http": "HTTP"
+                }
+              },
             "display_name": {
               "label": "接続名",
               "description": "接続リストに表示される名前です。"
@@ -3037,7 +3247,7 @@
             },
             "endpoint": {
               "label": "エンドポイント",
-              "description": "サービスアドレス。オブジェクトストレージ/WebDAV：https://host、FTP：ftp(s)://host[:21]、SFTP：ssh://user@host[:22]、SMB：host[:445]、http：完全な URL、hdfs：namenode:8020、netstorage/quatrix：ホスト名、azurefiles：任意のサービス URL。 S3 互換ベンダーは各社の S3 エンドポイントを指定：R2 https://<accountid>.r2.cloudflarestorage.com、Wasabi https://s3.<region>.wasabisys.com、Spaces https://<region>.digitaloceanspaces.com、Scaleway https://s3.<region>.scw.cloud、IDrive e2 はアカウント固有エンドポイント、US3 https://s3-<region>.ufileos.com、China Mobile EOS https://eos-<region>-1.cmecloud.cn、Netease NOS https://s3.netease.com、BOS https://s3.<region>.bcebos.com、TOS https://tos-s3-<region>.volces.com、KS3 https://s3.<region>.ksyuncs.com。"
+              "description": "サービスアドレス。オブジェクトストレージ：https://host、http：完全な URL、hdfs：namenode:8020、netstorage/quatrix：ホスト名、azurefiles：任意のサービス URL。 S3 互換ベンダーは各社の S3 エンドポイントを指定：R2 https://<accountid>.r2.cloudflarestorage.com、Wasabi https://s3.<region>.wasabisys.com、Spaces https://<region>.digitaloceanspaces.com、Scaleway https://s3.<region>.scw.cloud、IDrive e2 はアカウント固有エンドポイント、US3 https://s3-<region>.ufileos.com、China Mobile EOS https://eos-<region>-1.cmecloud.cn、Netease NOS https://s3.netease.com、BOS https://s3.<region>.bcebos.com、TOS https://tos-s3-<region>.volces.com、KS3 https://s3.<region>.ksyuncs.com。"
             },
             "share": {
               "label": "共有名",
@@ -3184,6 +3394,27 @@
           "label": "Armazenamento",
           "description": "Conexão de armazenamento baseada no rclone: sistema de arquivos local, S3/MinIO, OSS da Alibaba, COS da Tencent, Azure Blob, Google Cloud Storage, OBS da Huawei, WebDAV, FTP, SFTP, SMB/CIFS ou qualquer outro backend do rclone.",
           "fields": {
+            "ftp_tls": {
+                "label": "TLS (FTPS)",
+                "description": "Conectar com FTPS (TLS explícito na conexão de controle FTP)."
+              },
+            "host": {
+                "label": "Servidor",
+                "placeholder": "files.example.com",
+                "description": "Host do servidor de armazenamento para FTP/SFTP/SMB/WebDAV. Ao declará-lo, o DBX pode anexar camadas de transporte SSH/HTTP/SOCKS à conexão (túnel estático). Conexões existentes que já têm endpoint continuam usando-o."
+              },
+            "port": {
+                "label": "Porta",
+                "description": "Porta TCP, 1-65535. Valores comuns: FTP 21, SFTP 22, SMB 445, WebDAV 80 (HTTP) / 443 (HTTPS)."
+              },
+            "webdav_scheme": {
+                "label": "Esquema",
+                "description": "Esquema de URL para o endereço do serviço WebDAV construído a partir do host e da porta.",
+                "options": {
+                  "https": "HTTPS",
+                  "http": "HTTP"
+                }
+              },
             "display_name": {
               "label": "Nome da conexão",
               "description": "Nome exibido na lista de conexões."
@@ -3332,7 +3563,7 @@
             },
             "endpoint": {
               "label": "Endpoint",
-              "description": "Endereço do serviço. Armazenamento de objetos/WebDAV: https://host; FTP: ftp(s)://host[:21]; SFTP: ssh://user@host[:22]; SMB: host[:445]; http: URL completa; hdfs: namenode:8020; netstorage/quatrix: nome do host; azurefiles: URL de serviço opcional. Provedores compatíveis com S3 usam o endpoint S3 deles: R2 https://<accountid>.r2.cloudflarestorage.com; Wasabi https://s3.<region>.wasabisys.com; Spaces https://<region>.digitaloceanspaces.com; Scaleway https://s3.<region>.scw.cloud; IDrive e2 endpoint da conta; US3 https://s3-<region>.ufileos.com; China Mobile EOS https://eos-<region>-1.cmecloud.cn; Netease NOS https://s3.netease.com; BOS https://s3.<region>.bcebos.com; TOS https://tos-s3-<region>.volces.com; KS3 https://s3.<region>.ksyuncs.com."
+              "description": "Endereço do serviço. Armazenamento de objetos: https://host; http: URL completa; hdfs: namenode:8020; netstorage/quatrix: nome do host; azurefiles: URL de serviço opcional. Provedores compatíveis com S3 usam o endpoint S3 deles: R2 https://<accountid>.r2.cloudflarestorage.com; Wasabi https://s3.<region>.wasabisys.com; Spaces https://<region>.digitaloceanspaces.com; Scaleway https://s3.<region>.scw.cloud; IDrive e2 endpoint da conta; US3 https://s3-<region>.ufileos.com; China Mobile EOS https://eos-<region>-1.cmecloud.cn; Netease NOS https://s3.netease.com; BOS https://s3.<region>.bcebos.com; TOS https://tos-s3-<region>.volces.com; KS3 https://s3.<region>.ksyuncs.com."
             },
             "share": {
               "label": "Compartilhamento",

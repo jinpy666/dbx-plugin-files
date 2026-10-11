@@ -138,8 +138,7 @@ const options = (key) => byKey[key].options.map((option) => option.value);
 const ENDPOINT_PROTOCOLS = [
   "s3", "gcs", "azblob", "obs", "oss", "cos", "qiniu", "r2", "wasabi", "spaces",
   "scaleway", "idrive", "us3", "ecloud", "nos", "bos", "tos", "ks3",
-  "webdav", "ftp", "sftp",
-  "sftp-native", "smb", "koofr", "pcloud", "seafile",
+  "koofr", "pcloud", "seafile",
   // generic backends whose service address has a dedicated field
   "azurefiles", "filefabric", "hdfs", "http", "imagekit", "netstorage",
   "oracleobjectstorage", "qingstor", "quatrix", "sia",
@@ -147,10 +146,14 @@ const ENDPOINT_PROTOCOLS = [
 const ENDPOINT_REQUIRED = [
   "azblob", "obs", "oss", "cos", "qiniu", "r2", "wasabi", "spaces",
   "scaleway", "idrive", "us3", "ecloud", "nos", "bos", "tos", "ks3",
-  "webdav", "ftp", "sftp", "smb",
-  "sftp-native", "koofr", "pcloud", "seafile",
+  "koofr", "pcloud", "seafile",
   "filefabric", "hdfs", "http", "imagekit", "netstorage", "quatrix",
 ];
+// Single-endpoint protocols speak host/port directly (binding host/port).
+// The declared host is what lets the DBX host attach SSH/HTTP/SOCKS
+// transport layers (issue #83): without a host/port binding the host
+// refuses to build the static tunnel.
+const TUNNEL_PROTOCOLS = ["webdav", "ftp", "sftp", "smb", "sftp-native"];
 const USERNAME_VISIBLE = [
   "webdav", "smb", "pcloud", "seafile",
   "azurefiles", "cloudinary", "filen", "filescom", "hdfs", "iclouddrive",
@@ -205,6 +208,15 @@ for (const protocol of options("protocol")) {
     // OSS (no default endpoint) but optional for S3 (AWS default endpoint).
     current.visible("endpoint", ENDPOINT_PROTOCOLS.includes(protocol));
     current.required("endpoint", ENDPOINT_REQUIRED.includes(protocol));
+    // Single-endpoint protocols speak host/port (transport-layer target).
+    current.visible("host", TUNNEL_PROTOCOLS.includes(protocol));
+    current.required("host", TUNNEL_PROTOCOLS.includes(protocol));
+    current.visible("port", TUNNEL_PROTOCOLS.includes(protocol));
+    current.required("port", TUNNEL_PROTOCOLS.includes(protocol));
+    current.visible("webdav_scheme", protocol === "webdav");
+    current.required("webdav_scheme", false);
+    current.visible("ftp_tls", protocol === "ftp");
+    current.required("ftp_tls", false);
     current.visible("bucket", ["s3", "gcs", "obs", "oss", "cos", "qiniu", "r2", "wasabi", "spaces", "scaleway", "idrive", "us3", "ecloud", "nos", "bos", "tos", "ks3"].includes(protocol));
     // Bucket namespace (2026-09-17): the S3-compatible vendor protocols
     // accept an empty bucket —

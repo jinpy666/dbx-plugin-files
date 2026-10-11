@@ -3307,6 +3307,14 @@ mod manifest_matrix {
                 _ => "",
             }),
             "service" => json!("memory"),
+            // Connection-level host/port bindings (issue #83): the matrix
+            // fixture carries a stored endpoint for the single-endpoint
+            // protocols, so these only feed the synthesis path covered by
+            // the model tests.
+            "host" => json!("files.example.com"),
+            "port" => json!(2121),
+            "ftp_tls" => json!(false),
+            "webdav_scheme" => json!("https"),
             // Structural engines keep their required wiring options in the
             // JSON extras (no structured field matches them); everything
             // else samples an empty extras object.
@@ -3393,11 +3401,18 @@ mod manifest_matrix {
         let mut external_config = Map::new();
         let mut connection_secrets = Map::new();
         let mut name = Value::Null;
+        let mut connection_host = Value::Null;
+        let mut connection_port = Value::Null;
         for field in form_fields() {
             let key = field["key"].as_str().expect("field key").to_string();
             let value = values.get(&key).cloned().unwrap_or(Value::Null);
             match field["binding"].as_str().unwrap_or_default() {
                 "name" => name = value,
+                // Connection-level bindings (issue #83): they never travel in
+                // external_config — the lifecycle payload carries them on the
+                // connection object itself.
+                "host" => connection_host = value,
+                "port" => connection_port = value,
                 "secret" => {
                     let textual = value.as_str().map(str::trim).unwrap_or_default();
                     if !textual.is_empty() || value.is_number() || value.is_boolean() {
@@ -3413,6 +3428,8 @@ mod manifest_matrix {
             "connection": {
                 "id": "matrix",
                 "name": name,
+                "host": connection_host,
+                "port": connection_port,
                 "external_config": external_config,
                 "connection_secrets": connection_secrets,
             }

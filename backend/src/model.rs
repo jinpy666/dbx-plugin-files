@@ -435,6 +435,25 @@ impl StoredConnection {
             .filter(|value| *value > 0)
             .unwrap_or(0);
 
+        // Host-managed transport layers (SSH/HTTP/SOCKS): the host builds a
+        // static tunnel to the declared `host`/`port` binding fields and hands
+        // the plugin the local dial endpoint through `runtime`. Only tunnelled
+        // lifecycles carry the layers, so untunnelled behavior is untouched —
+        // legacy endpoint-only connections never reach here anyway (the host
+        // refuses transport layers without a host/port binding, issue #83).
+        let host_tunnelled = connection
+            .get("transport_layers")
+            .and_then(Value::as_array)
+            .is_some_and(|layers| !layers.is_empty());
+        let mut endpoint = endpoint_for_lifecycle(
+            external_config,
+            Some(connection),
+            &protocol,
+            Some(runtime_host.as_str()),
+            runtime_port,
+            host_tunnelled,
+        )?;
+
         let proxy = parse_proxy(external_config, connection_secrets)?;
         let tunnel = parse_tunnel(external_config, &protocol)?;
 
@@ -453,7 +472,7 @@ impl StoredConnection {
             account_name: optional_string(external_config, "account_name"),
             account_key: secret_string(connection_secrets, "account_key"),
             scope: optional_string(external_config, "scope"),
-            endpoint: optional_string(external_config, "endpoint"),
+            endpoint,
             region: optional_string(external_config, "region"),
             access_key_id: optional_string(external_config, "access_key_id"),
             secret_access_key: secret_string(connection_secrets, "secret_access_key"),
@@ -1229,6 +1248,104 @@ fn bool_field(object: Option<&serde_json::Map<String, Value>>, key: &str, defaul
     }
 }
 
+/// Protocols whose service address is a single host:port — the ones whose
+/// form speaks the `host`/`port` binding fields (issue #83: the DBX host
+/// needs that binding to attach SSH/HTTP/SOCKS transport layers).
+const SINGLE_ENDPOINT_PROTOCOLS: [&str; 5] = ["webdav", "ftp", "sftp", "smb", "sftp-native"];
+
+/// Resolves the effective connection endpoint for a lifecycle payload.
+///
+/// Precedence: a stored `external_config.endpoint` always wins (legacy
+/// connections and MCP/API callers keep their exact grammar — an `ftps://`
+/// scheme or SFTP userinfo must never be silently rewritten). Otherwise,
+/// for the single-endpoint protocols, the endpoint is synthesized from the
+/// host's `host`/`port` binding fields (the new form stores no endpoint),
+/// with `ftp_tls` / `webdav_scheme` choosing the scheme.
+///
+/// When the lifecycle carries host-managed transport layers, the dial
+/// authority is rewritten to the runtime tunnel endpoint (`runtime.host` /
+/// `runtime.port`), preserving scheme, userinfo, and any URL path suffix —
+/// the rclone backend then dials the tunnel, which forwards to the real
+/// host. Without transport layers the endpoint is used verbatim.
+fn endpoint_for_lifecycle(
+    external_config: Option<&serde_json::Map<String, Value>>,
+    connection: Option<&serde_json::Map<String, Value>>,
+    protocol: &str,
+    runtime_host: Option<&str>,
+    runtime_port: u16,
+    host_tunnelled: bool,
+) -> Result<String, String> {
+    let stored = optional_string(external_config, "endpoint");
+    if !stored.is_empty() {
+        return Ok(if host_tunnelled {
+            rewrite_dial_authority(
+                &stored,
+                runtime_host.unwrap_or_default(),
+                runtime_port,
+            )
+        } else {
+            stored
+        });
+    }
+    let mut endpoint = String::new();
+    if SINGLE_ENDPOINT_PROTOCOLS.contains(&protocol) {
+        let host = optional_string(connection, "host");
+        if !host.is_empty() {
+            let port = connection
+                .and_then(|connection| connection.get("port"))
+                .and_then(Value::as_u64)
+                .and_then(|value| u16::try_from(value).ok())
+                .unwrap_or(0);
+            let authority = if port > 0 {
+                format!("{host}:{port}")
+            } else {
+                host.clone()
+            };
+            endpoint = match protocol {
+                "ftp" => {
+                    let tls = bool_field(external_config, "ftp_tls", false);
+                    format!("{}://{authority}", if tls { "ftps" } else { "ftp" })
+                }
+                "webdav" => {
+                    let scheme = optional_string(external_config, "webdav_scheme");
+                    let scheme = if scheme.is_empty() { "https" } else { &scheme };
+                    format!("{scheme}://{authority}")
+                }
+                // sftp / sftp-native / smb take the bare host[:port] grammar.
+                _ => authority,
+            };
+        }
+    }
+    if host_tunnelled && !endpoint.is_empty() {
+        endpoint = rewrite_dial_authority(&endpoint, runtime_host.unwrap_or_default(), runtime_port);
+    }
+    Ok(endpoint)
+}
+
+/// Replaces an endpoint's dial authority (host:port) with the runtime
+/// tunnel target while preserving the scheme, any `[user[:pass]@]` userinfo
+/// (SFTP logins), and any URL path suffix (WebDAV subpaths). A scheme-less
+/// endpoint is replaced outright (bare `host[:port]` grammar).
+fn rewrite_dial_authority(endpoint: &str, host: &str, port: u16) -> String {
+    let dial = format!("{host}:{port}");
+    match endpoint.split_once("://") {
+        Some((scheme, rest)) => {
+            let (userinfo, tail) = match rest.rsplit_once('@') {
+                Some((user, tail)) if !user.is_empty() => (Some(user), tail),
+                _ => (None, rest),
+            };
+            let path = tail.split_once('/').map(|(_, path)| path).unwrap_or_default();
+            let prefix = userinfo.map(|user| format!("{user}@")).unwrap_or_default();
+            if path.is_empty() {
+                format!("{scheme}://{prefix}{dial}")
+            } else {
+                format!("{scheme}://{prefix}{dial}/{path}")
+            }
+        }
+        None => dial,
+    }
+}
+
 /// Parses the optional `external_config.proxy` object into a
 /// [`ProxyConfig`]; absent or `null` yields `Ok(None)`. The password
 /// prefers the secret store (`connection_secrets.proxy_password`) and
@@ -1645,6 +1762,119 @@ mod tests {
         }))
         .unwrap();
         assert!(default.display_charset.is_empty(), "display_charset defaults to empty (UTF-8)");
+    }
+
+    // -- endpoint synthesis from the host/port bindings (issue #83) ----------
+
+    #[test]
+    fn synthesizes_single_endpoint_protocols_from_host_port_bindings() {
+        let build = |protocol: &str, extra: Value| {
+            let mut external = json!({ "protocol": protocol });
+            if let (Some(target), Some(source)) = (external.as_object_mut(), extra.as_object()) {
+                for (key, value) in source {
+                    target.insert(key.clone(), value.clone());
+                }
+            }
+            StoredConnection::from_lifecycle_params(&json!({
+                "connection": {
+                    "id": "conn-host-port",
+                    "host": "files.example.com",
+                    "port": 2121,
+                    "external_config": external
+                }
+            }))
+            .unwrap()
+            .endpoint
+        };
+        assert_eq!(build("ftp", json!({})), "ftp://files.example.com:2121");
+        assert_eq!(build("ftp", json!({ "ftp_tls": true })), "ftps://files.example.com:2121");
+        assert_eq!(build("sftp", json!({})), "files.example.com:2121");
+        assert_eq!(build("sftp-native", json!({})), "files.example.com:2121");
+        assert_eq!(build("smb", json!({})), "files.example.com:2121");
+        assert_eq!(build("webdav", json!({})), "https://files.example.com:2121");
+        assert_eq!(build("webdav", json!({ "webdav_scheme": "http" })), "http://files.example.com:2121");
+    }
+
+    #[test]
+    fn stored_endpoint_wins_over_the_host_port_bindings() {
+        // Legacy connections and MCP/API callers keep their exact grammar —
+        // an ftps scheme or SFTP userinfo must never be silently rewritten.
+        let connection = StoredConnection::from_lifecycle_params(&json!({
+            "connection": {
+                "id": "conn-legacy",
+                "host": "other.example.com",
+                "port": 22,
+                "external_config": { "protocol": "sftp", "endpoint": "ssh://backup@nas.local:22022" }
+            }
+        }))
+        .unwrap();
+        assert_eq!(connection.endpoint, "ssh://backup@nas.local:22022");
+
+        // No host binding (old host, imported config): endpoint verbatim.
+        let connection = StoredConnection::from_lifecycle_params(&json!({
+            "connection": {
+                "id": "conn-no-binding",
+                "external_config": { "protocol": "smb", "endpoint": "nas.local:445" }
+            }
+        }))
+        .unwrap();
+        assert_eq!(connection.endpoint, "nas.local:445");
+    }
+
+    #[test]
+    fn host_transport_layers_rewrite_the_dial_authority_to_runtime() {
+        let connection = StoredConnection::from_lifecycle_params(&json!({
+            "connection": {
+                "id": "conn-tunnel",
+                "host": "nas.local",
+                "port": 445,
+                "transport_layers": [{ "type": "ssh", "host": "bastion.example.com", "port": 22 }],
+                "external_config": { "protocol": "smb", "endpoint": "nas.local:445" }
+            },
+            "runtime": { "host": "127.0.0.1", "port": 35555 }
+        }))
+        .unwrap();
+        assert_eq!(connection.endpoint, "127.0.0.1:35555");
+
+        // Scheme, userinfo, and path suffix survive the rewrite.
+        let connection = StoredConnection::from_lifecycle_params(&json!({
+            "connection": {
+                "id": "conn-tunnel-webdav",
+                "host": "dav.example.com",
+                "port": 443,
+                "transport_layers": [{ "type": "proxy", "host": "proxy.example.com", "port": 1080 }],
+                "external_config": { "protocol": "webdav", "endpoint": "https://bob@dav.example.com/dav" }
+            },
+            "runtime": { "host": "127.0.0.1", "port": 35556 }
+        }))
+        .unwrap();
+        assert_eq!(connection.endpoint, "https://bob@127.0.0.1:35556/dav");
+    }
+
+    #[test]
+    fn runtime_is_ignored_without_transport_layers() {
+        // Without layers the runtime echo of the logical endpoint must not
+        // touch the endpoint — untunnelled behavior stays byte-identical.
+        let connection = StoredConnection::from_lifecycle_params(&json!({
+            "connection": {
+                "id": "conn-direct",
+                "host": "nas.local",
+                "port": 445,
+                "external_config": { "protocol": "smb", "endpoint": "nas.local:445" }
+            },
+            "runtime": { "host": "nas.local", "port": 445 }
+        }))
+        .unwrap();
+        assert_eq!(connection.endpoint, "nas.local:445");
+    }
+
+    #[test]
+    fn rewrite_dial_authority_preserves_scheme_userinfo_and_path() {
+        assert_eq!(rewrite_dial_authority("ftp://host:21", "127.0.0.1", 35555), "ftp://127.0.0.1:35555");
+        assert_eq!(rewrite_dial_authority("ssh://u@h:22", "127.0.0.1", 1), "ssh://u@127.0.0.1:1");
+        assert_eq!(rewrite_dial_authority("https://h/dav/x", "127.0.0.1", 2), "https://127.0.0.1:2/dav/x");
+        assert_eq!(rewrite_dial_authority("h:445", "127.0.0.1", 3), "127.0.0.1:3");
+        assert_eq!(rewrite_dial_authority("h", "127.0.0.1", 4), "127.0.0.1:4");
     }
 
     #[test]
@@ -2557,7 +2787,7 @@ mod tests {
         for item in &fields {
             let binding = item["binding"].as_str().expect("field binding");
             assert!(
-                matches!(binding, "name" | "config" | "secret"),
+                matches!(binding, "name" | "config" | "secret" | "host" | "port"),
                 "unknown binding '{binding}' on {}",
                 item["key"]
             );
@@ -2648,10 +2878,14 @@ mod tests {
         ];
         endpoint_protocols.extend_from_slice(&s3_vendors);
         endpoint_protocols.extend_from_slice(&[
-            "webdav", "ftp", "sftp", "smb", "sftp-native", "koofr", "pcloud", "seafile",
+            "koofr", "pcloud", "seafile",
             "azurefiles", "filefabric", "hdfs", "http", "imagekit", "netstorage",
             "oracleobjectstorage", "qingstor", "quatrix", "sia",
         ]);
+        // Single-endpoint protocols left the endpoint form for the host/port
+        // bindings (issue #83 — the host needs that binding for transport
+        // layers); ftp keeps a TLS toggle and webdav a scheme select.
+        let tunnel_protocols = ["webdav", "ftp", "sftp", "smb", "sftp-native"];
         let expects: &[(&str, &[&str])] = &[
             ("bucket", &bucket_protocols),
             ("container", &["azblob"]),
@@ -2664,6 +2898,10 @@ mod tests {
             ("secret_access_key", &key_protocols),
             ("enable_virtual_host_style", &["s3"]),
             ("endpoint", &endpoint_protocols),
+            ("host", &tunnel_protocols),
+            ("port", &tunnel_protocols),
+            ("ftp_tls", &["ftp"]),
+            ("webdav_scheme", &["webdav"]),
             ("secret_id", &["cos"]),
             ("secret_key", &["cos"]),
             ("security_token", &["cos"]),
@@ -2948,13 +3186,22 @@ mod tests {
         );
         for required_protocol in [
             "azblob", "obs", "oss", "cos", "qiniu", "r2", "wasabi", "spaces", "scaleway",
-            "idrive", "us3", "ecloud", "nos", "bos", "tos", "ks3", "webdav", "ftp", "sftp",
-            "smb", "sftp-native", "koofr", "pcloud", "seafile", "filefabric", "hdfs", "http",
+            "idrive", "us3", "ecloud", "nos", "bos", "tos", "ks3", "koofr", "pcloud", "seafile",
+            "filefabric", "hdfs", "http",
             "imagekit", "netstorage", "quatrix",
         ] {
             assert!(
                 endpoint_required.contains(&required_protocol),
                 "endpoint must be conditionally required for '{required_protocol}'"
+            );
+        }
+        // Single-endpoint protocols (webdav/ftp/sftp/smb/sftp-native) left the
+        // endpoint form: they speak the host/port binding fields instead
+        // (issue #83 — the host needs that binding for transport layers).
+        for tunnel_protocol in ["webdav", "ftp", "sftp", "smb", "sftp-native"] {
+            assert!(
+                !endpoint_required.contains(&tunnel_protocol),
+                "endpoint must not be required for '{tunnel_protocol}' (host/port bindings own it)"
             );
         }
         assert!(
