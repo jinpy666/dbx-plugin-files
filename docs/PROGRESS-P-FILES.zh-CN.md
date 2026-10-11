@@ -2371,3 +2371,49 @@ tag/分支指针）。截图：图 1 为 OSS 根目录并列「文件夹 new-api
 OSS 上做（本环境无 OSS 凭据，MinIO 遮蔽冲突前缀无法构造双条目场景）；
 `pathExists` 重名预检（新建/重命名目标）在同名共存下仍按 stat 保守报
 「已存在」，属可接受的保守行为，未改动。
+
+## 用户上报修复批：#83 代理/隧道层无法连接 + task-provider 声明摘除（2026-10-11）
+
+分支 `fix/v0.1.89-user-issues`（基于 `feature/scheduler-integration`，含
+#80/#81/#82 修复）。两件事各为一个发布阻塞项：
+
+### #83 根因与修复：单端点协议无 host/port 绑定，宿主拒绝搭传输层
+
+- **现象**：连接配置 SSH/HTTP/SOCKS 传输层后连接即报
+  `Transport layers for this plugin connection need a remote host and port…`。
+- **根因**（v0.6.38 宿主源码核对 `dbx-core/src/connection/mod.rs`
+  `connection_endpoint`）：插件连接挂传输层时宿主要建静态隧道，目标取自
+  `ConnectionConfig.host/port`——即 provider 表单里 `binding: host/port`
+  字段；Files 的连接表单只有一个 `binding: config` 的共享 `endpoint` 字段，
+  宿主侧 `config.host` 恒空 → 显式报错（防止静默转发到空目标）。
+- **修复**：
+  - manifest：`webdav/ftp/sftp/smb/sftp-native` 五个单端点协议从 endpoint
+    表单迁出，改声明 `host`（binding host）+ `port`（binding port）必填
+    字段；webdav 另有 `webdav_scheme`（http/https，默认 https）、ftp 另有
+    `ftp_tls`（FTPS 开关）补齐原 endpoint 语法携带的 scheme/TLS 语义。
+    七语言本地化同步，endpoint 描述去掉五个协议的语法说明。
+  - 后端（`model.rs::endpoint_for_lifecycle`）：`external_config.endpoint`
+    为空时从连接级 `connection.host/port` 合成 endpoint（stored endpoint
+    恒优先——遗留 `ftps://` scheme、SFTP userinfo、WebDAV 路径后缀不被
+    改写）；生命周期携带宿主传输层（`connection.transport_layers` 非空）
+    时把拨号 authority 重写到 `runtime.host/port` 隧道端点，保留
+    scheme/userinfo/路径（对齐 ssh 插件「TCP 永远拨 runtime」契约）。
+  - MCP 内联面补 `ftpTls`/`webdavScheme`；host/port 为连接级绑定，MCP
+    内联调用方走 `endpoint`。
+- **验证**：`cargo test` 567 全绿（新增合成/优先级/隧道重写/runtime 忽略
+  4 组单测 + manifest 一致性/必填形状/本地化覆盖/MCP 覆盖/表单矩阵同步）；
+  `validate_repo`、`connection-forms/verify.mjs`（173 组合）、前端
+  typecheck/test（713）/build 全绿。静态隧道端到端（真实 bastion）待
+  用户环境复验。
+
+### task-provider（io.dbx.files.tasks）声明摘除
+
+- **根因**：manifest 携带 `type: "task-provider"` 贡献点时，v0.6.38 宿主
+  的 `PluginContribution` serde 枚举（内部 tag + 八个已知变体）反序列化
+  直接失败 → 整个插件在旧宿主上无法安装/加载（不只调度功能不可用）。
+  宿主 task-provider 契约在 `feature/scheduler-integration`（未发版）。
+- **处置**：发布版本摘除贡献点声明与七语言本地化条目（-781 行）；
+  `task/*` RPC 后端面与 `files/listDirs` 保留（旧宿主不调用即死代码，
+  无害），待宿主集成版发版后随宿主恢复声明。
+- **验证**：`validate_repo`（method parity 83 不变）+
+  `connection-forms/verify.mjs` 全绿。
