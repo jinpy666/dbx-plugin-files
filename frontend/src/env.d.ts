@@ -121,6 +121,10 @@ interface DbxPluginApi {
   /** 宿主为指定连接重放完整 connect 生命周期（Host API 沙箱桥内置，内部即
    * host.reopenConnection 请求；旧宿主缺该方法时回退 request 路由）。 */
   reopenConnection?(connectionId: string): Promise<void>;
+  /** 把浏览位置交接给宿主原生文件管理器（filesystem-provider 贡献点 +
+   * host.filesystem 权限）：uri 形如 `rclone://<connectionId>/<percent-encoded path>`。
+   * 旧宿主缺该方法——调用侧按 typeof 探测整体隐藏入口，零噪音降级。 */
+  openFilesystem?(providerId: string, context: { uri: string }): Promise<void>;
 }
 
 interface Window {

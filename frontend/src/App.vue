@@ -255,6 +255,9 @@ const dragOverSide = ref<PaneSide | null>(null);
 // sidecar 内置保留连接 `__local__`（engine 合成的 root="/" fs 连接），无需
 // 用户建连；双栏开启时左栏默认指向本地，右栏保持当前（远端）连接。
 const LOCAL_CONNECTION_ID = "__local__";
+// filesystem-provider 贡献点 id：宿主 openFilesystem 按它路由到本插件的
+// 原生文件管理器实现（manifest 声明的 provider id，前后端各写一份需一致）。
+const FS_PROVIDER_ID = "io.dbx.files.fs";
 /** 左栏连接（仅双栏模式路由）：__local__=本地，""=当前连接，其余=宿主其它连接。 */
 const leftConnectionId = ref<string>(LOCAL_CONNECTION_ID);
 const leftConnections = computed(() => [
@@ -935,6 +938,26 @@ const canMountToolbar = computed(() => canUseMount.value && sideConnectionId(too
 function mountToolbarTarget() {
   if (!canMountToolbar.value) return;
   openMountDialog(paneDirPath(toolbarTarget.value.side), sideConnectionId(toolbarTarget.value.side) ?? connectionId.value);
+}
+
+// ---- 在 DBX 文件管理器中打开（filesystem-provider 交接）------------------------
+// 沙箱工作台的浏览位置交接回宿主原生文件管理器：旧宿主没有 openFilesystem，
+// 按 typeof 探测整体隐藏入口（对标 fileTransfer 的按需判空，零噪音降级）。
+const canOpenInHost = computed(() => typeof window.dbxPlugin?.openFilesystem === "function");
+// 交接目标 = 活动栏当前目录：本地 __local__ 栏本来就在用户文件管理器里，禁用。
+const canOpenInHostToolbar = computed(() => sideConnectionId(toolbarTarget.value.side) !== LOCAL_CONNECTION_ID);
+
+function openToolbarInHost() {
+  const open = window.dbxPlugin?.openFilesystem;
+  if (!open || !canOpenInHostToolbar.value) return;
+  const side = toolbarTarget.value.side;
+  const connId = sideConnectionId(side) ?? connectionId.value;
+  // 路径段逐段 percent-encode（宿主按段解码）：空格/中文不会破坏段边界；
+  // 根目录无段，落到 `rclone://<conn>/`（带尾斜杠的 authority 形态）。
+  const segments = paneDirPath(side).split("/").filter(Boolean).map(encodeURIComponent);
+  void open(FS_PROVIDER_ID, { uri: `rclone://${connId}/${segments.join("/")}` }).catch((cause: unknown) => {
+    showNotice(t("operationFailed", { error: errorMessage(cause) }));
+  });
 }
 
 // 双栏开关不持久化；两侧侧栏状态分别持久化，切换一侧不影响另一侧。
@@ -5204,6 +5227,8 @@ onBeforeUnmount(() => {
       :conn-state="connState"
       :show-mount="canUseMount"
       :can-mount="canMountToolbar"
+      :show-open-in-host="canOpenInHost"
+      :can-open-in-host="canOpenInHostToolbar"
       :bwlimit="bwlimitActive"
       :starred="toolbarStarred"
       :t="t"
@@ -5214,6 +5239,7 @@ onBeforeUnmount(() => {
       @delete="startDelete(toolbarSelectionEntries(toolbarTarget.side), toolbarTarget.side)"
       @toggle-dual-pane="dualPane = !dualPane"
       @mount="mountToolbarTarget"
+      @open-in-host="openToolbarInHost"
       @open-settings="openSettings()"
       @bwlimit-click="openSettings('transfer')"
       @bwlimit-set="onBwlimitSave"

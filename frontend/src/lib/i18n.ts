@@ -73,6 +73,10 @@ export const messages = {
     sizeResult: "{count} items · {size}",
     copyPublicLink: "Copy public link",
     copiedPublicLink: "Public link copied",
+    // 在 DBX 文件管理器中打开（filesystem-provider 交接）：按钮随宿主能力出现；
+    // 活动栏为本地窗格时禁用——本地盘本来就在用户的文件管理器里。
+    openInHostFileManager: "Open in DBX",
+    openInHostFileManagerLocalOnly: "Only remote connections can be opened in DBX",
     // 本地挂载（docs/MOUNT.zh-CN.md M1）：rclone mount 优先，WebDAV 网关兜底
     mountToLocal: "Mount to local",
     mountRcloneOk: "Mounted read-only at {point}",
@@ -700,6 +704,8 @@ export const messages = {
     sizeResult: "{count} elementos · {size}",
     copyPublicLink: "Copiar enlace público",
     copiedPublicLink: "Enlace público copiado",
+    openInHostFileManager: "Abrir en DBX",
+    openInHostFileManagerLocalOnly: "Solo las conexiones remotas se pueden abrir en DBX",
     mountToLocal: "Montar en local",
     mountRcloneOk: "Montado en solo lectura en {point}",
     mountGatewayFallback: "No hay driver FUSE en esta máquina: URL del gateway copiada ({reason}). Pégala en «Conectar con el servidor» de tu gestor de archivos (solo lectura).",
@@ -1312,6 +1318,8 @@ export const messages = {
     sizeResult: "{count} voci · {size}",
     copyPublicLink: "Copia link pubblico",
     copiedPublicLink: "Link pubblico copiato",
+    openInHostFileManager: "Apri in DBX",
+    openInHostFileManagerLocalOnly: "Solo le connessioni remote possono essere aperte in DBX",
     mountToLocal: "Monta in locale",
     mountRcloneOk: "Montato in sola lettura su {point}",
     mountGatewayFallback: "Nessun driver FUSE su questa macchina: URL del gateway copiato ({reason}). Incollalo in «Connetti al server» del file manager (sola lettura).",
@@ -1924,6 +1932,8 @@ export const messages = {
     sizeResult: "{count} 項目 · {size}",
     copyPublicLink: "公開リンクをコピー",
     copiedPublicLink: "公開リンクをコピーしました",
+    openInHostFileManager: "DBX で開く",
+    openInHostFileManagerLocalOnly: "リモート接続のみ DBX で開けます",
     mountToLocal: "ローカルにマウント",
     mountRcloneOk: "読み取り専用で {point} にマウントしました",
     mountGatewayFallback: "このマシンには FUSE ドライバーがないため、ゲートウェイの URL をコピーしました（{reason}）。ファイルマネージャーの「サーバへ接続」に貼り付けてマウントしてください（読み取り専用）。",
@@ -2536,6 +2546,8 @@ export const messages = {
     sizeResult: "{count} itens · {size}",
     copyPublicLink: "Copiar link público",
     copiedPublicLink: "Link público copiado",
+    openInHostFileManager: "Abrir no DBX",
+    openInHostFileManagerLocalOnly: "Somente conexões remotas podem ser abertas no DBX",
     mountToLocal: "Montar localmente",
     mountRcloneOk: "Montado somente leitura em {point}",
     mountGatewayFallback: "Sem driver FUSE nesta máquina — URL do gateway copiada ({reason}). Cole no \"Conectar ao servidor\" do gerenciador de arquivos para montar (somente leitura).",
@@ -3148,6 +3160,10 @@ export const messages = {
     sizeResult: "{count} 项 · {size}",
     copyPublicLink: "复制公开链接",
     copiedPublicLink: "公开链接已复制",
+    // 在 DBX 文件管理器中打开（filesystem-provider 交接）：按钮随宿主能力出现；
+    // 活动栏为本地窗格时禁用——本地盘本来就在用户的文件管理器里。
+    openInHostFileManager: "在 DBX 中打开",
+    openInHostFileManagerLocalOnly: "仅远端连接支持在 DBX 中打开",
     // 本地挂载（docs/MOUNT.zh-CN.md M1）：rclone mount 优先，WebDAV 网关兜底
     mountToLocal: "挂载到本机",
     mountRcloneOk: "已只读挂载到 {point}",
@@ -3762,6 +3778,8 @@ export const messages = {
     sizeResult: "{count} 項 · {size}",
     copyPublicLink: "複製公開連結",
     copiedPublicLink: "公開連結已複製",
+    openInHostFileManager: "在 DBX 中開啟",
+    openInHostFileManagerLocalOnly: "僅遠端連線支援在 DBX 中開啟",
     mountToLocal: "掛載到本機",
     mountRcloneOk: "已唯讀掛載到 {point}",
     mountGatewayFallback: "本機缺少 FUSE 驅動，已複製閘道位址（{reason}）——在檔案管理器「連線伺服器」貼上即可掛載（唯讀）",

@@ -1475,6 +1475,7 @@
         }
       ],
       "workbench": "io.dbx.files.workbench",
+      "filesystem_provider": "io.dbx.files.fs",
       "capabilities": [
         "test",
         "connect",
@@ -1487,6 +1488,15 @@
       "label": "Files Workbench",
       "description": "Dual-pane browsing of local and remote storage: copy, move, and drag files between panes, with directory sync and zip archives in the same view.",
       "icon": "assets/plugin.svg"
+    },
+    {
+      "type": "filesystem-provider",
+      "id": "io.dbx.files.fs",
+      "label": "Storage (rclone)",
+      "description": "Browse any Files Studio storage connection in the DBX file manager.",
+      "icon": "assets/plugin.svg",
+      "schemes": ["rclone"],
+      "capabilities": ["read", "write", "delete", "rename", "mkdir"]
     }
   ],
   "localizations": {
@@ -1803,6 +1813,10 @@
         "io.dbx.files.workbench": {
           "label": "文件工作台",
           "description": "本地与远端双栏对照浏览：跨栏复制、移动与拖拽传输，同步与 zip 归档同屏完成。"
+        },
+        "io.dbx.files.fs": {
+          "label": "存储（rclone）",
+          "description": "在 DBX 文件管理器中浏览任意 Files Studio 存储连接。"
         }
       }
     },
@@ -2119,6 +2133,10 @@
         "io.dbx.files.workbench": {
           "label": "檔案工作台",
           "description": "本機與遠端雙欄對照瀏覽：跨欄複製、移動與拖曳傳輸，同步與 zip 封存同屏完成。"
+        },
+        "io.dbx.files.fs": {
+          "label": "儲存（rclone）",
+          "description": "在 DBX 檔案管理員中瀏覽任意 Files Studio 儲存連線。"
         }
       }
     },
@@ -2435,6 +2453,10 @@
         "io.dbx.files.workbench": {
           "label": "Files Workbench",
           "description": "Dual-pane browsing of local and remote storage: copy, move, and drag files between panes, with directory sync and zip archives in the same view."
+        },
+        "io.dbx.files.fs": {
+          "label": "Storage (rclone)",
+          "description": "Browse any Files Studio storage connection in the DBX file manager."
         }
       }
     },
@@ -2751,6 +2773,10 @@
         "io.dbx.files.workbench": {
           "label": "Mesa de trabajo de archivos",
           "description": "Navegación dual de almacenamiento local y remoto: copia, mueve y arrastra archivos entre paneles, con sincronización de directorios y archivos zip en la misma vista."
+        },
+        "io.dbx.files.fs": {
+          "label": "Almacenamiento (rclone)",
+          "description": "Explore cualquier conexión de almacenamiento de Files Studio en el administrador de archivos de DBX."
         }
       }
     },
@@ -3067,6 +3093,10 @@
         "io.dbx.files.workbench": {
           "label": "Banco di lavoro file",
           "description": "Navigazione a doppio pannello di archiviazione locale e remota: copia, sposta e trascina file tra i pannelli, con sincronizzazione delle directory e archivi zip nella stessa vista."
+        },
+        "io.dbx.files.fs": {
+          "label": "Archiviazione (rclone)",
+          "description": "Sfoglia qualsiasi connessione di archiviazione di Files Studio nel gestore file di DBX."
         }
       }
     },
@@ -3383,6 +3413,10 @@
         "io.dbx.files.workbench": {
           "label": "ファイルワークベンチ",
           "description": "ローカルとリモートを並べて閲覧するデュアルペイン：ペイン間でファイルをコピー・移動・ドラッグでき、ディレクトリ同期や zip アーカイブも同じ画面で。"
+        },
+        "io.dbx.files.fs": {
+          "label": "ストレージ（rclone）",
+          "description": "DBX ファイルマネージャーで Files Studio の任意のストレージ接続を閲覧します。"
         }
       }
     },
@@ -3699,6 +3733,10 @@
         "io.dbx.files.workbench": {
           "label": "Bancada de arquivos",
           "description": "Navegação em painel duplo de armazenamento local e remoto: copie, mova e arraste arquivos entre os painéis, com sincronização de diretórios e arquivos zip na mesma tela."
+        },
+        "io.dbx.files.fs": {
+          "label": "Armazenamento (rclone)",
+          "description": "Navegue por qualquer conexão de armazenamento do Files Studio no gerenciador de arquivos do DBX."
         }
       }
     }

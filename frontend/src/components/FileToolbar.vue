@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
-import { Activity, CalendarClock, CircleGauge, Columns2, Download, FolderPlus, FolderUp, Gauge, HardDrive, ScrollText, Settings, Star, Trash2, Upload, Plug } from "@lucide/vue";
+import { Activity, CalendarClock, CircleGauge, Columns2, Download, ExternalLink, FolderPlus, FolderUp, Gauge, HardDrive, ScrollText, Settings, Star, Trash2, Upload, Plug } from "@lucide/vue";
 
 // 全局动作栏：路径/面包屑/过滤等栏内控件已下沉到各栏 wb-pane-header
 // （双栏对称性修复），这里只承载跨栏的全局操作。
@@ -20,6 +20,11 @@ const props = defineProps<{
   showMount: boolean;
   /** 挂载入口只对远端连接面可用（本地 __local__ 栏没有可挂载的远端）。 */
   canMount: boolean;
+  /** 「在 DBX 中打开」能力探测（宿主 openFilesystem 存在）：false 时按钮整体
+   * 隐藏——旧宿主零噪音，而不是摆一个点了没反应的死按钮。 */
+  showOpenInHost: boolean;
+  /** 交接目标取活动栏位置：本地 __local__ 栏无处可交接（禁用并说明原因）。 */
+  canOpenInHost: boolean;
   /** 当前生效的传输限速（files/bwlimit；null/空 = 不限速）：非空时顶栏显示徽标。 */
   bwlimit?: string | null;
   /** 活动栏当前目录是否已收藏（rclone-ui parity 星标）：点亮时图标高亮。 */
@@ -41,6 +46,8 @@ const emit = defineEmits<{
   (event: "toggle-dual-pane"): void;
   /** 本地挂载（对标 ssh 工具栏动作 icon）：挂载活动栏当前目录。 */
   (event: "mount"): void;
+  /** 在 DBX 文件管理器中打开：交接活动栏当前目录（App 构造 rclone:// uri）。 */
+  (event: "open-in-host"): void;
   /** 独立设置弹窗（对标 ssh 设置 icon）：设置不再挤在 dock 页签里。 */
   (event: "open-settings"): void;
   (event: "bwlimit-click"): void;
@@ -241,6 +248,15 @@ const statsDockOpen = computed(() => props.dockOpen && props.dockTab === "stats"
       <button class="wb-icon-button wb-icon-neutral" v-tip="t(dockTipKey)" :class="{ 'is-active': dockOpen }" :aria-pressed="dockOpen" @click="emit('toggle-dock')"><component :is="dockIcon" /></button>
       <!-- 功能 icon（对标 ssh 工具栏）：挂载活动栏目录 + 打开独立设置弹窗。 -->
       <button v-if="showMount" class="wb-icon-button wb-icon-emerald" v-tip="t('mountToLocal')" :disabled="!canMount" @click="emit('mount')"><HardDrive /></button>
+      <!-- 在 DBX 文件管理器中打开（filesystem-provider 交接）：tooltip 随可用性
+           切换——本地窗格禁用并把原因说在 tooltip 里，而不是点了报错。 -->
+      <button
+        v-if="showOpenInHost"
+        class="wb-icon-button wb-icon-neutral wb-open-in-host-toggle"
+        v-tip="t(canOpenInHost ? 'openInHostFileManager' : 'openInHostFileManagerLocalOnly')"
+        :disabled="!canOpenInHost"
+        @click="emit('open-in-host')"
+      ><ExternalLink /></button>
       <button class="wb-icon-button wb-icon-neutral" v-tip="t('settings')" @click="emit('open-settings')"><Settings /></button>
     </div>
   </header>

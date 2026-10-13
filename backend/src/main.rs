@@ -15,6 +15,7 @@
 #![recursion_limit = "256"]
 
 mod archive;
+mod fs_facade;
 mod local_downloads;
 mod local_editors;
 mod mount;
@@ -107,6 +108,11 @@ struct Plugin {
     /// 通用 Scheduler Task Provider（`io.dbx.files.tasks`，task/* 固定
     /// RPC）：runId → 活动运行登记表（cancel 旗标 / job 关联 / 日志 seq）。
     task_runs: task_provider::TaskRunRegistry,
+    /// 宿主 filesystem/download/* 拉取会话（fs facade）：downloadId → 已
+    /// gate 的对象读取会话（remote 路径、size、offset）。与 serves/
+    /// about_cache 同一 std-Mutex 短临界区纪律（不持锁 await）——分片读
+    /// 先 clone 会话、读完再锁推进 offset。
+    download_sessions: fs_facade::DownloadSessions,
 }
 
 impl Plugin {
@@ -272,6 +278,7 @@ impl Plugin {
             list_cache,
             scheduler,
             task_runs: task_provider::TaskRunRegistry::new(),
+            download_sessions: std::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -3020,6 +3027,18 @@ impl Plugin {
                 "{} declares run-mode triggers only (sync/copy); task/start requires a resident trigger",
                 task_provider::PROVIDER_ID
             )),
+            // Host filesystem facade (`filesystem/*`, provider
+            // io.dbx.files.fs): the host-side file contract over the same
+            // rclone engine. URI grammar, cursor pagination and the
+            // download pull-sessions live in fs_facade.rs; unknown
+            // filesystem/* methods keep falling to the terminal `_` arm.
+            // ------------------------------------------------------------------
+            "filesystem/list" | "filesystem/read" | "filesystem/write"
+            | "filesystem/createDirectory" | "filesystem/delete" | "filesystem/rename"
+            | "filesystem/download/open" | "filesystem/download/read"
+            | "filesystem/download/close" => {
+                fs_facade::handle(self, method, params, emitter).await
+            }
             _ => Err(format!("Method not found: {method}")),
         }
     }
@@ -5953,6 +5972,87 @@ mod tests {
     fn connection_id_param_validates() {
         assert!(connection_id_param(&json!({ "connectionId": "x" })).is_ok());
         assert!(connection_id_param(&json!({})).is_err());
+    }
+
+    // -- filesystem/* facade gates --------------------------------------------
+    //
+    // The facade entry binds the connection-level gates through the SAME
+    // helpers as the workbench arms (ensure_binding_writable /
+    // ensure_binding_deletable) on the binding the URI authority resolves to.
+    // The chain under test is the exact facade composition:
+    // from_lifecycle_params (external_config) → registry::binding_for →
+    // gate helpers, so a read_only or allow_delete=false connection must
+    // reject filesystem/write and filesystem/delete before any rc call.
+
+    #[test]
+    fn filesystem_facade_write_and_delete_rejected_by_connection_policy() {
+        for (read_only, allow_delete) in [(true, true), (false, false), (true, false)] {
+            let binding = rclone::registry::binding_for(
+                &StoredConnection::from_lifecycle_params(&json!({
+                    "connection": {
+                        "id": "c",
+                        "external_config": {
+                            "protocol": "fs",
+                            "read_only": read_only,
+                            "allow_delete": allow_delete
+                        }
+                    }
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                binding.read_only, read_only,
+                "binding_for must surface read_only (read_only={read_only})"
+            );
+            assert_eq!(
+                binding.allow_delete, allow_delete,
+                "binding_for must surface allow_delete (allow_delete={allow_delete})"
+            );
+            // filesystem/write + filesystem/createDirectory + filesystem/rename
+            // share the write gate: rejected exactly when read_only.
+            if read_only {
+                let write_error = ensure_binding_writable(&binding).unwrap_err();
+                assert!(
+                    write_error.contains("read-only"),
+                    "write gate (read_only={read_only}): {write_error}"
+                );
+            } else {
+                assert!(
+                    ensure_binding_writable(&binding).is_ok(),
+                    "a writable connection passes the write gate (allow_delete={allow_delete})"
+                );
+            }
+            // filesystem/delete: read_only rejects too (§9), allow_delete
+            // denies on its own when the connection is writable.
+            let delete_result = ensure_binding_deletable(&binding);
+            if read_only {
+                let error = delete_result.unwrap_err();
+                assert!(
+                    error.contains("read-only"),
+                    "delete gate must reject read-only first: {error}"
+                );
+            } else {
+                let error = delete_result.unwrap_err();
+                assert!(
+                    error.contains("allow_delete"),
+                    "delete gate (allow_delete={allow_delete}): {error}"
+                );
+            }
+        }
+        // The writable+deletable combination passes both gates.
+        let open = rclone::registry::binding_for(
+            &StoredConnection::from_lifecycle_params(&json!({
+                "connection": {
+                    "id": "c",
+                    "external_config": { "protocol": "fs" }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(ensure_binding_writable(&open).is_ok());
+        assert!(ensure_binding_deletable(&open).is_ok());
     }
 
     // -- files/serve/* ---------------------------------------------------------
