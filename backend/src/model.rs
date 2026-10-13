@@ -2878,14 +2878,11 @@ mod tests {
         ];
         endpoint_protocols.extend_from_slice(&s3_vendors);
         endpoint_protocols.extend_from_slice(&[
+            "webdav", "ftp", "sftp", "smb", "sftp-native",
             "koofr", "pcloud", "seafile",
             "azurefiles", "filefabric", "hdfs", "http", "imagekit", "netstorage",
             "oracleobjectstorage", "qingstor", "quatrix", "sia",
         ]);
-        // Single-endpoint protocols left the endpoint form for the host/port
-        // bindings (issue #83 — the host needs that binding for transport
-        // layers); ftp keeps a TLS toggle and webdav a scheme select.
-        let tunnel_protocols = ["webdav", "ftp", "sftp", "smb", "sftp-native"];
         let expects: &[(&str, &[&str])] = &[
             ("bucket", &bucket_protocols),
             ("container", &["azblob"]),
@@ -2898,10 +2895,6 @@ mod tests {
             ("secret_access_key", &key_protocols),
             ("enable_virtual_host_style", &["s3"]),
             ("endpoint", &endpoint_protocols),
-            ("host", &tunnel_protocols),
-            ("port", &tunnel_protocols),
-            ("ftp_tls", &["ftp"]),
-            ("webdav_scheme", &["webdav"]),
             ("secret_id", &["cos"]),
             ("secret_key", &["cos"]),
             ("security_token", &["cos"]),
@@ -3195,13 +3188,14 @@ mod tests {
                 "endpoint must be conditionally required for '{required_protocol}'"
             );
         }
-        // Single-endpoint protocols (webdav/ftp/sftp/smb/sftp-native) left the
-        // endpoint form: they speak the host/port binding fields instead
-        // (issue #83 — the host needs that binding for transport layers).
+        // Single-endpoint protocols (webdav/ftp/sftp/smb/sftp-native) speak
+        // the endpoint field directly: the service address lives in one
+        // string, and the host/port binding experiment stays out of the
+        // manifest until the host-side validation gaps are fixed.
         for tunnel_protocol in ["webdav", "ftp", "sftp", "smb", "sftp-native"] {
             assert!(
-                !endpoint_required.contains(&tunnel_protocol),
-                "endpoint must not be required for '{tunnel_protocol}' (host/port bindings own it)"
+                endpoint_required.contains(&tunnel_protocol),
+                "endpoint must be required for '{tunnel_protocol}'"
             );
         }
         assert!(

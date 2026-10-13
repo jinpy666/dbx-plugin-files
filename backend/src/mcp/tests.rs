@@ -1620,8 +1620,6 @@ fn manifest_fields_are_fully_covered_by_inline_mapping() {
         ("domain", "domain"),
         ("known_hosts_strategy", "knownHostsStrategy"),
         ("display_charset", "displayCharset"),
-        ("ftp_tls", "ftpTls"),
-        ("webdav_scheme", "webdavScheme"),
         ("proxy_type", "proxyType"),
         ("proxy_host", "proxyHost"),
         ("proxy_port", "proxyPort"),

@@ -2417,3 +2417,50 @@ OSS 上做（本环境无 OSS 凭据，MinIO 遮蔽冲突前缀无法构造双�
   无害），待宿主集成版发版后随宿主恢复声明。
 - **验证**：`validate_repo`（method parity 83 不变）+
   `connection-forms/verify.mjs` 全绿。
+
+## 发布阻塞修复批：0.1.90 回退 #83 表单声明（2026-10-13）
+
+### 现象与根因
+
+0.1.89 发布后用户侧两个校验报错，均出自宿主 `dbx-plugin-runtime` 的
+`validate_plugin_connection_values`：
+
+- 新建（任意协议）连接测试/连接时报
+  `Plugin connection field 'Port' must be a port between 1 and 65535`：
+  #83 为五个单端点协议声明 `binding: port` 字段后，宿主校验循环不看
+  `visible_when`，对 endpoint 系协议（port 字段不可见）连接的无条件
+  `config.port = 0` 哨兵值做范围校验即报错。
+- 存量（升级前创建的 webdav/ftp/sftp/smb/sftp-native）连接报
+  `Plugin connection field 'Host' is required`：地址仍在
+  `external_config.endpoint`（0.1.88 表单形态）、连接级 host/port 为空
+  哨兵；`protocol` 命中 `required_when` 后宿主按新表单语义把可见的
+  host 字段判必填。
+
+### 处置（0.1.90）
+
+- **manifest 回退 #83 的表单声明**：删除 `host`/`port`/`ftp_tls`/
+  `webdav_scheme` 四个字段与七语言条目，`endpoint` 的
+  `visible_when`/`required_when` 集合恢复覆盖五个单端点协议（0.1.88
+  表单形态）。旧宿主不再见到 host/port 绑定字段，两个校验报错消失；
+  表单行为与 0.1.88 完全一致。
+- **后端兼容面保留**：`endpoint_for_lifecycle` 的「stored endpoint 恒
+  优先、缺失时从连接级 host/port 合成、携带传输层时拨号 authority 重写
+  到 runtime 隧道端点」逻辑原样保留（endpoint 非空即不触发，对 0.1.88
+  形态无害），宿主侧修复版可用后再恢复声明。
+- **宿主侧修复（fork jinpy666/dbx，`d5f762252`/`d29e96d23`，未随本次
+  插件发版）**：Port 范围校验改 condition-aware（隐藏字段跳过）；存量
+  endpoint 形态豁免 host/port 必填。20 个校验单测全绿。宿主发版后可
+  重放 #83 的 manifest 部分。
+- MCP 内联映射摘除 `ftpTls`/`webdavScheme`（manifest 字段已不存在，
+  scheme/TLS 语义回归 endpoint URL 语法）。
+- 同步钉住测试：manifest 一致性矩阵（endpoint 集合恢复、删四字段行）、
+  必填形状（五协议 endpoint 必填断言反转）、MCP 内联覆盖；verify.mjs
+  契约同步（TUNNEL_PROTOCOLS 摘除、ENDPOINT 两集合恢复）。
+- 版本：manifest 0.1.90，sidecar（backend/Cargo.toml + Cargo.lock）同步
+  0.1.90。
+
+### 验证
+
+`shared/release/validate_manifests.py files --tag files-v0.1.90` PASS；
+`connection-forms/verify.mjs`（173 组合）PASS；`cargo test --locked`
+（见提交时点结果）；前端 typecheck/test/build 待发布 CI 复核。

@@ -116,8 +116,6 @@ pub(crate) fn stored_connection_from_inline(connection: &Value) -> Result<Stored
         ("domain", "domain"),
         ("knownHostsStrategy", "known_hosts_strategy"),
         ("displayCharset", "display_charset"),
-        ("ftpTls", "ftp_tls"),
-        ("webdavScheme", "webdav_scheme"),
         ("proxyType", "proxy_type"),
         ("proxyHost", "proxy_host"),
         ("proxyPort", "proxy_port"),
