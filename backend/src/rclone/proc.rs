@@ -666,8 +666,21 @@ pub(crate) fn open_0600(path: &Path) -> Result<std::fs::File, String> {
 }
 
 async fn wait_healthy(endpoint: &RcdEndpoint) -> Result<(), String> {
+    // Loopback contract (issue #85): the health POST dials the rcd's own
+    // 127.0.0.1 port — ambient proxy env must never route it, or a healthy
+    // rcd is declared unhealthy through an unreachable proxy.
+    let client = super::rc::loopback_http_builder()
+        .build()
+        .expect("reqwest client with static options always builds");
+    wait_healthy_with_client(&client, endpoint).await
+}
+
+pub(crate) async fn wait_healthy_with_client(
+    client: &reqwest::Client,
+    endpoint: &RcdEndpoint,
+) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + SPAWN_HEALTH_TIMEOUT;
-    let client = reqwest::Client::new();
+    let mut last_error = String::new();
     loop {
         let response = client
             .post(format!("{}/rc/noopauth", endpoint.base_url))
@@ -677,14 +690,27 @@ async fn wait_healthy(endpoint: &RcdEndpoint) -> Result<(), String> {
             .await;
         match response {
             Ok(response) if response.status().is_success() => return Ok(()),
-            _ if tokio::time::Instant::now() >= deadline => {
-                return Err(format!(
-                    "rc/noopauth did not answer within {}s",
-                    SPAWN_HEALTH_TIMEOUT.as_secs()
-                ))
+            Err(error) => last_error = error.to_string(),
+            Ok(response) => {
+                last_error = format!("HTTP {}", response.status());
             }
-            _ => sleep(SPAWN_HEALTH_INTERVAL).await,
         }
+        if tokio::time::Instant::now() >= deadline {
+            // Field reports (issue #85) paste only this line — the last
+            // attempt's failure mode (proxy refusal vs connection refused
+            // vs HTTP status) is what separates an unreachable proxy from
+            // a rcd that never bound, so carry it along.
+            return Err(format!(
+                "rc/noopauth did not answer within {}s{}",
+                SPAWN_HEALTH_TIMEOUT.as_secs(),
+                if last_error.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (last attempt: {last_error})")
+                }
+            ));
+        }
+        sleep(SPAWN_HEALTH_INTERVAL).await;
     }
 }
 

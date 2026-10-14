@@ -193,10 +193,25 @@ async fn idle_timeout<F: Future>(fut: F, budget: Duration) -> Option<F::Output> 
     }
 }
 
+/// Builder for loopback-only HTTP: every rcd-facing base URL is
+/// `http://127.0.0.1:<port>` (see [`super::proc::RcdHandle::start`]), so
+/// ambient proxy environment (`http_proxy`/`https_proxy`/`all_proxy` —
+/// injected by the host app's proxy feature or inherited from the shell
+/// that launched it) MUST NOT apply. Issue #85: with a remote/global-mode
+/// proxy in the environment, the spawn health POST and every rc call were
+/// routed through a proxy that cannot reach the sidecar's loopback port,
+/// and a perfectly healthy rcd was declared unhealthy after the 10s spawn
+/// budget. `.no_proxy()` pins loopback traffic to the direct route — use
+/// for EVERY client that dials the rcd, never for clients that dial the
+/// internet.
+pub(crate) fn loopback_http_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder().no_proxy()
+}
+
 /// No total timeout; connect stays bounded so a dead rcd fails fast instead
 /// of hanging the caller on the OS connect stack.
 fn build_unbounded_http() -> reqwest::Client {
-    reqwest::Client::builder()
+    loopback_http_builder()
         .connect_timeout(Duration::from_secs(30))
         // M1：总超时兜底放宽到 10 分钟（与流式 watchdog 同量级）——去掉
         // 30s 悬崖是为了让巨型列举跑完，不是允许 rcd stall 时永久悬挂：
@@ -233,7 +248,7 @@ impl std::fmt::Debug for RcClient {
 
 impl RcClient {
     pub fn new(base_url: String, user: String, pass: String) -> Self {
-        let http = reqwest::Client::builder()
+        let http = loopback_http_builder()
             .timeout(Duration::from_secs(30))
             .build()
             .expect("reqwest client with static options always builds");
@@ -253,7 +268,7 @@ impl RcClient {
     /// `build_unbounded_http`): a dead rcd must fail fast, not park the
     /// caller on the OS connect stack forever.
     pub fn transfer_client(&self) -> RcClient {
-        let http = reqwest::Client::builder()
+        let http = loopback_http_builder()
             .connect_timeout(Duration::from_secs(30))
             .build()
             .expect("reqwest client with static options always builds");
@@ -929,5 +944,74 @@ mod tests {
             "connection refused (os error 111)"
         );
         assert_eq!(deepest_source(&Leaf), "connection refused (os error 111)");
+    }
+
+    /// Issue #85 regression: ambient proxy environment (`http_proxy` set by
+    /// the host app's proxy feature or an inherited shell) must not hijack
+    /// rcd loopback traffic — a remote/global-mode proxy cannot reach the
+    /// sidecar's 127.0.0.1 port, so `wait_healthy` then declares a perfectly
+    /// healthy rcd unhealthy after the 10s spawn budget (field report
+    /// 2026-10-14: rcd's own log shows "Serving remote control on …" yet
+    /// `rc/noopauth did not answer within 10s`).
+    ///
+    /// reqwest captures env proxies at CLIENT BUILD time, so the poisoned
+    /// env is only held across the two client constructions (microseconds)
+    /// and removed before any request flies — a concurrent test building a
+    /// raw reqwest client inside that instant is the only bystander.
+    #[tokio::test]
+    async fn loopback_health_check_ignores_ambient_proxy_env() {
+        // Minimal 200 responder standing in for rcd's rc endpoint.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback stub");
+        let port = listener.local_addr().expect("stub addr").port();
+        let server = tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buffer = [0u8; 4096];
+                    let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buffer).await;
+                    let _ = tokio::io::AsyncWriteExt::write_all(
+                        &mut socket,
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                    )
+                    .await;
+                });
+            }
+        });
+        let endpoint = super::super::proc::RcdEndpoint {
+            base_url: format!("http://127.0.0.1:{port}"),
+            user: "u85".to_string(),
+            pass: "p85".to_string(),
+        };
+
+        // Port 1 always refuses: a request honoring the poisoned proxy dies
+        // instantly, one bypassing it reaches the stub.
+        std::env::set_var("http_proxy", "http://127.0.0.1:1");
+        std::env::set_var("HTTP_PROXY", "http://127.0.0.1:1");
+        let control = reqwest::Client::new();
+        let bypass = loopback_http_builder()
+            .build()
+            .expect("static client options");
+        std::env::remove_var("http_proxy");
+        std::env::remove_var("HTTP_PROXY");
+
+        // Control proves the poison actually intercepts on this platform;
+        // without it a silent env miss would make the bypass assertion
+        // vacuous.
+        let poisoned = control
+            .post(format!("{}/rc/noopauth", endpoint.base_url))
+            .basic_auth(&endpoint.user, Some(&endpoint.pass))
+            .timeout(Duration::from_secs(2))
+            .send()
+            .await;
+        assert!(
+            poisoned.is_err(),
+            "plain client must route through the poisoned proxy"
+        );
+
+        super::super::proc::wait_healthy_with_client(&bypass, &endpoint)
+            .await
+            .expect("loopback health check must ignore ambient proxy env");
+        server.abort();
     }
 }
