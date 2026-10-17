@@ -679,7 +679,17 @@ pub(crate) async fn wait_healthy_with_client(
     client: &reqwest::Client,
     endpoint: &RcdEndpoint,
 ) -> Result<(), String> {
-    let deadline = tokio::time::Instant::now() + SPAWN_HEALTH_TIMEOUT;
+    wait_healthy_with_client_budget(client, endpoint, SPAWN_HEALTH_TIMEOUT).await
+}
+
+/// Same probe with an injectable budget — the 10s production budget is far
+/// too slow for a unit test that only needs one failed attempt's shape.
+async fn wait_healthy_with_client_budget(
+    client: &reqwest::Client,
+    endpoint: &RcdEndpoint,
+    budget: Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + budget;
     let mut last_error = String::new();
     loop {
         let response = client
@@ -690,7 +700,17 @@ pub(crate) async fn wait_healthy_with_client(
             .await;
         match response {
             Ok(response) if response.status().is_success() => return Ok(()),
-            Err(error) => last_error = error.to_string(),
+            Err(error) => {
+                // reqwest 的顶层 Display 只剩一句 "error sending request"，
+                // 真正的拦截方线索（连接拒绝/重置/代理拒绝）在 source 链里；
+                // 现场回报只会贴超时这行，按 rc.rs::transport_detail 同口径
+                // 展开末次原因（issue #85 二次反馈：rcd 已监听、回环仍连不
+                // 上，需要 os 级错误码区分防火墙/LSP 类拦截）。
+                last_error = format!(
+                    "{error} [{}]",
+                    super::rc::RcError::transport_detail(&error)
+                );
+            }
             Ok(response) => {
                 last_error = format!("HTTP {}", response.status());
             }
@@ -702,7 +722,7 @@ pub(crate) async fn wait_healthy_with_client(
             // a rcd that never bound, so carry it along.
             return Err(format!(
                 "rc/noopauth did not answer within {}s{}",
-                SPAWN_HEALTH_TIMEOUT.as_secs(),
+                budget.as_secs(),
                 if last_error.is_empty() {
                     String::new()
                 } else {
@@ -761,6 +781,38 @@ mod tests {
         // probe_version on a missing binary fails before version comparison;
         // assert the error mentions execution, not a panic.
         assert!(probe_version(&binary).is_err());
+    }
+
+    /// Issue #85 二次反馈回归：rcd 已监听但回环请求仍失败时，超时错误的
+    /// last attempt 必须携带 source 链最底层的 os 级原因（connection
+    /// refused 等），而不是 reqwest 包装层那句泛化的 "error sending
+    /// request"——现场回报只贴一行，这一行必须能区分拦截方。
+    #[tokio::test]
+    async fn wait_healthy_last_attempt_includes_deepest_source() {
+        // 127.0.0.1:1 无监听者：每次尝试都在 connect 阶段立即失败。
+        let endpoint = RcdEndpoint {
+            base_url: "http://127.0.0.1:1".to_string(),
+            user: "u85".to_string(),
+            pass: "p85".to_string(),
+        };
+        let client = crate::rclone::rc::loopback_http_builder()
+            .build()
+            .expect("static client options");
+        let error = wait_healthy_with_client_budget(
+            &client,
+            &endpoint,
+            Duration::from_millis(300),
+        )
+        .await
+        .expect_err("nothing listens on port 1");
+        assert!(
+            error.contains("did not answer within"),
+            "timeout banner missing: {error}"
+        );
+        assert!(
+            error.to_lowercase().contains("refused"),
+            "deepest source cause missing: {error}"
+        );
     }
 
     /// Issue #16 regression (resolution half): with no env override and no
