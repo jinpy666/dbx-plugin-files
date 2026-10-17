@@ -38,7 +38,7 @@ use std::sync::Mutex;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::engine::general_purpose::STANDARD_NO_PAD as BASE64_STANDARD_NO_PAD;
 use base64::Engine as _;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 use super::rc::{RcClient, RcError};
 use crate::model::{ProxyConfig, ProxyKind, StoredConnection};
@@ -854,6 +854,16 @@ pub async fn connect(
         return Err(error.to_string());
     }
     let binding = binding_for(connection)?;
+    // Issue #88 MLSD 兼容探测：ftp 注册成功后对连接根做一次限量 listing，
+    // 命中 `unsupported LIST line` 就地改挂 `disable_mlsd=true`（见探测函
+    // 数注释）。探测不产生任何用户可见失败——所有非命中/探测失败路径都保
+    // 持原配置原行为。
+    let parameters = if backend_type == "ftp" {
+        let fs = super::call_fs(&binding);
+        ftp_mlsd_compat_probe(client, &name, &fs, parameters, obscure).await
+    } else {
+        parameters
+    };
     registry.insert(
         &connection.id,
         binding.clone(),
@@ -865,6 +875,67 @@ pub async fn connect(
         },
     );
     Ok(binding)
+}
+
+/// rclone ftp 后端默认走 MLSD 列目录；部分 Windows Server FTP 的目录输出
+/// 里有 jlaffaye/ftp 解析不了的行——目录浏览能列出条目，但下载路径的单文
+/// 件 stat（`NewObject`→`GetEntry`）报 `failed to find object: unsupported
+/// LIST line`（issue #88，上游 rclone#9293 同型）。已知开关
+/// `disable_mlsd=true`，而 ftp 表单是固定参数集，用户无法自助设置。
+///
+/// 这里在注册完成后立即探测：对连接根做一次 `operations/list`（limit=2
+/// 控制传输量，解析错误发生在后端列举阶段、与 limit 无关），命中该错误
+/// 就地删掉刚建的 remote、改挂 `disable_mlsd=true` 并返回修正后的参数，
+/// 注册表随之携带修正值——respawn 重放（`replay_group_registrations`）不
+/// 会回退。其余一切路径（listing 成功、其他错误、探测本身失败、重挂失
+/// 败）都原样保留首次配置，绝不因探测阻断连接。
+async fn ftp_mlsd_compat_probe(
+    client: &RcClient,
+    name: &str,
+    fs: &str,
+    parameters: Value,
+    obscure: bool,
+) -> Value {
+    let probe = client
+        .call(
+            "operations/list",
+            &json!({ "fs": fs, "remote": "", "opt": { "limit": 2 } }),
+        )
+        .await;
+    match probe {
+        Ok(_) => parameters,
+        Err(error) if is_unsupported_list_line(&error.to_string()) => {
+            let _ = client.config_delete(name).await;
+            let mut healed = parameters.clone();
+            if let Some(object) = healed.as_object_mut() {
+                object.insert("disable_mlsd".to_string(), Value::Bool(true));
+            }
+            match client.config_create(name, "ftp", healed.clone(), obscure).await {
+                Ok(_) => {
+                    eprintln!(
+                        "[io.dbx.files] ftp '{name}': server listing breaks rclone's MLSD parse \
+                         (unsupported LIST line); re-registered with disable_mlsd=true (issue #88)"
+                    );
+                    healed
+                }
+                Err(recreate_error) => {
+                    eprintln!(
+                        "[io.dbx.files] ftp '{name}': disable_mlsd re-registration failed \
+                         ({recreate_error}); keeping the original config"
+                    );
+                    parameters
+                }
+            }
+        }
+        Err(_) => parameters,
+    }
+}
+
+/// The rclone/jlaffaye listing-parse failure this probe heals (issue #88).
+/// Surfaces as `rc http 500: {"error": "... unsupported LIST line"}` from
+/// `operations/list` and the same literal inside rc-serve download errors.
+fn is_unsupported_list_line(message: &str) -> bool {
+    message.contains("unsupported LIST line")
 }
 
 /// `connection/disconnect`: delete the remote and drop the registry entry.
@@ -3198,6 +3269,190 @@ mod tests {
             }
         }
     }
+
+    // -- ftp MLSD compat probe (issue #88) --------------------------------
+
+    /// Scripted loopback rc stub standing in for rcd: answers each POST by
+    /// path and records every `config/create` body. Throwaway credentials,
+    /// per-connection keep-alive loop so a client reuses its socket.
+    async fn spawn_rc_stub(
+        script: &'static [(&'static str, u16, &'static str)],
+        recorded: std::sync::Arc<Mutex<Vec<String>>>,
+    ) -> (u16, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind rc stub");
+        let port = listener.local_addr().expect("stub addr").port();
+        let handle = tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let recorded = recorded.clone();
+                tokio::spawn(async move {
+                    loop {
+                        // Read head + Content-Length-delimited body.
+                        let mut buffer: Vec<u8> = Vec::new();
+                        let mut chunk = [0u8; 4096];
+                        let head_end = loop {
+                            if let Some(position) = buffer
+                                .windows(4)
+                                .position(|window| window == b"\r\n\r\n")
+                            {
+                                break position + 4;
+                            }
+                            let Ok(n) = socket.read(&mut chunk).await else { return };
+                            if n == 0 {
+                                return;
+                            }
+                            buffer.extend_from_slice(&chunk[..n]);
+                        };
+                        let head = String::from_utf8_lossy(&buffer[..head_end]).to_string();
+                        let content_length = head
+                            .lines()
+                            .find_map(|line| {
+                                line.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")?
+                                    .trim()
+                                    .parse::<usize>()
+                                    .ok()
+                            })
+                            .unwrap_or(0);
+                        while buffer.len() < head_end + content_length {
+                            let Ok(n) = socket.read(&mut chunk).await else { return };
+                            if n == 0 {
+                                break;
+                            }
+                            buffer.extend_from_slice(&chunk[..n]);
+                        }
+                        let request_line =
+                            head.lines().next().unwrap_or_default().to_string();
+                        let path = request_line
+                            .split(' ')
+                            .nth(1)
+                            .unwrap_or_default()
+                            .split('?')
+                            .next()
+                            .unwrap_or_default()
+                            .to_string();
+                        if path == "/config/create" {
+                            if let Ok(mut records) = recorded.lock() {
+                                records.push(String::from_utf8_lossy(&buffer[head_end..]).to_string());
+                            }
+                        }
+                        let (status, payload) = script
+                            .iter()
+                            .find(|(scripted, _, _)| *scripted == path)
+                            .map(|(_, status, payload)| (*status, *payload))
+                            .unwrap_or((404, "{\"error\":\"stub: unexpected path\"}"));
+                        let reason = if status == 200 { "OK" } else { "Internal Server Error" };
+                        let response = format!(
+                            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{}",
+                            payload.len(),
+                            payload
+                        );
+                        if socket.write_all(response.as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        (port, handle)
+    }
+
+    fn ftp_probe_fixture(port: u16) -> StoredConnection {
+        let mut connection = fixture("ftp");
+        connection.user = "u88".to_string();
+        connection.password = "p88".to_string();
+        connection.endpoint = format!("ftp://127.0.0.1:{port}");
+        connection
+    }
+
+    #[tokio::test]
+    async fn ftp_connect_heals_unsupported_list_line_with_disable_mlsd() {
+        // issue #88 现场形态：operations/list 500 + unsupported LIST line
+        // → 就地重挂 disable_mlsd=true，注册表携带修正值（respawn 重放不回退）。
+        static SCRIPT: &[(&str, u16, &str)] = &[
+            ("/config/create", 200, "{}"),
+            ("/config/delete", 200, "{}"),
+            (
+                "/operations/list",
+                500,
+                "{\"error\":\"failed to find object: unsupported LIST line\",\"input\":null,\"status\":500}",
+            ),
+        ];
+        let recorded = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let (port, server) = spawn_rc_stub(SCRIPT, recorded.clone()).await;
+        let connection = ftp_probe_fixture(port);
+        let registry = Registry::new();
+        let client = RcClient::new(
+            format!("http://127.0.0.1:{port}"),
+            "u88".to_string(),
+            "p88".to_string(),
+        );
+        connect(&registry, &client, &connection)
+            .await
+            .expect("connect with probe");
+        let creates = recorded.lock().expect("records").clone();
+        assert_eq!(creates.len(), 2, "initial + healed registration: {creates:?}");
+        assert!(!creates[0].contains("disable_mlsd"), "initial: {}", creates[0]);
+        assert!(
+            creates[1].contains("\"disable_mlsd\":true"),
+            "healed body: {}",
+            creates[1]
+        );
+        let registration = registry
+            .registration(&connection.id)
+            .expect("registration kept");
+        assert_eq!(
+            registration.parameters["disable_mlsd"],
+            Value::Bool(true),
+            "respawn replay must carry the healed parameters"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn ftp_connect_keeps_original_config_without_the_list_failure() {
+        // 目录可正常列举（或其他任何错误，如登录失败）都不得改配置。
+        static SCRIPT: &[(&str, u16, &str)] = &[
+            ("/config/create", 200, "{}"),
+            ("/operations/list", 200, "{\"list\":[]}"),
+        ];
+        let recorded = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let (port, server) = spawn_rc_stub(SCRIPT, recorded.clone()).await;
+        let connection = ftp_probe_fixture(port);
+        let registry = Registry::new();
+        let client = RcClient::new(
+            format!("http://127.0.0.1:{port}"),
+            "u88".to_string(),
+            "p88".to_string(),
+        );
+        connect(&registry, &client, &connection)
+            .await
+            .expect("connect with probe");
+        let creates = recorded.lock().expect("records").clone();
+        assert_eq!(creates.len(), 1, "no re-registration: {creates:?}");
+        assert!(!creates[0].contains("disable_mlsd"));
+        let registration = registry
+            .registration(&connection.id)
+            .expect("registration kept");
+        assert!(
+            registration.parameters.get("disable_mlsd").is_none(),
+            "clean listing must keep the default MLSD behavior"
+        );
+        server.abort();
+    }
+
+    #[test]
+    fn unsupported_list_line_classifier_matches_the_wire_error() {
+        assert!(is_unsupported_list_line(
+            "rc http 500: { \"error\": \"failed to find object: unsupported LIST line\", \"input\": null, \"status\": 500 }"
+        ));
+        assert!(!is_unsupported_list_line("rc http 530: Login incorrect"));
+        assert!(!is_unsupported_list_line(
+            "Failed to stat '/x': rc transport error: connection refused"
+        ));
+    }
 }
 
 /// Manifest-driven form × registry matrix: replays the checked-in
@@ -3679,5 +3934,5 @@ mod manifest_matrix {
                 }
             }
         }
-    }
+        }
 }
