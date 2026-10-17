@@ -38,6 +38,8 @@ export const messages = {
     // issue #83/#79 同根因：宿主句柄失效时用户会看到原始英文报错且走死）。
     uploadBridgeReadFailed: "Upload of {name} failed: the local file could not be read through the host",
     uploadBridgeFallback: "Host file bridge is unavailable — pick the files again to upload",
+    // issue #86 上传二阶段（staging→远端）标签
+    uploadPhaseRemote: "Uploading to server",
     download: "Download",
     deleteSelected: "Delete selected",
     transfers: "Transfers",
@@ -673,6 +675,8 @@ export const messages = {
     uploadFolderHint: "Sube una carpeta completa conservando su estructura de directorios",
     uploadBridgeReadFailed: "Error al subir {name}: no se pudo leer el archivo local a través del host",
     uploadBridgeFallback: "El puente de archivos del host no está disponible; vuelve a elegir los archivos",
+    // issue #86 上传二阶段（staging→远端）标签
+    uploadPhaseRemote: "Subiendo al servidor",
     download: "Descargar",
     deleteSelected: "Eliminar selección",
     transfers: "Transferencias",
@@ -1287,6 +1291,8 @@ export const messages = {
     uploadFolderHint: "Carica un'intera cartella mantenendo la struttura di directory",
     uploadBridgeReadFailed: "Caricamento di {name} non riuscito: impossibile leggere il file locale tramite l'host",
     uploadBridgeFallback: "Il bridge file dell'host non è disponibile; seleziona di nuovo i file",
+    // issue #86 上传二阶段（staging→远端）标签
+    uploadPhaseRemote: "Caricamento sul server",
     download: "Scarica",
     deleteSelected: "Elimina selezionati",
     transfers: "Trasferimenti",
@@ -1901,6 +1907,8 @@ export const messages = {
     uploadFolderHint: "フォルダー全体をディレクトリ構造を保ったままアップロード",
     uploadBridgeReadFailed: "{name} のアップロードに失敗しました：ホスト経由でローカルファイルを読み取れません",
     uploadBridgeFallback: "ホストのファイルブリッジを利用できません。ファイルをもう一度選択してください",
+    // issue #86 アップロード第2段階（staging→リモート）ラベル
+    uploadPhaseRemote: "サーバーにアップロード中",
     download: "ダウンロード",
     deleteSelected: "選択項目を削除",
     transfers: "転送",
@@ -2515,6 +2523,8 @@ export const messages = {
     uploadFolderHint: "Envia uma pasta inteira preservando a estrutura de diretórios",
     uploadBridgeReadFailed: "Falha ao enviar {name}: não foi possível ler o arquivo local através do host",
     uploadBridgeFallback: "A ponte de arquivos do host está indisponível — selecione os arquivos novamente",
+    // issue #86 上传二阶段（staging→远端）标签
+    uploadPhaseRemote: "Enviando ao servidor",
     download: "Baixar",
     deleteSelected: "Excluir selecionados",
     transfers: "Transferências",
@@ -3129,6 +3139,8 @@ export const messages = {
     uploadFolderHint: "上传整个文件夹——保留目录结构",
     uploadBridgeReadFailed: "{name} 上传失败：无法通过宿主读取本地文件",
     uploadBridgeFallback: "宿主文件桥接不可用，请重新选择要上传的文件",
+    // issue #86 上传二阶段（staging→远端）标签
+    uploadPhaseRemote: "上传到服务器",
     download: "下载",
     deleteSelected: "删除所选",
     transfers: "传输",
@@ -3747,6 +3759,8 @@ export const messages = {
     uploadFolderHint: "上傳整個資料夾——保留目錄結構",
     uploadBridgeReadFailed: "{name} 上傳失敗：無法透過宿主讀取本機檔案",
     uploadBridgeFallback: "宿主檔案橋接不可用，請重新選擇要上傳的檔案",
+    // issue #86 上傳二階段（staging→遠端）標籤
+    uploadPhaseRemote: "上傳到伺服器",
     download: "下載",
     deleteSelected: "刪除所選",
     transfers: "傳輸",

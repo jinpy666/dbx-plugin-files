@@ -867,7 +867,7 @@ pub async fn write_bytes(
     let (parent, payload_remote) = split_upload_target(&target);
     let staging = stage_bytes(data)?;
     let uploaded = client
-        .operations_uploadfile(fs, &parent, &staging, None)
+        .operations_uploadfile(fs, &parent, &staging, None, None)
         .await;
     let _ = std::fs::remove_file(&staging);
     uploaded.map_err(|error| format!("Failed to write '{target}': {error}"))?;

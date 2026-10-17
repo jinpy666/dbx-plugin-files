@@ -171,12 +171,17 @@ impl UploadStaging {
     /// because `self` is consumed). Returns the uploaded byte count, i.e.
     /// the staging file size; the `operations/uploadfile` response carries
     /// no item to cross-check against (live rcd answers `{}`).
+    ///
+    /// `group` attaches the rclone accounting stats group the caller's
+    /// progress poller scopes `core/stats` to (issue #86); `None` is the
+    /// no-progress-watching default.
     pub async fn finish(
         mut self,
         client: &RcClient,
         fs: &str,
         remote: &str,
         mime: Option<&str>,
+        group: Option<&str>,
     ) -> Result<u64, String> {
         if self.expected > 0 && self.received != self.expected {
             let message = format!(
@@ -192,7 +197,7 @@ impl UploadStaging {
             })?;
         }
         drop(self.file.take());
-        let result = upload_staged_exact(client, fs, &self.path, remote, mime).await;
+        let result = upload_staged_exact(client, fs, &self.path, remote, mime, group).await;
         self.cleanup();
         result?;
         Ok(self.received)
@@ -254,6 +259,7 @@ pub(crate) async fn upload_staged_exact(
     staging_file: &Path,
     remote: &str,
     mime: Option<&str>,
+    group: Option<&str>,
 ) -> Result<(), String> {
     let (parent, name) = split_remote(remote);
     if name.is_empty() {
@@ -269,7 +275,7 @@ pub(crate) async fn upload_staged_exact(
 
     let result = async {
         client
-            .operations_uploadfile(fs, &stage_dir, staging_file, mime)
+            .operations_uploadfile(fs, &stage_dir, staging_file, mime, group)
             .await
             .map_err(|error| format!("Failed to upload '{remote}': {error}"))?;
         client
@@ -506,7 +512,7 @@ mod tests {
                 .expect("append frame");
         }
         staging
-            .finish(client, fs, remote, Some("application/octet-stream"))
+            .finish(client, fs, remote, Some("application/octet-stream"), None)
             .await
             .expect("finish upload")
     }
@@ -631,7 +637,7 @@ mod tests {
         assert_eq!(staging.received(), payload.len() as u64);
 
         let uploaded = staging
-            .finish(&live.client, &live.fs, "bc-out.bin", Some("application/octet-stream"))
+            .finish(&live.client, &live.fs, "bc-out.bin", Some("application/octet-stream"), None)
             .await
             .expect("finish");
         assert_eq!(uploaded, payload.len() as u64);
@@ -649,9 +655,10 @@ mod tests {
         let Some(live) = Live::start().await else { return };
         let mut staging = UploadStaging::start("task-mismatch", 100).expect("start");
         staging.append(0, &[0u8; 40]).expect("append");
-        let error = staging.finish(&live.client, &live.fs, "bc-mismatch.bin", None)
+        let error = staging
+            .finish(&live.client, &live.fs, "bc-mismatch.bin", None, None)
             .await
-            .expect_err("finish must reject size mismatch");
+            .expect_err("mismatched size must fail before any rc traffic");
         assert!(error.contains("size mismatch"), "{error}");
         // Nothing landed remotely.
         assert_eq!(

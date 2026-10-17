@@ -72,6 +72,40 @@ describe("TransferPanel progressMeta for count-based jobs (R5-P2-3)", () => {
   });
 });
 
+// issue #86：上传二阶段（staging→远端）行追加「上传到服务器」阶段标签。
+
+describe("TransferPanel upload remote-phase label (issue #86)", () => {
+  it("appends the phase tag while phase=upload is active", () => {
+    const job: TransferJob = {
+      jobId: "task-86",
+      connectionId: "c",
+      kind: "upload",
+      state: "running",
+      size: 2048,
+      transferred: 512,
+      phase: "upload",
+      updatedAt: Date.now(),
+    };
+    const wrapper = mountPanel([job]);
+    const meta = wrapper.find(".wb-transfer-meta").text();
+    expect(meta).toContain("uploadPhaseRemote");
+  });
+
+  it("plain uploads do not show the phase tag", () => {
+    const job: TransferJob = {
+      jobId: "task-86b",
+      connectionId: "c",
+      kind: "upload",
+      state: "running",
+      size: 2048,
+      transferred: 512,
+      updatedAt: Date.now(),
+    };
+    const wrapper = mountPanel([job]);
+    expect(wrapper.find(".wb-transfer-meta").text()).not.toContain("uploadPhaseRemote");
+  });
+});
+
 // 本机落盘下载的行级交互（对标 ssh 面板：定位/打开 + 单条删除）。
 
 describe("TransferPanel status icons", () => {

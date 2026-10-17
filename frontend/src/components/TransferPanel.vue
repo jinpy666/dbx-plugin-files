@@ -86,6 +86,15 @@ function stateLabel(job: TransferJob): string {
   return props.t(`transferStatus.${job.state}`);
 }
 
+/** kind 标签；上传二阶段（issue #86）追加「上传到服务器」，此时进度条
+ * 才反映真实的远端网络上传（阶段一是本机中转，通常瞬间完成）。 */
+function kindLabel(job: TransferJob): string {
+  const kind = props.t(`transferKind.${job.kind}`);
+  return job.kind === "upload" && job.phase === "upload"
+    ? `${kind} · ${props.t("uploadPhaseRemote")}`
+    : kind;
+}
+
 function progressMeta(job: TransferJob): string {
   if (isByteBased(job)) {
     const files = job.filesTotal ? props.t("filesProgress", { done: job.filesDone ?? 0, total: job.filesTotal }) : "";
@@ -131,7 +140,7 @@ function timeLabel(job: TransferJob): string {
         <span class="wb-transfer-path-parent">{{ pathParts(job.remotePath || job.jobId).parent }}</span>
       </div>
       <div class="wb-transfer-meta">
-        <span>{{ t(`transferKind.${job.kind}`) }}</span>
+        <span>{{ kindLabel(job) }}</span>
         <button
           v-if="job.checkSummary"
           type="button"
