@@ -703,12 +703,20 @@ impl RcClient {
 
     /// Multipart streaming upload via `operations/uploadfile` (rclone
     /// >= 1.68). `file` is streamed from disk, not buffered whole.
+    ///
+    /// `group` attaches an rclone accounting stats group (`_group`) to the
+    /// rc job: rcd consumes the request body at REMOTE speed (`Rcat` pipes
+    /// the multipart part straight into the upload — fs/operations/rc.go),
+    /// so a concurrent `core/stats {group}` poller observes real
+    /// remote-upload progress while this request is in flight (issue #86).
+    /// `None` keeps the default `job/<id>` group the wiring layer ignores.
     pub async fn operations_uploadfile(
         &self,
         fs: &str,
         remote: &str,
         file: &std::path::Path,
         mime: Option<&str>,
+        group: Option<&str>,
     ) -> Result<Value, RcError> {
         let mut part = reqwest::multipart::Part::file(file)
             .await
@@ -722,12 +730,19 @@ impl RcClient {
                 .map_err(|error| RcError::Malformed(format!("invalid mime {mime}: {error}")))?;
         }
         let form = reqwest::multipart::Form::new().part("file", part);
-        let url = format!(
+        let mut url = format!(
             "{}/operations/uploadfile?fs={}&remote={}",
             self.base_url,
             encode_query_component(fs),
             encode_query_component(remote)
         );
+        if let Some(group) = group {
+            // Query params are the proven channel for a multipart POST here
+            // (fs/remote already travel this way); rcserver merges them into
+            // the rc params where jobs::getGroup reads `_group`.
+            url.push_str("&_group=");
+            url.push_str(&encode_query_component(group));
+        }
         // M2 (review FILES-M2), semantics fixed in the 0.1.81 scan: this
         // used to be `tokio::time::timeout`, whose future spans the entire
         // streaming body — any upload transferring longer than the budget
@@ -1013,5 +1028,52 @@ mod tests {
             .await
             .expect("loopback health check must ignore ambient proxy env");
         server.abort();
+    }
+
+    /// Issue #86: the staged upload attaches its accounting stats group as
+    /// the `_group` query param, so the wiring layer's `core/stats {group}`
+    /// poller scopes to exactly this upload. The same encoder leaves `/`
+    /// literal (same treatment as fs/remote, both legal in query strings).
+    #[tokio::test]
+    async fn uploadfile_request_carries_stats_group() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback stub");
+        let port = listener.local_addr().expect("stub addr").port();
+        let server = tokio::spawn(async move {
+            let mut request_line = String::new();
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buffer = [0u8; 8192];
+                // One read suffices: the request head (query string included)
+                // sits in the first segment for this tiny body.
+                if let Ok(n) = tokio::io::AsyncReadExt::read(&mut socket, &mut buffer).await {
+                    let head = String::from_utf8_lossy(&buffer[..n]).to_string();
+                    request_line = head.lines().next().unwrap_or_default().to_string();
+                }
+                let _ = tokio::io::AsyncWriteExt::write_all(
+                    &mut socket,
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                )
+                .await;
+            }
+            request_line
+        });
+        let scratch = tempfile::tempdir().expect("scratch dir");
+        let staging = scratch.path().join("payload");
+        std::fs::write(&staging, b"hello").expect("staging bytes");
+        let client = RcClient::new(
+            format!("http://127.0.0.1:{port}"),
+            "u86".to_string(),
+            "p86".to_string(),
+        );
+        client
+            .operations_uploadfile("fs", "dir", &staging, None, Some("files-upload/t1"))
+            .await
+            .expect("stub answers 200");
+        let request_line = server.await.expect("stub task");
+        assert!(
+            request_line.contains("_group=files-upload/t1"),
+            "stats group param missing from request line: {request_line}"
+        );
     }
 }

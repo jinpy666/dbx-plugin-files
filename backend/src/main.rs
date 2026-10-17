@@ -3125,9 +3125,84 @@ impl Plugin {
         // 审计（一次 finish 一条，追加帧/暂存路径不记）。target 与 copyurl
         // 一致取 gate 后的 remote 形式。
         let remote_path = task.remote.clone();
-        let outcome = task.staging.finish(&client, &task.fs, &task.remote, None).await;
+        // 远端上传进度（issue #86）：uploadfile 的流式请求体被 rcd 按远端
+        // 速度消费（Rcat 把 multipart part 直接管道进上传，rc.go），慢段
+        // 就发生在这次 HTTP 请求内。给该 rc job 挂显式统计组，下面的轮询
+        // 泵以 `core/stats {group}` 读取真实已上传字节，与帧接收阶段共用
+        // 事件形状并以 `phase:"upload"` 区分两端。泵在 job 终态时自退出，
+        // finish 返回后 abort 兜底。
+        let group = format!("files-upload/{task_id}");
+        let poller = {
+            let client = client.clone();
+            let engine = Arc::clone(&self.rclone);
+            let emitter = emitter.clone();
+            let task_id = task_id.to_string();
+            let total = task.declared_size;
+            let group = group.clone();
+            tokio::spawn(async move {
+                let mut throttle = transfers::Throttle::default();
+                let mut last_uploaded: Option<u64> = None;
+                loop {
+                    tokio::time::sleep(UPLOAD_PROGRESS_POLL_INTERVAL).await;
+                    let is_terminal = rclone_lock(&engine.jobs)
+                        .get(&task_id)
+                        .map(|job| job.status.is_terminal())
+                        .unwrap_or(true);
+                    if is_terminal {
+                        return;
+                    }
+                    let Ok(stats) = client
+                        .call("core/stats", &serde_json::json!({ "group": &group }))
+                        .await
+                    else {
+                        continue;
+                    };
+                    let uploaded = stats.get("bytes").and_then(Value::as_u64).unwrap_or(0);
+                    if last_uploaded == Some(uploaded) {
+                        continue;
+                    }
+                    last_uploaded = Some(uploaded);
+                    let emit = {
+                        let mut jobs = rclone_lock(&engine.jobs);
+                        let Some(job) = jobs.get_mut(&task_id) else {
+                            return;
+                        };
+                        job.transferred_bytes = uploaded;
+                        if job.status == transfers::JobStatus::Queued {
+                            job.status = transfers::JobStatus::Running;
+                        }
+                        throttle.should_emit(uploaded, Some(total))
+                    };
+                    if emit {
+                        // Same throttled payload shape as the frame-ingest
+                        // events, plus `phase:"upload"`（远端段标记）。
+                        let mut event =
+                            transfers::progress_event(&task_id, uploaded, Some(total));
+                        if let Some(object) = event.as_object_mut() {
+                            object.insert("size".into(), serde_json::json!(total));
+                            object.insert(
+                                "state".into(),
+                                serde_json::json!(transfers::JobStatus::Running.as_str()),
+                            );
+                            object.insert("phase".into(), serde_json::json!("upload"));
+                        }
+                        let _ = emitter.event("files/transfer/progress", event);
+                    }
+                }
+            })
+        };
+        let outcome = task
+            .staging
+            .finish(&client, &task.fs, &task.remote, None, Some(&group))
+            .await;
+        poller.abort();
         match outcome {
-            Ok(_uploaded) => {
+            Ok(uploaded) => {
+                // 终态回满：最后一次轮询的统计可能滞后于实际，staging 尺寸
+                // 校验已过，完成即视为全部到位（历史行不得停在 99%）。
+                if let Some(job) = rclone_lock(&self.rclone.jobs).get_mut(task_id) {
+                    job.transferred_bytes = uploaded;
+                }
                 self.audit_id(&connection_id, "files/upload", &remote_path, "ok")?;
                 rclone_complete_job(
                     &self.rclone,
@@ -4711,6 +4786,10 @@ fn rclone_lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// (issue#6-6): 250ms sampling, stalled after 40 ticks (10s).
 const UPLOAD_FINISH_TICK: Duration = Duration::from_millis(250);
 const UPLOAD_FINISH_STALL_TICKS: u32 = 40;
+/// 远端上传段（issue #86）的 `core/stats {group}` 轮询间隔。与 sync.rs
+/// `POLL_INTERVAL` 同口径：进度节流由 Throttle 收口（≥200ms 或 ≥1%），
+/// 轮询本身只决定采样密度。
+const UPLOAD_PROGRESS_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Root-relative remote resolution for the Phase B ops that take a plain
 /// remote (`read_prefix`, `write_bytes`, the download pump): the same
@@ -5261,7 +5340,8 @@ async fn remote_edit_sync_back(
         rclone_running_at_event(&task_id, 0, Some(size)),
     );
     remote_edit_emit_state(edits, emitter, key, "syncing", None);
-    match rclone::bytes_channel::upload_staged_exact(client, fs, local, remote, None).await {
+    match rclone::bytes_channel::upload_staged_exact(client, fs, local, remote, None, None).await
+    {
         Ok(()) => {
             if !edits.update(key, |session| {
                 session.status = remote_edit::STATUS_WATCHING;

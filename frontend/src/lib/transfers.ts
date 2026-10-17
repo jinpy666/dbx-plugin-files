@@ -56,6 +56,10 @@ export interface TransferJob {
   localPath?: string;
   /** check 作业终态差异摘要（checkSummary，sidecar 报告的单行归纳）。 */
   checkSummary?: string;
+  /** issue #86：上传二阶段标记（sidecar `phase:"upload"` 事件携带）。此
+   * 阶段进度条反映真实的远端网络上传；阶段一（本机中转 staging）通常瞬
+   * 间完成。仅活动态保留，终态清除。 */
+  phase?: string;
 }
 
 export interface TransferProgressEvent {
@@ -78,6 +82,8 @@ export interface TransferProgressEvent {
   localPath?: string;
   /** check 终态报告摘要（rclone_sync_event_from 携带）。 */
   checkSummary?: string;
+  /** issue #86：上传二阶段标记（sidecar 轮询泵事件携带 `phase:"upload"`）。 */
+  phase?: string;
 }
 
 export const ACTIVE_STATES: readonly TransferState[] = ["queued", "running"];
@@ -105,6 +111,10 @@ export function applyProgress(jobs: Record<string, TransferJob>, event: Transfer
   if (!jobId) return undefined;
   const existing = jobs[jobId];
   const kind: TransferKind = event.kind ?? (event.direction === "download" ? "download" : "upload");
+  // issue #86：阶段标记只在活动态保留——终态事件/轮询不带 phase，把它
+  // 清掉，历史行不残留「上传到服务器」。
+  const nextState = (event.state ?? existing?.state ?? "running") as TransferState;
+  const phase = isActive(nextState) ? event.phase ?? existing?.phase : undefined;
   const next: TransferJob = existing
     ? {
         ...existing,
@@ -119,6 +129,7 @@ export function applyProgress(jobs: Record<string, TransferJob>, event: Transfer
         // localPath 只在完成事件/轮询行里出现，事件缺省时不丢已有值。
         localPath: event.localPath ?? existing.localPath,
         checkSummary: event.checkSummary ?? existing.checkSummary,
+        phase,
         updatedAt: Date.now(),
       }
     : {
@@ -137,6 +148,7 @@ export function applyProgress(jobs: Record<string, TransferJob>, event: Transfer
         error: event.error,
         localPath: event.localPath,
         checkSummary: event.checkSummary,
+        phase,
         createdAt: Date.now(),
         updatedAt: Date.now(),
       };
@@ -179,6 +191,8 @@ export function applyList(jobs: Record<string, TransferJob>, payload: TransferLi
       // saveToLocal 完成的下载行携带本机落盘路径（reveal/open 的依据）。
       localPath: raw.localPath ? String(raw.localPath) : undefined,
       checkSummary: raw.checkSummary ? String(raw.checkSummary) : existing?.checkSummary,
+      // issue #86：list 行不携带 phase，活动 job 保留事件流写入的现值。
+      phase: isActive(state) ? existing?.phase : undefined,
       // 历史任务时间以加入/开始时刻为准；轮询不能用完成时刻覆盖首次登记时间。
       // updatedAt 仍保留事件流的最近更新时间，用于活动任务状态。
       updatedAt: existing?.updatedAt ?? finishedAt ?? startedAt ?? Date.now(),

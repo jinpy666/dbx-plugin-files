@@ -68,6 +68,32 @@ describe("transfers", () => {
     expect(jobs.b.error).toBe("boom");
   });
 
+  it("carries the upload remote-phase marker and clears it on terminal states (issue #86)", () => {
+    const jobs: Record<string, TransferJob> = {};
+    // 阶段一（本机中转）：事件不带 phase。
+    applyProgress(jobs, { jobId: "a", kind: "upload", transferred: 100, size: 100, state: "running" });
+    expect(jobs.a.phase).toBeUndefined();
+    // 阶段二（远端上传）：sidecar 事件携带 phase:"upload"，transferred 重置
+    // 为已上传字节，进度条按真实网络进度重新计。
+    applyProgress(jobs, { jobId: "a", kind: "upload", transferred: 30, size: 100, state: "running", phase: "upload" });
+    expect(jobs.a.phase).toBe("upload");
+    expect(jobs.a.transferred).toBe(30);
+    // 终态清除 phase，历史行不残留阶段标签。
+    applyProgress(jobs, { jobId: "a", kind: "upload", transferred: 100, size: 100, state: "completed" });
+    expect(jobs.a.phase).toBeUndefined();
+  });
+
+  it("keeps the active phase marker across files/transfers/list rebuilds (issue #86)", () => {
+    const jobs: Record<string, TransferJob> = {};
+    applyProgress(jobs, { jobId: "a", kind: "upload", transferred: 30, size: 100, state: "running", phase: "upload" });
+    applyList(jobs, { jobs: [{ jobId: "a", kind: "upload", state: "running", transferredBytes: 40, totalBytes: 100 }] }, "conn");
+    expect(jobs.a.phase).toBe("upload");
+    expect(jobs.a.transferred).toBe(40);
+    // 终态的 list 行同样清掉 phase。
+    applyList(jobs, { jobs: [{ jobId: "a", kind: "upload", state: "completed", transferredBytes: 100, totalBytes: 100 }] }, "conn");
+    expect(jobs.a.phase).toBeUndefined();
+  });
+
   it("computes percent from file or folder metrics", () => {
     expect(percentOf(job({ size: 200, transferred: 50 }))).toBe(25);
     expect(percentOf(job({ state: "completed", size: 0 }))).toBe(100);
