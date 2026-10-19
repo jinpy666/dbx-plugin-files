@@ -53,8 +53,12 @@ function b64encode(value: Uint8Array): string {
 // 1x1 png
 const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
+// 泵用宏任务而非纯微任务：lib/api.ts 的 call() 加默认超时包装（B1）后，每次
+// 调用的 promise 链多了两级 wrapper 跳数；纯 `await Promise.resolve()` 微任务
+// 泵对跳数敏感（实测 stat→readRange 收尾的渲染恰好落在第 6 拍之后），宏任务
+// 泵每拍先排干全部微任务再跨 tick，对跳数不敏感。断言对象均为终态，不受影响。
 async function flush(times = 6) {
-  for (let i = 0; i < times; i += 1) await Promise.resolve();
+  for (let i = 0; i < times; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 let wrapper: VueWrapper | undefined;

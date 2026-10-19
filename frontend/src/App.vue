@@ -121,6 +121,7 @@ import { resolveUploadTarget, type UploadTarget } from "./lib/uploadTarget";
 import { MENU_ITEM_SELECTOR, onMenuArrowKeys, onTablistArrowKeys, trapTabKey } from "./lib/a11y";
 import { isConnectionNotReadyMessage, isNotFoundMessage, isTransportFailure } from "./lib/friendlyError";
 import { decideBootRestoreRetry } from "./lib/bootRestoreRetry";
+import { TRANSPORT_PROBE_TIMEOUT_MS, useTransportWatch } from "./lib/useTransportWatch";
 import { createNavGuard } from "./lib/navGuard";
 import { resolveToolbarTarget } from "./lib/toolbarTarget";
 import { validateFileName } from "./lib/fileName";
@@ -1389,6 +1390,15 @@ const FRAME_QUEUE_MAX_BYTES = 64 * 1024 * 1024;
  * 即发即忘，超限即暂停泵，以 sidecar 权威进度为信用（见上传泵内注释）。 */
 const UPLOAD_INFLIGHT_WINDOW_BYTES = 64 * 1024 * 1024;
 const UPLOAD_BACKPRESSURE_POLL_MS = 100;
+/** 上传背压等待的有界 deadline（B2）：桥断死时 sidecar 进度事件永不推进，
+ * 信用窗口不会自行打开——无界等待让泵在「进度冻结但任务常驻 running」里
+ * 无限空转。15min 依据：窗口 64 MiB 须在最慢可接受远端链路下排空（约
+ * 100 KiB/s 写入下限 ≈ 11 min），取 15min 留余量，仍早于 upload/finish 的
+ * 30min 超时，死桥任务先落终态；deadline 每分片重置，健康慢链路的窗口
+ * 排空远快于此。超时抛错走既有失败路径：catch 置 failed + files/transfer/
+ * cancel（与手动取消同语义）；错误文案含 "timed out"，friendlyError 映射为
+ * errNetwork 七语文案、isTransportFailure 把 pill 归为断连。 */
+const UPLOAD_BACKPRESSURE_DEADLINE_MS = 15 * 60 * 1000;
 const frameOverflow = new Set<string>();
 /** 已释放（取消/完成）的下载通道：sidecar 在处理 cancel 前仍在推的帧
  * 直接丢弃——无 waiter 的迟到帧会逐帧重建 queue 且永远无人消费。
@@ -2100,6 +2110,36 @@ async function recoverPaneListing(side: PaneSide, cause: unknown, options: { any
   // 途中导航失败的自愈都不应把用户扔回根目录。
   void (side === "left" ? loadDirectory(paneDirPath("left")) : loadRightDirectory(paneDirPath("right"))).catch(() => undefined);
 }
+
+// ---- 断网/断链自愈看守（A，对标 ssh useTerminalTransportWatch）----------------
+// web（docker/dbx-web）部署下浏览器→宿主链路死掉不产生任何 files/* 应答：
+// 上传泵背压、面板轮询会各自悬挂。看守以只读 files/capabilities 有界探测
+// （经 call() 注入 connectionId；页面侧 8s race 是唯一可靠超时边界），断链
+// 即置 pill/横幅并单发恢复；同源可达确认后复用现成自愈链路——reopen 内聚
+// 在 recoverPaneListing（先 requestHostConnectionReopen 再重拉该栏当前路径），
+// 这里不重复 reopen。卸载清理由 composable 自身的 onBeforeUnmount 承担。
+useTransportWatch({
+  // 本地 __local__ 栏无浏览器→宿主链路面；主连接在场才探测（双栏 pill 为
+  // 全局态，主连接是最合理的健康度代理）。
+  isActive: () => Boolean(connectionId.value) && connectionId.value !== LOCAL_CONNECTION_ID,
+  // 仅健康态探测：业务失败与 boot 自愈窗口各有恢复链路，看守不抢跑。
+  isHealthy: () => connState.value === "connected",
+  probeTransport: () => call<FileCapabilities>("files/capabilities", {}, { timeoutMs: TRANSPORT_PROBE_TIMEOUT_MS }),
+  onOutage: () => {
+    connState.value = "disconnected";
+    // 归因到主连接：断连 pill 的重连点击据此精确补连（reconnectFromToolbar）。
+    pillFailedConnectionId.value = connectionId.value;
+    // showError 存 I18nText 惰性求值 + 8s 自动收敛：看守仍在跑，链路仍死会再报。
+    showError({ key: "transportDisconnected" }, "global");
+  },
+  onRecover: () => {
+    // anyFailure：看守的可达性确认已是更强的恢复前提，不限错误类型重拉；
+    // 在途导航让位语义不变（recoverPaneListing 内部把门）。
+    const cause = new Error("transport restored");
+    void recoverPaneListing("left", cause, { anyFailure: true });
+    if (dualPane.value) void recoverPaneListing("right", cause, { anyFailure: true });
+  },
+});
 
 /** 左栏切换连接（双栏）：新连接回到根目录，quickPaths 随连接面刷新。 */
 function onLeftConnectionChange(value: string) {
@@ -3156,9 +3196,13 @@ async function uploadSource(item: UploadQueueItem, target: UploadTarget) {
       // 队列（下载侧有 FRAME_QUEUE_MAX_BYTES 对称防线，上传侧此前没有）。
       // 以 sidecar 权威进度为信用：在途未确认超限即暂停读盘/入队，等进度
       // 事件或 5s 轮询推进。桥彻底断死时窗口不会自行打开——取消检查点
-      // 每轮仍生效，upload/finish 的 30min 超时兜底。
+      // 每轮仍生效，B2 再给等待加 deadline 兜底（UPLOAD_BACKPRESSURE_
+      // DEADLINE_MS，超时即走下方 catch 的既有失败路径，不再无限空转；
+      // upload/finish 的 30min 超时只罩得住走到 finish 的任务）。
+      const backpressureDeadline = Date.now() + UPLOAD_BACKPRESSURE_DEADLINE_MS;
       while (offset - (tracker.jobs[taskId]?.transferred ?? 0) > UPLOAD_INFLIGHT_WINDOW_BYTES) {
         if (cancelFlag.canceled) break;
+        if (Date.now() >= backpressureDeadline) throw new Error("upload stalled: transfer progress timed out");
         await new Promise((resolve) => setTimeout(resolve, UPLOAD_BACKPRESSURE_POLL_MS));
       }
       // issue#6-5：上传进度以 sidecar 收到的权威字节为准（节流事件 + 5s 轮询

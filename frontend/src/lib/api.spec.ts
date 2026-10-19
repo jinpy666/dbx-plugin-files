@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { entryKey, isHostMethodMissing, normalizeEntry, normalizeEntries, pathFromEntryKey, type FileEntry } from "./api";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_CALL_TIMEOUT_MS, bindApi, call, entryKey, FilesApiError, isHostMethodMissing, normalizeEntry, normalizeEntries, pathFromEntryKey, type FileEntry } from "./api";
 import { sortEntries, type SortState } from "./sorting";
 
 const modifiedSort: SortState = { column: "modified", direction: "asc" };
@@ -64,5 +64,56 @@ describe("isHostMethodMissing", () => {
     expect(isHostMethodMissing(new Error("Connection reopen is unavailable"))).toBe(true);
     expect(isHostMethodMissing(new Error("Method not found: files/list"))).toBe(true);
     expect(isHostMethodMissing(new Error("Storage connect failed: bad credentials"))).toBe(false);
+  });
+});
+
+describe("call() 默认超时（B1：断链自愈的前端侧边界）", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("rejects with FilesApiError when the bridge promise never settles", async () => {
+    vi.useFakeTimers();
+    bindApi(() => new Promise<never>(() => {}), null);
+    const pending = call("files/list");
+    const assertion = expect(pending).rejects.toBeInstanceOf(FilesApiError);
+    await vi.advanceTimersByTimeAsync(DEFAULT_CALL_TIMEOUT_MS);
+    await assertion;
+    await expect(pending).rejects.toThrow("files/list timed out after 15000 ms");
+  });
+
+  it("keeps a fast resolution untouched and injects connectionId as before", async () => {
+    const invoke = vi.fn((_method: string, params?: unknown) => Promise.resolve({ ok: true, params }));
+    // vi.fn 的单态签名与 Invoke 的泛型签名不兼容，仅测试桩处放宽。
+    bindApi(invoke as unknown as Parameters<typeof bindApi>[0], "conn-1");
+    await expect(call("files/capabilities")).resolves.toEqual({ ok: true, params: { connectionId: "conn-1" } });
+  });
+
+  it("lets an explicit timeoutMs override the default and forwards it to the bridge", async () => {
+    vi.useFakeTimers();
+    let seenOptions: unknown;
+    const invoke = vi.fn((_method: string, _params: unknown, options?: { timeoutMs?: number }) => {
+      seenOptions = options;
+      return new Promise<never>(() => {});
+    });
+    bindApi(invoke, null);
+    const explicit = 30 * 60 * 1000;
+    let rejected = false;
+    const pending = call("files/upload/finish", { taskId: "t1" }, { timeoutMs: explicit }).catch((cause: unknown) => {
+      rejected = true;
+      return cause;
+    });
+
+    // 显式值优先：默认 15s 到点不落败（超长任务不受默认超时影响）。
+    await vi.advanceTimersByTimeAsync(DEFAULT_CALL_TIMEOUT_MS);
+    expect(rejected).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(explicit - DEFAULT_CALL_TIMEOUT_MS);
+    const cause = (await pending) as FilesApiError;
+    expect(rejected).toBe(true);
+    expect(cause).toBeInstanceOf(FilesApiError);
+    expect(cause.message).toContain("timed out");
+    // 显式 options 仍透传给宿主桥（支持的实现可更早 enforce）。
+    expect(seenOptions).toEqual({ timeoutMs: explicit });
   });
 });

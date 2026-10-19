@@ -95,6 +95,48 @@ export function errorMessage(error: unknown): string {
 
 type Invoke = <T = unknown>(method: string, params?: unknown, options?: { timeoutMs?: number }) => Promise<T>;
 
+/**
+ * call() 默认超时（B1）：宿主桥的 timeoutMs 由宿主在收到请求后才 enforce，
+ * 「请求根本没到宿主」的断链它无能为力，前端 Promise.race 是唯一可靠边界
+ * （对标 ssh terminalInputQueue.sendWithTimeout 的页面侧超时形态）。15s 覆盖
+ * files/* 元数据类应答（list/stat/capabilities 等），远长于健康链路应答；
+ * 长任务不经 call()（upload/finish 走裸 invoke 显式 30min）。落败抛
+ * FilesApiError 且消息含 "timed out"——friendlyError/isTransportFailure 据此
+ * 归类为传输失败（连接 pill 置 disconnected、横幅走 errNetwork 文案）。
+ */
+export const DEFAULT_CALL_TIMEOUT_MS = 15_000;
+
+export interface CallOptions {
+  timeoutMs?: number;
+}
+
+/** 页面侧有界超时（不依赖宿主桥实现 options）；timeoutMs ≤ 0 视为不限时。 */
+function withTimeout<T>(operation: Promise<T>, timeoutMs: number, method: string): Promise<T> {
+  if (!timeoutMs || timeoutMs <= 0) return operation;
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new FilesApiError(method, `${method} timed out after ${timeoutMs} ms`));
+    }, timeoutMs);
+    Promise.resolve(operation).then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (cause: unknown) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(cause);
+      },
+    );
+  });
+}
+
 let invokeRef: Invoke | null = null;
 let connectionRef: string | null = null;
 
@@ -108,14 +150,16 @@ export function currentConnectionId(): string | null {
 }
 
 /** 调用 sidecar：注入 connectionId（已有则不覆盖）。 */
-export async function call<T = Record<string, unknown>>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+export async function call<T = Record<string, unknown>>(method: string, params: Record<string, unknown> = {}, options?: CallOptions): Promise<T> {
   if (!invokeRef) throw new FilesApiError(method, "api not bound");
   const payload = { ...params };
   if (method.startsWith("files/") && !method.startsWith("files/transfers") && payload.connectionId === undefined && connectionRef) {
     payload.connectionId = connectionRef;
   }
   try {
-    return await invokeRef<T>(method, payload);
+    // 显式 options 透传给宿主桥（支持的实现可更早 enforce）；前端 race 兜底，
+    // 调用点显式 timeoutMs 优先，缺省 DEFAULT_CALL_TIMEOUT_MS。
+    return await withTimeout(invokeRef<T>(method, payload, options), options?.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS, method);
   } catch (cause) {
     throw new FilesApiError(method, errorMessage(cause));
   }
