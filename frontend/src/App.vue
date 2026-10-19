@@ -1646,7 +1646,7 @@ async function loadDirectory(target?: string) {
   // catch 路径不经过成功赋值，旧标志会让新目录按到达顺序渲染（m1）。
   leftStreaming.value = false;
   try {
-    const { entries: list, failed, errorMessage: streamError, partialCount, truncated } = await streamListing("left", next, sideConnectionId("left"), {
+    const { entries: list, failed, errorMessage: streamError, partialCount, truncated, stale } = await streamListing("left", next, sideConnectionId("left"), {
       onChunk: (partial) => {
         // 流式渲染：首个 chunk 到达即让骨架屏让位（footer 条目数随 chunk 实时
         // 增长），streaming 期间 sortedEntries 按到达顺序展示。
@@ -1659,6 +1659,19 @@ async function loadDirectory(target?: string) {
     // 晚到的过期会话：面包屑/列表/选中态保持最新导航的结果。
     if (!leftNav.isCurrent(token)) return;
     leftStreaming.value = false;
+    if (stale) {
+      // token 仍当前却收到弃置结算 = 看守断链清理（新导航弃置时 token 已过期，
+      // 走上方早退）：帧通道已死，已到条目不足以呈现为完整目录——落失败横幅
+      // 并交还控制权；loading 由 finally 复位，onRecover 的重拉不再被让位挡住。
+      listingFailed.value = true;
+      entries.value = list;
+      entriesTruncated.value = false;
+      path.value = next;
+      selection.value = [];
+      activePath.value = "";
+      showError({ key: "listingInterrupted" }, "left");
+      return;
+    }
     if (failed) {
       // 失败帧：保留已到条目（可能为空）+ listingFailed 错误横幅路径；
       // 文案经 ListStreamPartialError 体现「已加载 N 项后失败」。
@@ -1709,7 +1722,7 @@ async function loadRightDirectory(target?: string) {
   // 与左栏一致（m1）：catch 路径不经过流式标志的成功赋值，需在导航起点复位。
   rightStreaming.value = false;
   try {
-    const { entries: list, failed, errorMessage: streamError, partialCount, truncated } = await streamListing("right", next, targetConnectionId.value || undefined, {
+    const { entries: list, failed, errorMessage: streamError, partialCount, truncated, stale } = await streamListing("right", next, targetConnectionId.value || undefined, {
       onChunk: (partial) => {
         if (!rightNav.isCurrent(token)) return;
         rightStreaming.value = true;
@@ -1719,6 +1732,18 @@ async function loadRightDirectory(target?: string) {
     });
     if (!rightNav.isCurrent(token)) return;
     rightStreaming.value = false;
+    if (stale) {
+      // 与左栏同语义：看守断链弃置（token 仍当前）落失败横幅，loading 由
+      // finally 复位，onRecover 的重拉不再被「在途导航让位」挡住。
+      rightListingFailed.value = true;
+      rightEntries.value = list;
+      rightEntriesTruncated.value = false;
+      rightPath.value = next;
+      rightSelection.value = [];
+      rightActivePath.value = "";
+      showError({ key: "listingInterrupted" }, "right");
+      return;
+    }
     if (failed) {
       rightEntries.value = list;
       rightEntriesTruncated.value = false;
@@ -2126,6 +2151,13 @@ useTransportWatch({
   isHealthy: () => connState.value === "connected",
   probeTransport: () => call<FileCapabilities>("files/capabilities", {}, { timeoutMs: TRANSPORT_PROBE_TIMEOUT_MS }),
   onOutage: () => {
+    // 断链即弃置两侧在途流会话：帧通道已死，继续等待只会在 loading/流式标志
+    // 上悬挂，且 recoverPaneListing 的「在途导航让位」会让下方 onRecover 的
+    // 恢复永远空转（用户实测：断网恢复后目录卡死刷新，只能刷新浏览器）。
+    // stale 结算让 loadDirectory 落到 listingInterrupted 失败路径并复位
+    // loading，恢复重拉因此不再被让位挡住。
+    abandonStream("left");
+    abandonStream("right");
     connState.value = "disconnected";
     // 归因到主连接：断连 pill 的重连点击据此精确补连（reconnectFromToolbar）。
     pillFailedConnectionId.value = connectionId.value;

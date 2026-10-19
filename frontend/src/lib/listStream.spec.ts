@@ -1,7 +1,8 @@
 // 流式目录列表会话（files/listStream P1）纯逻辑单测：
 // chunk 累加与 seq 去重、requestId 不匹配丢弃、done/error 终态交付、abandon
-// （新导航取代）结算等待。渲染与导航联动在 App.listStream.spec.ts 覆盖。
-import { describe, expect, it } from "vitest";
+// （新导航取代）结算等待、帧空闲超时（断链丢帧收敛）。渲染与导航联动在
+// App.listStream.spec.ts 覆盖。
+import { describe, expect, it, vi } from "vitest";
 import { createChunkHoldback, createListStreamBrowse, type ListStreamChunk } from "./listStream";
 import type { FileEntry } from "./api";
 
@@ -160,5 +161,65 @@ describe("createChunkHoldback (ack 前到达帧预缓冲)", () => {
     const holdback = createChunkHoldback();
     for (let seq = 1; seq <= 70; seq += 1) holdback.push(frame("r1", seq));
     expect(holdback.drain("r1")).toHaveLength(64);
+  });
+});
+
+// ---- 帧空闲超时（断链自愈专项）：ack 后 chunks/done 长时间不至（浏览器↔宿主
+// 断链把事件帧丢在半路）会把 result 永久悬挂——loading 卡死刷新的根因。空闲
+// 超时把该悬挂收敛为一次失败结算。 ------------------------------------------------
+describe("createListStreamBrowse 帧空闲超时", () => {
+  it("settles the session as failed when no frames arrive within the idle window", async () => {
+    vi.useFakeTimers();
+    try {
+      const browse = createListStreamBrowse({});
+      browse.register({ requestId: "r1" });
+      const pending = browse.result;
+      vi.advanceTimersByTime(30_000);
+      const result = await pending;
+      expect(result.failed).toBe(true);
+      expect(result.entries).toEqual([]);
+      expect(result.partialCount).toBe(0);
+      // 终态后帧一律拒绝（契约不变）。
+      expect(browse.handleChunk(chunkOf({ requestId: "r1", seq: 1 }))).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resets the idle window on every accepted chunk (slow but alive stays alive)", async () => {
+    vi.useFakeTimers();
+    try {
+      const browse = createListStreamBrowse({});
+      browse.register({ requestId: "r1" });
+      const pending = browse.result;
+      vi.advanceTimersByTime(20_000);
+      browse.handleChunk(chunkOf({ requestId: "r1", seq: 1, entries: [entry("/a")] }));
+      vi.advanceTimersByTime(20_000); // 若窗口未重置，此处已超时
+      browse.handleChunk(chunkOf({ requestId: "r1", seq: 2, entries: [entry("/b")] }));
+      vi.advanceTimersByTime(20_000); // 距上一帧 20s，仍存活
+      vi.advanceTimersByTime(10_000); // 距上一帧 30s，超时结算（保留已到条目）
+      const result = await pending;
+      expect(result.failed).toBe(true);
+      expect(result.entries.map((item) => item.path)).toEqual(["/a", "/b"]);
+      expect(result.partialCount).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops the idle timer once abandoned (stale settlement owns the wait)", async () => {
+    vi.useFakeTimers();
+    try {
+      const browse = createListStreamBrowse({});
+      browse.register({ requestId: "r1" });
+      const pending = browse.result;
+      browse.abandon();
+      const result = await pending;
+      expect(result.stale).toBe(true);
+      expect(result.failed).toBe(false);
+      vi.advanceTimersByTime(60_000); // 计时器已撤：不二次结算、无未处理拒绝
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

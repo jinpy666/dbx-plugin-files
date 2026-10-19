@@ -195,3 +195,34 @@ describe("listStream events-before-ack race (预缓冲重放)", () => {
     expect(leftTable().props("loading")).toBe(false);
   });
 });
+
+// 断链自愈（transport watch）：ack 已登记但 chunk/done 帧因链路死亡永不到达
+// 时，看守 onOutage 弃置在途会话——loading 复位 + listingInterrupted 横幅
+// （此前 result 永不结算，目录永久卡在刷新骨架屏，只能刷新浏览器）。
+describe("listStream transport outage abandons the in-flight stream", () => {
+  it("clears loading and shows the interrupted banner when the watch cuts the stall", async () => {
+    window.history.replaceState(null, "", "/?mock=1&locale=en&delay=0&streamInterval=60000");
+    mock = installMockHost() as NonNullable<ReturnType<typeof installMockHost>>;
+    // 桥开关：置 dead 后 invoke 永不落定（模拟断链：请求收不到任何应答）。
+    const bridged = window.dbxPlugin!;
+    const originalInvoke = bridged.invoke.bind(bridged);
+    let dead = false;
+    window.dbxPlugin = {
+      ...bridged,
+      invoke: (method: string, params: unknown, options: unknown) => (dead ? new Promise(() => undefined) : originalInvoke(method as never, params, options as never)),
+    } as typeof window.dbxPlugin;
+    wrapper = mount(App, { attachTo: document.body, global: { directives: { tip: vTip } } });
+
+    // 初始导航 ack 已登记（mock ack 即回）、chunk 60s 后才来：post-ack 悬挂态。
+    await flush(400);
+    expect(leftTable().props("loading")).toBe(true);
+
+    // 桥死 → 5s 探测节拍 + 8s 探测超时 → 看守判链（留恢复探测余量）。
+    dead = true;
+    await flush(15_000);
+
+    // onOutage 弃置在途会话：loading 复位（不再永久骨架屏）+ 中断横幅。
+    expect(leftTable().props("loading")).toBe(false);
+    expect(wrapper!.text()).toContain(workbenchMessage("en", "listingInterrupted"));
+  });
+});

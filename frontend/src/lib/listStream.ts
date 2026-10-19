@@ -66,6 +66,16 @@ export class ListStreamPartialError extends Error {
 }
 
 /**
+ * 帧空闲上限（断链自愈专项）：ack 登记后 chunks/done 帧长时间不至（浏览器↔宿主
+ * 断链把事件帧丢在半路，失败帧同样到不了）会让 result 永不结算——loading/流式
+ * 标志永久悬挂，后续恢复路径还会因「在途导航」让位而空转（用户实测：断网恢复
+ * 后目录卡死在刷新，只能刷新浏览器）。空闲超时把该悬挂收敛为一次失败结算，
+ * 等待方落到既有失败路径；下载侧 waitForFrame 的 30s/帧是同款边界。每次有效
+ * 帧重置窗口；abandon/终态即撤表。
+ */
+export const STREAM_IDLE_TIMEOUT_MS = 30_000;
+
+/**
  * 单次浏览的流式会话（一次 files/listStream 请求对应一个实例）。
  * `result` 在 done 帧 / 失败帧 / abandon 三种情况下都会结算，等待方不会悬挂。
  */
@@ -79,10 +89,28 @@ export function createListStreamBrowse(handlers: ListStreamBrowseHandlers & { de
   let accumulated: FileEntry[] = []; // chunk 累加器（到达顺序）
   let terminal = false; // 已进入终态（done/失败帧/abandon），后续帧一律拒绝
   let abandoned = false; // 已被新导航弃置
+  let idleTimer: ReturnType<typeof setTimeout> | undefined; // 帧空闲看门狗（ack 后才武装）
   let settle!: (result: ListStreamResult) => void;
   const result = new Promise<ListStreamResult>((resolve) => {
     settle = resolve;
   });
+
+  function clearIdle() {
+    if (idleTimer !== undefined) {
+      clearTimeout(idleTimer);
+      idleTimer = undefined;
+    }
+  }
+
+  function armIdle() {
+    clearIdle();
+    idleTimer = setTimeout(() => {
+      if (terminal || abandoned || !ack) return;
+      // 断链丢帧的收敛出口：按「已加载 N 项后失败」语义结算（失败帧同构）。
+      terminal = true;
+      settle({ entries: accumulated, failed: true, errorMessage: "listing stream stalled (no frames)", partialCount: accumulated.length });
+    }, STREAM_IDLE_TIMEOUT_MS);
+  }
 
   return {
     /** 终态 promise：done / 失败帧 / abandon 都会结算（abandon 带 stale 标记）。 */
@@ -109,15 +137,18 @@ export function createListStreamBrowse(handlers: ListStreamBrowseHandlers & { de
       if (chunk.requestId !== ack.requestId) return false;
       if (!Number.isFinite(chunk.seq) || chunk.seq <= lastSeq) return false;
       lastSeq = chunk.seq;
+      armIdle();
       accumulated = accumulated.concat(decorate(chunk.entries ?? [], ack.displayCharset ?? ""));
       if (chunk.error) {
         // 失败帧：保留已到条目 + partialCount（失败帧 entries 恒空，不计入）。
         terminal = true;
+        clearIdle();
         settle({ entries: accumulated, failed: true, errorMessage: chunk.error, partialCount: chunk.partialCount ?? accumulated.length });
         return true;
       }
       if (chunk.done) {
         terminal = true;
+        clearIdle();
         settle({ entries: accumulated, failed: false });
         return true;
       }
@@ -131,6 +162,7 @@ export function createListStreamBrowse(handlers: ListStreamBrowseHandlers & { de
     register(value: ListStreamAck): boolean {
       if (ack || abandoned) return false;
       ack = value;
+      armIdle();
       onAck?.(value);
       return true;
     },
@@ -141,6 +173,7 @@ export function createListStreamBrowse(handlers: ListStreamBrowseHandlers & { de
     abandon(): string | null {
       if (abandoned) return null;
       abandoned = true;
+      clearIdle();
       if (!terminal) {
         terminal = true;
         settle({ entries: accumulated, failed: false, stale: true });
