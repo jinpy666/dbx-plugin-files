@@ -797,6 +797,11 @@ fn rc_error_body(error: &RcError) -> Option<String> {
     }
 }
 
+/// "Unknown job" shapes: rclone 1.75.1 answers `job not found` (rc 500);
+/// 1.75.2+ rejects a jobid that no longer fits rc's int64 param decode with
+/// `key "jobid" … overflows int64` (rc 400, local PATH-rclone regression
+/// catch). Both mean the jobid cannot name a live job — a stale/expired
+/// handle must read as None, not a permanent error.
 fn is_job_not_found(error: &RcError) -> bool {
     let body = match error {
         RcError::Http { body, .. } => body.as_str(),
@@ -806,10 +811,31 @@ fn is_job_not_found(error: &RcError) -> bool {
     let parsed = serde_json::from_str::<Value>(body)
         .ok()
         .and_then(|value| value.get("error").and_then(Value::as_str).map(str::to_string));
+    let is_unknown = |text: &str| text.contains("job not found") || text.contains("overflows int64");
     match parsed {
-        Some(message) => message.contains("job not found"),
-        None => body.contains("job not found"),
+        Some(message) => is_unknown(&message),
+        None => is_unknown(body),
     }
+}
+
+/// rclone 1.75.2+ 的溢出形状（本地 PATH rclone 回归捕获）与 1.75.1 的
+/// `job not found` 同读作未知任务；传输/网络层错误不误判。
+#[test]
+fn ghost_job_recognizes_int64_overflow_shape() {
+    let overflow = RcError::Http {
+        status: 400,
+        body: "{\n\t\"error\": \"key \\\"jobid\\\" (9.223372036854776e+18) overflows int64 \",\n\t\"input\": {\n\t\t\"jobid\": 9223372036854776000\n\t},\n\t\"path\": \"job/status\",\n\t\"status\": 400\n}\n"
+            .to_string(),
+    };
+    assert!(is_job_not_found(&overflow), "1.75.2 overflow 400 must read as unknown job");
+    let classic = RcError::Http {
+        status: 500,
+        body: "{\"error\": \"job not found\", \"path\": \"job/status\", \"status\": 500}\n"
+            .to_string(),
+    };
+    assert!(is_job_not_found(&classic), "1.75.1 job not found stays recognized");
+    let transport = RcError::Rclone { message: "rc transport error".to_string() };
+    assert!(!is_job_not_found(&transport), "transport errors are not unknown-job");
 }
 
 #[cfg(test)]
