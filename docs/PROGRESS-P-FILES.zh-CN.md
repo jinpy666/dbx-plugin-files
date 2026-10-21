@@ -2464,3 +2464,53 @@ OSS 上做（本环境无 OSS 凭据，MinIO 遮蔽冲突前缀无法构造双�
 `shared/release/validate_manifests.py files --tag files-v0.1.90` PASS；
 `connection-forms/verify.mjs`（173 组合）PASS；`cargo test --locked`
 （见提交时点结果）；前端 typecheck/test/build 待发布 CI 复核。
+
+## Issue 跟进：#89 S3 桶内前缀权限 + #85 本地复现验证（2026-10-21）
+
+### #89 支持桶内指定目录权限的访问（jzChia，10-21）
+
+**诉求**：AK/SK 仅授权 `demo-bucket/demo/*` 前缀（S3 policy 限定 ListBucket
+前缀条件 + 对象 ARN 限 `demo/*`），希望插件支持桶内指定目录的访问。
+
+**调查结论（rclone lsf 实测四种组合）**：
+- 根=桶列表（bucket 留空）→ ListAllMyBuckets，限定凭据被拒（MinIO 宽松
+  放行，AWS/阿里云系直接 403）；
+- 只填 Bucket → 列桶根无前缀 → **403 AccessDenied**（用户踩中的形态）；
+- Bucket + Root path=前缀 / Bucket 填 `bucket/prefix` 复合写法 → 完全可用
+  （`composed_root` 的 `/{bucket}{root}` 折叠天然覆盖，#53 既有能力）。
+
+即能力已支持，缺口在**配置体验**：限定凭据在默认配置上连接测试必 403，
+且报错无任何指向可用配置的指引。
+
+**修复（本分支）**：
+- `registry.rs` 新增 `prefix_denial_hint()`：连接测试的 stat 与桶列表探测
+  两个出口对拒绝类错误（错误文本含 `AccessDenied` 或 `http 403`；rc 会把
+  底层 S3 403 包成 `rc http 500`，live MinIO 实证，不能只看 status）在
+  bucket 根型后端追加指引——保留 Bucket、把前缀填入 Root path，或直接写
+  `bucket/prefix` 复合形式。
+- manifest bucket 字段：placeholder 改 `my-bucket or my-bucket/prefix`，
+  description 追加前缀限定说明，**七语 localizations 同步**（en/zh-CN/
+  zh-TW/es/it/ja/pt-BR）。
+
+**验证**：
+- 新增离线单测（两种 403 形状 + 非 bucket 根型/非拒绝类不追加）与 live
+  端到端测试 `live_test_connection_prefix_scoped_s3_credentials`（MinIO
+  限定前缀 IAM 用户 `limited`：bucket-only 报错带指引，bucket+root 与
+  复合写法连接测试通过；env 缺省自动 SKIP）。
+- `cargo test` 593/594：唯一失败 `sync.rs::query_status_tracks_lifecycle_
+  and_expiry`（ghost jobid 被 rc 判 int64 溢出 400）在未改动的 main 检出
+  同样失败，系本机 rclone 版本的 rc 报错形状差异，预存问题、与本改动无关。
+- `connection-forms/verify.mjs`（173 组合）PASS；manifest JSON 合法。
+
+### #85 sftp 连接不上——本地复现验证（hxin666 装 beta.1 仍失败）
+
+owner 在 issue 回复要求本地 AI 分析复现。执行：毒化代理环境
+（`http_proxy`/`https_proxy`/`all_proxy` 均指向不可达 `127.0.0.1:1`，大小写
+双语法）跑本机已装 0.1.91 sidecar 的 smoke（fs + memory + sftp-native 真实
+SFTP 远端段）→ **PASS 105 / SKIP 5 / FAIL 0**。回环 no_proxy 修复在 0.1.91
+版本线上端到端成立，引擎侧无可再修的本地路径。
+
+剩余动作：等用户装 ≥0.1.91 复测并回报新错误文本（0.1.91 起错误带
+`last attempt` 底层原因链，可区分防火墙/LSP 拦截与代理残留）；若回报仍失败
+再按底层原因跟进。用户「设 NO_PROXY 后 DBX 无法启动」是宿主启动层问题
+（与插件引擎无关），如复现需单独排查。
