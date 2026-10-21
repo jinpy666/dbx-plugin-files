@@ -1043,13 +1043,37 @@ mod tests {
         let server = tokio::spawn(async move {
             let mut request_line = String::new();
             if let Ok((mut socket, _)) = listener.accept().await {
-                let mut buffer = [0u8; 8192];
-                // One read suffices: the request head (query string included)
-                // sits in the first segment for this tiny body.
-                if let Ok(n) = tokio::io::AsyncReadExt::read(&mut socket, &mut buffer).await {
-                    let head = String::from_utf8_lossy(&buffer[..n]).to_string();
-                    request_line = head.lines().next().unwrap_or_default().to_string();
+                // 读完整个请求（头 + 按 Content-Length 的体）再断言：reqwest
+                // 偶发把头与体拆成两次 TCP 写、内核分段不定，单次 read 会
+                // 拿到残缺请求行（flaky 实测 3 跑 1 挂）。
+                let mut buffer: Vec<u8> = Vec::new();
+                let mut chunk = [0u8; 4096];
+                loop {
+                    let read = tokio::io::AsyncReadExt::read(&mut socket, &mut chunk).await;
+                    let Ok(n) = read else { break };
+                    if n == 0 {
+                        break;
+                    }
+                    buffer.extend_from_slice(&chunk[..n]);
+                    let text = String::from_utf8_lossy(&buffer);
+                    let Some(header_end) = text.find("\r\n\r\n") else {
+                        continue;
+                    };
+                    let content_length = text
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(str::trim)
+                                .and_then(|value| value.parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    if buffer.len() >= header_end + 4 + content_length {
+                        break;
+                    }
                 }
+                let head = String::from_utf8_lossy(&buffer).to_string();
+                request_line = head.lines().next().unwrap_or_default().to_string();
                 let _ = tokio::io::AsyncWriteExt::write_all(
                     &mut socket,
                     b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
