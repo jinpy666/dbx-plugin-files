@@ -809,8 +809,13 @@ mod tests {
             error.contains("did not answer within"),
             "timeout banner missing: {error}"
         );
+        // Windows runner 对 127.0.0.1:1 的 SYN 会被防火墙静默丢弃（无
+        // RST），尝试以 attempt timeout 收场（0.1.92-beta.3 起 CI 实证）；
+        // Unix 是即时 connection refused。两种形状都证明 source 链已展开
+        // 到最底层——断言目标是"带出了深层原因"，不是特定 OS 错误码。
+        let detail = error.to_lowercase();
         assert!(
-            error.to_lowercase().contains("refused"),
+            detail.contains("refused") || detail.contains("timed out"),
             "deepest source cause missing: {error}"
         );
     }
