@@ -792,7 +792,12 @@ pub async fn test_connection(
                      the APPID suffix for Tencent COS buckets)"
                 )
             }
-            _ => error.to_string(),
+            // Issue #89：限定前缀权限的凭据 stat 桶根就 403（目录 stat 内部
+            // 即一次 ListObjects，live MinIO 实证），错误从这里出去。
+            _ => {
+                let hint = prefix_denial_hint(&error, &backend_type);
+                format!("{error}{hint}")
+            }
         }
     })?;
     cleanup.map_err(|error| format!("connection test passed but cleanup failed: {error}"))?;
@@ -812,11 +817,39 @@ pub async fn test_connection(
         }
     }
     if let Some(Err(error)) = bucket_listing {
-        return Err(format!(
-            "connection test reached the remote but the bucket listing failed: {error}"
-        ));
+        return Err(bucket_listing_error(&error, &backend_type));
     }
     Ok(())
+}
+
+/// Issue #89：限定前缀权限的 AK/SK（仅授权 `bucket/prefix/*`）在「只填
+/// Bucket 的连接」上 stat 桶根、在「根=桶列表的连接」上列桶都会被 403，
+/// 而可用配置（Bucket + Root path 前缀、或复合 `bucket/prefix`）本身是
+/// 支持的。不带指引的拒绝会被读成"服务坏了"而不是"把前缀填进 Root path"。
+///
+/// rc 会把底层 S3 的 403 包成 `rc http 500`（AccessDenied 与 StatusCode:
+/// 403 只出现在错误体里，live MinIO 实证），所以按错误文本识别拒绝，不能
+/// 只看 RcError::Http 的 status（直接透传 403 时 Display 是 "rc http 403"，
+/// 一并覆盖）。
+fn prefix_denial_hint(error: &RcError, backend_type: &str) -> &'static str {
+    let text = error.to_string();
+    if (text.contains("AccessDenied") || text.contains("http 403"))
+        && super::is_bucket_rooted(backend_type)
+    {
+        " (if the credentials are scoped to an in-bucket prefix, keep the Bucket \
+         field and put the prefix in the Root path field — or write \
+         \"bucket/prefix\" directly as the Bucket)"
+    } else {
+        ""
+    }
+}
+
+/// 桶列表探测（namespace probe）失败的错误文案：拒绝类带 #89 指引。
+fn bucket_listing_error(error: &RcError, backend_type: &str) -> String {
+    let hint = prefix_denial_hint(error, backend_type);
+    format!(
+        "connection test reached the remote but the bucket listing failed: {error}{hint}"
+    )
 }
 
 /// issue #81 探活决策（纯函数便于单测）：bucket 根型后端且 root 未折叠
@@ -1686,6 +1719,105 @@ mod tests {
                 "{backend} is path-rooted: no bucket listing probe"
             );
         }
+    }
+
+    /// issue #89：桶列表探测失败的错误文案。仅 bucket 根型后端的 403 追加
+    /// 前缀权限指引（限定前缀的 AK/SK 死在 probe 上，必须指向可用配置）；
+    /// 非 403、非 bucket 根型后端保持 rclone 原文透传。
+    /// issue #89：拒绝类错误的前缀权限指引。仅 bucket 根型后端的拒绝
+    /// （rc 500 包裹与直接 http 403 两种形状）追加指引；非 bucket 根型、
+    /// 非拒绝类保持原文。stat 桶根（B 场景实际出口）与 probe 列根两个
+    /// 出口共用同一判定。
+    #[test]
+    fn bucket_listing_error_hints_prefix_scoped_credentials_on_403() {
+        // rc 500 包裹形状（live MinIO 实证：对底层 S3 403 返回 rc http 500，
+        // AccessDenied 只在错误体里）。
+        let wrapped = RcError::Http {
+            status: 500,
+            body: "operation error S3: ListObjects, https response error StatusCode: 403, \
+                   api error AccessDenied: Access Denied."
+                .into(),
+        };
+        let hinted = prefix_denial_hint(&wrapped, "s3");
+        assert!(hinted.contains("Root path"), "{hinted}");
+        assert!(hinted.contains("bucket/prefix"), "{hinted}");
+        // 直接透传形状：RcError::Http 的 Display 是 "rc http 403"。
+        let direct = RcError::Http {
+            status: 403,
+            body: "api error AccessDenied: Access Denied.".into(),
+        };
+        assert!(
+            prefix_denial_hint(&direct, "s3").contains("Root path"),
+            "direct 403 must hint too"
+        );
+        // 非 bucket 根型后端（sftp 等）不会走到 bucket 语义，兜底也不加指引。
+        assert!(
+            prefix_denial_hint(&direct, "sftp").is_empty(),
+            "path-rooted backend stays plain"
+        );
+        // 非拒绝类（服务端错误）不追加指引。
+        let server_error = RcError::Http {
+            status: 500,
+            body: "internal".into(),
+        };
+        assert!(prefix_denial_hint(&server_error, "s3").is_empty(),);
+        // probe 出口文案：拒绝带指引，原文保留。
+        let probed = bucket_listing_error(&wrapped, "s3");
+        assert!(probed.contains("bucket listing failed"), "{probed}");
+        assert!(probed.contains("Root path"), "{probed}");
+    }
+
+    /// Live issue #89 end to end against a prefix-scoped IAM user: the
+    /// bucket-only connection (probe hits the unscoped bucket root) fails
+    /// with the actionable hint, while the bucket+prefix and composed
+    /// `bucket/prefix` connections pass the test. Needs a MinIO-style
+    /// endpoint with a prefix-limited key pair; skipped unless
+    /// `DBX_FILES_TEST_S3_ENDPOINT` / `_ACCESS_KEY` / `_SECRET` /
+    /// `_BUCKET` / `_PREFIX` are all set (container smoke sets them).
+    #[tokio::test]
+    async fn live_test_connection_prefix_scoped_s3_credentials() {
+        let (Some((handle, client)), Some(endpoint), Some(access), Some(secret), Some(bucket), Some(prefix)) = (
+            rcd_client().await,
+            std::env::var("DBX_FILES_TEST_S3_ENDPOINT").ok(),
+            std::env::var("DBX_FILES_TEST_S3_ACCESS_KEY").ok(),
+            std::env::var("DBX_FILES_TEST_S3_SECRET").ok(),
+            std::env::var("DBX_FILES_TEST_S3_BUCKET").ok(),
+            std::env::var("DBX_FILES_TEST_S3_PREFIX").ok(),
+        ) else {
+            eprintln!("skipping: no rclone binary or prefix-scoped S3 fixture env");
+            return;
+        };
+        let _ = handle;
+        let mut connection = fixture("s3");
+        connection.endpoint = endpoint;
+        connection.access_key_id = access;
+        connection.secret_access_key = secret;
+
+        let mut bucket_only = connection.clone();
+        bucket_only.id = "S3Prefix01".into();
+        bucket_only.bucket = bucket.clone();
+        let error = test_connection(&client, &bucket_only)
+            .await
+            .expect_err("bucket-only connection must fail for prefix-scoped keys");
+        assert!(
+            error.contains("Root path") && error.contains("bucket/prefix"),
+            "403 must carry the actionable hint: {error}"
+        );
+
+        let mut bucket_with_prefix = connection.clone();
+        bucket_with_prefix.id = "S3Prefix02".into();
+        bucket_with_prefix.bucket = bucket.clone();
+        bucket_with_prefix.root = format!("/{prefix}");
+        test_connection(&client, &bucket_with_prefix)
+            .await
+            .expect("bucket + Root path prefix passes for prefix-scoped keys");
+
+        let mut composed = connection;
+        composed.id = "S3Prefix03".into();
+        composed.bucket = format!("{bucket}/{prefix}");
+        test_connection(&client, &composed)
+            .await
+            .expect("composed bucket/prefix passes for prefix-scoped keys");
     }
 
     /// A blank connection for `protocol`; tests flip individual fields.

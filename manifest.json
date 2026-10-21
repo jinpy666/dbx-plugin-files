@@ -748,8 +748,8 @@
           "type": "text",
           "binding": "config",
           "default": "",
-          "placeholder": "my-bucket",
-          "description": "Bucket name. Required for Google Cloud Storage. For supported S3-compatible protocols, leave empty to list all buckets at the connection root.",
+          "placeholder": "my-bucket or my-bucket/prefix",
+          "description": "Bucket name. Required for Google Cloud Storage. For supported S3-compatible protocols, leave empty to list all buckets at the connection root. To scope the connection to an in-bucket prefix (e.g. credentials authorized for one sub-path only), write \"bucket/prefix\" here or keep the bucket and put the prefix in the Root path field.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
@@ -1575,8 +1575,8 @@
             },
             "bucket": {
               "label": "存储桶",
-              "placeholder": "my-bucket",
-              "description": "存储桶名称；Google Cloud Storage 必填。支持的 S3 兼容协议留空则在连接根目录列出全部存储桶。"
+              "placeholder": "my-bucket or my-bucket/prefix",
+              "description": "存储桶名称；Google Cloud Storage 必填。支持的 S3 兼容协议留空则在连接根目录列出全部存储桶。若需将连接限定到桶内前缀（例如凭据仅授权某个子路径），在此填写\u201c存储桶/前缀\u201d，或保留桶名并把前缀填入 Root path 字段。"
             },
             "endpoint": {
               "label": "端点",
@@ -1874,8 +1874,8 @@
             },
             "bucket": {
               "label": "儲存桶",
-              "placeholder": "my-bucket",
-              "description": "儲存桶名稱；Google Cloud Storage 必填。支援的 S3 相容協定留空則在連線根目錄列出全部儲存桶。"
+              "placeholder": "my-bucket or my-bucket/prefix",
+              "description": "儲存桶名稱；Google Cloud Storage 必填。支援的 S3 相容協定留空則在連線根目錄列出全部儲存桶。若需將連線限定到儲存桶內前綴（例如憑證僅授權某個子路徑），在此填寫\u201c儲存桶/前綴\u201d，或保留儲存桶名稱並把前綴填入 Root path 欄位。"
             },
             "endpoint": {
               "label": "端點",
@@ -2173,8 +2173,8 @@
             },
             "bucket": {
               "label": "Bucket",
-              "placeholder": "my-bucket",
-              "description": "Bucket name. Required for Google Cloud Storage. For supported S3-compatible protocols, leave empty to list all buckets at the connection root."
+              "placeholder": "my-bucket or my-bucket/prefix",
+              "description": "Bucket name. Required for Google Cloud Storage. For supported S3-compatible protocols, leave empty to list all buckets at the connection root. To scope the connection to an in-bucket prefix (e.g. credentials authorized for one sub-path only), write \"bucket/prefix\" here or keep the bucket and put the prefix in the Root path field."
             },
             "endpoint": {
               "label": "Endpoint",
@@ -2472,8 +2472,8 @@
             },
             "bucket": {
               "label": "Bucket",
-              "placeholder": "my-bucket",
-              "description": "Nombre del bucket; es obligatorio para Google Cloud Storage. En protocolos S3 compatibles admitidos, déjelo vacío para listar todos los buckets en la raíz de la conexión."
+              "placeholder": "my-bucket or my-bucket/prefix",
+              "description": "Nombre del bucket; es obligatorio para Google Cloud Storage. En protocolos S3 compatibles admitidos, déjelo vacío para listar todos los buckets en la raíz de la conexión. Para limitar la conexión a un prefijo dentro del bucket (p. ej., credenciales autorizadas solo para una subruta), escriba \"bucket/prefijo\" aquí o conserve el bucket y ponga el prefijo en el campo Root path."
             },
             "endpoint": {
               "label": "Endpoint",
@@ -2771,8 +2771,8 @@
             },
             "bucket": {
               "label": "Bucket",
-              "placeholder": "my-bucket",
-              "description": "Nome del bucket; obbligatorio per Google Cloud Storage. Nei protocolli S3 compatibili supportati, lascialo vuoto per elencare tutti i bucket nella radice della connessione."
+              "placeholder": "my-bucket or my-bucket/prefix",
+              "description": "Nome del bucket; obbligatorio per Google Cloud Storage. Nei protocolli S3 compatibili supportati, lascialo vuoto per elencare tutti i bucket nella radice della connessione. Per limitare la connessione a un prefisso nel bucket (ad es. credenziali autorizzate solo per un sotto-percorso), scrivi qui \"bucket/prefisso\" oppure mantieni il bucket e inserisci il prefisso nel campo Root path."
             },
             "endpoint": {
               "label": "Endpoint",
@@ -3070,8 +3070,8 @@
             },
             "bucket": {
               "label": "バケット",
-              "placeholder": "my-bucket",
-              "description": "バケット名。Google Cloud Storage では必須です。対応する S3 互換プロトコルでは空欄にすると接続ルートにすべてのバケットを一覧します。"
+              "placeholder": "my-bucket or my-bucket/prefix",
+              "description": "バケット名。Google Cloud Storage では必須です。対応する S3 互換プロトコルでは空欄にすると接続ルートにすべてのバケットを一覧します。接続をバケット内のプレフィックスに限定する場合（例：特定サブパスのみに許可された認証情報）は、ここに「バケット/プレフィックス」を入力するか、バケットを入力したまま Root path フィールドにプレフィックスを入力してください。"
             },
             "endpoint": {
               "label": "エンドポイント",
@@ -3369,8 +3369,8 @@
             },
             "bucket": {
               "label": "Bucket",
-              "placeholder": "my-bucket",
-              "description": "Nome do bucket; obrigatório para o Google Cloud Storage. Nos protocolos S3 compatíveis suportados, deixe vazio para listar todos os buckets na raiz da conexão."
+              "placeholder": "my-bucket or my-bucket/prefix",
+              "description": "Nome do bucket; obrigatório para o Google Cloud Storage. Nos protocolos S3 compatíveis suportados, deixe vazio para listar todos os buckets na raiz da conexão. Para limitar a conexão a um prefixo dentro do bucket (ex.: credenciais autorizadas apenas para um subcaminho), escreva \"bucket/prefixo\" aqui ou mantenha o bucket e coloque o prefixo no campo Root path."
             },
             "endpoint": {
               "label": "Endpoint",
