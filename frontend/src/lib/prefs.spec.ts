@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadDownloadDir, loadFavorites, loadOpenAppPrefs, loadUiPrefs, persistDownloadDir, persistFavorites, persistOpenAppPrefs, saveUiPrefs, resolveOpenApp, DOWNLOAD_DIR_KEY, FAVORITES_KEY, OPEN_APP_KEY, UI_PREFS_KEY, type OpenAppPrefs, type UiPrefs } from "./prefs";
+import { clampSidebarWidth, loadDownloadDir, loadFavorites, loadOpenAppPrefs, loadUiPrefs, persistDownloadDir, persistFavorites, persistOpenAppPrefs, saveUiPrefs, resolveOpenApp, DEFAULT_SIDEBAR_WIDTH, DOWNLOAD_DIR_KEY, FAVORITES_KEY, OPEN_APP_KEY, UI_PREFS_KEY, type OpenAppPrefs, type UiPrefs } from "./prefs";
 
 function brokenStorage(): Storage {
   const unavailable = () => {
@@ -75,6 +75,32 @@ describe("ui prefs", () => {
     const storage = memoryStorage({ [UI_PREFS_KEY]: '{"dualPane":true,"sort":{"column":"name","direction":"asc"}}' });
     const loaded = loadUiPrefs(storage);
     expect("dualPane" in loaded).toBe(false);
+  });
+});
+
+describe("sidebar width preference (issue #90 超长目录名撑开分栏)", () => {
+  it("round-trips a stored width through storage", () => {
+    const storage = memoryStorage({ [UI_PREFS_KEY]: JSON.stringify({ ...prefs, sidebarWidth: 320 }) });
+    expect(loadUiPrefs(storage).sidebarWidth).toBe(320);
+  });
+
+  it("stays unset when missing (default handled by the consumer)", () => {
+    expect(loadUiPrefs(memoryStorage()).sidebarWidth).toBeUndefined();
+    expect(loadUiPrefs(memoryStorage({ [UI_PREFS_KEY]: "{broken" })).sidebarWidth).toBeUndefined();
+  });
+
+  it("clamps out-of-range widths and falls back for non-numeric values", () => {
+    const below = memoryStorage({ [UI_PREFS_KEY]: JSON.stringify({ ...prefs, sidebarWidth: 10 }) });
+    const above = memoryStorage({ [UI_PREFS_KEY]: JSON.stringify({ ...prefs, sidebarWidth: 9999 }) });
+    const junk = memoryStorage({ [UI_PREFS_KEY]: JSON.stringify({ ...prefs, sidebarWidth: "wide" }) });
+    expect(loadUiPrefs(below).sidebarWidth).toBe(120);
+    expect(loadUiPrefs(above).sidebarWidth).toBe(480);
+    expect(loadUiPrefs(junk).sidebarWidth).toBe(DEFAULT_SIDEBAR_WIDTH);
+  });
+
+  it("clamps non-finite input to the default width", () => {
+    expect(clampSidebarWidth(Number.NaN)).toBe(DEFAULT_SIDEBAR_WIDTH);
+    expect(clampSidebarWidth(200.6)).toBe(201);
   });
 });
 

@@ -446,8 +446,12 @@ body.wb-col-resizing { cursor: col-resize; user-select: none; -webkit-user-selec
 .wb-pane-header .wb-breadcrumbs { flex: 1 1 auto; min-width: 0; overflow: hidden; }
 .wb-pane-header .wb-path-toolbar { flex: 1 1 auto; min-width: 0; }
 
-/* 侧栏导航（P-FILES）：tree（目录树）/ quick（快捷目录）双 tab + 收起窄条。 */
-.wb-side-panel { display: flex; flex: 0 0 148px; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); background: color-mix(in srgb, var(--muted) 28%, var(--background)); }
+/* 侧栏导航（P-FILES）：tree（目录树）/ quick（快捷目录）双 tab + 收起窄条。
+   min-width: 0（issue #90）：行名 white-space: nowrap，缺省的 min-width:auto
+   会让面板的自动最小尺寸被超长目录名的 min-content 顶起，面板被撑到内容宽、
+   同栏文件表挤没；归零后宽度只由 flex-basis（默认 148 / 用户拖拽偏好）决定。
+   position: relative 供右缘拖宽手柄（wb-side-resize）定位。 */
+.wb-side-panel { position: relative; display: flex; flex: 0 0 148px; min-width: 0; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); background: color-mix(in srgb, var(--muted) 28%, var(--background)); }
 .wb-side-tabs { display: flex; align-items: center; gap: 2px; border-bottom: 1px solid var(--border); padding: 4px 5px; }
 .wb-side-tabs button { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border: 0; border-radius: 4px; background: transparent; cursor: pointer; color: var(--muted-foreground); padding: 0; }
 .wb-side-tabs button svg { width: 13px; height: 13px; }
@@ -529,6 +533,11 @@ body.wb-col-resizing { cursor: col-resize; user-select: none; -webkit-user-selec
 .wb-tree-spinner { width: 9px; height: 9px; border: 1.5px solid var(--muted-foreground); border-top-color: transparent; border-radius: 50%; animation: wb-rotate 0.7s linear infinite; }
 /* 收起态窄条：仅保留展开按钮。 */
 .wb-side-rail { display: flex; flex-direction: column; align-items: center; flex: 0 0 26px; padding-top: 6px; border-right: 1px solid var(--border); background: color-mix(in srgb, var(--muted) 28%, var(--background)); }
+/* 侧栏拖宽手柄（issue #90「分栏没法调整」）：右缘 6px 热区（视觉同列宽拖拽
+   wb-col-resize），悬停/拖拽中高亮；拖拽期间锁定光标与文本选择。 */
+.wb-side-resize { position: absolute; top: 0; bottom: 0; right: -4px; z-index: 6; width: 6px; cursor: col-resize; touch-action: none; border-radius: 2px; }
+.wb-side-resize:hover, .wb-side-resize.is-resizing { background: color-mix(in srgb, var(--primary) 45%, transparent); }
+body.wb-side-resizing { cursor: col-resize; user-select: none; -webkit-user-select: none; }
 .wb-side-rail button { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border: 0; border-radius: 4px; background: transparent; cursor: pointer; color: var(--muted-foreground); padding: 0; }
 .wb-side-rail button svg { width: 13px; height: 13px; }
 .wb-side-rail button:hover { background: var(--accent); color: var(--foreground); }
