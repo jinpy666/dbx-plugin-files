@@ -171,3 +171,75 @@ describe("SideNavPanel tree keyboard access (P2-9)", () => {
     expect(toggles).toBe(1);
   });
 });
+
+describe("SideNavPanel 侧栏拖宽（issue #90 分栏没法调整/超长目录名撑开）", () => {
+  // happy-dom 无需真 PointerEvent：处理器只读 clientX/button/currentTarget。
+  function pointerEvent(type: string, clientX: number): Event {
+    return new MouseEvent(type, { bubbles: true, cancelable: true, clientX });
+  }
+
+  function mountWithWidth(width: number) {
+    return mount(SideNavPanel, {
+      attachTo: document.body,
+      props: {
+        side: "left",
+        tab: "tree",
+        collapsed: false,
+        width,
+        treeRoot,
+        quickPaths: [] as QuickPath[],
+        favorites: [] as string[],
+        currentPath: "/docs",
+        t,
+      },
+    });
+  }
+
+  it("applies the width prop to the panel inline style", () => {
+    const wrapper = mountWithWidth(220);
+    const style = wrapper.find(".wb-side-panel").attributes("style");
+    // happy-dom 把 flex 简写展开为 longhand：0 0 220px → grow/shrink 0 + basis 220px。
+    expect(style).toContain("flex-basis: 220px");
+    expect(style).toContain("flex-grow: 0");
+    expect(style).toContain("flex-shrink: 0");
+    expect(style).toContain("width: 220px");
+    wrapper.unmount();
+  });
+
+  it("emits clamped update:width while dragging and commits on pointerup", () => {
+    const wrapper = mountWithWidth(148);
+    const grip = wrapper.get('[data-test="side-resize"]').element;
+    grip.dispatchEvent(pointerEvent("pointerdown", 100));
+    expect(document.body.classList.contains("wb-side-resizing")).toBe(true);
+    grip.dispatchEvent(pointerEvent("pointermove", 200));
+    const updates = wrapper.emitted("update:width");
+    expect(updates?.length).toBe(1);
+    expect(updates![0][0]).toBe(248);
+    grip.dispatchEvent(pointerEvent("pointermove", 800));
+    expect(wrapper.emitted("update:width")![1][0]).toBe(480); // 上限钳制
+    grip.dispatchEvent(pointerEvent("pointerup", 800));
+    expect(wrapper.emitted("width-commit")?.length).toBe(1);
+    expect(document.body.classList.contains("wb-side-resizing")).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("does not commit when the pointer never moved", () => {
+    const wrapper = mountWithWidth(148);
+    const grip = wrapper.get('[data-test="side-resize"]').element;
+    grip.dispatchEvent(pointerEvent("pointerdown", 100));
+    grip.dispatchEvent(pointerEvent("pointerup", 100));
+    expect(wrapper.emitted("width-commit")).toBeUndefined();
+    expect(document.body.classList.contains("wb-side-resizing")).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("double click resets to the default width and commits", () => {
+    const wrapper = mountWithWidth(360);
+    wrapper.get('[data-test="side-resize"]').trigger("dblclick");
+    const updates = wrapper.emitted("update:width");
+    expect(updates?.length).toBe(1);
+    expect(updates![0][0]).toBe(148);
+    expect(wrapper.emitted("width-commit")?.length).toBe(1);
+    wrapper.unmount();
+  });
+});

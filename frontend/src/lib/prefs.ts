@@ -30,6 +30,8 @@ export interface UiPrefs {
   auditActionFilter?: string;
   /** 文件表列自定义（列宽 + 显隐），全局生效（双栏共用）；缺省走默认列。 */
   columns?: ColumnPrefs;
+  /** 侧栏（目录树面板）宽度（px，双栏共用）；缺省走 DEFAULT_SIDEBAR_WIDTH。 */
+  sidebarWidth?: number;
 }
 
 // —— 文件表列自定义（对标 WinSCP/Finder）——————————————————————————————
@@ -53,6 +55,20 @@ export const COLUMN_MIN_WIDTH: Record<"name" | "size" | "modified", number> = {
   modified: 110,
 };
 export const COLUMN_MAX_WIDTH = 1200;
+
+// —— 侧栏宽度自定义（issue #90）———————————————————————————————————————
+// 侧栏行名 white-space: nowrap，超长目录名会把 flex: 0 0 148px 面板的自动
+// 最小尺寸（min-width: auto = min-content）顶起，面板被撑到内容宽、同栏文件
+// 表被挤没。宽度改为用户可拖 + 持久化；缺省仍 148。
+export const DEFAULT_SIDEBAR_WIDTH = 148;
+export const SIDEBAR_MIN_WIDTH = 120;
+export const SIDEBAR_MAX_WIDTH = 480;
+
+/** 侧栏宽度钳制：非法值回落默认，越界收敛到 [min, max]。 */
+export function clampSidebarWidth(width: number): number {
+  const value = Number.isFinite(width) ? Math.round(width) : DEFAULT_SIDEBAR_WIDTH;
+  return Math.min(Math.max(value, SIDEBAR_MIN_WIDTH), SIDEBAR_MAX_WIDTH);
+}
 
 /** 默认列：大小/时间沿用旧版内联宽度；名称列取常见双栏视口下的可读宽度。 */
 export const DEFAULT_COLUMN_PREFS: ColumnPrefs = {
@@ -173,6 +189,8 @@ function sanitize(raw: unknown): Partial<UiPrefs> {
   }
   // 缺失时不物化默认列（保持「未配置」语义）；消费方用 DEFAULT_COLUMN_PREFS 兜底。
   if (value.columns !== undefined) prefs.columns = sanitizeColumnPrefs(value.columns);
+  // 侧栏宽度同列宽语义：缺失不物化，消费方用 DEFAULT_SIDEBAR_WIDTH 兜底。
+  if (value.sidebarWidth !== undefined) prefs.sidebarWidth = clampSidebarWidth(Number(value.sidebarWidth));
   return prefs;
 }
 
@@ -201,6 +219,7 @@ export function loadUiPrefs(storage?: KvBacking): UiPrefs {
     settingsWin: sanitizePreviewWin(prefs.settingsWin),
     auditActionFilter: typeof prefs.auditActionFilter === "string" ? prefs.auditActionFilter : undefined,
     columns: prefs.columns,
+    sidebarWidth: prefs.sidebarWidth,
   };
 }
 

@@ -9,11 +9,14 @@ import DirTree from "./DirTree.vue";
 import type { DirTreeNode } from "../lib/dirTree";
 import { quickPathIcon, quickPathLabelKey, type QuickPath } from "../lib/quickPaths";
 import { baseName, formatBytes } from "../lib/api";
+import { DEFAULT_SIDEBAR_WIDTH, clampSidebarWidth } from "../lib/prefs";
 
 const props = defineProps<{
   side: "left" | "right";
   tab: "tree" | "quick" | "fav";
   collapsed: boolean;
+  /** 侧栏宽度（px）：App 单点持有并持久化（双栏共用一份），缺省走默认宽。 */
+  width?: number;
   treeRoot: DirTreeNode | null;
   quickPaths: QuickPath[];
   /** 当前连接已收藏的目录路径（App 按 connectionId 键入后下发）。 */
@@ -21,18 +24,69 @@ const props = defineProps<{
   currentPath: string;
   t: (key: string, values?: Record<string, string | number>) => string;
   /** 远端空间占用（files/about，60s sidecar 缓存；App 按栏传入：左栏=当前
-   * 连接，右栏=目标连接；本地 __local__ 或后端不支持时为 null 隐藏）。 */
+   *  连接，右栏=目标连接；本地 __local__ 或后端不支持时为 null 隐藏）。 */
   usage?: { used: number; total: number } | null;
 }>();
 
 const emit = defineEmits<{
   (event: "update:tab", tab: "tree" | "quick" | "fav"): void;
   (event: "update:collapsed", collapsed: boolean): void;
+  /** issue #90：拖拽过程中实时上抛（父组件驱动双栏即时同步），不落盘。 */
+  (event: "update:width", width: number): void;
+  /** 松手（或双击重置）后上抛，父组件统一落盘。 */
+  (event: "width-commit"): void;
   (event: "navigate", path: string): void;
   (event: "toggle-node", node: DirTreeNode): void;
   (event: "refresh-tree"): void;
   (event: "node-context", payload: { path: string; name: string; x: number; y: number }): void;
 }>();
+
+/** 当前生效宽度：prop 缺失（未接父组件）时按默认宽渲染。 */
+function panelWidth(): number {
+  return clampSidebarWidth(props.width ?? DEFAULT_SIDEBAR_WIDTH);
+}
+
+// —— 侧栏拖宽（issue #90 分栏没法调整）：右缘 6px 手柄，pointer capture 实时
+// 调宽（钳制上下限），松手上抛 commit 由 App 落盘；双击重置默认宽。
+// 手柄 aria-hidden 与 wb-col-resize 同口径（纯指针交互）。 ——
+const sideResizing = ref(false);
+let sideResizeState: { startX: number; startWidth: number; moved: boolean } | null = null;
+
+function onSideResizeStart(event: PointerEvent) {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  const el = event.currentTarget as HTMLElement;
+  try {
+    // Pointer Capture 让指针移出热区后 move/up 仍送达手柄；测试环境缺失时静默。
+    el.setPointerCapture?.(event.pointerId);
+  } catch {
+    /* 无 Pointer Capture 环境下同样可用 */
+  }
+  sideResizeState = { startX: event.clientX, startWidth: panelWidth(), moved: false };
+  sideResizing.value = true;
+  document.body.classList.add("wb-side-resizing");
+}
+
+function onSideResizeMove(event: PointerEvent) {
+  if (!sideResizeState) return;
+  const next = clampSidebarWidth(sideResizeState.startWidth + (event.clientX - sideResizeState.startX));
+  if (next !== sideResizeState.startWidth) sideResizeState.moved = true;
+  emit("update:width", next);
+}
+
+function onSideResizeEnd() {
+  if (!sideResizeState) return;
+  const { moved } = sideResizeState;
+  sideResizeState = null;
+  sideResizing.value = false;
+  document.body.classList.remove("wb-side-resizing");
+  if (moved) emit("width-commit");
+}
+
+function onSideResizeReset() {
+  emit("update:width", DEFAULT_SIDEBAR_WIDTH);
+  emit("width-commit");
+}
 
 function displayName(name: string): string {
   return name === "/" ? props.t("quickRoot") : name;
@@ -89,7 +143,7 @@ function onTreeKeydown(event: KeyboardEvent) {
 </script>
 
 <template>
-  <div v-if="!collapsed" class="wb-side-panel">
+  <div v-if="!collapsed" class="wb-side-panel" :style="{ flex: `0 0 ${panelWidth()}px`, width: `${panelWidth()}px` }">
     <div v-if="usage && usage.total > 0" class="wb-side-usage" :title="t('sideUsage')">
       <div class="wb-side-usage-bar"><div class="wb-side-usage-fill" :style="{ width: `${Math.min(100, Math.round((usage.used / usage.total) * 100))}%` }" /></div>
       <span class="wb-muted">{{ t("sideUsage") }}: {{ formatBytes(usage.used) }} / {{ formatBytes(usage.total) }}</span>
@@ -164,6 +218,17 @@ function onTreeKeydown(event: KeyboardEvent) {
         </button>
       </div>
     </div>
+    <span
+      class="wb-side-resize"
+      :class="{ 'is-resizing': sideResizing }"
+      data-test="side-resize"
+      aria-hidden="true"
+      @pointerdown="onSideResizeStart"
+      @pointermove="onSideResizeMove"
+      @pointerup="onSideResizeEnd"
+      @pointercancel="onSideResizeEnd"
+      @dblclick="onSideResizeReset"
+    />
   </div>
   <div v-else class="wb-side-rail">
     <button type="button" v-tip="t('sideExpand')" @click="emit('update:collapsed', false)">

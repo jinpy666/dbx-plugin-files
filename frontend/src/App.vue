@@ -109,7 +109,7 @@ import { groupByRemoteDir, resolveUploadNames, type ConflictPolicy, type UploadQ
 import { inspect, type DangerousHit } from "./lib/dangerousPaths";
 import { errorBannerOf, i18nTextOf, workbenchMessage, type ErrorBannerState, type I18nInput, type I18nText } from "./lib/i18n";
 import { isArchivePath } from "./lib/archive";
-import { PREVIEW_MIN, loadConflictPolicy, loadDownloadDir, loadFavorites, loadOpenAppPrefs, loadUiPrefs, persistConflictPolicy, persistDownloadDir, persistFavorites, persistOpenAppPrefs, saveUiPrefs, resolveOpenApp, type FavoriteMap, type OpenAppPrefs, type PreviewWin } from "./lib/prefs";
+import { DEFAULT_SIDEBAR_WIDTH, PREVIEW_MIN, clampSidebarWidth, loadConflictPolicy, loadDownloadDir, loadFavorites, loadOpenAppPrefs, loadUiPrefs, persistConflictPolicy, persistDownloadDir, persistFavorites, persistOpenAppPrefs, saveUiPrefs, resolveOpenApp, type FavoriteMap, type OpenAppPrefs, type PreviewWin } from "./lib/prefs";
 import { sortEntries, toggleSortState, type SortColumn, type SortState } from "./lib/sorting";
 import { withDisplayName } from "./lib/charset";
 import { filterEntries } from "./lib/searchFilter";
@@ -238,6 +238,8 @@ const leftSideTab = ref<"tree" | "quick" | "fav">(prefs.leftSideTab);
 const rightSideTab = ref<"tree" | "quick" | "fav">(prefs.rightSideTab);
 const leftSideCollapsed = ref(prefs.leftSideCollapsed);
 const rightSideCollapsed = ref(prefs.rightSideCollapsed);
+// issue #90：侧栏宽度双栏共用一份（与列自定义同口径），拖拽实时生效、松手落盘。
+const sidebarWidth = ref(prefs.sidebarWidth ?? DEFAULT_SIDEBAR_WIDTH);
 const rightPath = ref("/");
 const rightEntries = ref<FileEntry[]>([]);
 const rightEntriesTruncated = ref(false);
@@ -984,6 +986,13 @@ watch([sort, leftSideTab, rightSideTab, leftSideCollapsed, rightSideCollapsed], 
     rightSideCollapsed: rightSideCollapsed.value,
   });
 }, { deep: true });
+
+// issue #90：侧栏宽度只在拖拽松手/双击重置时落盘（拖拽中每次 pointermove
+// 写盘太浪费）。写盘沿用「新鲜读取 + 显式补丁」，避免覆盖并发写入的其他键。
+function persistSidebarWidth() {
+  sidebarWidth.value = clampSidebarWidth(sidebarWidth.value);
+  saveUiPrefs({ ...loadUiPrefs(), sidebarWidth: sidebarWidth.value });
+}
 
 // tree tab 可见时目录树跟随本栏目录（issue #66）：目录变化沿路径链自动展开
 // 定位；切到 tree tab / 从收起展开时同样立即定位。收起或非 tree tab 不跟随。
@@ -5337,6 +5346,7 @@ onBeforeUnmount(() => {
             side="left"
             :tab="leftSideTab"
             :collapsed="leftSideCollapsed"
+            :width="sidebarWidth"
             :tree-root="leftTree"
             :quick-paths="leftQuickPaths"
             :favorites="leftFavorites"
@@ -5345,6 +5355,8 @@ onBeforeUnmount(() => {
             :t="t"
             @update:tab="leftSideTab = $event"
             @update:collapsed="leftSideCollapsed = $event"
+            @update:width="sidebarWidth = $event"
+            @width-commit="persistSidebarWidth"
             @navigate="navigateQuickPath('left', $event)"
             @toggle-node="expandTreeNode('left', $event)"
             @refresh-tree="refreshTree('left')"
@@ -5433,6 +5445,7 @@ onBeforeUnmount(() => {
             side="right"
             :tab="rightSideTab"
             :collapsed="rightSideCollapsed"
+            :width="sidebarWidth"
             :tree-root="rightTree"
             :quick-paths="rightQuickPaths"
             :favorites="rightFavorites"
@@ -5441,6 +5454,8 @@ onBeforeUnmount(() => {
             :t="t"
             @update:tab="rightSideTab = $event"
             @update:collapsed="rightSideCollapsed = $event"
+            @update:width="sidebarWidth = $event"
+            @width-commit="persistSidebarWidth"
             @navigate="navigateQuickPath('right', $event)"
             @toggle-node="expandTreeNode('right', $event)"
             @refresh-tree="refreshTree('right')"
