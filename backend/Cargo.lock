@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "dbx-plugin-files"
-version = "0.1.92-beta.4"
+version = "0.1.92-beta.5"
 dependencies = [
  "base64 0.23.1",
  "chrono",
