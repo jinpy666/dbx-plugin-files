@@ -4194,9 +4194,14 @@ function openChannelParams(resolved: ResolvedEditor): Record<string, string> {
 /** 子菜单/关联/默认统一入口：解析编辑器 → files/remote-edit/open（ask 策略
  * 随配置下发）。open RPC 立即返回会话，拉取/启动/回传进度经
  * files/remote-edit/state 事件回报（见 handleEvent）。 */
-async function openInExternalEditor(entry: FileEntry, side: PaneSide, override?: ResolvedEditor) {
-  // 目标连接在打开时固化（双栏下用右键所在栏的连接）。
-  const targetConnectionId = sideConnectionId(side) ?? connectionId.value;
+async function openInExternalEditor(
+  entry: FileEntry,
+  side: PaneSide,
+  override?: ResolvedEditor,
+  connectionIdOverride?: string,
+) {
+  // 目标连接在打开时固化（双栏下用右键所在栏的连接；预览用其打开时快照）。
+  const targetConnectionId = connectionIdOverride ?? sideConnectionId(side) ?? connectionId.value;
   contextMenu.value = undefined;
   try {
     await ensureExternalEditors();
@@ -4225,6 +4230,22 @@ function openWithCustomEntry(entry: FileEntry, side: PaneSide, editor: CustomEdi
   void openInExternalEditor(entry, side, { kind: "custom", editor });
 }
 
+/** 预览弹窗只有路径：构造最小条目，复用右键「打开方式」同一条 remote-edit 链路；
+ *  连接用 openPreview 时的快照（预览期间两栏可继续导航到别的连接）。 */
+function previewFileEntry(path: string): FileEntry {
+  return { name: baseName(path), path, kind: "file" };
+}
+function openPreviewWith(editor: ResolvedEditor) {
+  const path = previewPath.value;
+  if (!path) return;
+  void openInExternalEditor(previewFileEntry(path), previewSide.value, editor, previewConnectionId.value);
+}
+function beginPreviewCustomCommand() {
+  const path = previewPath.value;
+  if (!path) return;
+  beginCustomEditorCommand(previewFileEntry(path), previewSide.value, previewConnectionId.value);
+}
+
 // 子菜单开合状态：打开时惰性拉编辑器目录（同 ssh ensureExternalEditors）。
 const openWithSubOpen = ref(false);
 
@@ -4236,7 +4257,7 @@ function toggleOpenWithSub(open: boolean) {
 // 自定义编辑器命令弹窗：命令串由 sidecar argv 化执行（不过 shell），
 // 「记住为默认」写入 {pattern → customId} 关联（pattern 取文件扩展名掩码）。
 const customEditorOpen = ref(false);
-const customEditorEntry = ref<{ entry: FileEntry; side: PaneSide }>();
+const customEditorEntry = ref<{ entry: FileEntry; side: PaneSide; connectionId?: string }>();
 const customEditorName = ref("");
 const customEditorCommand = ref("");
 const customEditorRemember = ref(true);
@@ -4264,9 +4285,9 @@ function onCustomEditorKeydown(event: KeyboardEvent): void {
   trapTabKey(event, customEditorEl.value);
 }
 
-function beginCustomEditorCommand(entry: FileEntry, side: PaneSide) {
+function beginCustomEditorCommand(entry: FileEntry, side: PaneSide, connectionIdOverride?: string) {
   contextMenu.value = undefined;
-  customEditorEntry.value = { entry, side };
+  customEditorEntry.value = { entry, side, connectionId: connectionIdOverride };
   customEditorName.value = "";
   customEditorCommand.value = "";
   customEditorRemember.value = true;
@@ -4290,7 +4311,12 @@ async function commitCustomEditor() {
   }
   updateEditorConfig(next);
   customEditorOpen.value = false;
-  await openInExternalEditor(state.entry, state.side, { kind: "custom", editor: { id, name, command } });
+  await openInExternalEditor(
+    state.entry,
+    state.side,
+    { kind: "custom", editor: { id, name, command } },
+    state.connectionId,
+  );
 }
 
 // ask 回传策略（后端 tick 挂起）：保存 modified 事件按会话排队，队头弹
@@ -5602,11 +5628,17 @@ onBeforeUnmount(() => {
         :connection-id="previewConnectionId"
         :allow-minimize="true"
         :t="t"
+        :editors="externalEditors"
+        :editor-config="editorConfig"
+        :can-open-local="canSaveLocal"
         @close="closePreview"
         @saved="onPreviewSaved"
         @download="onPreviewDownload"
         @minimize="minimizePreview"
         @open-settings="openSettings('openWith')"
+        @open-with="openPreviewWith"
+        @custom-command="beginPreviewCustomCommand"
+        @request-editors="ensureExternalEditors"
       />
       <div
         class="wb-preview-grip"

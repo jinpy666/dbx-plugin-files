@@ -330,7 +330,20 @@ body.wb-col-resizing { cursor: col-resize; user-select: none; -webkit-user-selec
 /* ---- preview pane --------------------------------------------------------------- */
 .wb-preview { position: relative; display: flex; flex: 1 1 auto; min-height: 0; flex-direction: column; background: var(--background); }
 .wb-preview-header { display: flex; min-height: 32px; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); padding: 4px 8px; }
+/* 预览标题图标（与 FileTable 行图标同体系）：媒体/代码/归档给主题色，
+   办公文档与未知类型保持中性灰。 */
+.wb-preview-fileicon { width: 15px; height: 15px; flex: 0 0 15px; stroke-width: 1.7; color: var(--muted-foreground); }
+.wb-preview-fileicon.wb-fi-image { color: var(--icon-cyan); }
+.wb-preview-fileicon.wb-fi-video { color: var(--icon-violet); }
+.wb-preview-fileicon.wb-fi-audio { color: var(--warning); }
+.wb-preview-fileicon.wb-fi-code { color: var(--icon-blue); }
+.wb-preview-fileicon.wb-fi-archive { color: var(--success); }
 .wb-preview-header strong { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 预览头部「打开方式」下拉：复用 .wb-context-menu 的外观，锚在按钮下方右侧；
+   预览层的 Esc 关闭链由组件的捕获监听先收菜单，避免一次 Esc 连预览一起关。 */
+.wb-open-with { position: relative; display: inline-flex; }
+.wb-open-with-menu { position: absolute; top: calc(100% + 6px); right: 0; left: auto; min-width: 210px; max-width: min(280px, calc(100vw - 24px)); max-height: 60vh; overflow-y: auto; transform-origin: top right; }
+.wb-open-with-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wb-preview-editbar { display: flex; align-items: center; justify-content: flex-end; gap: 6px; border-bottom: 1px solid var(--border); padding: 3px 8px; }
 .wb-preview-editbar .wb-preview-edit-error { flex: 1 1 auto; min-width: 0; color: var(--destructive); font-size: 11px; overflow-wrap: anywhere; }
 .wb-preview-editbar .wb-edit-save { background: var(--primary); color: var(--primary-foreground); border-radius: 4px; }
