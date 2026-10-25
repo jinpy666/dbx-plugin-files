@@ -13,13 +13,16 @@ let sessionMarkdownView: MarkdownView = "render";
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { Download, FileText, Folder, Minus, Pencil, RefreshCw, Settings2, X } from "@lucide/vue";
 import { baseName, call, errorMessage, formatBytes, isMethodMissing } from "../lib/api";
+import type { EditorConfig, KnownEditor, ResolvedEditor } from "../lib/editorRules";
+import { fileIcon, fileIconClass } from "../lib/fileIcons";
 import { canEditBytes, hexDump, PREVIEW_MAX_BYTES, READ_MAX_BYTES, WRITE_MAX_BYTES } from "../lib/preview";
 import { resolvePreview, type PreviewResolution } from "../lib/previewResolver";
 import FileViewerPreview from "./FileViewerPreview.vue";
 import MarkdownRender from "./MarkdownRender.vue";
+import PreviewOpenWithMenu from "./PreviewOpenWithMenu.vue";
 import TextPreview from "./TextPreview.vue";
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   path: string | null;
   canWrite: boolean;
   /** 预览所属栏的连接 id（双栏左栏可为本地 __local__）；缺省走默认注入。 */
@@ -29,7 +32,18 @@ const props = defineProps<{
   /** 浮窗宿主（App 预览层）允许最小化成悬浮 pill 时显示按钮。 */
   allowMinimize?: boolean;
   t: (key: string, values?: Record<string, string | number>) => string;
-}>();
+  /** 预览头部「打开方式」数据源（App 的编辑器目录/映射配置）。 */
+  editors?: KnownEditor[];
+  editorConfig?: EditorConfig;
+  /** 本机落盘能力：web/docker 形态下没有本机副本可打开。 */
+  canOpenLocal?: boolean;
+}>(), {
+  connectionId: undefined,
+  allowMinimize: false,
+  editors: () => [],
+  editorConfig: () => ({ associations: [], customEditors: [], uploadPolicy: "auto" }),
+  canOpenLocal: false,
+});
 
 const emit = defineEmits<{
   (event: "close"): void;
@@ -38,6 +52,9 @@ const emit = defineEmits<{
   (event: "minimize"): void;
   /** viewer 无法渲染（unsupported/失败）时请求打开「打开方式」设置页。 */
   (event: "open-settings"): void;
+  (event: "open-with", editor: ResolvedEditor): void;
+  (event: "custom-command"): void;
+  (event: "request-editors"): void;
 }>();
 
 type PreviewMode = "text" | "image" | "hex" | "archive" | "viewer";
@@ -495,6 +512,7 @@ const canOpenExternal = computed(() =>
 <template>
   <div v-if="path" ref="previewEl" tabindex="-1" class="wb-preview">
     <div class="wb-preview-header">
+      <component :is="fileIcon(title)" :class="fileIconClass(title)" class="wb-preview-fileicon" aria-hidden="true" />
       <strong :title="path">{{ title }}</strong>
       <span class="wb-muted">{{ loading || mode === "image" || mode === "archive" || mode === "viewer" ? "" : formatBytes(size) }}</span>
       <!-- Markdown 渲染/源码切换（仅 md 文本态出现；i18n key 七语补录前用兜底文案）。 -->
@@ -517,6 +535,18 @@ const canOpenExternal = computed(() =>
         >{{ mdLabel("mdSourceView", "源码") }}</button>
       </span>
       <button v-if="canEdit && !saving" class="wb-icon-button wb-icon-neutral" v-tip="t('edit')" @click="startEdit"><Pencil /></button>
+      <!-- 打开方式：复用右键子菜单的 remote-edit 下载/回传链路，选中即开。 -->
+      <PreviewOpenWithMenu
+        :file-name="title"
+        :editors="editors"
+        :editor-config="editorConfig"
+        :can-open="canOpenLocal"
+        :disabled-hint="canOpenLocal ? undefined : t('desktopOnlyTitle')"
+        :t="t"
+        @open="(editor) => emit('open-with', editor)"
+        @custom-command="emit('custom-command')"
+        @request-editors="emit('request-editors')"
+      />
       <button class="wb-icon-button wb-icon-neutral" v-tip="t('download')" @click="emit('download', path)"><Download /></button>
       <button v-if="allowMinimize" class="wb-icon-button wb-icon-neutral" v-tip="t('minimizePreview')" :aria-label="t('minimizePreview')" @click="emit('minimize')"><Minus /></button>
       <button class="wb-icon-button wb-icon-neutral" v-tip="t('close')" @click="emit('close')"><X /></button>

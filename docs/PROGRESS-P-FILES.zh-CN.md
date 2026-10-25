@@ -2514,3 +2514,25 @@ SFTP 远端段）→ **PASS 105 / SKIP 5 / FAIL 0**。回环 no_proxy 修复在 
 `last attempt` 底层原因链，可区分防火墙/LSP 拦截与代理残留）；若回报仍失败
 再按底层原因跟进。用户「设 NO_PROXY 后 DBX 无法启动」是宿主启动层问题
 （与插件引擎无关），如复现需单独排查。
+
+## 预览头部文件图标 + 打开方式下拉（反哺 ssh 预览设计，2026-10-25）
+
+ssh 插件预览先落地「文件类型图标 + 打开方式下拉」后，本插件按同一交互补齐，
+使两边预览/编辑入口对齐：
+
+- `PreviewPane.vue` 标题左侧复用 `lib/fileIcons` 的类型图标（与 FileTable 行
+  图标同体系；媒体/代码/归档主题色，办公文档中性灰），图标类名沿用
+  `wb-fi-*`，不新增识别表。
+- 新增 `PreviewOpenWithMenu.vue`：预览头部下拉 = 系统默认 + sidecar 探测到
+  的可用编辑器 + 自定义编辑器 + 「自定义命令…」，与右键「打开方式 ▸」同源
+  同数据（`externalEditors` / `editorConfig`）。选中后经 App 的
+  `openInExternalEditor` 走既有 `files/remote-edit/open` 链路；连接使用
+  `openPreview` 时的 `previewConnectionId` 快照，预览期间两栏导航不会把
+  打开目标串到别的连接。
+- 下拉为组件内轻量浮层（复用 `.wb-context-menu` 外观）：捕获阶段收 Esc，
+  避免一次 Esc 连预览一起关；外点关闭；↑↓/Home/End 键盘可达；web/docker
+  （`canSaveLocal=false`）下入口禁用并提示桌面端专属。
+- 验证：`PreviewOpenWithMenu.spec.ts`（6 例）+ `PreviewPane.spec.ts` 头部
+  图标/门禁用例；`pnpm --dir frontend test` 92 文件 747 用例全绿，
+  typecheck/build、`validate_repo.py`、`connection-forms/verify.mjs files`
+  均 PASS。

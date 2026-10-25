@@ -182,6 +182,35 @@ it("exposes unsaved-draft state as isDirty for the close guard", async () => {
   expect(dirty()).toBe(false);
 });
 
+// 预览头部：文件类型图标（与 FileTable 同体系）+ 本机程序打开下拉。
+describe("PreviewPane header (file icon + open with)", () => {
+  function mountArchive(overrides: Record<string, unknown> = {}) {
+    bindApi(async <T,>(method: string) => {
+      if (method === "files/archiveList") return { entries: [], total: 0 } as unknown as T;
+      return { dataBase64: "", truncated: false, size: 0 } as unknown as T;
+    }, null);
+    window.dbxPlugin = { decodeBase64: b64decode } as DbxPluginApi;
+    return mount(PreviewPane, {
+      props: { path: "/downloads/bundle.zip", canWrite: true, appearance, t: (key: string) => key, ...overrides },
+      attachTo: document.body,
+    });
+  }
+
+  it("renders the archive icon and enables the open-with trigger", async () => {
+    wrapper = mountArchive({ canOpenLocal: true });
+    await flush();
+    expect(wrapper.get(".wb-preview-fileicon").classes()).toContain("wb-fi-archive");
+    const trigger = wrapper.get("[data-test=preview-open-with]");
+    expect(trigger.attributes("disabled")).toBeUndefined();
+  });
+
+  it("disables the open-with trigger without local save capability", async () => {
+    wrapper = mountArchive({ canOpenLocal: false });
+    await flush();
+    expect(wrapper.get("[data-test=preview-open-with]").attributes("disabled")).toBeDefined();
+  });
+});
+
 // 两套方案：文本走 CodeMirror，Office/PDF 走 FileViewer，未知二进制回退 hex。
 it("routes strategies: text to CodeMirror, PDF to viewer, unknown binary to hex", async () => {
   bindApi(async <T,>(method: string) => {
