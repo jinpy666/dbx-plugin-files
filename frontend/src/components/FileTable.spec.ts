@@ -683,3 +683,28 @@ describe("FileTable truncated footer (issue #49)", () => {
     wrapper.unmount();
   });
 });
+
+describe("FileTable 表头全选（#91）", () => {
+  it("checking the header checkbox selects every loaded entry; unchecking clears", async () => {
+    const wrapper = mountTable();
+    const checkbox = wrapper.find('[data-test="select-all"]');
+    expect(checkbox.exists()).toBe(true);
+    await checkbox.setValue(true);
+    expect(wrapper.emitted("update:selection")?.at(-1)).toEqual([["file:/a.txt", "file:/b.txt", "file:/c.txt"]]);
+    await checkbox.setValue(false);
+    expect(wrapper.emitted("update:selection")?.at(-1)).toEqual([[]]);
+  });
+
+  it("reflects indeterminate while a strict subset is selected", async () => {
+    const wrapper = mountTable();
+    await wrapper.setProps({ selection: ["file:/a.txt"] });
+    await nextTick();
+    const input = wrapper.find('[data-test="select-all"]').element as HTMLInputElement;
+    expect(input.checked).toBe(false);
+    expect(input.indeterminate).toBe(true);
+    await wrapper.setProps({ selection: ["file:/a.txt", "file:/b.txt", "file:/c.txt"] });
+    await nextTick();
+    expect((wrapper.find('[data-test="select-all"]').element as HTMLInputElement).checked).toBe(true);
+    expect((wrapper.find('[data-test="select-all"]').element as HTMLInputElement).indeterminate).toBe(false);
+  });
+});

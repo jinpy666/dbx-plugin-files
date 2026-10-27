@@ -175,6 +175,15 @@ function onListKeydown(event: KeyboardEvent) {
 
 const selectedSet = computed(() => new Set(props.selection));
 
+// #91 表头全选：复选框三态（全选/部分选中 indeterminate/全不选），语义与
+// Cmd/Ctrl+A 一致——只作用于当前列表已加载条目（虚拟滚动下不做远端全量）。
+const allVisibleSelected = computed(() => props.entries.length > 0 && props.entries.every((entry) => selectedSet.value.has(entryKey(entry))));
+const someVisibleSelected = computed(() => !allVisibleSelected.value && props.entries.some((entry) => selectedSet.value.has(entryKey(entry))));
+function onHeaderSelectAll(event: Event) {
+  const checked = (event.target as HTMLInputElement).checked;
+  emit("update:selection", checked ? props.entries.map((entry) => entryKey(entry)) : []);
+}
+
 function rowStyle(index: number) {
   return { top: `${index * ROW_HEIGHT}px` };
 }
@@ -394,8 +403,18 @@ function onResizeEnd() {
   <!-- R3-P2-8：表头 role=row/columnheader + aria-sort（排序方向对屏幕阅读器可感知）。
        表头右键弹出列显隐菜单（对标 WinSCP/Finder）；行内空白区右键仍走 blank-context。 -->
   <div class="wb-file-header" role="row" @contextmenu.prevent.stop="openColumnMenu">
-    <!-- 与行首复选框（14px + gap）对齐的占位，保证表头列边界与行单元格对齐。 -->
-    <span class="wb-col-check-spacer" aria-hidden="true" />
+    <!-- #91：表头全选复选框（与行首复选框对齐），三态 + 七语提示。 -->
+    <label class="wb-col-check-spacer wb-col-check-all">
+      <input
+        type="checkbox"
+        data-test="select-all"
+        :checked="allVisibleSelected"
+        :indeterminate="someVisibleSelected"
+        :aria-label="t('toggleSelectAll')"
+        :title="t('toggleSelectAll')"
+        @change="onHeaderSelectAll"
+      />
+    </label>
     <span
       v-if="!isColumnHidden('name')"
       class="wb-col-name"

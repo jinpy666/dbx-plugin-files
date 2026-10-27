@@ -157,6 +157,9 @@ button.wb-session-reconnect:focus-visible { outline: 2px solid var(--destructive
    列右边界 6px 拖拽热区，悬停/拖拽中高亮，拖拽期间锁定光标与选择。 */
 .wb-file-header [role="columnheader"] { position: relative; }
 .wb-col-check-spacer { flex: 0 0 14px; width: 14px; }
+/* #91 表头全选复选框：占位升级为可点控件，尺寸与行首复选框一致。 */
+.wb-col-check-all { display: inline-grid; place-items: center; }
+.wb-col-check-all input { width: 13px; height: 13px; margin: 0; padding: 0; accent-color: var(--primary); cursor: pointer; }
 .wb-col-resize { position: absolute; top: -3px; bottom: -3px; right: -4px; width: 6px; cursor: col-resize; touch-action: none; border-radius: 2px; }
 .wb-file-header .wb-col-resize:hover, .wb-file-header .wb-col-resize.is-resizing { background: color-mix(in srgb, var(--primary) 45%, transparent); }
 body.wb-col-resizing { cursor: col-resize; user-select: none; -webkit-user-select: none; }
