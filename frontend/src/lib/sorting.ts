@@ -27,8 +27,10 @@ export function compareEntries(a: FileEntry, b: FileEntry, column: SortColumn, d
   if (column === "size") return ((a.size ?? 0) - (b.size ?? 0)) * sign;
   if (column === "modified") return (a.modifiedAt ?? "").localeCompare(b.modifiedAt ?? "") * sign;
   // R3-P2-3：数字感知自然序（a2 < a10，对标 FileZilla/Finder）——日志切片、
-  // 分卷等序号文件不再按字典序排成 a10 < a2。
-  return a.name.localeCompare(b.name, undefined, { numeric: true }) * sign;
+  // 分卷等序号文件不再按字典序排成 a10 < a2。locale 固定为 "en"：运行时默认
+  // locale（zh-CN 主机把 CJK 排在 ASCII 前）会让同一目录在不同机器上顺序
+  // 不同，文件列表排序必须是确定性的（tests 与真实环境同序）。
+  return a.name.localeCompare(b.name, "en", { numeric: true }) * sign;
 }
 
 export function sortEntries(entries: readonly FileEntry[], state: SortState): FileEntry[] {

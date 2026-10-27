@@ -159,6 +159,66 @@ describe("archive download wiring", () => {
     await settle();
     expect(menuItem(expected)).toBeUndefined();
   });
+
+  // ---- issue #92：下载选中项不再丢目录 ---------------------------------------
+  // 工具栏「下载」/多选右键「下载选中项」此前只认文件，只选目录时只弹
+  // 「没有可下载的文件」（issue 截图即该提示）。目录改走既有打包下载
+  // 管道（files/archiveDownload，各协议等价）。
+  it("toolbar download packs a selected directory instead of reporting none downloadable (#92)", async () => {
+    mountWorkbench();
+    await settle();
+    const { calls } = stubInvoke((method) => (method === "files/archiveDownload" ? { taskId: "task-arch-1" } : undefined));
+    table().vm.$emit("update:selection", ["dir:/docs"]);
+    await settle();
+    wrapper!.findComponent(FileToolbar).vm.$emit("download");
+    await settle();
+    expect(calls).toEqual([
+      { method: "files/archiveDownload", params: { connectionId: "mock-conn", path: "/docs" } },
+    ]);
+    expect(wrapper!.get(".wb-notice").text()).toContain(
+      workbenchMessage("en", "archiveDownloadStarted", { name: "docs" }),
+    );
+  });
+
+  it("toolbar download with a mixed selection downloads files and packs directories (#92)", async () => {
+    mountWorkbench();
+    await settle();
+    const { calls } = stubInvoke((method) => {
+      if (method === "files/archiveDownload") return { taskId: "task-arch-1" };
+      if (method === "files/download/start") return { taskId: "task-f-1", size: 0 };
+      if (method === "files/download/finish") return { success: true, taskId: "task-f-1" };
+      return undefined;
+    });
+    table().vm.$emit("update:selection", ["dir:/docs", "file:/backup.zip"]);
+    await settle();
+    wrapper!.findComponent(FileToolbar).vm.$emit("download");
+    await settle();
+    expect(calls.filter((item) => item.method === "files/download/start")).toEqual([
+      { method: "files/download/start", params: expect.objectContaining({ remotePath: "/backup.zip" }) },
+    ]);
+    expect(calls.filter((item) => item.method === "files/archiveDownload")).toEqual([
+      { method: "files/archiveDownload", params: { connectionId: "mock-conn", path: "/docs" } },
+    ]);
+  });
+
+  it("multi-select menu download routes directories to pack-and-download (#92)", async () => {
+    mountWorkbench();
+    await settle();
+    const { calls } = stubInvoke((method) => {
+      if (method === "files/archiveDownload") return { taskId: "task-arch-1" };
+      if (method === "files/download/start") return { taskId: "task-f-1", size: 0 };
+      if (method === "files/download/finish") return { success: true, taskId: "task-f-1" };
+      return undefined;
+    });
+    table().vm.$emit("update:selection", ["dir:/docs", "file:/backup.zip"]);
+    await settle();
+    table().vm.$emit("contextmenu", { entry: leftEntry("/docs"), x: 10, y: 10 });
+    await settle();
+    await menuItem(workbenchMessage("en", "downloadSelected"))!.trigger("click");
+    await settle();
+    expect(calls.some((item) => item.method === "files/download/start" && (item.params as { remotePath: string }).remotePath === "/backup.zip")).toBe(true);
+    expect(calls.some((item) => item.method === "files/archiveDownload" && (item.params as { path: string }).path === "/docs")).toBe(true);
+  });
 });
 
 // ---- 批量重命名（Task 3）--------------------------------------------------------

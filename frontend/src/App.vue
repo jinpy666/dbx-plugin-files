@@ -3599,21 +3599,32 @@ async function saveHostFile(chunks: Uint8Array[], fileName: string): Promise<voi
   if (!saved) throw new TransferCanceled();
 }
 
-async function downloadSelection(side: PaneSide = "left") {
+// issue #92：下载选中项的统一入口（工具栏「下载」/多选右键「下载选中项」）。
+// 此前只认文件、目录被静默过滤——只选目录时只弹「没有可下载的文件」
+// （issue #92 截图即该提示）。目录走既有打包下载管道（files/archiveDownload，
+// 右键「打包下载」同款；后端管线对各协议等价，FTP/SFTP/S3 均可用）：
+// 混选时文件逐项直下、目录打包，两类都为空才提示。
+async function downloadMixedSelection(entries: FileEntry[], side: PaneSide) {
   const id = sideConnectionId(side) ?? connectionId.value;
-  // R3-P1-2：按活动栏解析选择集（此前只读左栏，右栏选中时工具栏下载灰置）。
-  const pool = side === "right" ? rightSorted.value : sortedEntries.value;
-  const sel = side === "right" ? rightSelection.value : selection.value;
-  // issue #82：sel 元素是条目身份 key（kind+path）——同名共存时只下载用户选中的文件实体。
-  const files = pool.filter((entry) => sel.includes(entryKey(entry)) && entry.kind === "file");
-  // P2-6：过滤后为空（如只选了目录）不再静默，给出明确提示。
-  if (!files.length) {
+  const files = entries.filter((entry) => entry.kind === "file");
+  const dirs = entries.filter((entry) => entry.kind === "directory");
+  if (!files.length && !dirs.length) {
     showNotice(t("downloadNoneSelected"));
     return;
   }
   for (const entry of files) {
     await downloadEntry(entry, side, id);
   }
+  if (dirs.length) await archiveDownloadDirs(dirs, side);
+}
+
+async function downloadSelection(side: PaneSide = "left") {
+  // R3-P1-2：按活动栏解析选择集（此前只读左栏，右栏选中时工具栏下载灰置）。
+  const pool = side === "right" ? rightSorted.value : sortedEntries.value;
+  const sel = side === "right" ? rightSelection.value : selection.value;
+  // issue #82：sel 元素是条目身份 key（kind+path）——同名共存时只下载用户选中的实体。
+  const picked = pool.filter((entry) => sel.includes(entryKey(entry)));
+  await downloadMixedSelection(picked, side);
 }
 
 function onPreviewDownload(target: string | null) {
@@ -4528,20 +4539,8 @@ function menuAction(action: MenuAction) {
       break;
     // ---- 批量（多选右键）------------------------------------------------
     case "downloadSelected":
-      void (async () => {
-        const id = sideConnectionId(side) ?? connectionId.value;
-        const files = pickSideEntries(side, menuSelection).filter((item) => item.kind === "file");
-        if (!files.length) {
-          showNotice(t("downloadNoneSelected"));
-          return;
-        }
-        // downloadEntry 成功/失败各自已有反馈（成功逐文件提示，失败弹横幅、
-        // 取消静默）；循环不再追加聚合提示——此前「全部成功才提示」只会
-        // 重复第一个文件名，N 个文件时语义错误。
-        for (const item of files) {
-          await downloadEntry(item, side, id);
-        }
-      })();
+      // issue #92：混选不再丢目录——文件直下、目录打包（同工具栏下载）。
+      void downloadMixedSelection(pickSideEntries(side, menuSelection), side);
       break;
     case "copySelected":
     case "moveSelected":

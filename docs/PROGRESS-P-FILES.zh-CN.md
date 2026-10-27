@@ -2536,3 +2536,35 @@ ssh 插件预览先落地「文件类型图标 + 打开方式下拉」后，本�
   图标/门禁用例；`pnpm --dir frontend test` 92 文件 747 用例全绿，
   typecheck/build、`validate_repo.py`、`connection-forms/verify.mjs files`
   均 PASS。
+
+## #92 下载选中项支持目录（混选分流打包）+ Windows 测试基建修复（2026-10-28，issue 扫描轮）
+
+**#92 FTP 无法下载文件夹**：根因在前端入口——`downloadSelection` 与多选右键
+`downloadSelected` 只认 `entry.kind === "file"`，目录被静默过滤，只选目录时
+仅弹「所选内容中没有可下载的文件」（issue 截图即该提示）；后端
+`files/archiveDownload` 管线对各协议等价（agent 以真实 FTP 服务器逐步复验
+stat → validate_archive_source → build_dir_zip_bytes 全通）。修复：
+- 新增 `downloadMixedSelection`：文件逐项直下、目录走既有打包下载管道
+  （右键「打包下载」同款任务），工具栏「下载」与多选右键统一接入口。
+- 后端零改动；新增 FTP 真机管线回归测试（`rclone serve ftp` + rcd，live
+  测试约定，无 rclone 自动跳过）与前端 3 例（目录/混选/右键路由）。
+
+**Windows 本机全量测试修复**（`scripts/test.sh` 在 Windows 首次真正跑到
+smoke/打包层；此前 sidecar 路径无 .exe 解析导致 smoke 整段静默 SKIP）：
+- sidecar 路径按平台解析 `.exe`；smoke 前探测 rclone（PATH /
+  `DBX_FILES_RCLONE_BIN` / `bin/` / `~/.workbuddy`），并预置 `bin/` 打包
+  占位（CI 由 fetch-rclone.sh 完成，本地用 release 产物占位）。
+- `smoke_test.py` Windows 适配：mount 场景 SKIP（内核挂载依赖 WinFsp，auto
+  降级的 WebDAV 网关读穿透不在本 smoke 的 Windows 验证面，CI Linux 覆盖）；
+  `pgrep` 不存在时取消卫生检查视作通过；fs 快捷入口 chips 在 Windows 按退化
+  形态（root-only）断言——`home_dir()` 取 USERPROFILE 盘符路径无法作为 fs 根
+  "/" 下的 remote path 过 stat 验证，属已知 Windows 产品缺口，path 归一化
+  修复另立任务。
+- `sorting.ts` 文件名比较 locale 固定为 `"en"`：运行时默认 locale（zh-CN
+  主机把 CJK 排前）导致排序跨机器不确定，`sorting.spec` 在本机必失败；
+  固定后排序确定性对齐测试与 FileZilla/Finder 口径。
+
+**验证**：`cargo test --bin dbx-plugin-files` 578 全绿（含 live FTP 管线）；
+`vue-tsc` 0 错；`vitest` 750 全绿（含新增 3 例）；`scripts/test.sh` 端到端
+all green（含 windows-x64 .dbxp 打包成功）；`validate_repo.py`、
+`connection-forms/verify.mjs files`（173 组合）PASS。

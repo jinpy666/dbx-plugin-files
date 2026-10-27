@@ -37,17 +37,33 @@ pnpm --dir frontend build
 
 echo "==> sidecar release build"
 cargo build --release --manifest-path backend/Cargo.toml
+# Windows 的 cargo 产物带 .exe 后缀：smoke 车道与打包占位都要按平台解析，
+# 否则 smoke 整轮被 "sidecar binary not found" 静默 SKIP。
+SIDECAR="$ROOT/backend/target/release/dbx-plugin-files"
+[ -f "$SIDECAR.exe" ] && SIDECAR="$SIDECAR.exe"
+# framed smoke 的 fs/connection 段需要 rclone：PATH / DBX_FILES_RCLONE_BIN
+# 之外，再探测 bin/（打包 include 目录，CI 由 fetch-rclone.sh 预置）与
+# ~/.workbuddy/bin（本机常见下载位）；都缺则由 smoke 自己报可操作错误。
+if ! command -v rclone >/dev/null 2>&1 && [ -z "${DBX_FILES_RCLONE_BIN:-}" ]; then
+  for cand in "$ROOT"/bin/rclone.exe "$ROOT"/bin/rclone "$HOME"/.workbuddy/bin/rclone*/rclone.exe; do
+    if [ -f "$cand" ]; then export DBX_FILES_RCLONE_BIN="$cand"; break; fi
+  done
+fi
 
 echo "==> framed smoke (fs + memory; containers optional)"
-DBX_PLUGIN_SIDECAR="$ROOT/backend/target/release/dbx-plugin-files" python3 scripts/smoke_test.py
+DBX_PLUGIN_SIDECAR="$SIDECAR" python3 scripts/smoke_test.py
 
 echo "==> MCP smoke (release sidecar; container cases auto-SKIP)"
-DBX_PLUGIN_SIDECAR="$ROOT/backend/target/release/dbx-plugin-files" python3 scripts/smoke_mcp.py
+DBX_PLUGIN_SIDECAR="$SIDECAR" python3 scripts/smoke_mcp.py
 
 echo "==> package .dbxp"
 if [ ! -f manifest.json ]; then
   echo "SKIP: manifest.json not present yet (F-A owns it); packaging deferred"
 else
+  # [package].include 的 bin/ 必须存在（CI 由 fetch-rclone.sh 预置 rclone，
+  # 本地打包用 release 产物占位；正式发版由 release workflow 走完整链）。
+  mkdir -p bin
+  cp -f backend/target/release/dbx-plugin-files* bin/ 2>/dev/null || true
   unset DBX_PLUGIN_SDK_ROOT
   if command -v dbx-plugin >/dev/null 2>&1; then
     NO_COLOR=1 dbx-plugin package .

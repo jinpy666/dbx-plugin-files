@@ -1490,4 +1490,104 @@ mod tests {
             .expect_err("empty dir has no files");
         assert!(error.contains("Nothing to compress"), "{error}");
     }
+
+    /// issue #92 回归护栏：archiveDownload 的后端管线（stat → 递归
+    /// operations/list（`opt.recurse`）→ rc-serve GET 逐文件读）对 ftp 后端
+    /// 与 local/SFTP/S3 等价。真实链路：`rclone serve ftp` 子进程当 FTP
+    /// 服务器，rcd 注册 ftp remote 指向它；无 rclone binary 时静默跳过
+    /// （与 Live 同款约定）。
+    #[tokio::test]
+    async fn live_archive_download_pipeline_holds_over_ftp() {
+        let Some(binary) = super::super::proc::resolve_binary() else {
+            eprintln!("skipping: no rclone binary found");
+            return;
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("pkg/sub")).expect("mkdir");
+        std::fs::write(dir.path().join("pkg/a.txt"), b"alpha").expect("write");
+        std::fs::write(dir.path().join("pkg/sub/deep.bin"), vec![9u8; 2048]).expect("write");
+
+        // FTP 服务器：serve ftp 的 --pass 是字面值（不做 reveal），客户端
+        // 侧明文参数交给 config/create 的 obscure 收口即可对上。
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind :0");
+            listener.local_addr().unwrap().port()
+        };
+        struct KillOnDrop(std::process::Child);
+        impl Drop for KillOnDrop {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let server = std::process::Command::new(&binary)
+            .args([
+                "serve",
+                "ftp",
+                "--addr",
+                &format!("127.0.0.1:{port}"),
+                "--user",
+                "testu",
+                "--pass",
+                "testpw",
+            ])
+            .arg(dir.path())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("serve ftp should spawn");
+        let _server = KillOnDrop(server);
+        // 等 FTP 控制端口就绪（serve 启动是异步的）。
+        let mut up = false;
+        for _ in 0..50 {
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                up = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(up, "serve ftp never came up on 127.0.0.1:{port}");
+
+        let rcd = super::super::proc::RcdHandle::start(&binary, None)
+            .await
+            .expect("rcd should spawn");
+        let client = rcd.client();
+        client
+            .config_create(
+                "ftpchk",
+                "ftp",
+                serde_json::json!({
+                    "host": "127.0.0.1",
+                    "port": port,
+                    "user": "testu",
+                    "pass": "testpw",
+                }),
+                true,
+            )
+            .await
+            .expect("config/create ftp");
+        let fs = "ftpchk:";
+
+        // 与 main.rs files/archiveDownload 臂完全相同的调用面。
+        let entry = ops::stat(&client, fs, "pkg", "", false)
+            .await
+            .expect("stat dir over ftp");
+        assert_eq!(entry.kind, "dir");
+        validate_archive_source(&entry.kind, "pkg").expect("source validate");
+        let data = build_dir_zip_bytes(&client, fs, "pkg", "", false, "")
+            .await
+            .expect("dir zip bytes over ftp");
+        assert!(data.starts_with(b"PK\x03\x04"), "zip local header");
+        assert!(find_eocd(&data).is_ok(), "EOCD must parse");
+        // 递归 list 必须带出子目录内容（`opt.recurse` 语义），且 serve GET
+        // 读回真实字节（深层文件 2048 字节，zip 里找得到条目名）。
+        assert!(data.windows("pkg/a.txt".len()).any(|w| w == b"pkg/a.txt"));
+        assert!(data
+            .windows("pkg/sub/deep.bin".len())
+            .any(|w| w == b"pkg/sub/deep.bin"));
+        // zip 体量护栏：实测全量 2277 字节（a.txt 5 + deep.bin 2048 +
+        // 每条目 local/central 头与名字 224 + EOCD 22）；深层文件缺失时
+        // 总量掉到 ~230 字节以下。
+        assert!(data.len() > 2048 + 200, "deep payload must be in the zip");
+    }
 }
