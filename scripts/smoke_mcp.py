@@ -1053,11 +1053,28 @@ def s1_stdio_handshake(_client: SidecarClient) -> str:
     try:
         result = session.request("initialize", {})["result"]
         assert result["protocolVersion"] == "2024-11-05", result
+        # MCP 2026-07-28 conformance: every successful result carries
+        # resultType; a supported requested version is echoed; server/discover
+        # lists the supported set.
+        assert result["resultType"] == "complete", result
         assert result["serverInfo"]["name"] == "io.dbx.files", result
         assert result["serverInfo"]["version"], result
         assert result["capabilities"]["tools"]["listChanged"] is False, result
+        negotiated = session.request(
+            "initialize", {"protocolVersion": "2026-07-28", "capabilities": {}}
+        )["result"]
+        assert negotiated["protocolVersion"] == "2026-07-28", negotiated
+        discover = session.request("server/discover", {})["result"]
+        assert "2026-07-28" in discover["supportedVersions"], discover
+        assert "2024-11-05" in discover["supportedVersions"], discover
+        assert "tools" in discover["capabilities"], discover
 
-        tools = session.request("tools/list", {})["result"]["tools"]
+        listing = session.request("tools/list", {})["result"]
+        # 2026-07-28 cacheable list envelope: ttlMs/cacheScope are mandatory
+        # there (strict validation, no fallback); 0/private = never cache —
+        # connection state changes out-of-band.
+        assert listing["ttlMs"] == 0 and listing["cacheScope"] == "private", listing
+        tools = listing["tools"]
         names = [tool["name"] for tool in tools]
         for expected in EXPECTED_TOOLS:
             assert expected in names, f"{expected} missing from stdio tools/list: {names}"
@@ -1081,7 +1098,9 @@ def s1_stdio_handshake(_client: SidecarClient) -> str:
         session.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
         session.send({"jsonrpc": "2.0", "id": want, "method": "ping", "params": {}})
         message = session.recv()
-        assert message.get("id") == want and message.get("result") == {}, message
+        assert message.get("id") == want and message.get("result") == {
+            "resultType": "complete"
+        }, message
 
         # Unknown method → standard JSON-RPC -32601（族内统一：ssh/ldap/kafka
         # 同码；SKIP 判定认 "Method not found" 文本，与数字码解耦）。
@@ -1357,7 +1376,7 @@ def _alive(session: StdioSession) -> dict:
     """Health probe after adversarial input: a legal ping still answers and
     the process is still running."""
     message = session.request("ping", {})
-    assert message.get("result") == {}, message
+    assert message.get("result") == {"resultType": "complete"}, message
     assert session.proc.poll() is None, "sidecar process must stay alive"
     return message
 
@@ -1408,7 +1427,9 @@ def t2_notifications_and_idless(_client: SidecarClient) -> str:
         session.send({"jsonrpc": "2.0", "method": "notifications/other"})
         session.send({"jsonrpc": "2.0", "id": want, "method": "ping", "params": {}})
         message = session.recv()
-        assert message.get("id") == want and message.get("result") == {}, message
+        assert message.get("id") == want and message.get("result") == {
+            "resultType": "complete"
+        }, message
 
         # 无 id 的非 notification 请求：invalid request -32600（id 回 null），
         # 连接继续可用。
@@ -1457,7 +1478,7 @@ def t3_structural(_client: SidecarClient) -> str:
         ):
             session.send(request)
             message = session.recv()
-            assert message.get("result") == {} and message["id"] == request["id"], message
+            assert message.get("result") == {"resultType": "complete"} and message["id"] == request["id"], message
 
         _alive(session)
     finally:
@@ -1555,7 +1576,7 @@ def t5_pipelining(_client: SidecarClient) -> str:
             answers[mid] = message
         assert len(parse_errors) == 1, parse_errors
 
-        assert answers[ids["ping"]].get("result") == {}, answers[ids["ping"]]
+        assert answers[ids["ping"]].get("result") == {"resultType": "complete"}, answers[ids["ping"]]
         tools = answers[ids["tools"]]
         assert len(tools["result"]["tools"]) == 18, str(tools)[:200]
         quick = answers[ids["quick"]]
@@ -1580,7 +1601,7 @@ def t6_blank_and_crlf(_client: SidecarClient) -> str:
         # CRLF 结尾的合法请求：正常解析应答（\r 不进 JSON）。
         session.send_bytes(b'{"jsonrpc":"2.0","id":31,"method":"ping","params":{}}\r\n')
         message = session.recv()
-        assert message.get("id") == 31 and message.get("result") == {}, message
+        assert message.get("id") == 31 and message.get("result") == {"resultType": "complete"}, message
         _alive(session)
     finally:
         session.close()

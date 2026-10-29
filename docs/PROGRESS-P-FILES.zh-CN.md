@@ -2568,3 +2568,32 @@ smoke/打包层；此前 sidecar 路径无 .exe 解析导致 smoke 整段静默 
 `vue-tsc` 0 错；`vitest` 750 全绿（含新增 3 例）；`scripts/test.sh` 端到端
 all green（含 windows-x64 .dbxp 打包成功）；`validate_repo.py`、
 `connection-forms/verify.mjs files`（173 组合）PASS。
+
+## MCP 2026-07-28 协议一致性（2026-10-29，对齐 ssh）
+
+ssh 插件 2026-10-28 完成的新版 MCP 适配（`eca213fd` + `5663f1a5`）同款
+应用到 files stdio 面（`backend/src/mcp/stdio.rs`）：
+
+- `SUPPORTED_PROTOCOL_VERSIONS = [2026-07-28, 2024-11-05]`；`initialize`
+  按请求 `protocolVersion` 原样回显，未命中回落 `PROTOCOL_VERSION`。
+- 新增 `server/discover` → `{supportedVersions, capabilities}`（2026-07-28
+  起 initialize 握手移除后的发现通道）。
+- `dispatch` 统一为成功结果盖 `resultType:"complete"`（含 `isError` 工具
+  结果；错误响应不带 result）。
+- `tools/list` 增补缓存信封 `ttlMs:0` + `cacheScope:"private"`（严格宿主
+  校验必填，0/private = 永不缓存——连接态会带外变化）。
+
+验证：`cargo test --bin dbx-plugin-files` MCP 子集串行通过；
+`DBX_PLUGIN_SIDECAR=backend/target/release/dbx-plugin-files
+python3 scripts/smoke_mcp.py` 24 PASS / 0 FAIL / 7 SKIP（S1 钉住 resultType、
+版本回显、discover 与缓存信封；T1-T6 ping 断言同步为 resultType 形状）；
+`shared/mcp_schema_check.py --plugin io.dbx.files`：18/18 工具通过、0 DRIFT；
+` schedule_create` 的四个参数补齐非空 description，standalone 下显式
+`UNAVAILABLE` 归类为探针不适用（WARN，不是 schema 漂移）。`docs/MCP.zh-CN.md`
+已同步协议版本章节；`shared/MCP_ACCEPTANCE.zh-CN.md` 登记四插件同款契约。
+
+> 全量 `scripts/test.sh` 当前未通过：默认并行时两个 appbridge 测试会受
+> 进程级 `DBX_APP_DATA_DIR` 测试夹具竞争影响；全 Rust 测试串行后该组通过，
+> 但 `loopback_health_check_ignores_ambient_proxy_env` 仍因本机 reqwest 未按
+> 预期使用 poison proxy 失败（595/596 通过）。MCP smoke 与 MCP 子集通过；
+> 代理探针环境差异待单独处理。

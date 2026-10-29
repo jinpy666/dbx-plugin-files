@@ -1094,17 +1094,44 @@ fn stdio_protocol_handshake_and_shapes() {
     // initialize: MCP 2024-11-05, serverInfo name = io.dbx.files.
     let result = stdio_result(&server, "initialize", json!({}));
     assert_eq!(result["protocolVersion"], "2024-11-05", "{result}");
+    // 2026-07-28: every successful result carries resultType (absent-means-
+    // complete only bridges earlier-revision peers).
+    assert_eq!(result["resultType"], "complete", "{result}");
     assert_eq!(result["serverInfo"]["name"], "io.dbx.files");
     assert!(result["serverInfo"]["version"].is_string());
     assert_eq!(result["capabilities"]["tools"]["listChanged"], false);
-    assert_eq!(stdio_result(&server, "ping", json!({})), json!({}));
+    // Version negotiation: a supported requested version is echoed back.
+    let negotiated = stdio_result(
+        &server,
+        "initialize",
+        json!({ "protocolVersion": "2026-07-28" }),
+    );
+    assert_eq!(negotiated["protocolVersion"], "2026-07-28", "{negotiated}");
+    assert_eq!(negotiated["resultType"], "complete", "{negotiated}");
+    // server/discover (2026-07-28 capability discovery).
+    let discover = stdio_result(&server, "server/discover", json!({}));
+    let versions = discover["supportedVersions"].as_array().unwrap();
+    assert!(versions.contains(&json!("2026-07-28")), "{discover}");
+    assert!(versions.contains(&json!("2024-11-05")), "{discover}");
+    assert!(discover["capabilities"]["tools"].is_object(), "{discover}");
+    // ping is a successful result too: resultType, not an empty object.
+    assert_eq!(
+        stdio_result(&server, "ping", json!({})),
+        json!({ "resultType": "complete" })
+    );
     // Notifications are never answered (notifications/initialized included).
     let answer = tokio::runtime::Runtime::new().unwrap().block_on(
         server.dispatch(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })),
     );
     assert!(answer.is_none(), "{answer:?}");
-    // tools/list exposes the full tool surface with schemas.
-    let tools = stdio_result(&server, "tools/list", json!({}))["tools"].clone();
+    // tools/list exposes the full tool surface with schemas, plus the
+    // 2026-07-28 cacheable list envelope (mandatory and strictly validated;
+    // 0/private = never cache — connection state changes out-of-band).
+    let listing = stdio_result(&server, "tools/list", json!({}));
+    assert_eq!(listing["ttlMs"], 0, "{listing}");
+    assert_eq!(listing["cacheScope"], "private", "{listing}");
+    assert_eq!(listing["resultType"], "complete", "{listing}");
+    let tools = listing["tools"].clone();
     let names: Vec<&str> = tools
         .as_array()
         .unwrap()
@@ -2052,6 +2079,12 @@ fn tools_list_surface_matches_registry_and_schedule_stdio_is_unavailable() {
     let properties = schedule["inputSchema"]["properties"].as_object().unwrap();
     assert!(!properties.contains_key("connectionId"), "{properties:?}");
     assert!(!properties.contains_key("connection"), "{properties:?}");
+    for (name, schema) in properties {
+        assert!(
+            schema["description"].as_str().is_some_and(|value| !value.trim().is_empty()),
+            "schedule_create.{name} must describe its input"
+        );
+    }
 }
 
 #[test]
@@ -2156,7 +2189,11 @@ fn stdio_dispatch_rejects_missing_method_and_non_scalar_ids() {
     for good_id in [json!("str-1"), json!(7), json!(null)] {
         let request = json!({ "jsonrpc": "2.0", "id": good_id, "method": "ping" });
         let response = dispatch_raw(&server, request).expect("answered");
-        assert_eq!(response["result"], json!({}), "{response}");
+        assert_eq!(
+            response["result"],
+            json!({ "resultType": "complete" }),
+            "{response}"
+        );
         assert_eq!(response["id"], good_id, "id echoed verbatim");
     }
     // 无 id 的非 notification 请求：-32600（保留既有形状），连接继续。
@@ -2179,11 +2216,19 @@ fn stdio_dispatch_tolerates_missing_or_variant_jsonrpc_field() {
         let (server, _dir) = stdio_server();
         let request = json!({ "jsonrpc": version, "id": 1, "method": "ping" });
         let response = dispatch_raw(&server, request).expect("answered");
-        assert_eq!(response["result"], json!({}), "{response}");
+        assert_eq!(
+            response["result"],
+            json!({ "resultType": "complete" }),
+            "{response}"
+        );
     }
     let (server, _dir) = stdio_server();
     let response = dispatch_raw(&server, json!({ "id": 1, "method": "ping" })).expect("answered");
-    assert_eq!(response["result"], json!({}), "{response}");
+    assert_eq!(
+        response["result"],
+        json!({ "resultType": "complete" }),
+        "{response}"
+    );
 }
 
 #[test]

@@ -28,7 +28,16 @@ use serde_json::{json, Value};
 
 use super::*;
 
+/// Fallback protocol revision for the `initialize` handshake: answered when
+/// the peer names no supported version. 2026-07-28 removed the handshake
+/// (per-request `_meta` versioning), so this only matters to older peers.
 const PROTOCOL_VERSION: &str = "2024-11-05";
+
+/// Protocol revisions this stdio surface serves. Pre-2026 revisions share the
+/// same core (initialize/ping/tools/list/tools/call); 2026-07-28 additionally
+/// requires `resultType` on every successful result (stamped in `dispatch`)
+/// and can be discovered via `server/discover`.
+const SUPPORTED_PROTOCOL_VERSIONS: [&str; 2] = ["2026-07-28", "2024-11-05"];
 
 /// UI-intent tool family in stdio mode: UNAVAILABLE by design (no workbench
 /// to drive; `files_ui_quick_paths` is pure meta-discovery and stays usable).
@@ -427,6 +436,21 @@ pub(crate) struct StdioServer {
     pub(crate) bridge_ensure_wait: Duration,
 }
 
+/// The `initialize` answer for the peer's requested version: echo it back
+/// when we serve it (the versioning rule of every revision), fall back to
+/// [`PROTOCOL_VERSION`] otherwise — including for the empty/absent params of
+/// pre-versioning callers.
+fn negotiated_protocol_version(params: &Value) -> &'static str {
+    match params.get("protocolVersion").and_then(Value::as_str) {
+        Some(version) => SUPPORTED_PROTOCOL_VERSIONS
+            .iter()
+            .copied()
+            .find(|served| *served == version)
+            .unwrap_or(PROTOCOL_VERSION),
+        None => PROTOCOL_VERSION,
+    }
+}
+
 impl StdioServer {
     pub(crate) async fn dispatch(&self, request: Value) -> Option<Value> {
         let id = request.get("id").cloned();
@@ -481,7 +505,7 @@ impl StdioServer {
         // text, not the numeric code.
         let result: Result<Value, (i64, String)> = match method.as_str() {
             "initialize" => Ok(json!({
-                "protocolVersion": PROTOCOL_VERSION,
+                "protocolVersion": negotiated_protocol_version(&params),
                 "capabilities": { "tools": { "listChanged": false } },
                 "serverInfo": {
                     "name": "io.dbx.files",
@@ -489,7 +513,21 @@ impl StdioServer {
                 },
             })),
             "ping" => Ok(json!({})),
+            // 2026-07-28 removed the initialize handshake; version discovery
+            // is this method instead. Clients MAY call it (per-request `_meta`
+            // works too), so -32601 here would only brand us as pre-2026.
+            "server/discover" => Ok(json!({
+                "supportedVersions": SUPPORTED_PROTOCOL_VERSIONS,
+                "capabilities": { "tools": { "listChanged": false } },
+            })),
             "tools/list" => Ok(json!({
+                // 2026-07-28 cacheable list envelope: `ttlMs` + `cacheScope`
+                // are mandatory there and strictly validated (no fallback).
+                // 0/private = never cache — connection state changes
+                // out-of-band and the output names hosts and paths. Older
+                // peers ignore the extra fields, same as `resultType`.
+                "ttlMs": 0,
+                "cacheScope": "private",
                 "tools": self.mcp.stdio_tool_list()["tools"].clone(),
             })),
             "tools/call" => {
@@ -527,7 +565,18 @@ impl StdioServer {
             other => Err((-32601, format!("Method not found: {other}"))),
         };
         Some(match (id, result) {
-            (Some(id), Ok(result)) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+            (Some(id), Ok(mut result)) => {
+                // 2026-07-28 requires `resultType` on every successful result
+                // (absent-means-complete only bridges earlier revisions).
+                // Older peers ignore the field; keep a future
+                // `input_required` result's own type.
+                if result.get("resultType").is_none() {
+                    if let Some(object) = result.as_object_mut() {
+                        object.insert("resultType".to_string(), json!("complete"));
+                    }
+                }
+                json!({ "jsonrpc": "2.0", "id": id, "result": result })
+            }
             (Some(id), Err((code, message))) => json!({
                 "jsonrpc": "2.0",
                 "id": id,

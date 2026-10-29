@@ -11,6 +11,8 @@ Verifies, for the given target:
 Exits non-zero with a diagnosis on any violation. Read-only.
 """
 
+from __future__ import annotations
+
 import argparse
 import hashlib
 import json

@@ -29,9 +29,16 @@ sidecar 二进制可直接作为 MCP 服务器运行（ssh 插件同款，真机
 dbx-plugin-files --mcp
 ```
 
-- **协议**：MCP `2024-11-05`，换行分隔 JSON-RPC 2.0；`initialize`
-  （serverInfo `io.dbx.files`）、`notifications/initialized`（不回包）、
-  `tools/list`、`tools/call`、`ping`。**错误码分档（族内统一，
+- **协议**：MCP `2026-07-28` / `2024-11-05`，换行分隔 JSON-RPC 2.0；
+  `initialize`（serverInfo `io.dbx.files`）、`server/discover`、
+  `notifications/initialized`（不回包）、`tools/list`、`tools/call`、`ping`。
+  **2026-07-28 一致性（与 ssh 同款）**：`initialize` 的 `protocolVersion`
+  命中受支持集合时原样回显，否则回落 `2024-11-05`；所有成功 `result` 统一
+  携带 `resultType:"complete"`（该修订版硬性要求；缺失即 complete 的桥接
+  只对更早修订版 peer 生效，旧 peer 忽略该字段）；`server/discover` 返回
+  `{supportedVersions, capabilities}`；`tools/list` 结果另带缓存信封
+  `ttlMs:0` + `cacheScope:"private"`（该修订版必填且严格校验，0/private =
+  永不缓存——连接态会带外变化）。**错误码分档（族内统一，
   ssh/ldap/kafka 同码）**：传输层/结构性错误用 JSON-RPC 标准码——非 JSON
   行 `-32700` Parse error、未知方法 `-32601` Method not found、
   `tools/call` 缺工具名/arguments 非对象 `-32602` Invalid params、

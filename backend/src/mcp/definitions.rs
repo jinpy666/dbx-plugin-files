@@ -162,13 +162,13 @@ impl Mcp {
                     "type": "object",
                     "properties": {
                         "name": { "type": "string", "description": "Unique task name" },
-                        "kind": { "type": "string", "enum": ["sync", "copy", "bisync"] },
-                        "sourceConnectionId": { "type": "string" },
+                        "kind": { "type": "string", "enum": ["sync", "copy", "bisync"], "description": "Task mode: sync mirrors and deletes target extras, copy is additive, bisync is bidirectional" },
+                        "sourceConnectionId": { "type": "string", "description": "Source connection ID" },
                         "sourcePath": { "type": "string", "description": "Source directory path" },
                         "targetConnectionId": { "type": "string", "description": "Omit = same as source" },
-                        "targetPath": { "type": "string" },
+                        "targetPath": { "type": "string", "description": "Target directory path" },
                         "cron": { "type": "string", "description": "Five-field cron, e.g. '30 3 * * *' = daily 03:30 local" },
-                        "enabled": { "type": "boolean", "default": true },
+                        "enabled": { "type": "boolean", "default": true, "description": "Whether the scheduled task is enabled (default true)" },
                         "options": {
                             "type": "object",
                             "description": "rclone options (camelCase, same names as files_sync) plus backupDir+suffix (versioned backup), retentionDays (prune backupDir entries older than N days), verifyAfter (post-run check job)",
