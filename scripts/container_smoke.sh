@@ -46,9 +46,9 @@ MINIO_PASSWORD="$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | 
 MINIO_BUCKET="dbx-files-smoke-$(date +%s)"
 MINIO_BUCKET2="dbx-files-smoke2-$(date +%s)"
 # rclone 工具镜像钉扎：与插件自带引擎同版本（scripts/fetch-rclone.sh 的
-# v1.75.1-dbx.1），升级改为有意的 bump——本脚本修的正是上游 tag 漂移事故
+# v1.75.2-dbx.1），升级改为有意的 bump——本脚本修的正是上游 tag 漂移事故
 # （minio 401），工具链不再使用浮动 :latest。
-RCLONE_IMAGE="rclone/rclone:1.75.1"
+RCLONE_IMAGE="rclone/rclone:1.75.2"
 SFTP_USER="sftpuser"
 SFTP_PASSWORD="$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 SMB_USER="smoketest"
@@ -107,7 +107,7 @@ echo "==> starting MinIO (:${MINIO_PORT})"
 # bitnamilegacy/minio 保留社区版镜像归档（多架构，2025.7.23 为下架前最后
 # 日期型 tag），容器启动约定与官方镜像兼容（MINIO_ROOT_* + server /data）。
 ensure_image "bitnamilegacy/minio:2025.7.23"
-ensure_image "$RCLONE_IMAGE" "mirror.gcr.io/rclone/rclone:1.75.1"
+ensure_image "$RCLONE_IMAGE" "mirror.gcr.io/rclone/rclone:1.75.2"
 docker rm -f dbx-files-minio-test >/dev/null 2>&1 || true
 # Bitnami 镜像数据目录是 /bitnami/minio/data（entrypoint 自动建并 chown 到非
 # root 运行用户），默认 Cmd 已带 server 启动——显式追加 "server /data" 反而

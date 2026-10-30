@@ -16,7 +16,7 @@
 # The release zips contain a single top-level dir with the binary inside.
 set -euo pipefail
 
-RCLONE_VERSION="v1.75.1-dbx.1"
+RCLONE_VERSION="v1.75.2-dbx.1"
 # Fork releases carry the cmount-tagged build with the DBX plugin fixes; the
 # pinned SHA256 list below must be updated in the same change as the version
 # (contrib/rclone-fork/README.md). Override to rclone/rclone for the official
@@ -24,14 +24,14 @@ RCLONE_VERSION="v1.75.1-dbx.1"
 RCLONE_REPO="${RCLONE_REPO:-jinpy666/rclone}"
 
 # Pinned SHA256 of the release zips, from the fork's checksum list:
-# https://github.com/jinpy666/rclone/releases/download/v1.75.1-dbx.1/SHA256SUMS
+# https://github.com/jinpy666/rclone/releases/download/v1.75.2-dbx.1/SHA256SUMS
 pinned_sha256() {
   case "$1" in
-    rclone-v1.75.1-dbx.1-osx-arm64.zip)      echo "f27caad79bb18af872706df46614c14997b1002254c068f9d30630dbd5d759b8" ;;
-    rclone-v1.75.1-dbx.1-osx-amd64.zip)      echo "f158a0d1ef7a2945a87a3eb2a375af072822882cf369c69cdf2de92e15c1eed6" ;;
-    rclone-v1.75.1-dbx.1-linux-amd64.zip)    echo "a012b6edd9445a225609d9bbd51245fbeff67064b71eb59e238894ad06cab1d7" ;;
-    rclone-v1.75.1-dbx.1-linux-arm64.zip)    echo "5379cf0c39cb95858e93b7283a221ded1fcc08ecfee521342c56ff3217559c97" ;;
-    rclone-v1.75.1-dbx.1-windows-amd64.zip)  echo "4e4fbb680b9bb7300cb7d71e27f95a685d5c70f5e98a3404e3f9cfefd435b66d" ;;
+    rclone-v1.75.2-dbx.1-osx-arm64.zip)      echo "cb05c7b82f3cfd532055a21a81fa030a1944f73c2518ab5681bdffba2d4ea85b" ;;
+    rclone-v1.75.2-dbx.1-osx-amd64.zip)      echo "93dccd82a87f7b17470de920a19e30da44adf3a409ca13876d7f9864818f6fbc" ;;
+    rclone-v1.75.2-dbx.1-linux-amd64.zip)    echo "4053e966778e470930b72cc9752cf0636526a55012e1a41594dc28d36f045a2e" ;;
+    rclone-v1.75.2-dbx.1-linux-arm64.zip)    echo "9efb85c948f4ac126feb164705dfd6162bbb37c5ff4d7b5a6c080be94df1b01f" ;;
+    rclone-v1.75.2-dbx.1-windows-amd64.zip)  echo "fb491f3477b819bd6d70862badfc7938b08b0234b7be9df25016783d1e828cdb" ;;
     *) return 1 ;;
   esac
 }

@@ -15,7 +15,10 @@
   `FETCH_HEAD^{commit}` 推为 fork 的 `dbx` 分支。
 - 实际部署：`jinpy666/rclone` 的 `dbx` 分支已挂 `dbx-plugin-build.yml`；
   分支 push / 手动 dispatch 只构建并上传工件（artifacts），**只有推
-  `dbx-v*` tag 才会创建 GitHub Release**。
+  `v<上游版本>-dbx.<n>` tag（匹配 `v*-dbx*`）才会创建 GitHub Release**。
+- 注意：fork 的 Actions 在仓库 60 天无活动后会被 GitHub 停用（API 的
+  `actions/permissions` 仍显示 enabled，dispatch 会 422），需在网页
+  Actions 标签页手动点一次启用；重新推 tag 即触发。
 
 ## 2. 改造内容（保守裁剪）
 
@@ -37,10 +40,11 @@
   - `linux`（ubuntu-24.04）：amd64 + arm64，CGO=0；
   - `windows`（windows-2022）：amd64，CGO=0；
   - `macos`（macos-15）：装 macfuse 后用官方同款参数交叉出 amd64 + arm64（CGO）；
-  - `release`：聚合产物、生成 `SHA256SUMS`，在 `dbx-v*` tag 上发 GitHub Release。
+  - `release`：聚合产物、生成 `SHA256SUMS`，在 `v<上游版本>-dbx.<n>` tag 上发 GitHub Release。
 - 依赖工具：`make doc` 需要 pandoc（三个 job 均已安装）+ python3（runner 自带）。
-- 版本号约定：`dbx-v<上游版本>-<fork 序号>`，如 `dbx-v1.75.1-1`；tag 名同时是
-  `fs.Version` 与产物名的一部分（`rclone-dbx-v1.75.1-1-osx-arm64.zip`）。
+- 版本号约定：`v<上游版本>-dbx.<fork 序号>`，如 `v1.75.2-dbx.1`；须为 semver
+  （resource_windows.go 校验，剥 v 前缀后解析），tag 名同时是 `fs.Version`
+  与产物名的一部分（`rclone-v1.75.2-dbx.1-osx-arm64.zip`）。
 - 产物命名与官方完全一致（`rclone-<version>-<os>-<arch>.zip`，darwin→osx），
   由 `bin/cross-compile.go` 自动保证。
 
@@ -48,14 +52,14 @@
 
 fork 首个 Release 发布后，更新 dbx-plugin-files 的 `scripts/fetch-rclone.sh`：
 
-1. `RCLONE_VERSION="v1.75.1"` → `"dbx-v1.75.1-1"`；
+1. `RCLONE_VERSION="v1.75.1-dbx.1"` → `"v1.75.2-dbx.1"`；
 2. `pinned_sha256()` 中 5 个 zip 的 SHA256 → fork Release `SHA256SUMS` 的值；
 3. 下载源：临时切换可直接 `RCLONE_REPO=jinpy666/rclone`（自定义仓库没有
    downloads.rclone.org 回退）；长期切换把脚本内 `RCLONE_REPO` 默认值改为
    fork 仓库。
 
 版本冒烟检查 `rclone $RCLONE_VERSION` 无需改动：fork 的 `fs.Version` 即
-`dbx-v1.75.1-1`，`rclone --version` 输出 `rclone dbx-v1.75.1-1` 正好匹配。
+`v1.75.2-dbx.1`，`rclone --version` 输出 `rclone v1.75.2-dbx.1` 正好匹配。
 
 ## 5. 上游同步流程
 
