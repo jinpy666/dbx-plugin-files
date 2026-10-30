@@ -19,7 +19,7 @@ python3 scripts/validate_repo.py                    # 仓库契约 + 版本一�
 node scripts/connection-forms/verify.mjs            # 连接表单契约（含防冲突不变式）
 pnpm --dir frontend install --frozen-lockfile
 pnpm --dir frontend typecheck && pnpm --dir frontend test
-pnpm --dir frontend build                           # 产物写入 ui/，必须一并提交
+pnpm --dir frontend build                           # 产物写入 ui/（已脱库不入 git；发布/候选打包由 CI 现构建）
 cargo test --locked --manifest-path backend/Cargo.toml   # 含表单×引擎组合矩阵
 cargo build --locked --release --manifest-path backend/Cargo.toml
 python3 scripts/smoke_mcp.py --binary backend/target/release/dbx-plugin-files
@@ -35,7 +35,7 @@ DBX_PLUGIN_SIDECAR="$PWD/backend/target/release/dbx-plugin-files" \
 
 ## 3. 提交与打标
 
-1. 提交全部改动（含 `ui/` 构建产物，CI 有 freshness 门禁）。
+1. 提交全部改动（`ui/` 构建产物已脱库，不入 git，CI 会现构建）。
 2. push 到 `main`，确认 CI 全绿（validate / frontend / backend /
    container-smoke / 五平台 candidate / candidates-check）。
 3. 创建 tag `files-v<version>`（例：`files-v0.1.57`）并创建同名 GitHub
@@ -70,8 +70,8 @@ DBX_PLUGIN_SIDECAR="$PWD/backend/target/release/dbx-plugin-files" \
 ## 6. 常见问题
 
 - **tag 建了但工作流没跑**：tag 必须以 `files-v` 开头且与 manifest 版本一致。
-- **CI 的 ui/ freshness 门禁失败**：重新执行 `pnpm --dir frontend build`
-  并提交 `ui/` 产物。
+- **ui/ 产物疑问**：`ui/` 已脱库（`.gitignore` `/ui/`），本地 build 仅用于自验，
+  发布与候选打包由 CI 现构建前端，无需提交。
 - **container-smoke 失败**：先本地复现
   `scripts/container_smoke.sh`（`--keep` 保留容器排查），多为测试容器镜像
   上游变更所致，与插件代码无关时可固定镜像 digest。

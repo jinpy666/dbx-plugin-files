@@ -20,7 +20,7 @@ python3 scripts/validate_repo.py                    # repo contracts + version m
 node scripts/connection-forms/verify.mjs            # connection form contract (conflict guards)
 pnpm --dir frontend install --frozen-lockfile
 pnpm --dir frontend typecheck && pnpm --dir frontend test
-pnpm --dir frontend build                           # output lands in ui/, must be committed
+pnpm --dir frontend build                           # output lands in ui/ (de-repo'd, not committed; CI builds it fresh)
 cargo test --locked --manifest-path backend/Cargo.toml   # includes the form×engine matrix
 cargo build --locked --release --manifest-path backend/Cargo.toml
 python3 scripts/smoke_mcp.py --binary backend/target/release/dbx-plugin-files
@@ -36,8 +36,8 @@ DBX_PLUGIN_SIDECAR="$PWD/backend/target/release/dbx-plugin-files" \
 
 ## 3. Commit and tag
 
-1. Commit everything (including the `ui/` build output — CI enforces its
-   freshness).
+1. Commit everything (the `ui/` build output is de-repo'd — gitignored, CI
+   builds it fresh).
 2. Push to `main` and confirm CI is green (validate / frontend / backend /
    container-smoke / five-platform candidates / candidates-check).
 3. Create the tag `files-v<version>` (e.g. `files-v0.1.57`) and a GitHub
@@ -79,8 +79,9 @@ runtime, then `DBX_FILES_RCLONE_BIN`, then the system PATH).
 
 - **Tag pushed but no workflow ran**: the tag must start with `files-v` and
   match the manifest version.
-- **CI ui/ freshness gate failed**: run `pnpm --dir frontend build` again and
-  commit the `ui/` output.
+- **Questions about the `ui/` output**: `ui/` is de-repo'd (`.gitignore`
+  `/ui/`); local builds are for self-verification only — release and
+  candidate packaging build the frontend in CI.
 - **container-smoke failed**: reproduce locally with
   `scripts/container_smoke.sh` (`--keep` retains the containers); failures
   are usually an upstream test-container image change — pin the image digest
