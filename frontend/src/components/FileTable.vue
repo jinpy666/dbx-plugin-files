@@ -205,7 +205,7 @@ function toggleSelection(entry: FileEntry, modifiers: { meta?: boolean; ctrl?: b
     const targetIndex = props.entries.indexOf(entry);
     if (anchorIndex >= 0 && targetIndex >= 0) {
       const [start, end] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
-      emit("update:selection", props.entries.slice(start, end + 1).map((candidate) => candidate.path));
+      emit("update:selection", props.entries.slice(start, end + 1).map((candidate) => entryKey(candidate)));
       return;
     }
   }
@@ -217,7 +217,8 @@ function toggleSelection(entry: FileEntry, modifiers: { meta?: boolean; ctrl?: b
 }
 
 function onClickRow(entry: FileEntry, event: MouseEvent) {
-  toggleSelection(entry, { meta: event.metaKey, shift: event.shiftKey });
+  // Ctrl 与 Cmd 等价转发（Windows 无 Cmd 键，issue #91）。
+  toggleSelection(entry, { meta: event.metaKey, ctrl: event.ctrlKey, shift: event.shiftKey });
 }
 
 function onContextRow(entry: FileEntry, event: MouseEvent) {

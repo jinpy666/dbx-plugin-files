@@ -708,3 +708,47 @@ describe("FileTable 表头全选（#91）", () => {
     expect((wrapper.find('[data-test="select-all"]').element as HTMLInputElement).indeterminate).toBe(false);
   });
 });
+
+// —— issue #91：行点击多选——Ctrl 是 Windows 上 Cmd+click 的唯一等价增减修饰键，
+// 行点击必须转发 event.ctrlKey；Shift 区段与全选/Cmd+A 一致 emit kind+path 复合
+// key（issue #82），裸 path 与 selectedSet 匹配不上会让区段选择整体失真。
+describe("FileTable 行点击多选（#91）", () => {
+  it("ctrl+click toggles the row into the selection instead of resetting to single", async () => {
+    const wrapper = mountTable();
+    await wrapper.setProps({ selection: ["file:/a.txt"] });
+    await wrapper.findAll(".wb-file-row")[1].trigger("click", { ctrlKey: true });
+    expect(wrapper.emitted("update:selection")?.at(-1)).toEqual([["file:/a.txt", "file:/b.txt"]]);
+    // 再 Ctrl+点同一行：增减语义，取消勾选。
+    await wrapper.setProps({ selection: ["file:/a.txt", "file:/b.txt"] });
+    await wrapper.findAll(".wb-file-row")[1].trigger("click", { ctrlKey: true });
+    expect(wrapper.emitted("update:selection")?.at(-1)).toEqual([["file:/a.txt"]]);
+    wrapper.unmount();
+  });
+
+  it("shift+click selects the anchor..target range as kind+path keys (issue #82)", async () => {
+    const wrapper = mountTable();
+    await wrapper.setProps({ selection: ["file:/a.txt"] });
+    await wrapper.findAll(".wb-file-row")[2].trigger("click", { shiftKey: true });
+    expect(wrapper.emitted("update:selection")?.at(-1)).toEqual([["file:/a.txt", "file:/b.txt", "file:/c.txt"]]);
+    wrapper.unmount();
+  });
+
+  it("shift+click across same-name file+dir carries both entities as distinct keys", async () => {
+    const wrapper = mount(FileTable, {
+      props: {
+        entries: [
+          { name: "new-api", path: "/new-api", kind: "directory" },
+          { name: "new-api", path: "/new-api", kind: "file", size: 93 },
+        ],
+        selection: ["dir:/new-api"],
+        activePath: "",
+        sort: { column: "name", direction: "asc" },
+        t: (key: string) => key,
+      },
+    });
+    await wrapper.findAll(".wb-file-row")[1].trigger("click", { shiftKey: true });
+    expect(wrapper.emitted("update:selection")?.at(-1)).toEqual([["dir:/new-api", "file:/new-api"]]);
+    wrapper.unmount();
+  });
+});
+
