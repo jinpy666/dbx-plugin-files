@@ -1001,14 +1001,38 @@ mod tests {
 
         // Port 1 always refuses: a request honoring the poisoned proxy dies
         // instantly, one bypassing it reaches the stub.
+        //
+        // 对照组自密封：reqwest 在客户端构建期读取整套代理环境变量，宿主机
+        // 常驻的 `no_proxy=127.0.0.1,localhost` 会让对照组同样豁免回环地址、
+        // 绕开毒化代理直达 stub（beta.8 release notes 记录的本机 flake 根因：
+        // 带 no_proxy 单测必挂、清掉必过，已实证）。窗口内六项代理变量全收走
+        // 并原值恢复；窗口仍只横跨两次客户端构建（微秒级），旁观者风险与原先相同。
+        let saved_proxy_env: Vec<(String, Option<std::ffi::OsString>)> = [
+            "http_proxy",
+            "HTTP_PROXY",
+            "all_proxy",
+            "ALL_PROXY",
+            "no_proxy",
+            "NO_PROXY",
+        ]
+        .iter()
+        .map(|key| (key.to_string(), std::env::var_os(key)))
+        .collect();
+        for (key, _) in &saved_proxy_env {
+            std::env::remove_var(key);
+        }
         std::env::set_var("http_proxy", "http://127.0.0.1:1");
         std::env::set_var("HTTP_PROXY", "http://127.0.0.1:1");
         let control = reqwest::Client::new();
         let bypass = loopback_http_builder()
             .build()
             .expect("static client options");
-        std::env::remove_var("http_proxy");
-        std::env::remove_var("HTTP_PROXY");
+        for (key, value) in &saved_proxy_env {
+            match value {
+                Some(saved) => std::env::set_var(key, saved),
+                None => std::env::remove_var(key),
+            }
+        }
 
         // Control proves the poison actually intercepts on this platform;
         // without it a silent env miss would make the bypass assertion

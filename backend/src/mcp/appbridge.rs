@@ -409,11 +409,16 @@ mod tests {
     // ---- offline ensure / forward contract tests -----------------------
 
     /// Serializes tests that mutate the process-global app-data env vars
-    /// (cargo runs tests on parallel threads; the lock is local to the
-    /// appbridge tests so this module stays self-contained).
+    /// (cargo runs tests on parallel threads). The lock MUST be tests.rs's
+    /// `BRIDGE_ENV_LOCK`——此前这里自持一把私有锁，与 tests.rs 的 bridge 用例
+    /// 对同一组进程级 env 的读写没有串行化：并发的 remove_var 会让
+    /// `default_app_data_dir()` 回落到真实 app 数据目录，宿主机上常驻的
+    /// DBX 桌面端发布的活桥接端口会让 fail-closed / picks-up 两测非确定性
+    /// 失败（本机 64381 实锤，见 beta.9 发布后的 flake 排查）。
     fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        super::super::tests::BRIDGE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     #[test]
