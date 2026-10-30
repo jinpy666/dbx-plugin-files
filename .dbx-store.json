@@ -18,7 +18,7 @@
   "source": "https://github.com/jinpy666/dbx-plugin-files",
   "homepage": "https://github.com/jinpy666/dbx-plugin-files",
   "license": "MIT",
-  "releaseNotes": "预发布版（0.1.92-beta.10）。新增文件列表空白区鼠标框选（marquee）多选：拖动画矩形按行划选，Ctrl/Cmd 拖拽并入既有选中，位移过小按空白单击清空；补齐 #91 多选能力（表头全选 beta.7、Ctrl/Shift 点选 beta.9、框选 beta.10）。另修两个环境敏感的测试隔离问题（rc 代理测试自密封、appbridge env 共享锁），不影响运行时行为。",
+  "releaseNotes": "预发布版（0.1.92-beta.11）。内置 rclone 引擎升级 v1.75.1-dbx.1 → v1.75.2-dbx.1：上游安全修复为主的补丁版（go1.25→1.26.9 系 CVE、SFTP 失败上传占盘泄漏、rc 鉴权加固、serve nfs/webdav 路径穿越修复等），五平台二进制由 fork CI 重建并逐平台 SHA256 校验。",
   "localizations": {
     "zh-CN": {
       "name": "Files Studio",
