@@ -752,3 +752,72 @@ describe("FileTable 行点击多选（#91）", () => {
   });
 });
 
+// —— issue #91 候选增强：空白区鼠标框选（marquee）——对标 FileZilla/Finder：
+// 空白处按下拖动画矩形、按行索引划入选区；Ctrl/Cmd 并入既有选中；位移小于
+// 阈值按「空白处单击」=清空；行上按下绝不触发框选（行有自己的点击/拖拽语义）。
+// 测试环境 getBoundingClientRect 全 0、scrollTop 0，clientY 即内容坐标（行高 28）。
+describe("FileTable 空白区框选（#91 候选增强）", () => {
+  function pointerEvent(type: string, x: number, y: number, extra: MouseEventInit = {}) {
+    return new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y, ...extra });
+  }
+
+  async function dragMarquee(
+    wrapper: ReturnType<typeof mountTable>,
+    from: [number, number],
+    to: [number, number],
+    extra: MouseEventInit = {},
+  ) {
+    const viewport = wrapper.find(".wb-file-scroll");
+    viewport.element.dispatchEvent(pointerEvent("pointerdown", from[0], from[1], extra));
+    await nextTick();
+    viewport.element.dispatchEvent(pointerEvent("pointermove", to[0], to[1], extra));
+    await nextTick();
+    viewport.element.dispatchEvent(pointerEvent("pointerup", to[0], to[1], extra));
+    await nextTick();
+  }
+
+  it("plain drag across rows selects the covered range as kind+path keys", async () => {
+    const wrapper = mountTable();
+    await dragMarquee(wrapper, [10, 5], [60, 70]); // row0 → row2
+    expect(wrapper.emitted("update:selection")?.at(-1)).toEqual([["file:/a.txt", "file:/b.txt", "file:/c.txt"]]);
+    wrapper.unmount();
+  });
+
+  it("partial drag selects only the covered rows", async () => {
+    const wrapper = mountTable();
+    await dragMarquee(wrapper, [10, 30], [60, 60]); // row1 → row2
+    expect(wrapper.emitted("update:selection")?.at(-1)).toEqual([["file:/b.txt", "file:/c.txt"]]);
+    wrapper.unmount();
+  });
+
+  it("ctrl-drag unions the marquee range into the existing selection", async () => {
+    const wrapper = mountTable();
+    await wrapper.setProps({ selection: ["file:/a.txt"] });
+    await dragMarquee(wrapper, [10, 30], [60, 60], { ctrlKey: true }); // row1 → row2
+    expect(wrapper.emitted("update:selection")?.at(-1)).toEqual([["file:/a.txt", "file:/b.txt", "file:/c.txt"]]);
+    wrapper.unmount();
+  });
+
+  it("a sub-threshold blank press behaves as a click and clears the selection", async () => {
+    const wrapper = mountTable();
+    await wrapper.setProps({ selection: ["file:/a.txt"] });
+    await dragMarquee(wrapper, [10, 90], [12, 91]); // 位移 2px < 阈值
+    expect(wrapper.emitted("update:selection")?.at(-1)).toEqual([[]]);
+    wrapper.unmount();
+  });
+
+  it("a drag that starts on a row never opens a marquee", async () => {
+    const wrapper = mountTable();
+    await wrapper.setProps({ selection: ["file:/a.txt"] });
+    const row = wrapper.findAll(".wb-file-row")[1];
+    row.element.dispatchEvent(pointerEvent("pointerdown", 10, 35));
+    await nextTick();
+    wrapper.find(".wb-file-scroll").element.dispatchEvent(pointerEvent("pointermove", 60, 70));
+    await nextTick();
+    wrapper.find(".wb-file-scroll").element.dispatchEvent(pointerEvent("pointerup", 60, 70));
+    await nextTick();
+    expect(wrapper.emitted("update:selection")).toBeUndefined();
+    wrapper.unmount();
+  });
+});
+

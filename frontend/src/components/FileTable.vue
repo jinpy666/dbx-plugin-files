@@ -221,6 +221,102 @@ function onClickRow(entry: FileEntry, event: MouseEvent) {
   toggleSelection(entry, { meta: event.metaKey, ctrl: event.ctrlKey, shift: event.shiftKey });
 }
 
+// #91 候选增强：空白区鼠标框选（marquee）——对标 FileZilla/Finder。只在视口
+// 空白（spacer/视口自身）起步，行上按下不触发（行有自己的点击/拖拽语义）；
+// 按行索引换算覆盖范围（虚拟滚动下仍按全量 entries 的绝对下标）；选中统一
+// emit kind+path 复合 key。Ctrl/Cmd 拖拽并入既有选中；位移小于阈值按
+// 「空白处单击」处理=清空选中。
+const MARQUEE_THRESHOLD = 4;
+interface MarqueeState {
+  startX: number;
+  startY: number;
+  active: boolean;
+  rect: { x: number; y: number; w: number; h: number } | null;
+}
+const marquee = ref<MarqueeState | null>(null);
+
+/** clientY → 覆盖到的行下标（越界钳到首/末行）。 */
+function marqueeRowIndex(clientY: number): number {
+  const top = viewport.value?.getBoundingClientRect().top ?? 0;
+  const contentY = clientY - top + (viewport.value?.scrollTop ?? 0);
+  return Math.max(0, Math.min(props.entries.length - 1, Math.floor(contentY / ROW_HEIGHT)));
+}
+
+function onMarqueeStart(event: PointerEvent) {
+  if (event.button !== 0 || props.loading || props.failed || !props.entries.length) return;
+  if ((event.target as HTMLElement | null)?.closest(".wb-file-row, input, button, a")) return;
+  marquee.value = { startX: event.clientX, startY: event.clientY, active: false, rect: null };
+  try {
+    viewport.value?.setPointerCapture?.(event.pointerId);
+  } catch {
+    // 无指针捕获能力的宿主降级为元素内跟踪。
+  }
+  document.body.classList.add("wb-marquee-active");
+}
+
+function onMarqueeMove(event: PointerEvent) {
+  const state = marquee.value;
+  if (!state || !viewport.value) return;
+  const dx = event.clientX - state.startX;
+  const dy = event.clientY - state.startY;
+  if (!state.active) {
+    if (Math.max(Math.abs(dx), Math.abs(dy)) < MARQUEE_THRESHOLD) return;
+    state.active = true;
+  }
+  event.preventDefault();
+  const bounds = viewport.value.getBoundingClientRect();
+  state.rect = {
+    x: Math.min(state.startX, event.clientX) - bounds.left,
+    y: Math.min(state.startY, event.clientY) - bounds.top + viewport.value.scrollTop,
+    w: Math.abs(dx),
+    h: Math.abs(dy),
+  };
+  applyMarqueeSelection(state.startY, event.clientY, event.metaKey || event.ctrlKey);
+}
+
+function applyMarqueeSelection(startClientY: number, endClientY: number, additive: boolean) {
+  const first = marqueeRowIndex(startClientY);
+  const last = marqueeRowIndex(endClientY);
+  const [from, to] = first <= last ? [first, last] : [last, first];
+  const range = props.entries.slice(from, to + 1).map((candidate) => entryKey(candidate));
+  if (!additive) {
+    emit("update:selection", range);
+    emit("update:activePath", props.entries[to].path);
+    return;
+  }
+  // Ctrl/Cmd：范围并入既有选中（既有部分不因重叠被移除）。
+  const kept = props.selection.filter((key) => !range.includes(key));
+  emit("update:selection", [...kept, ...range]);
+}
+
+function endMarquee(event: PointerEvent, apply: boolean) {
+  const state = marquee.value;
+  if (!state) return;
+  marquee.value = null;
+  document.body.classList.remove("wb-marquee-active");
+  try {
+    viewport.value?.releasePointerCapture?.(event.pointerId);
+  } catch {
+    // 与 setPointerCapture 同源的降级。
+  }
+  if (!apply || !state.active) {
+    // 未成框：空白处单击=清空选中（对标 FileZilla）。
+    if (apply && props.selection.length) emit("update:selection", []);
+    return;
+  }
+  // 键盘扩选锚点跟随释放行，保证随后 Shift+方向键从该行起算。
+  const index = marqueeRowIndex(event.clientY);
+  nav.value = { index, anchor: index };
+}
+
+function onMarqueeEnd(event: PointerEvent) {
+  endMarquee(event, true);
+}
+
+function onMarqueeCancel(event: PointerEvent) {
+  endMarquee(event, false);
+}
+
 function onContextRow(entry: FileEntry, event: MouseEvent) {
   if (!selectedSet.value.has(entryKey(entry))) {
     emit("update:selection", [entryKey(entry)]);
@@ -474,7 +570,10 @@ function onResizeEnd() {
     </span>
   </div>
   <!-- R3-P2-8：滚动容器 role=listbox + aria-label，行 role=option + aria-selected。 -->
-  <div ref="viewport" class="wb-file-scroll" :data-pane-id="paneId ?? ''" role="listbox" aria-multiselectable="true" :aria-label="t('fileListLabel')" :aria-busy="Boolean(loading)" tabindex="0" @scroll="onScroll" @keydown="onListKeydown" @contextmenu.prevent.stop="emit('blank-context', { x: $event.clientX, y: $event.clientY })">
+  <div ref="viewport" class="wb-file-scroll" :data-pane-id="paneId ?? ''" role="listbox" aria-multiselectable="true" :aria-label="t('fileListLabel')" :aria-busy="Boolean(loading)" tabindex="0" @scroll="onScroll" @keydown="onListKeydown" @contextmenu.prevent.stop="emit('blank-context', { x: $event.clientX, y: $event.clientY })" @pointerdown="onMarqueeStart" @pointermove="onMarqueeMove" @pointerup="onMarqueeEnd" @pointercancel="onMarqueeCancel">
+    <!-- #91 候选增强：框选矩形叠层（纯视觉，pointer-events 关闭）。 -->
+    <div v-if="marquee?.rect" class="wb-marquee-rect" aria-hidden="true" :style="{ left: `${marquee.rect.x}px`, top: `${marquee.rect.y}px`, width: `${marquee.rect.w}px`, height: `${marquee.rect.h}px` }" />
+
     <div v-if="failed && !loading" class="wb-file-empty" role="status" style="display: flex; flex-direction: column; align-items: center">
       <p>{{ t("directoryLoadFailed") }}</p>
       <button type="button" class="wb-toolbar-button" @click="emit('retry')">{{ t("retry") }}</button>

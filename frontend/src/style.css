@@ -165,6 +165,10 @@ button.wb-session-reconnect:focus-visible { outline: 2px solid var(--destructive
 body.wb-col-resizing { cursor: col-resize; user-select: none; -webkit-user-select: none; }
 .wb-col-menu-gap { width: 16px; flex: 0 0 16px; }
 
+/* #91 候选增强：空白区框选矩形叠层（纯视觉；主题色沿用 --primary）。 */
+.wb-marquee-rect { position: absolute; z-index: 5; pointer-events: none; background: color-mix(in srgb, var(--primary) 15%, transparent); border: 1px solid color-mix(in srgb, var(--primary) 55%, transparent); border-radius: 2px; }
+body.wb-marquee-active { cursor: crosshair; user-select: none; -webkit-user-select: none; }
+
 /* ---- context menu --------------------------------------------------------- */
 /* 对齐 DBX 宿主右键菜单（globals.css cn-menu-translucent / context-menu 规格，
    Issue #9）：不透光面、1px 细边、大半径柔影；深色为默认基底，浅色按主题覆盖。 */
