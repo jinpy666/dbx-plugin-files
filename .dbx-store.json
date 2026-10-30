@@ -18,7 +18,7 @@
   "source": "https://github.com/jinpy666/dbx-plugin-files",
   "homepage": "https://github.com/jinpy666/dbx-plugin-files",
   "license": "MIT",
-  "releaseNotes": "预发布版（0.1.92-beta.8）。Files stdio MCP 兼容 2026-07-28 与 2024-11-05 协议修订版：协商 initialize 版本、提供 server/discover 能力发现，并为成功结果补齐 resultType。补齐 schedule_create 参数说明，更新 MCP smoke、文档与 schema 一致性检查。",
+  "releaseNotes": "预发布版（0.1.92-beta.9）。修复行点击多选：Windows 上 Ctrl+点选此前未转发 ctrlKey 被当作普通点击重置为单选；Shift 点选区段自 v0.1.88 起因 emit 裸 path 与「类型+路径」复合选中身份不匹配而失效。修复后 Shift 区段、Ctrl/Cmd 增减在全协议（含 S3）一致可用，并覆盖同名文件+目录双实体。",
   "localizations": {
     "zh-CN": {
       "name": "Files Studio",
