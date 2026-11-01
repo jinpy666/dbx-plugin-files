@@ -18,7 +18,7 @@
   "source": "https://github.com/jinpy666/dbx-plugin-files",
   "homepage": "https://github.com/jinpy666/dbx-plugin-files",
   "license": "MIT",
-  "releaseNotes": "预发布版（0.1.92-beta.11）。内置 rclone 引擎升级 v1.75.1-dbx.1 → v1.75.2-dbx.1：上游安全修复为主的补丁版（go1.25→1.26.9 系 CVE、SFTP 失败上传占盘泄漏、rc 鉴权加固、serve nfs/webdav 路径穿越修复等），五平台二进制由 fork CI 重建并逐平台 SHA256 校验。",
+  "releaseNotes": "Files Studio v0.1.92 正式版。相对 v0.1.91：多选与批量下载增强（表头全选三态复选框、行点击 Ctrl/Shift 多选、空白区框选多选、下载选中项支持目录/混选）；预览头部文件类型图标与打开方式下拉；目录树侧栏超长名撑开修复并支持拖拽宽度；内置 rclone 引擎升级 v1.75.2-dbx.1（上游安全修复为主）；stdio MCP 兼容 2026-07-28 与 2024-11-05 协议修订版（initialize 版本协商、server/discover 能力发现、成功结果 resultType，并补齐 schedule_create 参数说明）。",
   "localizations": {
     "zh-CN": {
       "name": "Files Studio",
