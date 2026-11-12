@@ -1255,13 +1255,19 @@ pub async fn public_link(
     remote: &str,
     root: &str,
     lock_to_root: bool,
+    expire_secs: Option<u64>,
 ) -> Result<String, String> {
     let relative = gate_read(root, lock_to_root, remote)?;
+    // Issue #98: `expire` rides the rc call as a duration string (rc parses
+    // "2006-01-02" dates or Go durations; invalid values surface rclone's
+    // own 400). Backends without public links keep failing with rclone's
+    // error text regardless.
+    let mut params = json!({ "fs": fs, "remote": relative });
+    if let Some(expire_secs) = expire_secs {
+        params["expire"] = json!(format!("{expire_secs}s"));
+    }
     let response = client
-        .call(
-            "operations/publiclink",
-            &json!({ "fs": fs, "remote": relative }),
-        )
+        .call("operations/publiclink", &params)
         .await
         .map_err(|error| format!("Failed to presign '{}': {error}", relative.trim_matches('/')))?;
     response
@@ -2281,7 +2287,7 @@ mod tests {
             move_file(&client, "src:", "s.txt", "dst:", "../e", locked, true)
                 .await
                 .unwrap_err(),
-            public_link(&client, "dbx:", "../e", locked, true)
+            public_link(&client, "dbx:", "../e", locked, true, None)
                 .await
                 .unwrap_err(),
         ];
@@ -2310,7 +2316,7 @@ mod tests {
             move_file(&client, "src:", "s.txt", "dst:", "/etc/x", locked, true)
                 .await
                 .unwrap_err(),
-            public_link(&client, "dbx:", "/etc/x", locked, true)
+            public_link(&client, "dbx:", "/etc/x", locked, true, None)
                 .await
                 .unwrap_err(),
         ];
@@ -2616,12 +2622,23 @@ mod tests {
     async fn live_public_link_local_error_passthrough() {
         let Some(live) = Live::start().await else { return };
         write_bytes(&live.client, &live.fs, "pl.txt", b"share").await.unwrap();
-        let error = public_link(&live.client, &live.fs, "pl.txt", "", false)
+        let error = public_link(&live.client, &live.fs, "pl.txt", "", false, None)
             .await
             .unwrap_err();
         assert!(
             error.contains("doesn't support public links"),
             "rc 错误必须透传: {error}"
+        );
+        // Issue #98: the expire duration rides the rc params — on a backend
+        // that rejects public links outright the error is identical, proving
+        // the extra key does not break the rc contract (a malformed one
+        // would surface rc's 400 "parse duration" instead).
+        let error = public_link(&live.client, &live.fs, "pl.txt", "", false, Some(86400))
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("doesn't support public links"),
+            "expire 透传不得破坏 rc 契约: {error}"
         );
     }
 

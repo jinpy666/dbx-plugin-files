@@ -1106,15 +1106,17 @@ impl Plugin {
                 let request: model::PublicLinkRequest = parse(params)?;
                 let binding = self.rclone.binding(&request.connection_id)?;
                 let client = self.rclone.client_for_binding(&binding).await?;
-                // `expire_secs` is ignored: rc `operations/publiclink` takes
-                // no expiry parameter (backends without public links surface
-                // rclone's own error text through ops::public_link).
+                // Issue #98: `expire_secs` now rides through to rc
+                // `operations/publiclink` (`expire` duration) for backends
+                // that support expiring links (s3 presign URLs); backends
+                // without public links surface rclone's own error text.
                 let url = rclone::ops::public_link(
                     &client,
                     &rclone::call_fs(&binding),
                     &request.path,
                     &binding.root,
                     binding.lock_to_root,
+                    request.expire_secs,
                 )
                 .await?;
                 Ok(json!({ "url": url }))

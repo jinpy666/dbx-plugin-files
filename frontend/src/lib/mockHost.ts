@@ -555,7 +555,10 @@ export function installMockHost() {
         if (!presign) throw new Error("operation not supported: backend has no public links");
         const path = str("path");
         assertOk(path);
-        return { url: `https://mock.example/presigned${path}?X-Expires=audit` };
+        // Issue #98: expireSecs rides through (mock echoes it for tests).
+        const expireSecs = typeof p.expireSecs === "number" ? p.expireSecs : undefined;
+        const query = expireSecs !== undefined ? `&ExpireSecs=${expireSecs}` : "";
+        return { url: `https://mock.example/presigned${path}?X-Expires=audit${query}` };
       }
       case "files/quickPaths": {
         const source = treeFor(p.connectionId);

@@ -134,7 +134,7 @@ type MenuAction =
   | "open" | "preview" | "download" | "rename" | "delete" | "copyPath" | "copyName"
   | "syncDir" | "copyDir" | "copy" | "move" | "extract" | "archiveContents" | "compress"
   // 对标 rclone-dashboard：目录体积统计（files/size）与公开链接（files/publicLink）
-  | "computeSize" | "copyPublicLink"
+  | "computeSize" | "copyPublicLink" | "copyPublicLinkExpiring"
   // rclone 深度能力：SUM 校验文件 / 清理空目录 / 目录内容比对（files/check）
   // 批次7：右键 SUM 校验文件 → 核验所在目录（files/checksum/verify）
   | "hashsum" | "rmdirs" | "checkDir" | "verifySum"
@@ -4520,6 +4520,9 @@ function menuAction(action: MenuAction) {
     case "copyPublicLink":
       void copyPublicLink(entry, side);
       break;
+    case "copyPublicLinkExpiring":
+      void copyPublicLink(entry, side, true);
+      break;
     case "syncDir":
     case "copyDir":
       startDirJob(action, entry, side);
@@ -4630,12 +4633,30 @@ async function runRmdirs(entry: FileEntry, side: PaneSide) {
   }
 }
 
-/** 公开链接：presign 能力门控（菜单项仅在 capabilities.presign 时出现）。 */
-async function copyPublicLink(entry: FileEntry, side: PaneSide) {
+/** 公开链接：presign 能力门控（菜单项仅在 capabilities.presign 时出现）。
+ * `askExpiry` 时弹输入框要过期时长（如 1h / 24h / 7d，空 = 后端默认），
+ * 走 files/publicLink 的 expire 透传（issue #98）。 */
+async function copyPublicLink(entry: FileEntry, side: PaneSide, askExpiry = false) {
   try {
+    let expire_secs: number | undefined;
+    if (askExpiry) {
+      const raw = window.prompt(t("publicLinkExpiryPrompt"), "24h");
+      if (raw === null) return; // cancelled
+      const text = raw.trim();
+      if (text) {
+        const match = /^(\d+)([smhd])$/.exec(text);
+        if (!match) {
+          showError(t("publicLinkExpiryInvalid"));
+          return;
+        }
+        const unit_secs = { s: 1, m: 60, h: 3600, d: 86400 }[match[2] as "s" | "m" | "h" | "d"];
+        expire_secs = Number(match[1]) * unit_secs;
+      }
+    }
     const result = await call<{ url: string }>("files/publicLink", {
       path: entry.path,
       connectionId: sideConnectionId(side) ?? connectionId.value,
+      ...(expire_secs !== undefined ? { expireSecs: expire_secs } : {}),
     });
     await writeClipboardText(result.url, t("copiedPublicLink"));
   } catch (cause) {
@@ -5910,6 +5931,7 @@ onBeforeUnmount(() => {
         <button role="menuitem" @click="menuAction('copyPath')"><Link2 /> {{ t("copyPath") }}</button>
         <button role="menuitem" @click="menuAction('copyName')"><FileText /> {{ t("copyName") }}</button>
         <button v-if="capabilities?.presign" role="menuitem" @click="menuAction('copyPublicLink')"><Link /> {{ t("copyPublicLink") }}</button>
+        <button v-if="capabilities?.presign" role="menuitem" @click="menuAction('copyPublicLinkExpiring')"><Link /> {{ t("copyPublicLinkExpiring") }}</button>
       </template>
     </div>
 
