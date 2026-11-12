@@ -265,7 +265,8 @@ impl RcloneEngine {
         &self,
         binding: &registry::RemoteBinding,
     ) -> Result<RcClient, String> {
-        let (key, env) = proxy_route(binding.proxy.as_ref());
+        let (key, env) =
+            proxy_route(binding.proxy.as_ref(), binding.no_check_certificate);
         let (client, respawned) = self
             .supervisor
             .lock()
@@ -351,7 +352,7 @@ impl RcloneEngine {
     /// from elsewhere). Reading the state reaps the exited child so the next
     /// `client_for` respawns into a fresh process.
     async fn rcd_died_after_spawn(&self, connection: &crate::model::StoredConnection) -> bool {
-        let (key, _) = proxy_route(connection.proxy.as_ref());
+        let (key, _) = proxy_route(connection.proxy.as_ref(), connection.no_check_certificate);
         matches!(self.supervisor.lock().await.group_alive(&key), Some(false))
     }
 
@@ -365,7 +366,7 @@ impl RcloneEngine {
         connection_id: &str,
     ) -> Result<(RcClient, RcdSpawnInfo, String), String> {
         let binding = self.binding(connection_id)?;
-        let key = registry::group_key_of(binding.proxy.as_ref());
+        let key = registry::group_key_of(binding.proxy.as_ref(), binding.no_check_certificate);
         let client = self.client_for_binding(&binding).await?;
         let spawn_info = self
             .supervisor
@@ -385,7 +386,7 @@ impl RcloneEngine {
         &self,
         connection: &crate::model::StoredConnection,
     ) -> Result<RcClient, String> {
-        let (key, env) = proxy_route(connection.proxy.as_ref());
+        let (key, env) = proxy_route(connection.proxy.as_ref(), connection.no_check_certificate);
         let (client, respawned) = self
             .supervisor
             .lock()
@@ -548,7 +549,8 @@ impl RcloneEngine {
     pub async fn keepalive_sweep(&self) {
         for key in self.registry.live_group_keys() {
             let proxy = self.registry.proxy_in_group(&key);
-            let (route_key, env) = proxy_route(proxy.as_ref());
+            let no_check_certificate = self.registry.no_check_certificate_in_group(&key);
+            let (route_key, env) = proxy_route(proxy.as_ref(), no_check_certificate);
             let (client, respawned) = match self
                 .supervisor
                 .lock()
@@ -829,27 +831,35 @@ mod tunnel_target_tests {
 /// `registry::params_for` instead.
 fn proxy_route(
     proxy: Option<&crate::model::ProxyConfig>,
+    no_check_certificate: bool,
 ) -> (String, Option<RcdEnv>) {
-    let key = registry::group_key_of(proxy);
-    match proxy {
-        None => (key, None),
+    let key = registry::group_key_of(proxy, no_check_certificate);
+    let mut env = match proxy {
+        None => None,
         Some(proxy) => {
             let url = match proxy.kind {
                 crate::model::ProxyKind::Http => proxy.url(),
                 crate::model::ProxyKind::Socks5 => format!("socks5://{}", proxy.url()),
             };
-            (
-                key,
-                Some(RcdEnv {
-                    http_proxy: Some(url.clone()),
-                    https_proxy: Some(url),
-                    // An inherited NO_PROXY could bypass the proxy for the
-                    // target host — a proxied group always proxies.
-                    no_proxy: None,
-                }),
-            )
+            Some(RcdEnv {
+                http_proxy: Some(url.clone()),
+                https_proxy: Some(url),
+                // An inherited NO_PROXY could bypass the proxy for the
+                // target host — a proxied group always proxies.
+                no_proxy: None,
+                no_check_certificate: false,
+            })
         }
+    };
+    if no_check_certificate {
+        // Issue #96: the s3-family backends expose no per-remote TLS
+        // option; rclone's global `--no-check-certificate` rides the env
+        // spelling of the flag. Only this group's rcd processes are
+        // affected — connections without the flag keep full verification.
+        let env = env.get_or_insert_with(RcdEnv::default);
+        env.no_check_certificate = true;
     }
+    (key, env)
 }
 
 /// Server-side rclone transfers (`operations/copy`, `sync/copy`) run both
@@ -1017,6 +1027,7 @@ mod wiring_tests {
             read_only: false,
             allow_delete: true,
             proxy: None,
+            no_check_certificate: false,
             display_charset: String::new(),
         }
     }

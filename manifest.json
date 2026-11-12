@@ -568,11 +568,28 @@
               "tardigrade",
               "ulozto",
               "union",
-              "zoho"
+              "zoho",
+              "s3",
+              "gcs",
+              "oss",
+              "cos",
+              "obs",
+              "qiniu",
+              "r2",
+              "wasabi",
+              "spaces",
+              "scaleway",
+              "idrive",
+              "us3",
+              "ecloud",
+              "nos",
+              "bos",
+              "tos",
+              "ks3"
             ]
           },
           "placeholder": "{ \"encoding\": \"Slash,Dot\" }",
-          "description": "Optional extra options for the selected backend as a JSON object, using the option names from rclone's docs. Unknown options are rejected with the list of valid names; common settings have dedicated fields above."
+          "description": "Optional extra options for the selected backend as a JSON object, using the option names from rclone's docs. Unknown options are rejected with the list of valid names; common settings have dedicated fields above. S3-family note: upload ACLs use `acl` (e.g. `private`, `bucket-owner-full-control`); TLS server-certificate verification is toggled by the dedicated field below, not by options here."
         },
         {
           "key": "access_token",
@@ -906,6 +923,38 @@
             ]
           },
           "description": "Address buckets as virtual hostnames (bucket.host) instead of path-style URLs; enable when the provider requires it."
+        },
+        {
+          "key": "no_check_certificate",
+          "label": "Skip certificate verification",
+          "type": "boolean",
+          "binding": "config",
+          "default": false,
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "s3",
+              "gcs",
+              "oss",
+              "cos",
+              "obs",
+              "qiniu",
+              "r2",
+              "wasabi",
+              "spaces",
+              "scaleway",
+              "idrive",
+              "us3",
+              "ecloud",
+              "nos",
+              "bos",
+              "tos",
+              "ks3",
+              "webdav",
+              "http"
+            ]
+          },
+          "description": "Do not verify the server TLS certificate (insecure). For test endpoints with expired or self-signed certificates; a dedicated engine process serves such connections, other connections keep full verification. WebDAV/HTTP use rclone's own flag; S3-family backends have no per-connection TLS option, so the toggle is honored process-wide for this connection only."
         },
         {
           "key": "access_key_id",
@@ -1576,7 +1625,7 @@
             "bucket": {
               "label": "存储桶",
               "placeholder": "my-bucket or my-bucket/prefix",
-              "description": "存储桶名称；Google Cloud Storage 必填。支持的 S3 兼容协议留空则在连接根目录列出全部存储桶。若需将连接限定到桶内前缀（例如凭据仅授权某个子路径），在此填写\u201c存储桶/前缀\u201d，或保留桶名并把前缀填入 Root path 字段。"
+              "description": "存储桶名称；Google Cloud Storage 必填。支持的 S3 兼容协议留空则在连接根目录列出全部存储桶。若需将连接限定到桶内前缀（例如凭据仅授权某个子路径），在此填写“存储桶/前缀”，或保留桶名并把前缀填入 Root path 字段。"
             },
             "endpoint": {
               "label": "端点",
@@ -1694,6 +1743,10 @@
             "enable_virtual_host_style": {
               "label": "虚拟主机风格",
               "description": "以虚拟主机名（bucket.host）而非路径风格 URL 寻址存储桶；服务商要求时开启。"
+            },
+            "no_check_certificate": {
+              "label": "跳过证书校验",
+              "description": "不校验服务器 TLS 证书（不安全）。用于证书过期或自签名的测试环境；此类连接由独立引擎进程承载，其他连接保持完整校验。S3 家族后端没有单连接 TLS 选项，开关仅以进程级方式作用于该连接。"
             },
             "token": {
               "label": "API 密钥 / 令牌",
@@ -1875,7 +1928,7 @@
             "bucket": {
               "label": "儲存桶",
               "placeholder": "my-bucket or my-bucket/prefix",
-              "description": "儲存桶名稱；Google Cloud Storage 必填。支援的 S3 相容協定留空則在連線根目錄列出全部儲存桶。若需將連線限定到儲存桶內前綴（例如憑證僅授權某個子路徑），在此填寫\u201c儲存桶/前綴\u201d，或保留儲存桶名稱並把前綴填入 Root path 欄位。"
+              "description": "儲存桶名稱；Google Cloud Storage 必填。支援的 S3 相容協定留空則在連線根目錄列出全部儲存桶。若需將連線限定到儲存桶內前綴（例如憑證僅授權某個子路徑），在此填寫“儲存桶/前綴”，或保留儲存桶名稱並把前綴填入 Root path 欄位。"
             },
             "endpoint": {
               "label": "端點",
@@ -1993,6 +2046,10 @@
             "enable_virtual_host_style": {
               "label": "虛擬主機風格",
               "description": "以虛擬主機名（bucket.host）而非路徑風格 URL 定址儲存桶；服務商要求時開啟。"
+            },
+            "no_check_certificate": {
+              "label": "跳過憑證驗證",
+              "description": "不驗證伺服器 TLS 憑證（不安全）。用於憑證過期或自簽名的測試環境；此類連線由獨立引擎程序承載，其他連線保持完整驗證。S3 家族後端沒有單連線 TLS 選項，開關僅以程序級方式作用於該連線。"
             },
             "token": {
               "label": "API 金鑰 / 權杖",
@@ -2293,6 +2350,10 @@
               "label": "Virtual-host style",
               "description": "Address buckets as virtual hostnames (bucket.host) instead of path-style URLs; enable when the provider requires it."
             },
+            "no_check_certificate": {
+              "label": "Skip certificate verification",
+              "description": "Do not verify the server TLS certificate (insecure). For test endpoints with expired or self-signed certificates; a dedicated engine process serves such connections, other connections keep full verification."
+            },
             "token": {
               "label": "API key / token",
               "placeholder": "your-api-key-or-token",
@@ -2591,6 +2652,10 @@
             "enable_virtual_host_style": {
               "label": "Estilo virtual-host",
               "description": "Direcciona el bucket como nombre de host virtual (bucket.host) en vez de URL estilo ruta; actívalo si el proveedor lo exige."
+            },
+            "no_check_certificate": {
+              "label": "Omitir la verificación del certificado",
+              "description": "No verificar el certificado TLS del servidor (inseguro). Para endpoints de prueba con certificados caducados o autofirmados; un proceso de motor dedicado atiende estas conexiones, las demás mantienen la verificación completa."
             },
             "token": {
               "label": "Clave de API / token",
@@ -2891,6 +2956,10 @@
               "label": "Stile virtual-host",
               "description": "Indirizza il bucket come nome host virtuale (bucket.host) invece che URL in stile percorso; attivalo se il provider lo richiede."
             },
+            "no_check_certificate": {
+              "label": "Salta la verifica del certificato",
+              "description": "Non verificare il certificato TLS del server (insicuro). Per endpoint di test con certificati scaduti o autofirmati; un processo dedicato serve queste connessioni, le altre mantengono la verifica completa."
+            },
             "token": {
               "label": "Chiave API / token",
               "placeholder": "your-api-key-or-token",
@@ -3190,6 +3259,10 @@
               "label": "バーチャルホスト形式",
               "description": "パス形式ではなく仮想ホスト名（bucket.host）でバケットを指定します。プロバイダーが要求する場合に有効化します。"
             },
+            "no_check_certificate": {
+              "label": "証明書検証をスキップ",
+              "description": "サーバーのTLS証明書を検証しません（安全ではありません）。期限切れや自己署名の証明書を使うテスト環境向けです。該当する接続は専用のエンジンプロセスで処理され、他の接続は通常どおり検証されます。"
+            },
             "token": {
               "label": "API キー / トークン",
               "placeholder": "your-api-key-or-token",
@@ -3488,6 +3561,10 @@
             "enable_virtual_host_style": {
               "label": "Estilo virtual-host",
               "description": "Endereça o bucket como nome de host virtual (bucket.host) em vez de URL estilo caminho; ative se o provedor exigir."
+            },
+            "no_check_certificate": {
+              "label": "Ignorar verificação do certificado",
+              "description": "Não verifica o certificado TLS do servidor (inseguro). Para endpoints de teste com certificados expirados ou autoassinados; um processo dedicado do motor atende essas conexões, as demais mantêm a verificação completa."
             },
             "token": {
               "label": "Chave de API / token",

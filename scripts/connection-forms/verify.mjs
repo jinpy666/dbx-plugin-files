@@ -185,6 +185,9 @@ const TOKEN_VISIBLE = ["fichier", "filefabric", "filelu", "filen", "linkbox", "p
 const TOKEN_REQUIRED = ["filelu", "linkbox", "quatrix", "shade"];
 const QUICK_PROTOCOLS = new Set(["fs", "aliyun-drive", "dropbox", "gdrive", "onedrive", "yandex-disk", "s3", "gcs", "azblob", "obs", "oss", "cos", "qiniu", "r2", "wasabi", "spaces", "scaleway", "idrive", "us3", "ecloud", "nos", "bos", "tos", "ks3", "webdav", "ftp", "sftp", "sftp-native", "smb", "koofr", "pcloud", "seafile"]);
 const GENERIC_PROTOCOLS = options("protocol").filter((value) => !QUICK_PROTOCOLS.has(value));
+// Issue #96: the S3 family also exposes the advanced-options JSON and the
+// skip-TLS-verify toggle. Mirrors backend/src/model.rs S3_FAMILY_PROTOCOLS.
+const S3_FAMILY = ["s3", "gcs", "oss", "cos", "obs", "qiniu", "r2", "wasabi", "spaces", "scaleway", "idrive", "us3", "ecloud", "nos", "bos", "tos", "ks3"];
 assert(GENERIC_PROTOCOLS.length > 0, "generic rclone protocol options must exist");
 let scenarios = 0;
 function state(overrides) {
@@ -239,7 +242,10 @@ for (const protocol of options("protocol")) {
     current.required("security_token", false);
     // Generic rclone backends (no quick form) enter their extra options as
     // one JSON object; every other protocol hides it.
-    current.visible("config", GENERIC_PROTOCOLS.includes(protocol));
+    current.visible("config", GENERIC_PROTOCOLS.includes(protocol) || S3_FAMILY.includes(protocol));
+    // Issue #96: skip-TLS-verify toggle for the S3 family plus the plain
+    // HTTP-family backends (webdav/http), hidden for everything else.
+    current.visible("no_check_certificate", S3_FAMILY.includes(protocol) || ["webdav", "http"].includes(protocol));
     // Remote service accounts, per protocol family.
     current.visible("username", USERNAME_VISIBLE.includes(protocol));
     current.required("username", USERNAME_REQUIRED.includes(protocol));

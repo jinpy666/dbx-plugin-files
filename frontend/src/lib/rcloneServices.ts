@@ -49,6 +49,17 @@ export const GENERIC_PROTOCOL_IDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * S3 家族协议（issue #96）：结构化表单字段映射到 s3 后端，同时接受
+ * `config` JSON 承载额外后端选项（如 `acl`）。与后端
+ * `model::S3_FAMILY_PROTOCOLS` 及 manifest 的 `Advanced options (JSON)`
+ * `visible_when` 列表逐项对齐。
+ */
+export const S3_FAMILY_PROTOCOL_IDS: ReadonlySet<string> = new Set([
+  "s3", "gcs", "oss", "cos", "obs", "qiniu", "r2", "wasabi", "spaces",
+  "scaleway", "idrive", "us3", "ecloud", "nos", "bos", "tos", "ks3",
+]);
+
+/**
  * 常用后端的参数示例（JSON 编辑器的占位草稿）。键名经
  * `rclone config providers <type>` 实测核对（v1.75.1）；未列出的后端
  * 直接手写 JSON，键名见 rclone 文档。

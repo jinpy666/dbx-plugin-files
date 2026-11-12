@@ -524,7 +524,7 @@ pub async fn start_mount(
     let binding = engine.binding(connection_id)?;
     // Hold the in-flight counter for the whole mount lifetime: the rcd must
     // outlive every kernel mount and gateway request against it.
-    let work = engine.start_work(&rclone::registry::group_key_of(binding.proxy.as_ref()));
+    let work = engine.start_work(&rclone::registry::group_key_of(binding.proxy.as_ref(), binding.no_check_certificate));
     let client = engine.client_for_binding(&binding).await?;
     let (fs, mount_path) = mount_surface(&binding, request.path.as_deref())?;
 
@@ -1352,6 +1352,7 @@ mod tests {
             read_only: false,
             allow_delete: true,
             proxy: None,
+            no_check_certificate: false,
             display_charset: String::new(),
         };
         // Whole root: one fs string, no re-basing.

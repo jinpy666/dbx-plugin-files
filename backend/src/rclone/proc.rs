@@ -58,6 +58,10 @@ pub struct RcdEnv {
     pub http_proxy: Option<String>,
     pub https_proxy: Option<String>,
     pub no_proxy: Option<String>,
+    /// Spawn the rcd with `RCLONE_NO_CHECK_CERTIFICATE=true` (issue #96):
+    /// process-level skip of TLS server-certificate verification for the
+    /// whole group. Group membership already isolates these connections.
+    pub no_check_certificate: bool,
 }
 
 impl RcdEnv {
@@ -83,6 +87,12 @@ impl RcdEnv {
                     command.env_remove(lower);
                 }
             }
+        }
+        if self.no_check_certificate {
+            // Both spellings, same RCLONE_* convention as the rc
+            // credentials above (read back case-insensitively by rclone).
+            command.env("RCLONE_NO_CHECK_CERTIFICATE", "true");
+            command.env("rclone_no_check_certificate", "true");
         }
     }
 }
@@ -1075,6 +1085,7 @@ mod tests {
             http_proxy: Some("http://user:secret@127.0.0.1:8080".to_string()),
             https_proxy: None,
             no_proxy: Some("127.0.0.1,localhost".to_string()),
+            no_check_certificate: false,
         };
         let mut command = std::process::Command::new("true");
         env.apply_to(&mut command);
@@ -1126,6 +1137,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Issue #96: the skip-TLS group spawns with rclone's env spelling of
+    /// `--no-check-certificate`; the default env must not set it.
+    #[test]
+    fn rcd_env_sets_no_check_certificate_only_when_asked() {
+        let mut command = std::process::Command::new("true");
+
+        let mut env = RcdEnv::default();
+        env.apply_to(&mut command);
+        let set = command
+            .get_envs()
+            .any(|(key, value)| {
+                key.to_string_lossy().to_uppercase() == "RCLONE_NO_CHECK_CERTIFICATE"
+                    && value.is_some()
+            });
+        assert!(!set, "default env must not set the flag");
+
+        let mut command = std::process::Command::new("true");
+        env.no_check_certificate = true;
+        env.apply_to(&mut command);
+        let values: Vec<String> = command
+            .get_envs()
+            .filter_map(|(key, value)| {
+                (key.to_string_lossy().to_uppercase() == "RCLONE_NO_CHECK_CERTIFICATE")
+                    .then(|| value.unwrap().to_string_lossy().into_owned())
+            })
+            .collect();
+        assert_eq!(values, vec!["true"; 2], "both spellings must carry true");
     }
 
     /// Proxy-group rcd stays healthy with env overrides pointing at a

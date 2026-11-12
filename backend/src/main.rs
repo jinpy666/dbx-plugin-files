@@ -378,7 +378,7 @@ impl Plugin {
                 // connection and no async work is in flight, stop its rcd.
                 // Groups still draining work are reaped by the keepalive
                 // sweep once the work settles.
-                let group = rclone::registry::group_key_of(binding.proxy.as_ref());
+                let group = rclone::registry::group_key_of(binding.proxy.as_ref(), binding.no_check_certificate);
                 self.rclone.shutdown_group_if_idle(&group).await;
                 Ok(json!({ "success": true }))
             }
@@ -1306,6 +1306,7 @@ impl Plugin {
                                 .rclone
                                 .start_work(&rclone::registry::group_key_of(
                                     binding.proxy.as_ref(),
+                                    binding.no_check_certificate,
                                 )),
                         },
                     );
@@ -1422,6 +1423,7 @@ impl Plugin {
                                 .rclone
                                 .start_work(&rclone::registry::group_key_of(
                                     binding.proxy.as_ref(),
+                                    binding.no_check_certificate,
                                 )),
                         },
                     );
@@ -1530,6 +1532,7 @@ impl Plugin {
                                 .rclone
                                 .start_work(&rclone::registry::group_key_of(
                                     binding.proxy.as_ref(),
+                                    binding.no_check_certificate,
                                 )),
                         },
                     );
@@ -3751,6 +3754,7 @@ async fn rclone_start_dir_job(
         // source group's key tracks the rcd the job runs on.
         work: rclone.start_work(&rclone::registry::group_key_of(
             source_binding.proxy.as_ref(),
+            source_binding.no_check_certificate,
         )),
     };
     let is_move = matches!(record.kind, rclone::sync::SyncKind::Move);
@@ -4130,6 +4134,7 @@ async fn rclone_start_check_job(
         bisync_session: None,
         work: rclone.start_work(&rclone::registry::group_key_of(
             source_binding.proxy.as_ref(),
+            source_binding.no_check_certificate,
         )),
     };
     rclone_lock(&sync_jobs).insert(job_id.clone(), record);
@@ -4375,6 +4380,7 @@ async fn rclone_start_bisync_job(
         bisync_session: None,
         work: rclone.start_work(&rclone::registry::group_key_of(
             source_binding.proxy.as_ref(),
+            source_binding.no_check_certificate,
         )),
     };
     rclone_lock(&sync_jobs).insert(job_id.clone(), record);

@@ -470,6 +470,11 @@ pub struct RemoteBinding {
     /// `params_for` injects the backend option directly); HTTP-family
     /// backends rely on this field for process-level proxy routing instead.
     pub proxy: Option<ProxyConfig>,
+    /// Skip TLS certificate verification (`no_check_certificate`). Rides
+    /// the binding so the engine can route these connections into a
+    /// dedicated rcd group spawned with `RCLONE_NO_CHECK_CERTIFICATE=true`
+    /// (issue #96); the s3-family backends have no per-remote TLS option.
+    pub no_check_certificate: bool,
     /// FTP 文件名显示编码（空 = 无；仅 ftp 连接携带）。原样下发给前端，
     /// 由前端在渲染层解码 rclone `‛XX` 转义序列；`path` 语义不受影响。
     pub display_charset: String,
@@ -709,6 +714,7 @@ pub fn binding_for(connection: &StoredConnection) -> Result<RemoteBinding, Strin
         read_only: connection.read_only,
         allow_delete: connection.allow_delete,
         proxy: connection.proxy.clone(),
+        no_check_certificate: connection.no_check_certificate,
         display_charset: connection.display_charset.clone(),
     })
 }
@@ -1044,13 +1050,25 @@ struct RegistryEntry {
     registration: RemoteRegistration,
 }
 
-/// Group key for a connection's egress proxy: `"direct"` or the proxy URL
-/// (see `ProxyConfig::group_key`). The single source for the engine's rcd
-/// grouping, idle-group teardown and keepalive sweeps.
-pub fn group_key_of(proxy: Option<&crate::model::ProxyConfig>) -> String {
-    proxy
+/// Group key for a connection's egress proxy and TLS-verify mode:
+/// `"direct"` or the proxy URL (see `ProxyConfig::group_key`), suffixed
+/// `|skip-tls-verify` when the connection asked to skip certificate
+/// verification. Those connections need their own rcd — the flag is
+/// process-level (`RCLONE_NO_CHECK_CERTIFICATE`) and the s3-family
+/// backends have no per-remote TLS option (issue #96). The single source
+/// for the engine's rcd grouping, idle-group teardown and keepalive sweeps.
+pub fn group_key_of(
+    proxy: Option<&crate::model::ProxyConfig>,
+    no_check_certificate: bool,
+) -> String {
+    let base = proxy
         .map(|proxy| proxy.group_key())
-        .unwrap_or_else(|| "direct".to_string())
+        .unwrap_or_else(|| "direct".to_string());
+    if no_check_certificate {
+        format!("{base}|skip-tls-verify")
+    } else {
+        base
+    }
 }
 
 impl Registry {
@@ -1088,7 +1106,10 @@ impl Registry {
     pub fn count_in_group(&self, key: &str) -> usize {
         self.lock()
             .values()
-            .filter(|entry| group_key_of(entry.binding.proxy.as_ref()) == key)
+            .filter(|entry| {
+                let binding = &entry.binding;
+                group_key_of(binding.proxy.as_ref(), binding.no_check_certificate) == key
+            })
             .count()
     }
 
@@ -1096,7 +1117,10 @@ impl Registry {
     pub fn registrations_in_group(&self, key: &str) -> Vec<RemoteRegistration> {
         self.lock()
             .values()
-            .filter(|entry| group_key_of(entry.binding.proxy.as_ref()) == key)
+            .filter(|entry| {
+                let binding = &entry.binding;
+                group_key_of(binding.proxy.as_ref(), binding.no_check_certificate) == key
+            })
             .map(|entry| entry.registration.clone())
             .collect()
     }
@@ -1106,8 +1130,24 @@ impl Registry {
     pub fn proxy_in_group(&self, key: &str) -> Option<crate::model::ProxyConfig> {
         self.lock()
             .values()
-            .find(|entry| group_key_of(entry.binding.proxy.as_ref()) == key)
+            .find(|entry| {
+                let binding = &entry.binding;
+                group_key_of(binding.proxy.as_ref(), binding.no_check_certificate) == key
+            })
             .and_then(|entry| entry.binding.proxy.clone())
+    }
+
+    /// The group's TLS-verify mode (the keepalive sweep rebuilds the child
+    /// env from it, same as [`Self::proxy_in_group`]).
+    pub fn no_check_certificate_in_group(&self, key: &str) -> bool {
+        self.lock()
+            .values()
+            .find(|entry| {
+                let binding = &entry.binding;
+                group_key_of(binding.proxy.as_ref(), binding.no_check_certificate) == key
+            })
+            .map(|entry| entry.binding.no_check_certificate)
+            .unwrap_or(false)
     }
 
     /// Proxy group keys that still hold at least one connection (the
@@ -1117,7 +1157,10 @@ impl Registry {
         let mut keys: Vec<String> = self
             .lock()
             .values()
-            .map(|entry| group_key_of(entry.binding.proxy.as_ref()))
+            .map(|entry| {
+                let binding = &entry.binding;
+                group_key_of(binding.proxy.as_ref(), binding.no_check_certificate)
+            })
             .collect();
         keys.sort();
         keys.dedup();
@@ -1404,6 +1447,37 @@ fn s3_family_parameters(connection: &StoredConnection) -> Result<Value, String> 
     // qiniu deliberately sends no region/force_path_style: the provider's
     // own quirks pin path-style access (force_path_style: true, v1.75.1
     // Qiniu.yaml) and addressing is endpoint-driven.
+    // Issue #96: the `config` JSON carries extra backend options (e.g.
+    // `upload_acl`), validated against the provider table like the generic
+    // protocols. Structured fields win — user JSON cannot override them.
+    let extra = extra_options(&connection.custom_config)?;
+    if let Some(object) = extra.as_object() {
+        let mut merged = object.clone();
+        for (key, value) in params.iter() {
+            merged.insert(key.clone(), value.clone());
+        }
+        let backend_options = providers_table()
+            .get("s3")
+            .map(|options| options.iter().map(|option| option.name).collect::<Vec<_>>());
+        let unknown: Vec<&String> = merged
+            .keys()
+            .filter(|key| {
+                backend_options
+                    .as_ref()
+                    .map(|valid| !valid.contains(&key.as_str()))
+                    .unwrap_or(false)
+            })
+            .collect();
+        if !unknown.is_empty() {
+            let mut unknown = unknown;
+            unknown.sort();
+            return Err(format!(
+                "s3: unknown option(s) {} — valid options are listed in the connection form docs",
+                unknown.iter().map(|key| format!("'{key}'")).collect::<Vec<_>>().join(", ")
+            ));
+        }
+        return Ok(Value::Object(merged));
+    }
     Ok(Value::Object(params))
 }
 
@@ -1683,6 +1757,31 @@ fn insert_str(map: &mut Map<String, Value>, key: &str, value: &str) {
     }
 }
 
+/// The user's `config` JSON for protocols that take extra backend options
+/// on top of the structured fields (S3 family, issue #96). An absent,
+/// null or empty value means none; a non-object value is a shape error.
+fn extra_options(custom_config: &Value) -> Result<Value, String> {
+    match custom_config {
+        Value::Null => Ok(Value::Object(Map::new())),
+        Value::Object(map) => Ok(Value::Object(map.clone())),
+        other => Err(format!(
+            "config must be a JSON object, got {}",
+            json_kind(other)
+        )),
+    }
+}
+
+fn json_kind(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
+    }
+}
+
 fn insert_u16(map: &mut Map<String, Value>, key: &str, value: u16) {
     map.insert(key.to_string(), Value::from(value));
 }
@@ -1831,6 +1930,7 @@ mod tests {
             service: String::new(),
             custom_config: Value::Object(Map::new()),
             bucket: String::new(),
+            no_check_certificate: false,
             gcs_auth_mode: "service_account".to_string(),
             credential: String::new(),
             container: String::new(),
@@ -2035,6 +2135,44 @@ mod tests {
         assert_eq!(params["force_path_style"], Value::Bool(false));
         // No endpoint → no endpoint key emitted.
         assert!(params.get("endpoint").is_none());
+    }
+
+    #[test]
+    fn params_for_s3_merges_config_json_with_structured_fields_winning() {
+        // Issue #96: user config JSON adds extra backend options; the
+        // structured form fields win on collision.
+        let mut connection = fixture("s3");
+        connection.access_key_id = "AK".into();
+        connection.secret_access_key = secret("sk");
+        connection.endpoint = "http://127.0.0.1:9000".into();
+        connection.custom_config = serde_json::json!({
+            "acl": "bucket-owner-full-control",
+            "access_key_id": "from-json"
+        });
+        let params = param_map(&connection);
+        assert_eq!(params["acl"], "bucket-owner-full-control");
+        assert_eq!(params["access_key_id"], "AK", "structured field wins");
+    }
+
+    #[test]
+    fn params_for_s3_rejects_unknown_config_options() {
+        let mut connection = fixture("s3");
+        connection.access_key_id = "AK".into();
+        connection.secret_access_key = secret("sk");
+        connection.endpoint = "http://127.0.0.1:9000".into();
+        connection.custom_config = serde_json::json!({ "no_such_option": true });
+        let error = params_for(&connection).unwrap_err();
+        assert!(error.contains("no_such_option"), "{error}");
+    }
+
+    #[test]
+    fn params_for_s3_config_must_be_an_object() {
+        let mut connection = fixture("s3");
+        connection.access_key_id = "AK".into();
+        connection.secret_access_key = secret("sk");
+        connection.endpoint = "http://127.0.0.1:9000".into();
+        connection.custom_config = serde_json::json!([1, 2]);
+        assert!(params_for(&connection).is_err());
     }
 
     #[test]
@@ -3014,7 +3152,7 @@ mod tests {
         });
         let proxied_binding = binding_for(&proxied).expect("binding");
         registry.insert(&proxied.id, proxied_binding, registration("dbxProxy"));
-        let key = crate::rclone::registry::group_key_of(proxied.proxy.as_ref());
+        let key = crate::rclone::registry::group_key_of(proxied.proxy.as_ref(), false);
         assert_eq!(registry.count_in_group(&key), 1);
         assert_eq!(registry.count_in_group("direct"), 1);
         assert_eq!(registry.registrations_in_group(&key).len(), 1);
@@ -3025,6 +3163,35 @@ mod tests {
         assert_eq!(registry.count_in_group(&key), 0);
         assert!(registry.proxy_in_group(&key).is_none());
         assert_eq!(registry.live_group_keys(), vec!["direct".to_string()]);
+    }
+
+    #[test]
+    fn skip_tls_verify_connections_route_into_their_own_group() {
+        // Issue #96: `no_check_certificate` is part of the group key — a
+        // skip-TLS connection never shares an rcd with a verified one, even
+        // with identical (or no) proxy.
+        let mut skip_tls = fixture("s3");
+        skip_tls.id = "SkipTls01".to_string();
+        skip_tls.no_check_certificate = true;
+        let skip_binding = binding_for(&skip_tls).expect("binding");
+        assert!(skip_binding.no_check_certificate);
+
+        let key = crate::rclone::registry::group_key_of(None, true);
+        assert_eq!(key, "direct|skip-tls-verify");
+        assert_ne!(key, crate::rclone::registry::group_key_of(None, false));
+
+        let mut registry = Registry::new();
+        let registration = super::RemoteRegistration {
+            name: "dbxSkipTls".to_string(),
+            backend_type: "s3".to_string(),
+            parameters: serde_json::Map::new().into(),
+            obscure: false,
+        };
+        registry.insert(&skip_tls.id, skip_binding, registration);
+        assert_eq!(registry.count_in_group(&key), 1);
+        assert_eq!(registry.count_in_group("direct"), 0);
+        assert!(registry.no_check_certificate_in_group(&key));
+        assert!(!registry.no_check_certificate_in_group("direct"));
     }
 
     // -- live-process tests (skipped without an rclone binary) --------------------
@@ -3763,6 +3930,9 @@ mod manifest_matrix {
             "allow_delete" => json!(true),
             "lock_to_root" => json!(false),
             "enable_virtual_host_style" => json!(false),
+            // Issue #96: skip-TLS-verify toggle defaults off — the sample
+            // keeps the default grouping (the on-case is engine-tested).
+            "no_check_certificate" => json!(false),
             "root" => json!(""),
             other => panic!("form field '{other}' has no matrix sample value"),
         }

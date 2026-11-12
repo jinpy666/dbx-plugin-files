@@ -146,6 +146,16 @@ pub const GENERIC_PROTOCOLS: [&str; 53] = [
     "swift", "tardigrade", "ulozto", "union", "zoho",
 ];
 
+/// S3-family protocols: the structured form fields map onto the s3 backend
+/// (see `s3_family_parameters`); they also accept the `config` JSON for
+/// extra backend options (issue #96). Must mirror the match arm in
+/// `params_for` and the `Advanced options (JSON)` `visible_when` list in
+/// `manifest.json`.
+pub const S3_FAMILY_PROTOCOLS: [&str; 17] = [
+    "s3", "gcs", "oss", "cos", "obs", "qiniu", "r2", "wasabi", "spaces", "scaleway",
+    "idrive", "us3", "ecloud", "nos", "bos", "tos", "ks3",
+];
+
 /// Egress proxy protocol of a connection. Maps onto the rclone ftp/sftp
 /// per-remote `http_proxy` / `socks_proxy` options (plain options on
 /// v1.75.1 — not `IsPassword` keys, so no obscuring ever applies).
@@ -268,6 +278,14 @@ pub struct StoredConnection {
     pub custom_config: Value,
     // --- s3 ---
     pub bucket: String,
+    // --- http-family TLS (engine per-group rcd routing) ---
+    /// Skip TLS certificate verification (`external_config.no_check_certificate`).
+    /// The s3-family backends expose no per-remote TLS option; the engine
+    /// routes these connections into a dedicated rcd group spawned with
+    /// `RCLONE_NO_CHECK_CERTIFICATE=true` (issue #96). Only the group's
+    /// processes are affected — connections without the flag keep full
+    /// verification.
+    pub no_check_certificate: bool,
     // --- gcs / azblob ---
     /// GCS authentication mode (`service_account` or `adc`). Empty keeps the
     /// legacy service-account behavior.
@@ -396,11 +414,14 @@ impl StoredConnection {
             ));
         }
 
-        // The `rclone-custom` escape hatch and every generic protocol accept
-        // either a JSON object or a JSON string in the textarea field;
-        // anything else must parse to an object.
+        // The `rclone-custom` escape hatch, every generic protocol and the
+        // S3 family accept either a JSON object or a JSON string in the
+        // textarea field (issue #96: the S3 family needs extra backend
+        // options such as `acl`); anything else must parse to an
+        // object.
         let custom_value = if protocol == "rclone-custom"
             || GENERIC_PROTOCOLS.contains(&protocol.as_str())
+            || S3_FAMILY_PROTOCOLS.contains(&protocol.as_str())
         {
             external_config.and_then(|config| config.get("config"))
         } else {
@@ -466,6 +487,7 @@ impl StoredConnection {
             service: optional_string(external_config, "service"),
             custom_config,
             bucket: optional_string(external_config, "bucket"),
+            no_check_certificate: bool_field(external_config, "no_check_certificate", false),
             gcs_auth_mode: optional_string(external_config, "gcs_auth_mode"),
             credential: secret_string(connection_secrets, "credential"),
             container: optional_string(external_config, "container"),
@@ -2057,6 +2079,71 @@ mod tests {
     }
 
     #[test]
+    fn s3_family_accepts_config_json_and_skip_tls_flag() {
+        // Issue #96: the S3 family accepts the `config` JSON (object form).
+        let s3 = StoredConnection::from_lifecycle_params(&json!({
+            "connection": {
+                "id": "c",
+                "external_config": {
+                    "protocol": "s3",
+                    "config": { "acl": "bucket-owner-full-control" }
+                }
+            }
+        }))
+        .unwrap();
+        assert_eq!(s3.custom_config["acl"], "bucket-owner-full-control");
+
+        // String form parses too; a structured-field protocol without
+        // `config` keeps an empty object.
+        let from_string = StoredConnection::from_lifecycle_params(&json!({
+            "connection": {
+                "id": "c",
+                "external_config": {
+                    "protocol": "wasabi",
+                    "config": "{\"chunk_size\":\"64Mi\"}"
+                }
+            }
+        }))
+        .unwrap();
+        assert_eq!(from_string.custom_config["chunk_size"], "64Mi");
+
+        let no_config = StoredConnection::from_lifecycle_params(&json!({
+            "connection": {
+                "id": "c",
+                "external_config": { "protocol": "r2" }
+            }
+        }))
+        .unwrap();
+        assert_eq!(no_config.custom_config, json!({}));
+
+        // A non-object config is a shape error on the S3 family as well.
+        let invalid = StoredConnection::from_lifecycle_params(&json!({
+            "connection": {
+                "id": "c",
+                "external_config": {
+                    "protocol": "s3",
+                    "config": [1, 2]
+                }
+            }
+        }));
+        assert!(invalid.is_err());
+
+        // The skip-TLS flag defaults off and parses the boolean field.
+        let skip_tls = StoredConnection::from_lifecycle_params(&json!({
+            "connection": {
+                "id": "c",
+                "external_config": {
+                    "protocol": "s3",
+                    "no_check_certificate": true
+                }
+            }
+        }))
+        .unwrap();
+        assert!(skip_tls.no_check_certificate);
+        assert!(!no_config.no_check_certificate);
+    }
+
+    #[test]
     fn normalizes_retired_opendal_custom_protocol() {
         let connection = StoredConnection::from_lifecycle_params(&json!({
             "connection": {
@@ -2919,7 +3006,19 @@ mod tests {
             ]),
             ("key", &["sftp", "sftp-native"]),
             ("known_hosts_strategy", &["sftp", "sftp-native"]),
-            ("config", &GENERIC_PROTOCOLS),
+            // Issue #96: the S3 family also exposes the advanced-options
+            // JSON (extra backend options like `acl`) and the skip-TLS
+            // toggle; webdav/http only get the toggle.
+            ("config", &{
+                let mut config_protocols = GENERIC_PROTOCOLS.to_vec();
+                config_protocols.extend_from_slice(&S3_FAMILY_PROTOCOLS);
+                config_protocols
+            }),
+            ("no_check_certificate", &{
+                let mut tls_protocols: Vec<&str> = S3_FAMILY_PROTOCOLS.to_vec();
+                tls_protocols.extend_from_slice(&["webdav", "http"]);
+                tls_protocols
+            }),
             ("access_token", &["dropbox", "gdrive", "onedrive", "yandex-disk", "box", "drime", "gofile"]),
             ("client_id", &[
                 "aliyun-drive", "dropbox", "gdrive", "google photos", "onedrive",
