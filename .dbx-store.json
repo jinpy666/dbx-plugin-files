@@ -18,7 +18,7 @@
   "source": "https://github.com/jinpy666/dbx-plugin-files",
   "homepage": "https://github.com/jinpy666/dbx-plugin-files",
   "license": "MIT",
-  "releaseNotes": "Files Studio v0.1.92 正式版。相对 v0.1.91：多选与批量下载增强（表头全选三态复选框、行点击 Ctrl/Shift 多选、空白区框选多选、下载选中项支持目录/混选）；预览头部文件类型图标与打开方式下拉；目录树侧栏超长名撑开修复并支持拖拽宽度；内置 rclone 引擎升级 v1.75.2-dbx.1（上游安全修复为主）；stdio MCP 兼容 2026-07-28 与 2024-11-05 协议修订版（initialize 版本协商、server/discover 能力发现、成功结果 resultType，并补齐 schedule_create 参数说明）。",
+  "releaseNotes": "预发布版（0.1.93-beta.1）。S3 家族连接支持跳过 TLS 证书校验（证书过期/自签名的测试端点可直连，独立引擎进程承载、其他连接保持完整校验）并开放「高级选项 (JSON)」（如 {\"acl\": \"bucket-owner-full-control\"} 控制上传 ACL，未知名拒绝并列出合法选项）；presign 连接新增「复制限时链接…」：预签名 URL 可自定义过期时长（1h/24h/7d 等）；MCP connect 同步开放 noCheckCertificate 内联参数。（#96、#98）",
   "localizations": {
     "zh-CN": {
       "name": "Files Studio",
