@@ -1158,14 +1158,34 @@ mod tests {
         let mut command = std::process::Command::new("true");
         env.no_check_certificate = true;
         env.apply_to(&mut command);
-        let values: Vec<String> = command
-            .get_envs()
-            .filter_map(|(key, value)| {
-                (key.to_string_lossy().to_uppercase() == "RCLONE_NO_CHECK_CERTIFICATE")
-                    .then(|| value.unwrap().to_string_lossy().into_owned())
-            })
-            .collect();
-        assert_eq!(values, vec!["true"; 2], "both spellings must carry true");
+        // Windows env names are case-insensitive: both spellings collapse
+        // into one entry there, so assert on the uppercased projection
+        // (same convention as `rcd_env_sets_and_removes_both_spellings`).
+        let mut normalized: std::collections::HashMap<String, Option<String>> = std::collections::HashMap::new();
+        for (key, value) in command.get_envs() {
+            normalized.insert(
+                key.to_string_lossy().to_uppercase(),
+                value.map(|value| value.to_string_lossy().into_owned()),
+            );
+        }
+        assert_eq!(
+            normalized.get("RCLONE_NO_CHECK_CERTIFICATE"),
+            Some(&Some("true".to_string())),
+            "the flag must be set"
+        );
+        #[cfg(unix)]
+        {
+            // Unix keeps both spellings as distinct keys.
+            let spellings: Vec<String> = command
+                .get_envs()
+                .filter_map(|(key, _)| {
+                    let key = key.to_string_lossy().to_string();
+                    (key == "RCLONE_NO_CHECK_CERTIFICATE" || key == "rclone_no_check_certificate")
+                        .then_some(key)
+                })
+                .collect();
+            assert_eq!(spellings.len(), 2, "both spellings must be set on Unix");
+        }
     }
 
     /// Proxy-group rcd stays healthy with env overrides pointing at a
