@@ -403,6 +403,26 @@ impl RcClient {
         .await
     }
 
+    /// operations/stat with `opt.metadata + hashTypes`（files/info）：rclone
+    /// 回填 backend metadata（s3 content-type/tier、POSIX mode/uid/gid 等）
+    /// 与校验和（后端支持哪些就回哪些）。其余语义与 operations_stat 相同
+    /// （缺失对象回 `Ok({"item": null})`）。注意上游无 `_metadata` 顶层参数：
+    /// 元数据请求走 `opt.metadata`（lsjson CLI 的 `_metadata` 形态 rc 不认）。
+    pub async fn operations_stat_metadata(&self, fs: &str, remote: &str) -> Result<Value, RcError> {
+        self.call(
+            "operations/stat",
+            &serde_json::json!({
+                "fs": fs,
+                "remote": remote,
+                "opt": {
+                    "metadata": true,
+                    "hashTypes": ["MD5", "SHA-1", "SHA-256"],
+                },
+            }),
+        )
+        .await
+    }
+
     /// Recursive file count + byte total for a path.
     ///
     /// Unbounded total timeout（与 operations/list 同理）：巨型子树的

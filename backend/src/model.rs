@@ -13,6 +13,8 @@
 // that land with F-B.
 #![allow(dead_code)]
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -572,6 +574,40 @@ pub struct FileEntry {
     /// 「新建桶/删除桶」语义。
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub bucket: bool,
+}
+
+/// `files/info` 详情：FileEntry 之外的扩展面（stat `opt.metadata` 投影）。
+/// 全部字段可选，由后端能力与协议语义决定——ETag 仅个别后端经 item `ID`
+/// 透出（rclone v1.75 的 s3 Object 不导出 ETag，内容身份用 `hashes`）；
+/// mode/uid/gid 仅携带 POSIX 元数据的后端；`metadata` 键值对按键排序，
+/// mode/uid/gid 提升为独立字段后不再出现在键值表里。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileInfoDetail {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    /// 对象存储 ETag（rclone stat item 的 `ID` 字段语义；多数后端为空）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
+    /// stat `hashTypes` 请求回填的校验和（如 md5/sha1/sha256，按键名排序）。
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub hashes: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gid: Option<String>,
+    /// stat `metadata` 键值对（user metadata 为主），按键排序。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub metadata: Vec<MetadataPair>,
+}
+
+/// 单个 metadata 键值对（键按字典序）。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MetadataPair {
+    pub key: String,
+    pub value: String,
 }
 
 /// Capability report for `files/capabilities`; mirrors `info().capability()`

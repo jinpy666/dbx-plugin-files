@@ -315,6 +315,19 @@ def scenario_structure(runner: Runner, base: str) -> None:
         assert base64.b64decode(result["dataBase64"]) == b"hello files", "read round-trip mismatch"
     runner.step("read", _read)
 
+    def _info():
+        # issue #98 只读先行：基础面恒有；扩展面（ETag/metadata/POSIX）由
+        # 后端能力决定，本场景只断言契约形状，真值断言在 s3 容器段。
+        result = runner.call("files/info", {"connectionId": cid, "path": f"{base}/dir/hello.txt"})
+        entry = result.get("entry", {})
+        assert entry.get("name") == "hello.txt", f"info entry name mismatch: {entry}"
+        assert entry.get("kind") == "file", f"info entry kind mismatch: {entry}"
+        assert int(entry.get("size", -1)) == len(b"hello files"), f"info entry size mismatch: {entry}"
+        detail = result.get("detail", {})
+        assert "metadata" not in detail or isinstance(detail["metadata"], list), \
+            f"info detail metadata must be a list or absent: {detail}"
+    runner.step("info", _info)
+
     def _copy():
         result = runner.call("files/copy", {"connectionId": cid, "sourcePath": f"{base}/dir/hello.txt", "targetPath": f"{base}/dir/hello-copy.txt"})
         # Degraded transports return a pollable jobId; native ones finish inline.
@@ -896,6 +909,21 @@ def run_s3_section(client: SidecarClient) -> None:
     scenario_audit(runner)
     scenario_public_link(runner, f"{base}/dir/hello.txt")
     scenario_transfer_roundtrip(runner, base)
+
+    def _info_true_values():
+        # issue #98 真值段：s3 后端 stat+opt.metadata 必带 backend metadata
+        # （content-type/tier 等）与 MD5 校验和——「只读先行」的对象存储契约
+        # 在这里落地。rclone v1.75 的 s3 Object 不经 item.ID 导出 ETag，内容
+        # 身份以 hashes.md5 表达（fs/memory 段的通用 _info 只断言形状）。
+        result = runner.call("files/info", {"connectionId": runner.connection_id, "path": f"{base}/dir/hello.txt"})
+        detail = result.get("detail", {})
+        hashes = detail.get("hashes")
+        assert isinstance(hashes, dict) and hashes.get("md5"), f"s3 info must carry an md5 hash: {detail}"
+        metadata = detail.get("metadata")
+        assert isinstance(metadata, list) and metadata, f"s3 info must carry metadata: {detail}"
+        keys = [pair.get("key") for pair in metadata]
+        assert keys == sorted(keys), f"s3 metadata pairs must be key-sorted: {keys}"
+    runner.step("info-s3-true-values", _info_true_values)
     bucket2 = os.environ.get("DBX_FILES_S3_BUCKET2")
     if bucket2:
         scenario_namespace_cross_bucket(runner, bucket, bucket2, endpoint, access, secret)

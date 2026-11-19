@@ -2597,3 +2597,58 @@ python3 scripts/smoke_mcp.py` 24 PASS / 0 FAIL / 7 SKIP（S1 钉住 resultType�
 > 但 `loopback_health_check_ignores_ambient_proxy_env` 仍因本机 reqwest 未按
 > 预期使用 poison proxy 失败（595/596 通过）。MCP smoke 与 MCP 子集通过；
 > 代理探针环境差异待单独处理。
+
+## #98 文件 metadata 只读先行：files/info + 详情对话框（2026-11-19）
+
+issue #98 三项中第 3 项（presign 自定义过期）已随 0.1.93 落地；本轮交付
+剩余项中的「查看」面，**编辑项（user metadata 写回/Content-Type 修改）
+标注能力边界**：上游 rclone rc 无 set-metadata 通道（`operations/set*`
+端点不存在，实测 + 上游多年 feature request 未实现），fork 端点方案
+（CopyObject + MetadataDirective=REPLACE）另行评估，本轮不做。
+
+### 交付面
+
+- **新协议方法 `files/info`**（`connectionId`、`path` → `{entry, detail}`）：
+  stat 复用 + `opt.metadata`/`hashTypes` 扩展投影。`detail` 含
+  `mimeType?`/`etag?`（item `ID`，个别后端）/`hashes?`（MD5/SHA-1/SHA-256
+  按后端支持）/`mode?/uid?/gid?`（POSIX 元数据提升）/`metadata?`（键值对
+  按键字典序，mode/uid/gid 提升后不重复）。实现：`rc.rs` 新增
+  `operations_stat_metadata`（rc 参数走 **`opt.metadata`**——CLI 的
+  `_metadata` 形态 rc 不认，黑盒实测踩坑后修正）；`ops.rs`
+  `file_info` + `file_info_from_item` 纯解析。
+- **前端 `DetailDialog.vue`**：右键菜单「详情」（文件/目录均可用）→ 对话框
+  分区展示基础面/ETag/校验和/POSIX/user metadata；扩展面全缺时优雅降级
+  提示（非错误）。焦点陷阱/Esc/背景关闭对齐既有对话框 a11y 约定。
+  `mockHost` 同步实现（mock FS 无扩展元数据，全量 App spec 走降级路径）；
+  `backendParity` GOLDEN 增补 `files/info`；文案七语补齐
+  （`entryInfo`/`detail*` 17 键）。
+- **smoke**：`scenario_structure` 增 `info` 步（fs/memory 形状断言）；s3
+  MinIO 段增 `info-s3-true-values` 真值断言（md5 非空 + metadata 非空 +
+  键序稳定）。
+
+### 能力边界（黑盒实测，v1.75.1-dbx.1）
+
+- **s3 无 ETag**：`operations/stat` item 不含 `ID`（showOrigIDs 亦无
+  OrigID）——rclone v1.75 的 s3 Object 不导出 ETag，内容身份以
+  `hashes.md5` 表达（单段上传等价于 ETag；multipart ETag 不同）。
+  `files/info` 的 `etag` 字段保留（有 `ID` 的后端自动回显）。
+- **POSIX 面**：local/sftp 类后端经 `opt.metadata` 回 `mode/uid/gid`
+  （local 实测 mode=100644/uid/gid 齐）；s3 回 content-type/tier/mtime。
+
+### 验证
+
+- `cargo test` 607 全绿（含 5 例 file_info 解析）；`vue-tsc` 0 错；
+  `vitest` 93 文件 / 767 全绿（含 DetailDialog 7 例 + parity）。
+- `scripts/test.sh`：cargo 607 → 前端三件套 → framed smoke（fs+memory）
+  全绿 → MCP smoke M1-M12 全 PASS（容器段按 env SKIP）→ 打包
+  `io.dbx.files-0.1.93-darwin-arm64.dbxp` 成功（打包段以
+  `DBX_HOST_WORKTREE=host/ 子仓库` 手动补跑：脚本缺省的
+  `../dbx-plugin-host-worktree` 相邻符号链接在本工作区不存在，环境差异
+  非本轮改动）。
+- **MinIO 真值 smoke**（随机凭据容器，手动起 MinIO 单段）：112 PASS /
+  5 SKIP（无 env 容器段）/ 0 FAIL，含 `info-s3-true-values`。
+- 本机 `scripts/container_smoke.sh` 在 WebDAV 段连续两次
+  `webdav did not become ready on port 18080`（httpd 容器起后 PROPFIND
+  探活超时，环境问题，与本轮改动无关——未触碰该脚本；sftp/smb/webdav/ftp
+  容器段照旧由 CI 与后续环境复验），故 MinIO 段以手动容器方式补验。
+

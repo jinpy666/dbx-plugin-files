@@ -47,6 +47,7 @@ const GOLDEN_BACKEND_METHODS: ReadonlySet<string> = new Set([
   "files/download/start",
   "files/extract",
   "files/hashsum",
+  "files/info",
   "files/list",
   "files/listCancel",
   "files/listDirs",

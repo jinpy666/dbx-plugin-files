@@ -24,6 +24,7 @@ import {
   FolderSymlink,
   Globe,
   HardDrive,
+  Info,
   Keyboard,
   Link,
   Link2,
@@ -73,6 +74,7 @@ import {
 } from "./lib/editorRules";
 import PathBrowseField from "./components/PathBrowseField.vue";
 import DropActionDialog from "./components/DropActionDialog.vue";
+import DetailDialog, { type DetailInfo } from "./components/DetailDialog.vue";
 import FileConflictDialog from "./components/FileConflictDialog.vue";
 import AuditPanel from "./components/AuditPanel.vue";
 import PreviewPane from "./components/PreviewPane.vue";
@@ -98,6 +100,7 @@ import {
   isMethodMissing,
   joinPath,
   normalizeEntries,
+  normalizeEntry,
   parentPath,
   pathFromEntryKey,
   type FileCapabilities,
@@ -132,6 +135,8 @@ type ConfirmKind = "delete" | "purge" | "newFolder" | "newFile" | "rename" | "co
 type PaneSide = "left" | "right";
 type MenuAction =
   | "open" | "preview" | "download" | "rename" | "delete" | "copyPath" | "copyName"
+  // 文件详情面板（files/info，issue #98 只读先行）
+  | "entryInfo"
   | "syncDir" | "copyDir" | "copy" | "move" | "extract" | "archiveContents" | "compress"
   // 对标 rclone-dashboard：目录体积统计（files/size）与公开链接（files/publicLink）
   | "computeSize" | "copyPublicLink" | "copyPublicLinkExpiring"
@@ -2928,6 +2933,28 @@ function onDropActionChoose(action: "copy" | "move") {
   void transferBetween(pending.from, action === "move", pending.list);
 }
 
+// 文件详情面板（files/info，issue #98 只读先行）：右键 → 「详情」。后端
+// 不支持的扩展面（ETag/metadata/POSIX）由 DetailDialog 优雅降级；请求失败
+// （含 404）统一走 showError。
+const detailOpen = ref(false);
+const detailEntry = ref<FileEntry | null>(null);
+const detailInfo = ref<DetailInfo | null>(null);
+
+async function openEntryInfo(entry: FileEntry, side: PaneSide) {
+  const id = sideConnectionId(side) ?? connectionId.value;
+  try {
+    const result = await call<{ entry: FileEntry; detail: DetailInfo }>("files/info", {
+      connectionId: id,
+      path: entry.path,
+    });
+    detailEntry.value = normalizeEntry(result.entry);
+    detailInfo.value = result.detail ?? null;
+    detailOpen.value = true;
+  } catch (cause) {
+    showError(cause);
+  }
+}
+
 function onDropActionCancel() {
   dropActionOpen.value = false;
   dropActionPending.value = undefined;
@@ -4523,6 +4550,9 @@ function menuAction(action: MenuAction) {
     case "copyPublicLinkExpiring":
       void copyPublicLink(entry, side, true);
       break;
+    case "entryInfo":
+      void openEntryInfo(entry, side);
+      break;
     case "syncDir":
     case "copyDir":
       startDirJob(action, entry, side);
@@ -5913,6 +5943,7 @@ onBeforeUnmount(() => {
         <button v-if="canWrite" role="menuitem" @click="menuAction('compress')"><FileArchive /> {{ t("compress") }}</button>
         <hr />
         <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('computeSize')"><Calculator /> {{ t("computeSize") }}</button>
+        <button role="menuitem" @click="menuAction('entryInfo')"><Info /> {{ t("entryInfo") }}</button>
         <button v-if="contextMenu.entry.kind === 'directory' && canWrite" role="menuitem" @click="menuAction('hashsum')"><FileCheck /> {{ t("hashsumMenu") }}</button>
         <button v-if="contextMenu.entry.kind === 'directory'" role="menuitem" @click="menuAction('checkDir')"><Scale /> {{ t("checkDirMenu") }}</button>
         <button v-if="isSumFile(contextMenu.entry)" role="menuitem" @click="menuAction('verifySum')"><ShieldCheck /> {{ t("verifySumMenu") }}</button>
@@ -6031,6 +6062,15 @@ onBeforeUnmount(() => {
       :t="t"
       @choose="onDropActionChoose"
       @cancel="onDropActionCancel"
+    />
+
+    <!-- 文件详情面板（files/info，issue #98 只读先行）。 -->
+    <DetailDialog
+      :open="detailOpen"
+      :entry="detailEntry"
+      :detail="detailInfo"
+      :t="t"
+      @close="detailOpen = false"
     />
 
     <!-- 传输同名冲突三键弹窗（上传预检与下载落盘共用）：覆盖/自动重命名/取消。 -->

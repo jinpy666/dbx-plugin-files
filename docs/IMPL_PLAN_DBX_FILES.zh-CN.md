@@ -269,6 +269,7 @@ connectionId `__local__`——按需合成的 root=`/` fs 连接（可写、可�
 | `files/list` | `path`、`recurse?` | `{entries:[{name,path,kind,size?,modifiedAt?}]}` |
 | `files/listPaged` | `path`、`page`、`pageSize` | `{entries,total}` |
 | `files/stat` | `path` | `{entry}` |
+| `files/info` | `connectionId`、`path` | `{entry, detail}`（issue #98 只读先行）。`detail` 为 rc stat `opt.metadata + hashTypes` 投影：`mimeType?`、`etag?`（item `ID` 字段，个别后端透出；rclone v1.75 的 s3 Object 不导出 ETag）、`hashes?:{算法→摘要}`（MD5/SHA-1/SHA-256，按后端支持回填）、`mode?/uid?/gid?`（POSIX 元数据提升）、`metadata?:[{key,value}]`（user/system metadata 键值对，按键字典序；mode/uid/gid 提升后不重复出现）。全部扩展字段可选，无 metadata 能力的后端整块缺省，前端 DetailDialog 优雅降级 |
 | `files/capabilities` | — | `{copy:bool,rename:bool,presign:bool,write:bool,…}`（`info().capability()` 透出，前端按能力显隐） |
 | `files/size` | `path` | `{count,bytes}`（lister 聚合） |
 | `files/publicLink` | `path`、`expireSecs?` | `{url}`；后端不支持时 -32000 |

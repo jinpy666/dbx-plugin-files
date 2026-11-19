@@ -478,7 +478,7 @@ impl Plugin {
                 }
                 Ok(response)
             }
-            "files/list" | "files/listPaged" | "files/stat" | "files/size" => {
+            "files/list" | "files/listPaged" | "files/stat" | "files/info" | "files/size" => {
                 let connection_id = params
                     .get("connectionId")
                     .and_then(Value::as_str)
@@ -578,6 +578,27 @@ impl Plugin {
                             entry.bucket = true;
                         }
                         Ok(json!({ "entry": entry }))
+                    }
+                    "files/info" => {
+                        let request: model::PathRequest = parse(params)?;
+                        let binding = self.rclone.binding(&request.connection_id)?;
+                        let fs = rclone::call_fs(&binding);
+                        let (mut entry, detail) = rclone::ops::file_info(
+                            &client,
+                            &fs,
+                            &request.path,
+                            &binding.root,
+                            binding.lock_to_root,
+                        )
+                        .await?;
+                        // namespace 连接上的单段路径命中桶本身（如 `/photos`）。
+                        if entry.kind == "dir"
+                            && rclone::is_bucket_namespace(&binding.backend_type, &binding.root)
+                            && rclone::is_bucket_path(&request.path)
+                        {
+                            entry.bucket = true;
+                        }
+                        Ok(json!({ "entry": entry, "detail": detail }))
                     }
                     _ => {
                         let request: model::PathRequest = parse(params)?;

@@ -591,6 +591,15 @@ export function installMockHost() {
         if (!entry) throw new Error(`NotFound: ${path}`);
         return { entry: { name: path.split("/").filter(Boolean).pop() ?? "/", path, kind: entry.kind, size: entry.size, modifiedAt: entry.modifiedAt } };
       }
+      case "files/info": {
+        const path = str("path");
+        assertOk(path);
+        const entry = treeFor(p.connectionId).get(path.replace(/\/+$/, ""));
+        if (!entry) throw new Error(`NotFound: ${path}`);
+        // mock FS 无 backend metadata（s3 ETag/user metadata/POSIX 均缺省），
+        // 让全部 App.*.spec 走 DetailDialog 的优雅降级路径。
+        return { entry: { name: path.split("/").filter(Boolean).pop() ?? "/", path, kind: entry.kind, size: entry.size, modifiedAt: entry.modifiedAt }, detail: {} };
+      }
       case "files/mkdir": {
         const path = str("path");
         assertOk(path);

@@ -67,10 +67,12 @@
 
 #![allow(dead_code)]
 
+use std::collections::BTreeMap;
+
 use serde_json::{json, Value};
 
 use crate::policy::PathPolicy;
-use crate::model::{Capabilities, FileEntry};
+use crate::model::{Capabilities, FileInfoDetail, FileEntry, MetadataPair};
 
 use super::rc::{RcClient, RcError};
 
@@ -404,6 +406,97 @@ pub async fn stat(
         ));
     };
     Ok(entry_from_item(item))
+}
+
+// ---------------------------------------------------------------------------
+// files/info (§5: operations/stat + _metadata → FileEntry + 扩展详情)
+// ---------------------------------------------------------------------------
+
+/// stat item → FileEntry 之外的扩展详情（ETag / MimeType / 校验和 / metadata
+/// 键值）。`opt.metadata` 回填的 `Metadata` 键值统一字符串化（null 丢弃）；
+/// mode/uid/gid 提升为独立 POSIX 字段后不再重复进键值表，其余按键字典序。
+/// `Hashes`（按请求的 hashTypes 回填）进 BTreeMap 保证稳定键序。
+fn file_info_from_item(item: &Value) -> FileInfoDetail {
+    let mime_type = item
+        .get("MimeType")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let etag = item
+        .get("ID")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let hashes: BTreeMap<String, String> = item
+        .get("Hashes")
+        .and_then(Value::as_object)
+        .map(|hashes| {
+            hashes
+                .into_iter()
+                .filter_map(|(key, value)| {
+                    let value = value.as_str()?.to_string();
+                    Some((key.to_lowercase(), value))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut mode = None;
+    let mut uid = None;
+    let mut gid = None;
+    let mut metadata = Vec::new();
+    if let Some(map) = item.get("Metadata").and_then(Value::as_object) {
+        for (key, value) in map {
+            match (key.as_str(), value) {
+                ("mode", Value::String(text)) => mode = Some(text.clone()),
+                ("uid", Value::String(text)) => uid = Some(text.clone()),
+                ("gid", Value::String(text)) => gid = Some(text.clone()),
+                (_, Value::Null) => {}
+                (_, Value::String(text)) => metadata.push(MetadataPair {
+                    key: key.clone(),
+                    value: text.clone(),
+                }),
+                (_, other) => metadata.push(MetadataPair {
+                    key: key.clone(),
+                    value: other.to_string(),
+                }),
+            }
+        }
+    }
+    metadata.sort_by(|a, b| a.key.cmp(&b.key));
+    FileInfoDetail {
+        mime_type,
+        etag,
+        hashes,
+        mode,
+        uid,
+        gid,
+        metadata,
+    }
+}
+
+/// `files/info`: `path` → `(entry, detail)`。与 `files/stat` 同一 NotFound
+/// 语义（`{"item": null}` / 缺失 `item` 键），额外带 `_metadata=true` 让
+/// rclone 回填 backend metadata（s3 user metadata、POSIX mode/uid/gid 等）。
+pub async fn file_info(
+    client: &RcClient,
+    fs: &str,
+    path: &str,
+    root: &str,
+    lock_to_root: bool,
+) -> Result<(FileEntry, FileInfoDetail), String> {
+    let remote = gate_read(root, lock_to_root, path)?;
+    let response = client
+        .operations_stat_metadata(fs, &remote)
+        .await
+        .map_err(|error| format!("Failed to stat '{}': {error}", remote.trim_matches('/')))?;
+    let item = response.get("item").filter(|item| !item.is_null());
+    let Some(item) = item else {
+        return Err(format!(
+            "Failed to stat '{}': path does not exist",
+            remote.trim_matches('/')
+        ));
+    };
+    Ok((entry_from_item(item), file_info_from_item(item)))
 }
 
 // ---------------------------------------------------------------------------
@@ -1710,6 +1803,126 @@ mod tests {
         assert_eq!(entry.path, "/");
         assert_eq!(entry.name, "/");
         assert_eq!(entry.size, None, "negative size never leaks");
+    }
+
+    // -- file_info_from_item（files/info 详情投影） -----------------------------
+
+    #[test]
+    fn file_info_from_item_maps_s3_stat_shape() {
+        // s3 stat + opt.metadata 的形状：MimeType、Metadata 混合 system
+        // （mode/uid/gid/mtime/tier）与 user（cache-control）键、Hashes 校验和。
+        let item = json!({
+            "Path": "photos/a.png",
+            "Name": "a.png",
+            "Size": 1024,
+            "MimeType": "image/png",
+            "ModTime": "2026-11-19T10:00:00Z",
+            "IsDir": false,
+            "Hashes": { "md5": "2b21731b43c4af152cea3b6ee1d2aabf" },
+            "Metadata": {
+                "mode": "0644",
+                "uid": "1000",
+                "gid": "1000",
+                "cache-control": "max-age=3600",
+                "tier": "STANDARD",
+                "mtime": "2026-11-19T10:00:00Z"
+            }
+        });
+        let detail = file_info_from_item(&item);
+        assert_eq!(detail.mime_type.as_deref(), Some("image/png"));
+        assert_eq!(detail.mode.as_deref(), Some("0644"));
+        assert_eq!(detail.uid.as_deref(), Some("1000"));
+        assert_eq!(detail.gid.as_deref(), Some("1000"));
+        assert_eq!(detail.hashes.get("md5").map(String::as_str), Some("2b21731b43c4af152cea3b6ee1d2aabf"));
+        // mode/uid/gid 提升后不再重复进键值表；剩余按键字典序。
+        let keys: Vec<&str> = detail.metadata.iter().map(|pair| pair.key.as_str()).collect();
+        assert_eq!(keys, vec!["cache-control", "mtime", "tier"]);
+        assert_eq!(detail.metadata[0].value, "max-age=3600");
+        let text = serde_json::to_string(&detail).unwrap();
+        assert!(text.contains("\"hashes\":{\"md5\":"), "{text}");
+        assert!(text.contains("\"mimeType\":\"image/png\""), "{text}");
+        // rclone v1.75 的 s3 Object 不导出 ETag（item 无 ID）：etag 不序列化。
+        assert!(!text.contains("\"etag\""), "{text}");
+    }
+
+    #[test]
+    fn file_info_from_item_id_field_maps_to_etag_when_present() {
+        // 个别后端经 item.ID 透出对象 ID：有则映射 etag，无则缺省。
+        let item = json!({
+            "Path": "a.bin",
+            "Name": "a.bin",
+            "IsDir": false,
+            "ID": "9af3b0f2"
+        });
+        let detail = file_info_from_item(&item);
+        assert_eq!(detail.etag.as_deref(), Some("9af3b0f2"));
+        let text = serde_json::to_string(&detail).unwrap();
+        assert!(text.contains("\"etag\":\"9af3b0f2\""), "{text}");
+
+        let without = file_info_from_item(&json!({ "Path": "b.bin", "Name": "b.bin", "IsDir": false }));
+        assert_eq!(without.etag, None);
+    }
+
+    #[test]
+    fn file_info_from_item_sparse_item_degrades() {
+        // 本地/无 ID 与 Metadata 键 → ETag/POSIX 面缺省，MimeType 保留。
+        let item = json!({
+            "Path": "a.txt",
+            "Name": "a.txt",
+            "Size": 6,
+            "MimeType": "text/plain; charset=utf-8",
+            "ModTime": "2026-11-19T23:14:07.971777267+08:00",
+            "IsDir": false
+        });
+        let detail = file_info_from_item(&item);
+        assert_eq!(detail.mime_type.as_deref(), Some("text/plain; charset=utf-8"));
+        assert_eq!(detail.etag, None);
+        assert_eq!(detail.mode, None);
+        assert_eq!(detail.uid, None);
+        assert_eq!(detail.gid, None);
+        assert!(detail.metadata.is_empty());
+        let text = serde_json::to_string(&detail).unwrap();
+        assert!(!text.contains("etag"), "skip_serializing on None: {text}");
+        assert!(!text.contains("metadata"), "skip_serializing on empty: {text}");
+    }
+
+    #[test]
+    fn file_info_from_item_metadata_value_coercion() {
+        // metadata 值统一字符串化：数字/布尔转文本，null 丢弃。
+        let item = json!({
+            "Path": "a.txt",
+            "Name": "a.txt",
+            "Size": 6,
+            "IsDir": false,
+            "Metadata": { "count": 3, "flag": true, "empty": null }
+        });
+        let detail = file_info_from_item(&item);
+        assert_eq!(
+            detail.metadata,
+            vec![
+                MetadataPair { key: "count".into(), value: "3".into() },
+                MetadataPair { key: "flag".into(), value: "true".into() },
+            ]
+        );
+    }
+
+    #[test]
+    fn file_info_from_item_promotes_posix_without_user_metadata() {
+        // sftp 类后端：Metadata 只有 POSIX 键 → 键值表为空、独立字段齐备。
+        let item = json!({
+            "Path": "srv/data",
+            "Name": "data",
+            "IsDir": true,
+            "Metadata": { "mode": "0755", "uid": "0", "gid": "0" }
+        });
+        let detail = file_info_from_item(&item);
+        assert_eq!(detail.mode.as_deref(), Some("0755"));
+        assert_eq!(detail.uid.as_deref(), Some("0"));
+        assert_eq!(detail.gid.as_deref(), Some("0"));
+        assert!(detail.metadata.is_empty(), "posix keys are promoted, not repeated");
+        let text = serde_json::to_string(&detail).unwrap();
+        assert!(text.contains("\"mode\":\"0755\""), "{text}");
+        assert!(!text.contains("\"metadata\""), "{text}");
     }
 
     // -- files/listDirs 投影（宿主 picker 目录浏览） ---------------------------
