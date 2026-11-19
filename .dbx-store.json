@@ -18,7 +18,7 @@
   "source": "https://github.com/jinpy666/dbx-plugin-files",
   "homepage": "https://github.com/jinpy666/dbx-plugin-files",
   "license": "MIT",
-  "releaseNotes": "正式版（0.1.93）。S3 家族连接支持跳过 TLS 证书校验（证书过期/自签名的测试端点可直连，独立引擎进程承载、其他连接保持完整校验）并开放「高级选项 (JSON)」（如 {\"acl\": \"bucket-owner-full-control\"} 控制上传 ACL，未知名拒绝并列出合法选项）；presign 连接新增「复制限时链接…」：预签名 URL 可自定义过期时长（1h/24h/7d 等）；MCP connect 同步开放 noCheckCertificate 内联参数。（#96、#98）",
+  "releaseNotes": "预发布版（0.1.94-beta.1）。相对 v0.1.93：新增文件「详情」面板（右键菜单）：files/info 只读面展示 校验和（MD5/SHA-1/SHA-256）、user/system metadata 键值表（s3：content-type、tier 等）、POSIX 权限位与属主（mode/uid/gid，local/sftp 类后端），无 metadata 能力的后端优雅降级；ETag 受 rclone rc 通道限制（v1.75 s3 Object 不透出 item.ID），内容身份以 MD5 表达；metadata 编辑（user metadata 写回/Content-Type 修改）标能力边界待后续。文案补齐 7 语言。（issue #98）",
   "localizations": {
     "zh-CN": {
       "name": "Files Studio",
