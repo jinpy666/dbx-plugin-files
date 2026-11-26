@@ -74,7 +74,7 @@ import {
 } from "./lib/editorRules";
 import PathBrowseField from "./components/PathBrowseField.vue";
 import DropActionDialog from "./components/DropActionDialog.vue";
-import DetailDialog, { type DetailInfo } from "./components/DetailDialog.vue";
+import DetailDialog, { type DetailInfo, type DetailSaveState } from "./components/DetailDialog.vue";
 import FileConflictDialog from "./components/FileConflictDialog.vue";
 import AuditPanel from "./components/AuditPanel.vue";
 import PreviewPane from "./components/PreviewPane.vue";
@@ -2939,6 +2939,21 @@ function onDropActionChoose(action: "copy" | "move") {
 const detailOpen = ref(false);
 const detailEntry = ref<FileEntry | null>(null);
 const detailInfo = ref<DetailInfo | null>(null);
+const detailConnectionId = ref<string>();
+const detailSaveState = ref<DetailSaveState>("idle");
+// issue #100：metadata 编辑入口只在后端声明能力、连接可写且目标是文件时
+// 出现。capabilities 是「当前宿主连接」的单一快照（loadCapabilities 无
+// connectionId），双栏另一侧可能是别的协议——非当前连接的详情保守隐藏，
+// 避免把 S3 能力错配给本地/WebDAV 条目（后端仍会二次门控）。
+const canEditDetailMetadata = computed(
+  () =>
+    Boolean(capabilities.value?.metadataWrite) &&
+    detailConnectionId.value === connectionId.value &&
+    !capabilitiesLoading.value &&
+    !connection.value.readOnly &&
+    !capabilities.value?.readOnly &&
+    detailEntry.value?.kind === "file",
+);
 
 async function openEntryInfo(entry: FileEntry, side: PaneSide) {
   const id = sideConnectionId(side) ?? connectionId.value;
@@ -2947,10 +2962,35 @@ async function openEntryInfo(entry: FileEntry, side: PaneSide) {
       connectionId: id,
       path: entry.path,
     });
+    detailConnectionId.value = id;
+    detailSaveState.value = "idle";
     detailEntry.value = normalizeEntry(result.entry);
     detailInfo.value = result.detail ?? null;
     detailOpen.value = true;
   } catch (cause) {
+    showError(cause);
+  }
+}
+
+/** issue #100：提交 metadata 编辑后重拉 files/info（不改列表缓存）——对话框
+ * 展示的后端真值随之刷新；失败交给 showError，对话框保持编辑态可重试。 */
+async function saveEntryMetadata(metadata: Record<string, string>) {
+  const id = detailConnectionId.value;
+  const entry = detailEntry.value;
+  if (!id || !entry) return;
+  detailSaveState.value = "saving";
+  try {
+    await call("files/setMetadata", { connectionId: id, path: entry.path, metadata });
+    const result = await call<{ entry: FileEntry; detail: DetailInfo }>("files/info", {
+      connectionId: id,
+      path: entry.path,
+    });
+    detailEntry.value = normalizeEntry(result.entry);
+    detailInfo.value = result.detail ?? null;
+    detailSaveState.value = "saved";
+    showNotice({ key: "metadataSaved" });
+  } catch (cause) {
+    detailSaveState.value = "error";
     showError(cause);
   }
 }
@@ -6064,13 +6104,16 @@ onBeforeUnmount(() => {
       @cancel="onDropActionCancel"
     />
 
-    <!-- 文件详情面板（files/info，issue #98 只读先行）。 -->
+    <!-- 文件详情面板（files/info #98 + metadata 编辑 #100）。 -->
     <DetailDialog
       :open="detailOpen"
       :entry="detailEntry"
       :detail="detailInfo"
       :t="t"
+      :can-edit-metadata="canEditDetailMetadata"
+      :save-state="detailSaveState"
       @close="detailOpen = false"
+      @save="saveEntryMetadata"
     />
 
     <!-- 传输同名冲突三键弹窗（上传预检与下载落盘共用）：覆盖/自动重命名/取消。 -->

@@ -616,6 +616,36 @@ impl Plugin {
                     }
                 }
             }
+            "files/setMetadata" => {
+                // issue #100: S3 user-metadata editing (two-hop server-side
+                // rewrite, no re-upload). Capability gate + validation live in
+                // rclone::metadata; the connection-level write gate comes
+                // first so a read-only connection never reaches the engine.
+                let request: model::SetMetadataRequest = parse(params)?;
+                let binding = self.rclone.binding(&request.connection_id)?;
+                // Only the write gate applies: the temp object the rewrite
+                // creates and removes is ours, so `allow_delete=false` must
+                // not block metadata edits (no user data is deleted).
+                ensure_binding_writable(&binding)?;
+                let client = self.rclone.client_for_binding(&binding).await?;
+                rclone::metadata::set_metadata(
+                    &client,
+                    &rclone::call_fs(&binding),
+                    &request.path,
+                    &binding.root,
+                    binding.lock_to_root,
+                    &binding.backend_type,
+                    &request.metadata,
+                )
+                .await?;
+                self.audit_id(
+                    &request.connection_id,
+                    "files/setMetadata",
+                    &request.path,
+                    "ok",
+                )?;
+                Ok(json!({ "success": true }))
+            }
             "files/capabilities" => {
                 let connection_id = connection_id_param(&params)?.to_string();
                 let binding = self.rclone.binding(&connection_id)?;

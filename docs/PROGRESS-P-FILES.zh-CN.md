@@ -2674,3 +2674,102 @@ issue #98 三项中第 3 项（presign 自定义过期）已随 0.1.93 落地；
 `scripts/smoke_mcp.py` M1-M13 全 PASS（M10 新增 delete-token → purge 拒绝
 用例；R1-R7 容器段按 env SKIP）。七语 N/A（无前端 UI 文案）。
 
+
+## #100 S3 user metadata 编辑（files/setMetadata，两跳服务端改写）（2026-11-26）
+
+issue #100 在 #98「只读查看」基础上交付**写回**：编辑 Content-Type 与
+`x-amz-meta-*` 用户元数据，不重传对象内容。可行性证据（源码 + 本地 MinIO
+实测，含 T1-T8 探针矩阵）见
+`docs/drafts/ISSUE-FOLLOWUP-FILES-97-98-100.zh-CN.md` §3。钉住的
+rclone v1.75.2-dbx.1 无需改动。
+
+### 交付面
+
+- **新协议方法 `files/setMetadata`**（`connectionId`、`path`、
+  `metadata:{<key>:<value>}` → `{success:true}`）。键只接受 5 个可写 HTTP
+  头（`content-type`/`cache-control`/`content-disposition`/
+  `content-encoding`/`content-language`）与 `x-amz-meta-<name>`；大小写
+  不敏感、归一为小写。实现 `backend/src/rclone/metadata.rs`：
+  1. `operations/copyfile` 源 → 唯一临时键
+     （`_config:{"Metadata":true,"MetadataSet":{…}}`；`Metadata` 先读源
+     对象元数据，未提供的键因此保留）；
+  2. `operations/movefile` 临时键 → 源
+     （`_config:{"IgnoreTimes":true}`；缺此键 move 可能判 up-to-date
+     而只删临时对象、元数据回退——证据文档 T7/T8 实测踩坑）；
+  3. 任一步失败 best-effort 删临时键（`operations/deletefile`），错误
+     文案标明已清理。
+  `_config` 键必须是 **Go 字段名**（`Metadata`/`MetadataSet`/
+  `IgnoreTimes`）；`metadata_set` 这类 snake_case 被 rclone 静默忽略，
+  单测显式钉住 payload 形状。
+- **临时键安全**：`<path>.dbx-meta-tmp-<token>`（token = 纳秒 + pid +
+  进程内计数器，hex）；分配前 `operations/stat` 预检，冲突换新 token
+  重试（≤3），**绝不覆盖已有对象**；目录/不存在路径在 copy 前用可读
+  错误拒绝。
+- **能力门控**：`files/capabilities` 新增 `metadataWrite`，仅
+  `s3`/`oss`/`cos`/`obs` 静态为真，且 rc `Features.WriteMetadata` 与
+  `UserMetadata` 均为真（fsinfo 可答时**只降不升**；缺字段保留静态
+  基线）。方法自身再校验一次后端类型——非 S3 家族返回可操作错误，
+  不依赖前端隐藏。
+- **前端** `DetailDialog.vue`：`capabilities.metadataWrite` 且连接可写
+  且目标是文件时，user metadata 区出现「编辑元数据」；编辑态可改
+  Content-Type、增删/改 `x-amz-meta-*` 键值行、行内校验（空值/非法键/
+  重复/控制字符/无改动），提交后父层调 `files/setMetadata` 并**重拉
+  `files/info`**，`saveState=saved` 退出编辑态；失败走 `showError` 并
+  保持编辑态可重试。草稿→wire map 纯逻辑独立在
+  `frontend/src/lib/metadataEdit.ts`。
+- **mock**：`files/capabilities` 增 `metadataWrite:false`（mock FS 非 S3，
+  与真实非 S3 连接形状一致）；`files/setMetadata` 在 `backendParity`
+  豁免表登记（能力恒 false，无前端调用方）。
+- **文案**：七语新增 14 键（`metadataEdit`/`metadataUserKeys`/
+  `metadata{Key,Value}Placeholder`/`metadataAddRow`/`metadataRemoveRow`/
+  `metadata{EmptyValue,InvalidKey,DuplicateKey,InvalidValue,NoChanges}`/
+  `metadataEditHint`/`metadataSaving`/`metadataSaved`）。
+
+### 能力边界（不假装支持）
+
+- **删除键不支持**：该路径写空串而非删除，故空值/纯空白值直接拒绝。
+- **S3 `Expires` 不支持**：rclone s3 不往返该头，键 `expires` /
+  `x-amz-expires` 明确报错，不做静默 no-op。
+- **仅 S3 家族**：`local`/`azureblob` 虽也报 `WriteMetadata:true`，但键
+  词表分别是 POSIX/xattr 与 `x-ms-meta-*`，不在本方法契约内（能力
+  静态矩阵保持 false）。
+- **值约束**：禁控制字符（头注入防护）；user metadata 合计（含
+  `x-amz-meta-` 前缀）≤ 2048 字节（S3 上限）。
+- **门禁**：只过连接级 `read_only` 写门；`allow_delete=false` 不拦截
+  （两跳只删自建的临时对象，不删用户数据）。
+
+### 验证
+
+- `cargo test`：**628 passed / 0 failed**（#100 新增 20 例：metadata 模块
+  19 例——wire map 拆分/Go 字段名/各项校验/能力矩阵/临时键命名与冲突/
+  copy 与 move 失败清理/不支持后端零 rc 流量/目录拒绝，stub rc 记录
+  请求断言两跳与清理；ops 能力降级 1 例）。
+- `vue-tsc --noEmit`：0 错；`vitest` 全量 **94 文件 / 783 passed**（新增
+  `metadataEdit.spec.ts` 10 例 + `DetailDialog` 编辑态 6 例；`backendParity`
+  GOLDEN/豁免表同步 `files/setMetadata`）。
+- **真机 MinIO（bitnamilegacy/minio:2025.7.23 @127.0.0.1:19000）**：
+  `scripts/smoke_test.py` 全量 **PASS 127 / SKIP 5 / FAIL 0**，s3 段新增
+  `metadata-capability`、`metadata-edit-roundtrip`（Content-Type +
+  `x-amz-meta-dbx-smoke` 回读、对象字节不变、无残留临时键）、
+  `metadata-reject-expires`、`metadata-reject-empty-value` 全绿；fs/memory
+  段新增 `metadata-unsupported-backend`（非 S3 后端返回可操作能力错误，
+  而非静默成功）。
+- **下载回验证**：按 rc 两步法改写后 `rclone serve http` 取头
+  `Content-Type: application/json`（原 `text/plain`），正文
+  `probe-body` 不变。
+
+### 残留风险
+
+- **临时键窗口**：改写期间桶内短暂出现
+  `<path>.dbx-meta-tmp-<token>`；并发列举可能看到，权限/生命周期规则
+  也可能作用于它（同前缀策略需排除 `.dbx-meta-tmp`）。
+- **并发写者**：两跳非原子。若他人在 copy 与 move 之间写入原键，
+  move 会用「旧内容 + 新元数据」覆盖对方写入（lost update）；反之
+  对方也可能覆盖本次结果。当前不做 ETag/条件写校验（rc copyfile 无
+  条件头通道），高并发编辑同一对象的场景不保证线性化。
+- **进程崩溃**：sidecar 在两步之间退出会留下孤儿临时键（无自动
+  GC）；重试会分配新 token 不会误用旧键。
+- **对象属性副作用**：S3 CopyObject 会刷新 Last-Modified（ETag 对
+  单段对象仍为内容 MD5）；存储层级/标签按 rclone 元数据往返语义处理。
+- **能力提示与实况**：`metadataWrite` 依赖 fsinfo；fsinfo 不可用时
+  保留静态真值，真正写入若被后端拒绝会以 rc 错误呈现（不会误报成功）。

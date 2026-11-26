@@ -55,6 +55,8 @@ export interface FileCapabilities {
   copy: boolean;
   rename: boolean;
   presign: boolean;
+  /** S3 user-metadata editing (`files/setMetadata`, issue #100). */
+  metadataWrite?: boolean;
   write: boolean;
   delete?: boolean;
   move?: boolean;

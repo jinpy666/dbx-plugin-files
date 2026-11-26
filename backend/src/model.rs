@@ -625,6 +625,11 @@ pub struct Capabilities {
     pub copy: bool,
     pub rename: bool,
     pub presign: bool,
+    /// S3-family user-metadata editing (`files/setMetadata`, issue #100).
+    /// True only for `s3`/`oss`/`cos`/`obs` *and* a live `Features`
+    /// `WriteMetadata`+`UserMetadata` (when fsinfo answers). Non-object
+    /// backends keep the write/rename surface but not this one.
+    pub metadata_write: bool,
     /// rc `Features.CanHaveEmptyDirectories` 投影：false 的后端空目录在
     /// 列表里不可见（`files/mkdir` 因此自动补一个空 `.keep` 占位文件，
     /// rclone-ui 同款行为）。`None` = fsinfo 不可用（能力未知；前端不要
@@ -695,6 +700,19 @@ pub struct ListCancelRequest {
 pub struct PathRequest {
     pub connection_id: String,
     pub path: String,
+}
+
+/// `files/setMetadata`（issue #100）：`path` + rclone 形态的 metadata 键值
+/// （`content-type`/`cache-control`/`content-disposition`/`content-encoding`/
+/// `content-language` 与 `x-amz-meta-*`）。键/值校验与拆分在
+/// `rclone::metadata` 内完成（空值=写入空串而非删除，因此拒绝）。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetMetadataRequest {
+    pub connection_id: String,
+    pub path: String,
+    #[serde(default)]
+    pub metadata: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]

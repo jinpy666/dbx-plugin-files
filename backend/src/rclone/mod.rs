@@ -18,6 +18,7 @@ pub mod bytes_channel;
 pub mod display;
 pub mod list_decision;
 pub mod list_stream;
+pub mod metadata;
 pub mod mount;
 pub mod ops;
 pub mod proc;

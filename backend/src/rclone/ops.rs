@@ -582,6 +582,9 @@ fn static_capabilities(backend_type: &str) -> Capabilities {
         copy: is_fs || is_object,
         rename: is_fs || is_object,
         presign: is_object,
+        // issue #100: user-metadata writes are an S3-vocabulary capability
+        // (`x-amz-meta-*`), not a generic object-store one.
+        metadata_write: super::metadata::metadata_write_supported(backend_type),
         // 静态基线不知道空目录语义：交给 fsinfo 的 live 覆盖（未知 = None）。
         can_have_empty_directories: None,
     }
@@ -597,6 +600,14 @@ fn apply_features(caps: &mut Capabilities, features: Option<&Value>) {
     }
     if let Some(can_have_empty_directories) = flag("CanHaveEmptyDirectories") {
         caps.can_have_empty_directories = Some(can_have_empty_directories);
+    }
+    // issue #100: live downgrade only. A backend outside the S3 family never
+    // gains the capability here; an S3-family one that reports either flag
+    // false loses it. Missing flags (older rclone) keep the static baseline.
+    if caps.metadata_write {
+        if let (Some(write), Some(user)) = (flag("WriteMetadata"), flag("UserMetadata")) {
+            caps.metadata_write = write && user;
+        }
     }
     // `copy`/`rename` stay on the static baseline: fsinfo's Copy/Move flags
     // advertise server-side copy *optimization*, not capability — the local
@@ -707,8 +718,8 @@ fn write_policy(root: &str, lock_to_root: bool) -> PathPolicy {
 }
 
 /// Write-side gate: path whitelist + `lock_to_root` (`mkdir`, copy/move
-/// targets). Error text is the policy's own.
-fn gate_write(root: &str, lock_to_root: bool, path: &str) -> Result<String, String> {
+/// targets, metadata rewrite). Error text is the policy's own.
+pub(crate) fn gate_write(root: &str, lock_to_root: bool, path: &str) -> Result<String, String> {
     write_policy(root, lock_to_root)
         .check_write(path)
         .map(|resolved| resolved.relative)
@@ -2079,6 +2090,14 @@ mod tests {
             assert!(caps.presign, "{scheme} is object storage");
             assert!(caps.copy && caps.rename, "{scheme}");
         }
+        // issue #100: the S3 user-metadata vocabulary is narrower than
+        // "object storage" — only the s3-family dialects advertise it.
+        for scheme in ["s3", "oss", "cos", "obs"] {
+            assert!(static_capabilities(scheme).metadata_write, "{scheme}");
+        }
+        for scheme in ["fs", "gcs", "azblob", "webdav", "ftp", "sftp", "smb"] {
+            assert!(!static_capabilities(scheme).metadata_write, "{scheme}");
+        }
         for scheme in ["webdav", "ftp", "sftp", "smb", "drive"] {
             let caps = static_capabilities(scheme);
             assert!(caps.list && caps.write && caps.read && caps.stat && caps.delete, "{scheme}");
@@ -2115,6 +2134,42 @@ mod tests {
         assert!(caps.write);
         apply_features(&mut caps, None);
         assert!(caps.write);
+    }
+
+    /// issue #100: live feature flags can only *downgrade* the metadata-write
+    /// capability (never grant it to a non-S3 dialect), and a missing flag
+    /// (older rclone) keeps the static baseline.
+    #[test]
+    fn metadata_write_capability_follows_live_flags_downward_only() {
+        let mut caps = static_capabilities("s3");
+        assert!(caps.metadata_write);
+        apply_features(
+            &mut caps,
+            Some(&json!({ "WriteMetadata": false, "UserMetadata": true })),
+        );
+        assert!(!caps.metadata_write, "WriteMetadata=false must demote");
+
+        let mut caps = static_capabilities("s3");
+        apply_features(
+            &mut caps,
+            Some(&json!({ "WriteMetadata": true, "UserMetadata": false })),
+        );
+        assert!(!caps.metadata_write, "UserMetadata=false must demote");
+
+        let mut caps = static_capabilities("s3");
+        apply_features(&mut caps, Some(&json!({ "WriteMetadata": true, "UserMetadata": true })));
+        assert!(caps.metadata_write);
+
+        let mut caps = static_capabilities("s3");
+        apply_features(&mut caps, Some(&json!({})));
+        assert!(caps.metadata_write, "missing flags keep the static baseline");
+
+        let mut caps = static_capabilities("local");
+        apply_features(
+            &mut caps,
+            Some(&json!({ "WriteMetadata": true, "UserMetadata": true })),
+        );
+        assert!(!caps.metadata_write, "non-S3 dialects never gain it");
     }
 
     // -- mkdir 空目录占位回退（纯决策矩阵） ------------------------------------
