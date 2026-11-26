@@ -466,6 +466,17 @@ def m10_fs(client: SidecarClient) -> str:
                                        path=target, confirmToken=preview2["confirmToken"]),
                      ("unknown or already used",))
 
+        # 工具绑定：files_delete 的 token 不能确认 files_purge——参数形状相同，
+        # 但用户批准的是一次单文件删除，不是递归删除。
+        cross = call_tool(client, "files_delete", connectionId=conn_id, path="/mcp-smoke/b.txt")
+        expect_error(
+            lambda: call_tool(client, "files_purge", connectionId=conn_id,
+                              path="/mcp-smoke/b.txt", confirmToken=cross["confirmToken"]),
+            ("different tool",),
+        )
+        assert os.path.exists(os.path.join(root, "mcp-smoke", "b.txt")), \
+            "cross-tool purge must not run"
+
         # purge 根路径红线（连接 root = "/"）。
         expect_error(
             lambda: call_tool(client, "files_purge", connectionId=conn_id, path="/"),
@@ -491,7 +502,7 @@ def m10_fs(client: SidecarClient) -> str:
         assert not os.path.exists(os.path.join(root, "mcp-smoke")), "purged on disk"
 
         return (f"digest matched={digest['matched']}; cursor paged; two-phase delete executed; "
-                f"token single-use; two-phase purge executed; audit source=mcp "
+                f"token single-use + tool-bound; two-phase purge executed; audit source=mcp "
                 f"({len(mcp_entries)} entries)")
     finally:
         try:

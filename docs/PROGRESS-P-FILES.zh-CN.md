@@ -2652,3 +2652,25 @@ issue #98 三项中第 3 项（presign 自定义过期）已随 0.1.93 落地；
   探活超时，环境问题，与本轮改动无关——未触碰该脚本；sftp/smb/webdav/ftp
   容器段照旧由 CI 与后续环境复验），故 MinIO 段以手动容器方式补验。
 
+## 安全修复：confirmToken 绑定签发工具（2026-11-26，只读/MCP 审计）
+
+**问题**：`ConfirmEntry` 只存 `hash + expires_at`，不记录签发工具。
+`files_delete {connectionId, path}` 与 `files_purge {connectionId, path}` 参数
+形状完全相同，`schedule_run_now {id}` 与 `schedule_delete {id}` 同理——一次
+"单文件删除"预览拿到的 token 可直接确认 `files_purge` 递归删除整棵子树，
+用户批准的操作与实际执行的操作不一致（CWE-863）。
+
+**修复**：
+- `ConfirmEntry` 增 `tool: String`；`confirm_begin(tool, args)` 记录签发工具，
+  `confirm_verify(token, tool, args)` 先校验工具再校验参数哈希；不匹配返回
+  "issued for a different tool"，且 token 照旧一次性消费。
+- 四个签发点分别绑定 `files_delete` / `files_purge`（同一函数传 `tool`）、
+  `schedule_create`、`schedule_run_now`、`schedule_delete`。
+- 只读执行门不受影响：delete/purge 的 `ensure_binding_deletable`
+  仍在预览前执行，只读连接不会被 token 复用绕过。
+
+**测试**：新增 `confirm_token_is_bound_to_the_tool_that_issued_it`（TDD 先红
+后绿：先按新签名写测试触发编译失败，再改 API）；`cargo test` 608 全绿；
+`scripts/smoke_mcp.py` M1-M13 全 PASS（M10 新增 delete-token → purge 拒绝
+用例；R1-R7 容器段按 env SKIP）。七语 N/A（无前端 UI 文案）。
+

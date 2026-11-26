@@ -706,7 +706,8 @@ impl Mcp {
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
         else {
-            let (confirm_token, expires_at) = self.confirm_begin(&arguments_without_token(arguments));
+            let (confirm_token, expires_at) =
+                self.confirm_begin(tool, &arguments_without_token(arguments));
             return Ok(json!({
                 "preview": preview,
                 "confirmToken": confirm_token,
@@ -715,7 +716,7 @@ impl Mcp {
                          confirmToken to execute",
             }));
         };
-        self.confirm_verify(token, &arguments_without_token(arguments))?;
+        self.confirm_verify(token, tool, &arguments_without_token(arguments))?;
         // rclone ops trim slash spellings internally; the bare validated path
         // is the delete target (the dir-marker spelling matters for prefix
         // backends only).
@@ -1223,7 +1224,7 @@ impl Mcp {
                 "enabled": request.enabled.unwrap_or(true),
                 "options": request.options,
             });
-            let (confirm_token, expires_at) = self.confirm_begin(&bare);
+            let (confirm_token, expires_at) = self.confirm_begin("schedule_create", &bare);
             return Ok(json!({
                 "preview": preview,
                 "confirmToken": confirm_token,
@@ -1232,7 +1233,7 @@ impl Mcp {
                          confirmToken to create",
             }));
         };
-        self.confirm_verify(token, &bare)?;
+        self.confirm_verify(token, "schedule_create", &bare)?;
         let request: crate::scheduler::model::ScheduleCreateRequest =
             serde_json::from_value(bare)
                 .map_err(|error| format!("Invalid request parameters: {error}"))?;
@@ -1277,7 +1278,7 @@ impl Mcp {
                 "target": format!("{}:{}", task.target_connection_id, task.target_path),
                 "enabled": task.enabled,
             });
-            let (confirm_token, expires_at) = self.confirm_begin(&bare);
+            let (confirm_token, expires_at) = self.confirm_begin("schedule_run_now", &bare);
             return Ok(json!({
                 "preview": preview,
                 "confirmToken": confirm_token,
@@ -1286,7 +1287,7 @@ impl Mcp {
                          confirmToken to run now",
             }));
         };
-        self.confirm_verify(token, &bare)?;
+        self.confirm_verify(token, "schedule_run_now", &bare)?;
         let run = scheduler.run_now(&id)?;
         let store = self.storage_route()?.store.clone();
         audit_mcp_id(&store, &id, "files/schedule/runNow", &run.run_id, "ok");
@@ -1317,7 +1318,7 @@ impl Mcp {
                 .into_iter()
                 .find(|task| task.id == id)
                 .ok_or("Schedule task was not found")?;
-            let (confirm_token, expires_at) = self.confirm_begin(&bare);
+            let (confirm_token, expires_at) = self.confirm_begin("schedule_delete", &bare);
             return Ok(json!({
                 "preview": { "taskId": task.id, "name": task.name, "kind": task.kind },
                 "confirmToken": confirm_token,
@@ -1326,7 +1327,7 @@ impl Mcp {
                          confirmToken to delete (run history is kept)",
             }));
         };
-        self.confirm_verify(token, &bare)?;
+        self.confirm_verify(token, "schedule_delete", &bare)?;
         let removed = scheduler.delete(&id)?;
         if removed {
             let store = self.storage_route()?.store.clone();

@@ -183,6 +183,10 @@ pub(crate) struct CursorSession {
 pub(crate) struct ConfirmEntry {
     pub(crate) hash: u64,
     pub(crate) expires_at_millis: u128,
+    /// Tool that issued the token. `files_delete` / `files_purge` and
+    /// `schedule_run_now` / `schedule_delete` share argument shapes, so the
+    /// parameter hash alone cannot distinguish what the user approved.
+    pub(crate) tool: String,
 }
 
 /// LRU-bounded ordered map: the least-recently-touched entry is evicted past
@@ -603,7 +607,7 @@ impl Mcp {
     /// same millisecond share an `expires_at_millis`, so under that pressure
     /// the eviction is a documented arbitrary pick — the victim must simply
     /// re-preview ("unknown or already used"), there is no double-write.
-    pub(crate) fn confirm_begin(&self, arguments: &Value) -> (String, u128) {
+    pub(crate) fn confirm_begin(&self, tool: &str, arguments: &Value) -> (String, u128) {
         let settings = self.current_settings();
         let token = format!("c-{}", uuid::Uuid::new_v4().simple());
         let now = unix_millis_now() as u128;
@@ -631,6 +635,7 @@ impl Mcp {
             ConfirmEntry {
                 hash: params_hash(arguments),
                 expires_at_millis: now + u128::from(settings.confirm_ttl_secs) * 1_000,
+                tool: tool.to_string(),
             },
         );
         (token, now + u128::from(settings.confirm_ttl_secs) * 1_000)
@@ -645,7 +650,12 @@ impl Mcp {
     /// threads racing `confirm_verify` on the same token can produce exactly
     /// one `Ok` — the loser sees "unknown or already used". Consumption is
     /// the atomic step; there is no verify-then-remove window.
-    pub(crate) fn confirm_verify(&self, token: &str, arguments: &Value) -> Result<(), String> {
+    pub(crate) fn confirm_verify(
+        &self,
+        token: &str,
+        tool: &str,
+        arguments: &Value,
+    ) -> Result<(), String> {
         let entry = self
             .confirms
             .lock()
@@ -660,6 +670,12 @@ impl Mcp {
             let ttl_secs = self.current_settings().confirm_ttl_secs;
             return Err(format!(
                 "confirmToken expired (TTL {ttl_secs}s); request a new preview"
+            ));
+        }
+        if entry.tool != tool {
+            return Err(format!(
+                "confirmToken was issued for a different tool ({}); request a new preview for {tool}",
+                entry.tool
             ));
         }
         if entry.hash != params_hash(arguments) {

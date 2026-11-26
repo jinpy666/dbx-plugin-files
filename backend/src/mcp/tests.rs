@@ -306,7 +306,7 @@ fn expiry_errors_report_the_tuned_ttl() {
         .unwrap_err();
     assert!(error.contains("TTL 45s"), "{error}");
     let stripped = json!({ "connectionId": "c", "path": "/tmp/x" });
-    let (token, _expires) = mcp.confirm_begin(&stripped);
+    let (token, _expires) = mcp.confirm_begin("files_delete", &stripped);
     {
         let mut confirms = mcp
             .confirms
@@ -314,7 +314,7 @@ fn expiry_errors_report_the_tuned_ttl() {
             .unwrap_or_else(|poison| poison.into_inner());
         confirms.get_mut(&token).unwrap().expires_at_millis = 0;
     }
-    let error = mcp.confirm_verify(&token, &stripped).unwrap_err();
+    let error = mcp.confirm_verify(&token, "files_delete", &stripped).unwrap_err();
     assert!(error.contains("TTL 120s"), "{error}");
 }
 
@@ -500,23 +500,23 @@ fn arguments_without_token_strips_only_the_token() {
 fn confirm_token_flow_hash_expiry_one_time() {
     let mcp = mcp();
     let stripped = json!({ "connectionId": "c", "path": "/tmp/x" });
-    let (token, _expires) = mcp.confirm_begin(&stripped);
+    let (token, _expires) = mcp.confirm_begin("files_delete", &stripped);
     // Same parameters verify (and consume).
-    mcp.confirm_verify(&token, &stripped).unwrap();
+    mcp.confirm_verify(&token, "files_delete", &stripped).unwrap();
     // One-time: a replay fails with the preview hint.
-    let error = mcp.confirm_verify(&token, &stripped).unwrap_err();
+    let error = mcp.confirm_verify(&token, "files_delete", &stripped).unwrap_err();
     assert!(error.contains("unknown or already used"), "{error}");
 
     // Tampered parameters invalidate (token consumed by the failed check).
-    let (token, _expires) = mcp.confirm_begin(&stripped);
+    let (token, _expires) = mcp.confirm_begin("files_delete", &stripped);
     let tampered = json!({ "connectionId": "c", "path": "/etc" });
-    let error = mcp.confirm_verify(&token, &tampered).unwrap_err();
+    let error = mcp.confirm_verify(&token, "files_delete", &tampered).unwrap_err();
     assert!(error.contains("arguments changed"), "{error}");
     // The invalidated token cannot be retried either.
-    assert!(mcp.confirm_verify(&token, &stripped).is_err());
+    assert!(mcp.confirm_verify(&token, "files_delete", &stripped).is_err());
 
     // Expired token refuses (consumed too).
-    let (token, _expires) = mcp.confirm_begin(&stripped);
+    let (token, _expires) = mcp.confirm_begin("files_delete", &stripped);
     {
         let mut confirms = mcp
             .confirms
@@ -524,8 +524,27 @@ fn confirm_token_flow_hash_expiry_one_time() {
             .unwrap_or_else(|poison| poison.into_inner());
         confirms.get_mut(&token).unwrap().expires_at_millis = 0;
     }
-    let error = mcp.confirm_verify(&token, &stripped).unwrap_err();
+    let error = mcp.confirm_verify(&token, "files_delete", &stripped).unwrap_err();
     assert!(error.contains("expired"), "{error}");
+}
+
+#[test]
+fn confirm_token_is_bound_to_the_tool_that_issued_it() {
+    // A preview is an approval of the operation the user saw. Because
+    // `files_delete` and `files_purge` (and `schedule_run_now` /
+    // `schedule_delete`) share an argument shape, a token issued by one must
+    // not authorise the other.
+    let mcp = mcp();
+    let args = json!({ "connectionId": "c", "path": "/tmp/x" });
+    let (token, _expires) = mcp.confirm_begin("files_delete", &args);
+    let error = mcp
+        .confirm_verify(&token, "files_purge", &args)
+        .unwrap_err();
+    assert!(error.contains("different tool"), "{error}");
+
+    // The matching tool still verifies with the same token.
+    let (token, _expires) = mcp.confirm_begin("files_delete", &args);
+    mcp.confirm_verify(&token, "files_delete", &args).unwrap();
 }
 
 // -- intent state table ----------------------------------------------------
@@ -2277,7 +2296,7 @@ fn confirm_table_churns_at_ttl_and_hard_cap() {
     // 600+ 次 preview（从不 confirm）：表被 TTL prune + 硬上限钳住，
     // 绝不单调增长（签发量超过硬上限，表停在上限）。
     for _ in 0..(Mcp::MAX_CONFIRM_ENTRIES + 200) {
-        let (token, _) = table.confirm_begin(&args);
+        let (token, _) = table.confirm_begin("files_delete", &args);
         assert!(token.starts_with("c-"));
     }
     {
@@ -2298,8 +2317,15 @@ fn confirm_table_churns_at_ttl_and_hard_cap() {
         .confirms
         .lock()
         .unwrap()
-        .insert("c-expired".to_string(), ConfirmEntry { hash: 0, expires_at_millis: expired_at });
-    let _ = table.confirm_begin(&args);
+        .insert(
+            "c-expired".to_string(),
+            ConfirmEntry {
+                hash: 0,
+                expires_at_millis: expired_at,
+                tool: "files_delete".to_string(),
+            },
+        );
+    let _ = table.confirm_begin("files_delete", &args);
     assert!(
         !table.confirms.lock().unwrap().contains_key("c-expired"),
         "expired token pruned on the next preview"
@@ -2319,11 +2345,12 @@ fn confirm_cap_evicts_the_earliest_expiring_token() {
                     // 远未来的过期时间 + 相对序：TTL prune 不参与，
                     // 只验证硬上限淘汰（最早过期者 = 序号最小者）。
                     expires_at_millis: unix_millis_now() as u128 + 1_000_000 + index as u128,
+                    tool: "files_delete".to_string(),
                 },
             );
         }
     }
-    let (fresh, _) = table.confirm_begin(&json!({}));
+    let (fresh, _) = table.confirm_begin("files_delete", &json!({}));
     let confirms = table.confirms.lock().unwrap();
     assert_eq!(confirms.len(), Mcp::MAX_CONFIRM_ENTRIES, "cap holds");
     assert!(confirms.contains_key(&fresh), "the fresh token survives");
@@ -2337,21 +2364,21 @@ fn confirm_cap_evicts_the_earliest_expiring_token() {
 #[test]
 fn confirm_ttl_retune_does_not_redate_issued_tokens() {
     let mcp = mcp();
-    let (token, expires_at) = mcp.confirm_begin(&json!({ "connectionId": "c", "path": "/a" }));
+    let (token, expires_at) = mcp.confirm_begin("files_delete", &json!({ "connectionId": "c", "path": "/a" }));
     assert!(expires_at > unix_millis_now() as u128 + 55_000, "60s default");
     // 调小 TTL：已签发 token 的过期时间不追溯（begin 时固定）。
     mcp.settings_set(&json!({ "confirmTtlSecs": 10 })).unwrap();
-    let (_, retuned_expires_at) = mcp.confirm_begin(&json!({ "connectionId": "c", "path": "/b" }));
+    let (_, retuned_expires_at) = mcp.confirm_begin("files_delete", &json!({ "connectionId": "c", "path": "/b" }));
     let now = unix_millis_now() as u128;
     assert!(
         retuned_expires_at <= now + 11_000,
         "new tokens use the retuned TTL: {retuned_expires_at} vs now {now}"
     );
     // 旧 token 在其原始 600s 窗口内仍然有效（消费即成功，一次性）。
-    mcp.confirm_verify(&token, &json!({ "connectionId": "c", "path": "/a" }))
+    mcp.confirm_verify(&token, "files_delete", &json!({ "connectionId": "c", "path": "/a" }))
         .expect("pre-retune token keeps its original window");
     // 过期报文携带实际生效（调小后）的 TTL。
-    let (token2, _) = mcp.confirm_begin(&json!({ "connectionId": "c", "path": "/c" }));
+    let (token2, _) = mcp.confirm_begin("files_delete", &json!({ "connectionId": "c", "path": "/c" }));
     mcp.confirms
         .lock()
         .unwrap()
@@ -2359,7 +2386,7 @@ fn confirm_ttl_retune_does_not_redate_issued_tokens() {
         .unwrap()
         .expires_at_millis = unix_millis_now() as u128 - 1;
     let error = mcp
-        .confirm_verify(&token2, &json!({ "connectionId": "c", "path": "/c" }))
+        .confirm_verify(&token2, "files_delete", &json!({ "connectionId": "c", "path": "/c" }))
         .unwrap_err();
     assert!(error.contains("TTL 10s"), "{error}");
 }
@@ -2877,12 +2904,12 @@ fn confirm_table_survives_concurrent_churn_without_double_consumption() {
             barrier.wait();
             let mut held: Vec<String> = Vec::new();
             for round in 0..rounds {
-                let (token, _) = table.confirm_begin(&args);
+                let (token, _) = table.confirm_begin("files_delete", &args);
                 match round % 3 {
                     0 => {
                         // 立即消费：一次成功（或同毫秒淘汰压力下的明确
                         // unknown），随后重放必须失败 —— 一次性。
-                        match table.confirm_verify(&token, &args) {
+                        match table.confirm_verify(&token, "files_delete", &args) {
                             Ok(()) => {}
                             Err(error) => assert!(
                                 error.contains("unknown or already used"),
@@ -2890,7 +2917,7 @@ fn confirm_table_survives_concurrent_churn_without_double_consumption() {
                             ),
                         }
                         assert!(
-                            table.confirm_verify(&token, &args).is_err(),
+                            table.confirm_verify(&token, "files_delete", &args).is_err(),
                             "replay of a consumed token must fail"
                         );
                     }
@@ -2899,10 +2926,10 @@ fn confirm_table_survives_concurrent_churn_without_double_consumption() {
                 }
             }
             for token in held {
-                match table.confirm_verify(&token, &args) {
+                match table.confirm_verify(&token, "files_delete", &args) {
                     Ok(()) => {
                         assert!(
-                            table.confirm_verify(&token, &args).is_err(),
+                            table.confirm_verify(&token, "files_delete", &args).is_err(),
                             "held token replay must fail"
                         );
                     }
