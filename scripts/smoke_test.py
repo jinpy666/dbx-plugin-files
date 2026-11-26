@@ -245,6 +245,83 @@ def scenario_capabilities(runner: Runner) -> None:
     caps = runner.call("files/capabilities", {"connectionId": runner.connection_id})
     assert isinstance(caps, dict), f"capabilities is not an object: {caps!r}"
     assert "copy" in caps and "rename" in caps, f"capabilities missing copy/rename: {caps!r}"
+    # issue #100: the metadata-write flag is always part of the report; its
+    # value is backend-dependent (s3-family only) and asserted per section.
+    assert isinstance(caps.get("metadataWrite"), bool), \
+        f"capabilities must carry a boolean metadataWrite: {caps!r}"
+
+
+def scenario_metadata_unsupported(runner: Runner, path: str) -> None:
+    """issue #100: non-S3 backends must reject metadata writes with an
+    actionable capability error, never a silent no-op."""
+    def _reject():
+        if not runner.expect_error("files/setMetadata", {
+            "connectionId": runner.connection_id,
+            "path": path,
+            "metadata": {"content-type": "application/json"},
+        }, "only S3-compatible"):
+            raise SkipStep("files/setMetadata not registered")
+    runner.step("metadata-unsupported-backend", _reject)
+
+
+def scenario_metadata_edit(runner: Runner, path: str) -> None:
+    """issue #100: S3 user metadata edit without re-upload.
+
+    Server-side two-hop rewrite (copyfile + MetadataSet → movefile with
+    IgnoreTimes); asserts the round-trip through files/info, byte identity of
+    the object and the absence of leftover temporary keys. S3/MinIO only —
+    the caller runs this from the s3 container section.
+    """
+    cid = runner.connection_id
+
+    def _capability():
+        caps = runner.call("files/capabilities", {"connectionId": cid})
+        assert caps.get("metadataWrite") is True, f"s3 must declare metadataWrite: {caps!r}"
+    runner.step("metadata-capability", _capability)
+
+    def _roundtrip():
+        result = runner.call("files/setMetadata", {
+            "connectionId": cid,
+            "path": path,
+            "metadata": {
+                "content-type": "application/json",
+                "x-amz-meta-dbx-smoke": "issue-100",
+            },
+        })
+        assert result.get("success") is True, f"setMetadata rejected: {result!r}"
+        detail = runner.call("files/info", {"connectionId": cid, "path": path}).get("detail", {})
+        pairs = {pair.get("key"): pair.get("value") for pair in detail.get("metadata", [])}
+        content_type = detail.get("mimeType") or pairs.get("content-type")
+        assert content_type == "application/json", \
+            f"content-type did not round-trip: detail={detail!r}"
+        assert pairs.get("x-amz-meta-dbx-smoke") == "issue-100", \
+            f"user metadata did not round-trip: detail={detail!r}"
+        read = runner.call("files/read", {"connectionId": cid, "path": path})
+        assert base64.b64decode(read["dataBase64"]) == b"hello files", \
+            "metadata rewrite changed the object bytes"
+        entries = runner.call("files/list", {"connectionId": cid, "path": os.path.dirname(path)})
+        leftovers = [entry["name"] for entry in entries.get("entries", []) if ".dbx-meta-tmp" in entry["name"]]
+        assert not leftovers, f"temporary rewrite keys left behind: {leftovers}"
+    runner.step("metadata-edit-roundtrip", _roundtrip)
+
+    def _reject_expires():
+        if not runner.expect_error("files/setMetadata", {
+            "connectionId": cid,
+            "path": path,
+            "metadata": {"expires": "Thu, 01 Jan 1970 00:00:00 GMT"},
+        }, "not supported"):
+            raise SkipStep("files/setMetadata not registered")
+    runner.step("metadata-reject-expires", _reject_expires)
+
+    def _reject_empty_value():
+        if not runner.expect_error("files/setMetadata", {
+            "connectionId": cid,
+            "path": path,
+            "metadata": {"x-amz-meta-dbx-smoke": ""},
+        }, "not supported"):
+            raise SkipStep("files/setMetadata not registered")
+    runner.step("metadata-reject-empty-value", _reject_empty_value)
+
 
 
 def assert_protocol_contract(runner: Runner, protocol: str) -> None:
@@ -836,6 +913,7 @@ def run_core_sections(client: SidecarClient, fs_root: str) -> None:
         scenario_capabilities(runner)
         scenario_quick_paths(runner, expect_user_dirs=False)
         scenario_structure(runner, base)
+        scenario_metadata_unsupported(runner, f"{base}/dir/hello.txt")
         scenario_mount(runner, base)
         scenario_audit(runner)
         scenario_transfer_roundtrip(runner, base)
@@ -924,6 +1002,7 @@ def run_s3_section(client: SidecarClient) -> None:
         keys = [pair.get("key") for pair in metadata]
         assert keys == sorted(keys), f"s3 metadata pairs must be key-sorted: {keys}"
     runner.step("info-s3-true-values", _info_true_values)
+    scenario_metadata_edit(runner, f"{base}/dir/hello.txt")
     bucket2 = os.environ.get("DBX_FILES_S3_BUCKET2")
     if bucket2:
         scenario_namespace_cross_bucket(runner, bucket, bucket2, endpoint, access, secret)

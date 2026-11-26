@@ -531,7 +531,9 @@ export function installMockHost() {
         return { cancelled: Boolean(stream) };
       }
       case "files/capabilities":
-        return { scheme: "mock", list: true, write: true, read: true, stat: true, delete: true, createDir: true, copy: true, rename: true, presign, readOnly: storageFor(p.connectionId).readOnly };
+        // mock FS 不是 S3 家族：metadataWrite 恒 false（与真实后端非 S3
+        // 连接的形状一致），详情对话框因此不出编辑入口。
+        return { scheme: "mock", list: true, write: true, read: true, stat: true, delete: true, createDir: true, copy: true, rename: true, presign, metadataWrite: false, readOnly: storageFor(p.connectionId).readOnly };
       case "files/size": {
         // 对标真实 sidecar：目录按直接子项汇总条目数与字节数；文件返回自身。
         await new Promise((resolve) => setTimeout(resolve, delayMs));

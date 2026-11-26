@@ -270,7 +270,8 @@ connectionId `__local__`——按需合成的 root=`/` fs 连接（可写、可�
 | `files/listPaged` | `path`、`page`、`pageSize` | `{entries,total}` |
 | `files/stat` | `path` | `{entry}` |
 | `files/info` | `connectionId`、`path` | `{entry, detail}`（issue #98 只读先行）。`detail` 为 rc stat `opt.metadata + hashTypes` 投影：`mimeType?`、`etag?`（item `ID` 字段，个别后端透出；rclone v1.75 的 s3 Object 不导出 ETag）、`hashes?:{算法→摘要}`（MD5/SHA-1/SHA-256，按后端支持回填）、`mode?/uid?/gid?`（POSIX 元数据提升）、`metadata?:[{key,value}]`（user/system metadata 键值对，按键字典序；mode/uid/gid 提升后不重复出现）。全部扩展字段可选，无 metadata 能力的后端整块缺省，前端 DetailDialog 优雅降级 |
-| `files/capabilities` | — | `{copy:bool,rename:bool,presign:bool,write:bool,…}`（`info().capability()` 透出，前端按能力显隐） |
+| `files/setMetadata` | `connectionId`、`path`、`metadata:{<key>:<value>}` | `{success:true}`（issue #100）。键只接受 `content-type`/`cache-control`/`content-disposition`/`content-encoding`/`content-language` 与 `x-amz-meta-<name>`（大小写不敏感，归一为小写）；仅 S3 家族（`s3`/`oss`/`cos`/`obs`，见 `files/capabilities.metadataWrite`）可用，其余后端 -32000。实现为两跳服务端改写（不重传对象）：`operations/copyfile` 源→唯一临时键（`_config:{"Metadata":true,"MetadataSet":{…}}`）→ `operations/movefile` 临时键→源（`_config:{"IgnoreTimes":true}`，缺此键 move 可能判 up-to-date 而不复制）；任一步失败清理临时键。未提供的键保持原值。**不支持删除键**（空值写入空串，故拒绝空值）、S3 `Expires` 不支持、值禁控制字符、user metadata 合计 ≤2 KiB |
+| `files/capabilities` | — | `{copy:bool,rename:bool,presign:bool,write:bool,metadataWrite:bool,…}`（`info().capability()` 透出 + rc `Features` 实况，前端按能力显隐；`metadataWrite` 仅 S3 家族且 `WriteMetadata`+`UserMetadata` 均为真） |
 | `files/size` | `path` | `{count,bytes}`（lister 聚合） |
 | `files/publicLink` | `path`、`expireSecs?` | `{url}`；后端不支持时 -32000 |
 | `files/quickPaths` | — | `{paths:[{key,path}]}`；工作台路径栏快速目录下拉（原 chips 行已并入下拉）。仅 fs 协议（root 为 `/` 即整盘、且未锁 root；OpenDAL fs 的 root 必填，无法「未配置」）透出 `home/desktop/downloads/documents/pictures`（逐个 stat 校验，缺失目录不出现）；其余协议与受限连接只返回 `{key:"root",path:"/"}` |

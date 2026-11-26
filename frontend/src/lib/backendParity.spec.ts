@@ -84,6 +84,7 @@ const GOLDEN_BACKEND_METHODS: ReadonlySet<string> = new Set([
   "files/serve/list",
   "files/serve/start",
   "files/serve/stop",
+  "files/setMetadata",
   "files/size",
   "files/stat",
   "files/syncDir",
@@ -126,6 +127,9 @@ const MOCK_EXEMPT_METHODS: Record<string, string> = {
   // 宿主调度器表单的 plugin 目录选择器（picker.source:"plugin"）调用，
   // 工作台前端不调用；目录浏览由宿主对话框承担。
   "files/listDirs": "宿主调度器 picker 面，工作台不调用",
+  // issue #100：mock FS 不是 S3 家族，capabilities.metadataWrite 恒 false，
+  // 详情对话框不出编辑入口，因此没有调用方（与真实后端非 S3 连接一致）。
+  "files/setMetadata": "mock 非 S3，能力恒 false，无前端调用方",
   // MCP 工具面方法（mcp/tools.rs 独立实现），工作台前端不调用。
   "mcp/call": "MCP 面方法，工作台不调用",
   "mcp/settings/get": "MCP 面方法，工作台不调用",

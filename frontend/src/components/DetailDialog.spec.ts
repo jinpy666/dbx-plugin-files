@@ -118,3 +118,93 @@ describe("DetailDialog", () => {
     expect(wrapper.emitted("close")).toHaveLength(2);
   });
 });
+
+// issue #100：S3 metadata 编辑入口只在后端声明能力时出现；提交前本地校验
+// 与父层 saveState 驱动的退出编辑态。
+const editableDetail = {
+  mimeType: "text/plain",
+  metadata: [
+    { key: "content-type", value: "text/plain" },
+    { key: "x-amz-meta-owner", value: "alice" },
+  ],
+};
+
+describe("DetailDialog metadata editing (#100)", () => {
+  it("hides the edit affordance without backend capability", async () => {
+    const wrapper = mountDialog({ detail: editableDetail });
+    await settle(wrapper);
+    expect(wrapper.find('[data-test="metadata-edit"]').exists()).toBe(false);
+  });
+
+  it("hides the edit affordance for directories", async () => {
+    const wrapper = mountDialog({
+      detail: editableDetail,
+      canEditMetadata: true,
+      entry: { ...baseEntry, name: "dir", path: "/photos", kind: "directory", size: undefined },
+    });
+    await settle(wrapper);
+    expect(wrapper.find('[data-test="metadata-edit"]').exists()).toBe(false);
+  });
+
+  it("seeds the editor and emits the wire map on save", async () => {
+    const wrapper = mountDialog({ detail: editableDetail, canEditMetadata: true });
+    await settle(wrapper);
+    await wrapper.find('[data-test="metadata-edit"]').trigger("click");
+    await settle(wrapper);
+
+    const editor = wrapper.find('[data-test="metadata-editor"]');
+    expect(editor.exists()).toBe(true);
+    expect(
+      (wrapper.find('[data-test="metadata-content-type"]').element as HTMLInputElement).value,
+    ).toBe("text/plain");
+    const keys = wrapper.findAll('[data-test="metadata-key"]');
+    expect(keys).toHaveLength(1);
+    expect((keys[0]!.element as HTMLInputElement).value).toBe("owner");
+
+    await wrapper.find('[data-test="metadata-content-type"]').setValue("application/json");
+    await wrapper.find('[data-test="metadata-value"]').setValue("bob");
+    await wrapper.find('[data-test="metadata-save"]').trigger("click");
+
+    expect(wrapper.emitted("save")).toEqual([
+      [{ "content-type": "application/json", "x-amz-meta-owner": "bob" }],
+    ]);
+  });
+
+  it("blocks empty values locally and shows a translated hint", async () => {
+    const wrapper = mountDialog({ detail: editableDetail, canEditMetadata: true });
+    await settle(wrapper);
+    await wrapper.find('[data-test="metadata-edit"]').trigger("click");
+    await settle(wrapper);
+    await wrapper.find('[data-test="metadata-value"]').setValue("");
+    await wrapper.find('[data-test="metadata-save"]').trigger("click");
+    await settle(wrapper);
+
+    expect(wrapper.emitted("save")).toBeUndefined();
+    expect(wrapper.find('[data-test="metadata-error"]').text()).toBe("metadataEmptyValue");
+  });
+
+  it("leaves the editor when the parent reports a saved state", async () => {
+    const wrapper = mountDialog({ detail: editableDetail, canEditMetadata: true });
+    await settle(wrapper);
+    await wrapper.find('[data-test="metadata-edit"]').trigger("click");
+    await settle(wrapper);
+    expect(wrapper.find('[data-test="metadata-editor"]').exists()).toBe(true);
+
+    await wrapper.setProps({ saveState: "saved" });
+    await settle(wrapper);
+    expect(wrapper.find('[data-test="metadata-editor"]').exists()).toBe(false);
+  });
+
+  it("Escape exits the editor without closing the dialog", async () => {
+    const wrapper = mountDialog({ detail: editableDetail, canEditMetadata: true });
+    await settle(wrapper);
+    await wrapper.find('[data-test="metadata-edit"]').trigger("click");
+    await settle(wrapper);
+
+    await wrapper.find('[role="dialog"]').trigger("keydown", { key: "Escape" });
+    await settle(wrapper);
+    expect(wrapper.find('[data-test="metadata-editor"]').exists()).toBe(false);
+    expect(wrapper.emitted("close")).toBeUndefined();
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(true);
+  });
+});
